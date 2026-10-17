@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.118] - 2026-10-17
+
+### Fixed
+- Knowledge-refresh fingerprints retain every visible physical record, matching SQLite's multiplicity instead of collapsing equal kind/ID pairs from different scopes into a false concurrency retry.
+- Refresh rejects ambiguous affected scope/source groups, conflicting projection parent references and occupied compiler targets before the batch's first write. Private refreshes cannot mix shared claims, deprecate a foreign-scope page or replace an unrelated record with a compiled page. Physical keys, original payloads and SQL projections bind both affected records and evidence inputs. Rejected batches roll back without flushing older pending exports. Existing canonical-artifact and transaction checks remain; unique shared canonical sources remain readable, and unrelated visible duplicate IDs do not block an independent refresh.
+- Native regressions verify successful refreshes and zero record/outbox writes on authority conflicts. Acceptance records distinguish the 254 current divergent identity pairs from 92 located historical pairs and 162 historical unknowns; this patch performs no identity merge, deletion or production rewrite and does not establish nightly quality acceptance.
+
 ## [1.14.117] - 2026-10-17
 
 ### Fixed

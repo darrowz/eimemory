@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.117" src="https://img.shields.io/badge/version-1.14.117-blue">
+  <img alt="Package version 1.14.118" src="https://img.shields.io/badge/version-1.14.118-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -87,7 +87,9 @@ expected record, selector, grounding and thresholds, without extra retrieval
 reads or candidate injection. The supplied 1.14.72 readback verifies the trace
 on that controlled failure, without certifying its recovery or formal quality.
 
-Mainline **1.14.117** gives the deterministic structured-recall selector the existing in-budget hydration and final-validation reserve. Collection receives an earlier cutoff inside the existing hard deadline. Incomplete collection remains degraded and cannot pass controlled evaluation merely because its target was returned. Slow collections may stop earlier; production acceptance requires the new release's own evidence.
+Mainline **1.14.118** corrects knowledge-refresh snapshot comparison for visible duplicate IDs and blocks ambiguous scope, source, projection lineage or occupied compiler targets before any batch write. A unique shared canonical paper remains readable, and unrelated duplicates do not block an independent refresh. The 254 current identity conflicts contain real payload differences and remain protected; 162 historical pairs are still unknown. See [acceptance evidence and limits](docs/acceptance-status.md).
+
+1.14.117 gives the deterministic structured-recall selector the existing in-budget hydration and final-validation reserve. Collection receives an earlier cutoff inside the existing hard deadline. Incomplete collection remains degraded and cannot pass controlled evaluation merely because its target was returned. Slow collections may stop earlier; production acceptance requires the new release's own evidence.
 
 1.14.116 removes four ambiguous bare Chinese words from default personal-preference triggers. Technical titles containing `直接`, `简洁`, `极简` or `废话` no longer lose valid facts merely because of those words. Existing personal and attribute queries keep their filtering contract. The 1.14.115 readback now attributes five misses to the preference branch and one to exhausted collection time; coverage and recovery still require fresh evidence.
 
@@ -268,7 +270,7 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.117, mainline)
+## Current package status (1.14.118, mainline)
 
 The current source repair covers the audit's sixteen findings with native
 positive/negative, restart, transport-loss and authorization regressions. Review
@@ -278,14 +280,15 @@ configuration-driven, with no hardcoded profile, identity or provider route.
 See [repair contracts and verification](docs/audit/business-closure-remediation-2026-10-13.md)
 and [production acceptance status](docs/acceptance-status.md).
 
-The 1.14.73 controlled-target eligibility and native source diagnostics remain
+The controlled-target eligibility and native source diagnostics remain
 available. An ineligible target is not an evaluable pass; empty eligible datasets
-cannot pass. The historical 1.14.72 business readback remains controlled 7/8,
-formal 0/3 and no evolution candidates. The current technical deployment is
-1.14.76 / `0bd74ec2`, with verified health and a successful persisted nightly
-`ref_536a893327e3` on October 14. Its release closure remains unaccepted because
-recall-quality and non-recall L5 evidence are incomplete. These operational
-results do not establish recovery of the earlier source-return miss.
+cannot pass. The latest operator readback verifies deployment of 1.14.115 /
+`194659fa` and same-commit nightly `ref_6d66ae9cd54f` on October 17. Production
+recall passes three cases and accepted cases reach 3/3, while controlled memory
+passes four of ten, `memory_eval_ci` fails and the overall command exits 1.
+Formal recall quality and dynamic-capability evidence remain unaccepted.
+The newer mainline source changes require their own deployment and same-commit
+nightly evidence before production recovery is claimed.
 
 Controlled known-item checks can observe one exact target through the native
 retrieval path. This private trace binds to one engine, source, scope and query,

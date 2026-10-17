@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
+from eimemory.core import strict_json
 from eimemory.intake.papers import artifacts as paper_artifacts
 from eimemory.intake.papers.artifacts import PaperArtifactError
 from eimemory.knowledge.capabilities import (
@@ -14,6 +16,7 @@ from eimemory.knowledge.capabilities import (
 )
 from eimemory.knowledge.compiler import compile_paper_knowledge
 from eimemory.knowledge.evidence_contracts import versioned_record_ref
+from eimemory.knowledge.projectors import PROJECTOR_SOURCE, PROJECTION_LINEAGE_SCHEMA, stable_projection_id
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.storage.jsonl import payload_digest, payload_set_fingerprint
 from eimemory.storage.runtime_store import RuntimeStore
@@ -24,6 +27,11 @@ PROJECTION_TYPE = "operational_knowledge"
 _BLOCKED_SOURCE_STATUSES = {"rejected", "deprecated", "conflicted", "needs_refresh"}
 _REFRESH_INPUT_KINDS = ["knowledge_page", "claim_card", "entity_record", "paper_source"]
 _RECORD_PAGE_SIZE = 1_000
+
+
+class _RefreshAborted(Exception):
+    def __init__(self, report: dict[str, Any]) -> None:
+        self.report = report
 
 
 @dataclass(slots=True)
@@ -90,12 +98,6 @@ def refresh_knowledge_pages(
         stale_pages=stale_pages,
         inputs=inputs,
     )
-    invalidated_record_ids = {
-        record_id
-        for plan in plans
-        for record_id in plan.invalidated_record_ids
-    }
-
     # MIS-2: scans, canonical-text IO, and compile stay outside the write lock.
     # The transaction compares payload fingerprints and upserts.  A changed
     # source snapshot retries without re-reading the PDF under the lock.
@@ -104,12 +106,13 @@ def refresh_knowledge_pages(
         kinds=["memory"],
         scope=scope_ref,
     )
-    projected_to_retire_seed = [
-        record
-        for record in projection_records
-        if _projection_source_id(record) in invalidated_record_ids
-        and record.status != "deprecated"
-    ]
+    for plan in plans:
+        reason = _plan_authority_error(plan, inputs=inputs, scope=scope_ref)
+        if reason:
+            return _authority_blocked_report(plans, reason)
+    projected_to_retire_seed, reason = _projection_retirements(projection_records, plans)
+    if reason:
+        return _authority_blocked_report(plans, reason)
     source_fingerprint = _fingerprint_records(inputs.records)
     memory_fingerprint = _fingerprint_records(projection_records)
 
@@ -117,19 +120,26 @@ def refresh_knowledge_pages(
         changed: list[RecordEnvelope] = []
         retired_projection_ids: list[str] = []
         if sqlite.record_payload_fingerprint(kinds=_REFRESH_INPUT_KINDS, scope=scope_ref) != source_fingerprint:
-            return _retry_required_report(sorted({plan.source_id for plan in plans})), [], []
+            raise _RefreshAborted(_retry_required_report(sorted({plan.source_id for plan in plans})))
         if sqlite.record_payload_fingerprint(kinds=["memory"], scope=scope_ref) != memory_fingerprint:
-            projected_to_retire = [
-                record
-                for record in _list_all_records(sqlite, kinds=["memory"], scope=scope_ref)
-                if _projection_source_id(record) in invalidated_record_ids
-                and record.status != "deprecated"
-            ]
+            projected_to_retire, reason = _projection_retirements(
+                _list_all_records(sqlite, kinds=["memory"], scope=scope_ref), plans,
+            )
+            if reason:
+                raise _RefreshAborted(_authority_blocked_report(plans, reason))
         else:
             projected_to_retire = list(projected_to_retire_seed)
-        for projection in projected_to_retire:
-            plan = _first_plan_for_record(plans, _projection_source_id(projection))
-            _retire_projection(projection, refresh_run_id=plan.refresh_run_id if plan else "")
+        reason = _compiled_target_error(sqlite, plans)
+        if reason:
+            raise _RefreshAborted(_authority_blocked_report(plans, reason))
+        related = [record for plan in plans for record in
+                   [*plan.source_pages, *plan.stale_pages, *plan.source_claims, *plan.source_entities,
+                    *([plan.source_record] if plan.source_record is not None else [])]]
+        reason = _existing_snapshot_error(sqlite, [*related, *(record for record, _plan in projected_to_retire)])
+        if reason:
+            raise _RefreshAborted(_authority_blocked_report(plans, reason))
+        for projection, plan in projected_to_retire:
+            _retire_projection(projection, refresh_run_id=plan.refresh_run_id)
             sqlite.upsert(projection, commit=False)
             changed.append(projection)
             retired_projection_ids.append(projection.record_id)
@@ -193,7 +203,12 @@ def refresh_knowledge_pages(
         }
         return report, changed, []
 
-    return store.mutate_records_atomically(mutation)
+    try:
+        return store.mutate_records_atomically(mutation)
+    except _RefreshAborted as exc:
+        # Roll back the owner and bypass its post-commit export flush. Even
+        # an empty committed mutation can otherwise flush older pending work.
+        return exc.report
 
 
 def _prepare_plans(
@@ -408,10 +423,213 @@ def _load_refresh_inputs(repository, *, scope: ScopeRef) -> _RefreshInputs:
 
 
 def _fingerprint_records(records: list[RecordEnvelope]) -> str:
-    rows: dict[tuple[str, str], str] = {}
+    # Physical rows with equal kind/id remain distinct across visible scopes.
+    # Match the SQL fingerprint's multiset; a read alias is not a dedupe key.
+    return payload_set_fingerprint(
+        (record.kind, record.record_id, payload_digest(record.to_dict())) for record in records
+    )
+
+
+def _authority(record: RecordEnvelope) -> tuple[str, ...]:
+    scope = record.scope
+    return scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id, record.source_id
+
+
+def _exact_key(record: RecordEnvelope) -> tuple[str, ...]:
+    return (*_authority(record), record.kind, record.record_id)
+
+
+def _plan_authority_error(plan: _RefreshPlan, *, inputs: _RefreshInputs, scope: ScopeRef) -> str:
+    roots = {_authority(page) for page in plan.stale_pages}
+    if len(roots) != 1:
+        return "ambiguous_page_authority"
+    root = next(iter(roots))
+    if root[:4] != (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id):
+        return "page_scope_authority_mismatch"
+    stale_keys = {_exact_key(page) for page in plan.stale_pages}
+    related = [record for record in inputs.records
+               if (_exact_key(record) in stale_keys
+                   or (plan.source_id and (record.kind == "paper_source" and record.record_id == plan.source_id
+                                           or plan.source_id in _record_source_ids(record))))]
+    by_kind: dict[str, set[tuple[str, ...]]] = defaultdict(set)
+    by_id: dict[tuple[str, str], set[tuple[str, ...]]] = defaultdict(set)
+    for record in related:
+        by_kind[record.kind].add(_authority(record))
+        by_id[(record.kind, record.record_id)].add(_exact_key(record))
+    if any(len(values) > 1 for values in by_kind.values()) or any(len(values) > 1 for values in by_id.values()):
+        return "ambiguous_source_authority"
+    if any(_authority(page) != root for page in plan.source_pages):
+        return "ambiguous_page_authority"
+    if any(_authority(claim) != root for claim in plan.source_claims):
+        return "claim_authority_mismatch"
+    # Entities and the read-only canonical paper may use a different source
+    # partition. Entities still belong to the page's exact owner; a visible
+    # shared/legacy entity cannot silently become a private compiled fact.
+    if any(_authority(entity)[:4] != root[:4] for entity in plan.source_entities):
+        return "entity_scope_authority_mismatch"
+    active_claims = {claim.record_id: claim for claim in plan.source_claims
+                     if claim.status == "active" and not _is_conflicted_claim(claim)}
+    for page in plan.compiled_records or ():
+        if page.kind != "knowledge_page" or _authority(page) != root:
+            return "compiled_authority_mismatch"
+        ids = page.content.get("supporting_claim_ids")
+        refs = page.content.get("supporting_claim_refs")
+        if (not isinstance(ids, list) or not ids or not isinstance(refs, list) or len(ids) != len(refs)
+                or page.content.get("supporting_claim_refs_schema") != "knowledge.projection_support.v1"):
+            return "compiled_support_authority_mismatch"
+        for claim_id, ref in zip(ids, refs):
+            claim = active_claims.get(claim_id)
+            if claim is None or payload_digest(ref) != payload_digest(versioned_record_ref(claim)):
+                return "compiled_support_authority_mismatch"
+    return ""
+
+
+def _compiled_target_error(sqlite, plans: list[_RefreshPlan]) -> str:
+    occupied_targets: set[tuple[str, ...]] = set()
+    for plan in plans:
+        previous = {_exact_key(page) for page in plan.source_pages}
+        for page in plan.compiled_records or ():
+            authority = _authority(page)
+            physical = (*authority[:4], page.record_id)
+            if physical in occupied_targets:
+                return "compiled_target_conflict"
+            occupied_targets.add(physical)
+            # The real uniqueness key excludes both kind and source_id.
+            # An exact-ref lookup returning None does not prove this slot free.
+            storage_key = sqlite._storage_key(page)
+            rows = sqlite.execute(
+                "SELECT storage_key,tenant_id,agent_id,workspace_id,user_id,source_id,kind,record_id "
+                "FROM records WHERE storage_key=? OR "
+                "(tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? AND record_id=?)",
+                (storage_key, *physical),
+            ).fetchall()
+            if len(rows) > 1:
+                return "compiled_target_conflict"
+            for row in rows:
+                key = tuple(str(row[field]) for field in
+                            ("tenant_id", "agent_id", "workspace_id", "user_id", "source_id", "kind", "record_id"))
+                if key not in previous or row["storage_key"] != storage_key:
+                    return "compiled_target_conflict"
+    return ""
+
+
+def _existing_snapshot_error(sqlite, records: list[RecordEnvelope]) -> str:
+    """Bind related read/write authority to its physical, verified snapshot."""
+    seen: set[tuple[str, ...]] = set()
     for record in records:
-        rows[(record.kind, record.record_id)] = payload_digest(record.to_dict())
-    return payload_set_fingerprint((kind, record_id, digest) for (kind, record_id), digest in rows.items())
+        exact = _exact_key(record)
+        if exact in seen:
+            continue
+        seen.add(exact)
+        storage_key = sqlite._storage_key(record)
+        authority = _authority(record)
+        rows = sqlite.execute(
+            "SELECT * FROM records WHERE storage_key=? OR "
+            "(tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? AND record_id=?)",
+            (storage_key, *authority[:4], record.record_id),
+        ).fetchall()
+        if len(rows) != 1:
+            return "refresh_record_snapshot_mismatch"
+        row = rows[0]
+        expected = {**dict(zip(("tenant_id", "agent_id", "workspace_id", "user_id", "source_id"), authority)),
+                    **{field: getattr(record, field) for field in
+                       ("record_id", "kind", "status", "source", "title", "summary", "detail")},
+                    "created_at": record.time.created_at, "updated_at": record.time.updated_at}
+        if (row["storage_key"] != storage_key or row["payload_pointer_json"]
+                or payload_digest(expected) != payload_digest({field: row[field] for field in expected})):
+            return "refresh_record_snapshot_mismatch"
+        try:
+            raw = str(row["payload_json"])
+            payload = strict_json.loads(raw, max_bytes=max(1, len(raw.encode("utf-8"))))
+            raw_meta = str(row["meta_json"])
+            meta = strict_json.loads(raw_meta, max_bytes=max(1, len(raw_meta.encode("utf-8"))))
+            if (not isinstance(payload, dict) or not isinstance(meta, dict)
+                    or re.fullmatch(r"[0-9a-f]{64}", str(row["payload_digest"] or "")) is None
+                    or payload_digest(payload) != row["payload_digest"]
+                    or payload_digest(record.to_dict()) != row["payload_digest"]
+                    or payload_digest(meta) != payload_digest(record.meta)):
+                return "refresh_record_snapshot_mismatch"
+        except (TypeError, ValueError, UnicodeError):
+            return "refresh_record_snapshot_mismatch"
+    return ""
+
+
+def _projection_retirements(
+    records: list[RecordEnvelope], plans: list[_RefreshPlan],
+) -> tuple[list[tuple[RecordEnvelope, _RefreshPlan]], str]:
+    parents: dict[tuple[str, ...], tuple[RecordEnvelope, _RefreshPlan]] = {}
+    for plan in plans:
+        invalidated = [*plan.source_pages, *(claim for claim in plan.source_claims if _is_conflicted_claim(claim))]
+        for parent in invalidated:
+            key = (*_authority(parent), parent.record_id)
+            if key in parents and parents[key][1] is not plan:
+                return [], "ambiguous_projection_authority"
+            parents[key] = parent, plan
+    retired: list[tuple[RecordEnvelope, _RefreshPlan]] = []
+    for record in records:
+        parent_id = _projection_source_id(record)
+        if record.status == "deprecated" or not parent_id:
+            continue
+        match = parents.get((*_authority(record), parent_id))
+        if match is None:
+            # A visible projection in another exact owner/source partition is
+            # an independent record, even when its bare parent ID is equal.
+            continue
+        parent, plan = match
+        if not _projection_parent_matches(record, parent):
+            return [], "projection_authority_mismatch"
+        retired.append((record, plan))
+    return retired, ""
+
+
+def _projection_parent_matches(record: RecordEnvelope, parent: RecordEnvelope) -> bool:
+    if (record.kind != "memory" or record.source != PROJECTOR_SOURCE
+            or record.record_id != stable_projection_id(parent) or _authority(record) != _authority(parent)
+            or record.meta.get("projection_type") != PROJECTION_TYPE
+            or record.meta.get("source_record_id") != parent.record_id
+            or record.meta.get("source_record_kind") != parent.kind):
+        return False
+    for container in (record.meta, record.provenance, record.content):
+        if ("source_record_id" in container and container["source_record_id"] != parent.record_id
+                or "source_record_kind" in container and container["source_record_kind"] != parent.kind):
+            return False
+    lineage_keys = {"source_record_ref", "supporting_claim_refs", "projection_lineage_schema"}
+    if not any(key in container for container in (record.meta, record.provenance, record.content) for key in lineage_keys):
+        return parent.source_id == "default"
+    ref = record.meta.get("source_record_ref")
+    if (not isinstance(ref, dict) or set(ref) != {"record_id", "kind", "scope", "source_id", "version_digest"}
+            or not isinstance(ref.get("scope"), dict)
+            or set(ref["scope"]) != {"tenant_id", "agent_id", "workspace_id", "user_id"}
+            or any(not isinstance(value, str) for value in ref["scope"].values())
+            or not isinstance(ref.get("version_digest"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", ref["version_digest"]) is None):
+        return False
+    expected = versioned_record_ref(parent)
+    # A projection legitimately binds the active version preceding the
+    # current needs_refresh/contradiction update. Retiring that old output
+    # does not certify its body or invent an archived source version.
+    if any(ref[key] != expected[key] for key in ("record_id", "kind", "scope", "source_id")):
+        return False
+    if any(key in record.content and payload_digest(record.content[key]) != payload_digest(record.meta.get(key))
+           for key in lineage_keys):
+        return False
+    supports = record.meta.get("supporting_claim_refs")
+    return (isinstance(supports, list) and isinstance(record.provenance.get("supporting_claim_refs"), list)
+            and payload_digest(supports) == payload_digest(record.provenance["supporting_claim_refs"])
+            and record.meta.get("projection_lineage_schema") == PROJECTION_LINEAGE_SCHEMA
+            and record.provenance.get("projection_lineage_schema") == PROJECTION_LINEAGE_SCHEMA
+            and payload_digest(record.provenance.get("source_record_ref")) == payload_digest(ref))
+
+
+def _authority_blocked_report(plans: list[_RefreshPlan], reason: str) -> dict[str, Any]:
+    pages = [page for plan in plans for page in plan.stale_pages]
+    return {
+        **_empty_report(), "ok": False, "refresh_status": "blocked", "retry_required": False,
+        "persisted": False, "mutation_count": 0,
+        "blocked_page_count": len(pages), "blocked_page_ids": [page.record_id for page in pages],
+        "blocked": [{"source_id": plan.source_id, "page_ids": [page.record_id for page in plan.stale_pages],
+                     "reason": reason} for plan in plans],
+    }
 
 
 def _records_for_plan(

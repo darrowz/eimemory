@@ -1,5 +1,82 @@
 # Receipt-based acceptance status
 
+## October 17 conflict classification and refresh authority boundaries: 1.14.118
+
+The operator's read-only classification separates the current reconstructed
+conflicts from the historical 1.14.115 command outcome. At October 17,
+00:25:11 UTC, all 254 current pairs have valid original checksums, SQL
+projections and physical references, and the same effective source partition.
+After normalizing the source in memory and aligning only `updated_at`, zero
+full canonical payloads are equal; all 254 differ. Content, metadata, creation
+time and occurrence time differ in every pair; provenance differs in 253.
+Additional title, summary, detail, evidence and link differences overlap.
+This is not evidence for timestamp-only deduplication or safe overwriting.
+
+Only 92 historical pairs can be located through their saved exact references.
+Their current payloads differ; these reads do not restore historical content
+versions. The remaining 162 historical pairs are unknown because the exact
+references were not fully persisted. Neither the same count nor membership
+of the located 92 in the current set establishes that the entire historical
+and current sets are identical.
+
+A further operator readback at 00:30:55 UTC gives identical distributions for
+the source and target sides. The two current readbacks have equal counts, but
+no complete earlier reference manifest proves unchanged membership between
+those snapshots.
+
+| Kind | Current pairs | Located historical pairs |
+| --- | ---: | ---: |
+| entity_record | 133 | 52 |
+| relation_record | 25 | 4 |
+| knowledge_page | 40 | 15 |
+| claim_card | 25 | 6 |
+| paper_source | 20 | 12 |
+| paper_extract | 10 | 2 |
+| evaluation_packet | 1 | 1 |
+
+Producer fields point to knowledge relations, compilation, claims, paper
+intake, extraction and production-recall scope repair. Stable business IDs
+can legitimately recur in separate physical scopes; matching IDs or producer
+names do not prove which write caused a collision. These counts came from
+the operator's executor and have not been independently reproduced here.
+No production apply, delete, overwrite or nightly rerun was performed.
+
+An independent native-runtime investigation reproduces a knowledge-refresh
+defect. Its in-memory fingerprint collapses visible records sharing kind and
+ID, while SQLite retains their multiplicity, falsely requesting a retry on
+an unchanged database. The same refresh also groups inputs and retirements
+by bare business IDs: private refreshes can mix shared claims, deprecate a
+shared page, or overwrite another record occupying a stable compiler target.
+These are isolated reproductions, not attribution of the 254 identity conflicts.
+
+1.14.118 retains every row in the existing fingerprint comparison and blocks
+ambiguous affected refresh plans before any write. Exact scope and source
+boundaries constrain compilation and retirement; occupied compiler targets
+must belong to that plan. A unique visible shared paper may still supply
+verified canonical text without being rewritten. Unrelated visible duplicate
+IDs do not block an independent plan. The batch reports an explicit block,
+without retiring projections or marking pages, when authority is ambiguous.
+Original checksum, canonical-artifact and transactional concurrency checks
+remain in force. Legacy raw-versus-hydrated payload differences can still
+fail the original comparison; this patch does not reinterpret them.
+Local verification passes 760 tests and 85 subtests across knowledge,
+storage/transaction ownership, identity repair, controlled evaluation,
+recall budgets and release impact. Compilation, version consistency and
+diff checks pass. These isolated checks do not establish deployment acceptance.
+
+This source change does not resolve divergent identity records, prove
+1.14.116 covers the five production preference misses, or establish recovery
+of the sixth case after the 1.14.117 budget change. Deployment, same-commit
+nightly, formal quality and dynamic-capability evidence remain pending.
+Agent renaming also preserves embedded business references under the identity
+repair contract. An isolated claim/page migration leaves the old support
+scope and digest intact, so the projector correctly refuses that lineage;
+the current contradiction reconciler does not mark it for refresh. If a moved
+projection retains an old-scope parent reference, the new refresh boundary
+also refuses it. Rebuilding such lineage needs its own verified ownership
+and migration evidence; this patch neither rewrites those proofs nor claims
+that stale marking alone would restore every migrated page.
+
 ## October 17 same-run failure attribution and phase reserve: 1.14.117
 
 The operator supplied all six detailed failures from 1.14.115 nightly

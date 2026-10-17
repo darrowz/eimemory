@@ -688,3 +688,662 @@ def test_refresh_fails_closed_for_blocked_paper_source(
         assert blocked_page.meta["refresh_blocked_reason"] == f"blocked_source_status_{source_status}"
     finally:
         runtime.close()
+
+
+def _refresh_authority_scopes(monkeypatch) -> tuple[ScopeRef, ScopeRef, ScopeRef]:
+    from eimemory.identity import HONGTU_AGENT_ID, HONGTU_WORKSPACE_ID
+
+    legacy_agent = "refresh-authority-legacy"
+    monkeypatch.setenv("EIMEMORY_LEGACY_AGENT_IDS", legacy_agent)
+    scope = ScopeRef(agent_id=HONGTU_AGENT_ID, workspace_id=HONGTU_WORKSPACE_ID, user_id="refresh-operator")
+    legacy = ScopeRef(agent_id=legacy_agent, workspace_id=scope.workspace_id, user_id=scope.user_id)
+    shared = ScopeRef(agent_id=scope.agent_id, workspace_id=scope.workspace_id)
+    return scope, legacy, shared
+
+
+def _refresh_authority_snapshot(runtime: Runtime) -> tuple[tuple, tuple]:
+    """Include durable export operations when checking a rejected refresh."""
+
+    with runtime.store._lock:
+        records = runtime.store.sqlite.conn.execute(
+            "SELECT * FROM records ORDER BY storage_key"
+        ).fetchall()
+        exports = runtime.store.sqlite.conn.execute(
+            "SELECT * FROM export_outbox ORDER BY operation_id"
+        ).fetchall()
+    return tuple(tuple(row) for row in records), tuple(tuple(row) for row in exports)
+
+
+def _assert_refresh_authority_blocked(runtime: Runtime, report: dict, before: tuple, *, reason: str) -> None:
+    assert report["ok"] is False
+    assert report["refresh_status"] == "blocked"
+    assert report["retry_required"] is False
+    assert report["recompiled_page_count"] == 0
+    assert report["retired_projection_count"] == 0
+    assert report["deprecated_page_count"] == 0
+    assert report["blocked"]
+    assert {item["reason"] for item in report["blocked"]} == {reason}
+    assert _refresh_authority_snapshot(runtime) == before
+
+
+@pytest.mark.parametrize("duplicate_kind", ["claim_card", "memory"])
+def test_refresh_authority_unrelated_visible_duplicate_does_not_block_independent_plan(
+    tmp_path, verified_canonical_artifact, monkeypatch, duplicate_kind: str,
+) -> None:
+    scope, legacy, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _, _, _, page, _ = _refresh_fixture(runtime, scope=scope, source_id="paper_independent_authority")
+        unrelated = []
+        for index, duplicate_scope in enumerate((scope, legacy)):
+            if duplicate_kind == "claim_card":
+                duplicate = _claim(
+                    claim_id="unrelated_visible_duplicate", source_id="unrelated_paper",
+                    text=f"Unrelated verified claim from authority {index}.", scope=duplicate_scope,
+                )
+            else:
+                duplicate = RecordEnvelope.create(
+                    kind="memory", title="Unrelated visible memory", scope=duplicate_scope,
+                    summary=f"Unrelated memory variant {index}.", source="refresh.test.unrelated",
+                )
+                duplicate.record_id = "unrelated_visible_duplicate"
+            runtime.store.append(duplicate)
+            unrelated.append(duplicate)
+        before = [runtime.store.get_by_exact_ref(r.record_id, scope=r.scope, source_id=r.source_id).to_dict()
+                  for r in unrelated]
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        assert report["retry_required"] is False
+        assert report["recompiled_page_count"] == 1
+        assert runtime.store.get_by_exact_ref(page.record_id, scope=scope, source_id=page.source_id).status == "active"
+        assert [runtime.store.get_by_exact_ref(r.record_id, scope=r.scope, source_id=r.source_id).to_dict()
+                for r in unrelated] == before
+    finally:
+        runtime.close()
+
+
+def test_refresh_authority_preserves_unique_shared_paper_and_distinct_kind_source_partitions(
+    tmp_path, verified_canonical_artifact, monkeypatch,
+) -> None:
+    scope, _, shared = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        source_id = "paper_shared_read_authority"
+        source = _source(runtime, source_id=source_id, scope=shared, canonical_text=True)
+        claim = _claim(
+            claim_id="claim_shared_read_authority", source_id=source_id,
+            text="OpenClaw runtime recall must preserve independently reviewed source provenance.", scope=scope,
+        )
+        claim.source_id = "research"
+        runtime.store.append(claim)
+        entity = EntityRecord(
+            entity_record_id="entity_shared_read_authority", paper_source_id=source_id,
+            name="OpenClaw Runtime", entity_type="system",
+        ).to_record(scope=scope)
+        entity.source_id = "entity-extractor"
+        runtime.store.append(entity)
+        page = compile_paper_knowledge(
+            paper_source_id=source_id, paper_title=source.title, claim_records=[claim], entity_records=[entity],
+        ).to_records(scope=scope)[0]
+        assert page.source_id == "research"
+        page.status = "needs_refresh"
+        runtime.store.append(page)
+        source_before = runtime.store.get_by_exact_ref(source.record_id, scope=shared, source_id="default").to_dict()
+        entity_before = runtime.store.get_by_exact_ref(entity.record_id, scope=scope, source_id=entity.source_id).to_dict()
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        assert report["retry_required"] is False
+        assert report["recompiled_page_count"] >= 1
+        refreshed = runtime.store.get_by_exact_ref(page.record_id, scope=scope, source_id="research")
+        assert refreshed is not None and refreshed.status == "active"
+        assert refreshed.content["supporting_claim_refs"][0]["source_id"] == "research"
+        assert refreshed.content["supporting_claim_refs"][0]["scope"] == asdict(scope)
+        assert runtime.store.get_by_exact_ref(source.record_id, scope=shared, source_id="default").to_dict() == source_before
+        assert runtime.store.get_by_exact_ref(entity.record_id, scope=scope, source_id=entity.source_id).to_dict() == entity_before
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("foreign_kind", ["claim_card", "entity_record", "knowledge_page"])
+@pytest.mark.parametrize("foreign_scope_type", ["legacy_agent", "shared_user"])
+def test_refresh_authority_rejects_related_foreign_scope_with_distinct_record_id_without_writes(
+    tmp_path, verified_canonical_artifact, monkeypatch, foreign_kind: str, foreign_scope_type: str,
+) -> None:
+    scope, legacy, shared = _refresh_authority_scopes(monkeypatch)
+    foreign_scope = legacy if foreign_scope_type == "legacy_agent" else shared
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        source_id = "paper_foreign_authority"
+        _refresh_fixture(runtime, scope=scope, source_id=source_id)
+        if foreign_kind == "claim_card":
+            foreign = _claim(
+                claim_id="foreign_authority_claim", source_id=source_id,
+                text="Foreign scope claims must not enter the local compiled knowledge page.", scope=foreign_scope,
+            )
+        elif foreign_kind == "entity_record":
+            foreign = EntityRecord(
+                entity_record_id="foreign_authority_entity", paper_source_id=source_id,
+                name="Foreign Scope Entity", entity_type="concept",
+            ).to_record(scope=foreign_scope)
+        else:
+            foreign = RecordEnvelope.create(
+                kind="knowledge_page", title="Foreign scope page", scope=foreign_scope,
+                content={"source_ids": [source_id], "page_type": "topic"},
+                source="eimemory.knowledge.compiler",
+            )
+        runtime.store.append(foreign)
+        visible = runtime.store.list_records(kinds=[foreign_kind], scope=scope, limit=100)
+        assert any(record.record_id == foreign.record_id and record.scope == foreign_scope for record in visible)
+        before = _refresh_authority_snapshot(runtime)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        reason = "entity_scope_authority_mismatch" if foreign_kind == "entity_record" else "ambiguous_source_authority"
+        _assert_refresh_authority_blocked(runtime, report, before, reason=reason)
+    finally:
+        runtime.close()
+
+
+def test_refresh_authority_rejects_related_claims_from_multiple_runtime_sources_without_writes(
+    tmp_path, verified_canonical_artifact, monkeypatch,
+) -> None:
+    scope, _, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        source_id = "paper_claim_partition_authority"
+        _refresh_fixture(runtime, scope=scope, source_id=source_id)
+        foreign = _claim(
+            claim_id="foreign_partition_claim", source_id=source_id,
+            text="A distinct runtime source must not be merged into this compiled page.", scope=scope,
+        )
+        foreign.source_id = "research-other"
+        runtime.store.append(foreign)
+        before = _refresh_authority_snapshot(runtime)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        _assert_refresh_authority_blocked(runtime, report, before, reason="ambiguous_source_authority")
+    finally:
+        runtime.close()
+
+
+def test_refresh_authority_rejects_legacy_only_plan_retargeted_by_canonical_caller_without_writes(
+    tmp_path, verified_canonical_artifact, monkeypatch,
+) -> None:
+    scope, legacy, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _refresh_fixture(runtime, scope=legacy, source_id="paper_legacy_only_authority")
+        before = _refresh_authority_snapshot(runtime)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        _assert_refresh_authority_blocked(runtime, report, before, reason="page_scope_authority_mismatch")
+    finally:
+        runtime.close()
+
+
+def test_refresh_authority_rejects_compiled_target_occupied_by_other_kind_without_writes(
+    tmp_path, verified_canonical_artifact, monkeypatch,
+) -> None:
+    from eimemory.knowledge.pages import stable_page_id
+
+    scope, _, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        source_id = "paper_target_authority"
+        source, _, _, _, _ = _refresh_fixture(runtime, scope=scope, source_id=source_id)
+        source.title = "Changed canonical source title"
+        source.content["title"] = source.title
+        runtime.store.rewrite(source)
+        occupied = RecordEnvelope.create(
+            kind="memory", title="Existing unrelated memory", summary="Existing occupied physical target.",
+            scope=scope, source="refresh.test.occupied",
+        )
+        occupied.record_id = stable_page_id("paper", source_id, source.title)
+        runtime.store.append(occupied)
+        before = _refresh_authority_snapshot(runtime)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        _assert_refresh_authority_blocked(runtime, report, before, reason="compiled_target_conflict")
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("conflict_field", ["scope", "source_id", "kind"])
+def test_refresh_authority_rejects_projection_parent_typed_ref_conflict_without_writes(
+    tmp_path, verified_canonical_artifact, monkeypatch, conflict_field: str,
+) -> None:
+    scope, legacy, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _, _, _, _, projection_id = _refresh_fixture(runtime, scope=scope, source_id="paper_projection_authority")
+        projection = runtime.store.get_by_exact_ref(projection_id, scope=scope, source_id="default")
+        assert projection is not None
+        for container in (projection.meta, projection.provenance):
+            parent_ref = dict(container["source_record_ref"])
+            parent_ref[conflict_field] = asdict(legacy) if conflict_field == "scope" else (
+                "research-other" if conflict_field == "source_id" else "claim_card"
+            )
+            container["source_record_ref"] = parent_ref
+        runtime.store.rewrite(projection)
+        before = _refresh_authority_snapshot(runtime)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        _assert_refresh_authority_blocked(runtime, report, before, reason="projection_authority_mismatch")
+    finally:
+        runtime.close()
+
+
+def test_refresh_authority_rechecks_projection_parent_fence_after_memory_race(
+    tmp_path, verified_canonical_artifact, monkeypatch,
+) -> None:
+    scope, legacy, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _, _, _, _, projection_id = _refresh_fixture(runtime, scope=scope, source_id="paper_projection_fence_race")
+        original_mutate = runtime.store.mutate_records_atomically
+        after_race = []
+
+        def interleave(mutation):
+            projection = runtime.store.get_by_exact_ref(projection_id, scope=scope, source_id="default")
+            assert projection is not None
+            for container in (projection.meta, projection.provenance):
+                parent_ref = dict(container["source_record_ref"])
+                parent_ref["scope"] = asdict(legacy)
+                container["source_record_ref"] = parent_ref
+            projection.meta["race_marker"] = "changed-parent-authority"
+            runtime.store.rewrite(projection)
+            after_race.append(_refresh_authority_snapshot(runtime))
+            return original_mutate(mutation)
+
+        monkeypatch.setattr(runtime.store, "mutate_records_atomically", interleave)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        assert len(after_race) == 1
+        _assert_refresh_authority_blocked(runtime, report, after_race[0], reason="projection_authority_mismatch")
+    finally:
+        runtime.close()
+
+
+def test_refresh_authority_shared_owner_same_ids_are_blocked_instead_of_false_snapshot_retry(
+    tmp_path, verified_canonical_artifact, monkeypatch,
+) -> None:
+    scope, _, shared = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        source, claim, _, page, _ = _refresh_fixture(
+            runtime, scope=scope, source_id="paper_owner_shared_same_ids", project=False,
+        )
+        for original in (source, claim, page):
+            duplicate = RecordEnvelope.from_dict(original.to_dict())
+            duplicate.scope = shared
+            duplicate.meta["duplicate_authority_marker"] = "shared-version"
+            runtime.store.append(duplicate)
+        visible = runtime.store.list_records(
+            kinds=["paper_source", "claim_card", "knowledge_page"], scope=scope, limit=100,
+        )
+        assert len(visible) == 6
+        assert len({(record.kind, record.record_id) for record in visible}) == 3
+        before = _refresh_authority_snapshot(runtime)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        _assert_refresh_authority_blocked(runtime, report, before, reason="ambiguous_page_authority")
+    finally:
+        runtime.close()
+
+
+def test_refresh_authority_rejects_target_page_owned_by_another_business_paper_without_writes(
+    tmp_path, verified_canonical_artifact, monkeypatch,
+) -> None:
+    from eimemory.knowledge.pages import stable_page_id
+
+    scope, _, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        source_id = "paper_target_business_authority"
+        source, _, _, _, _ = _refresh_fixture(runtime, scope=scope, source_id=source_id)
+        source.title = "Recompiled target title owned by another paper"
+        source.content["title"] = source.title
+        runtime.store.rewrite(source)
+        occupied = RecordEnvelope.create(
+            kind="knowledge_page", title="Another paper's existing page", scope=scope,
+            source="eimemory.knowledge.compiler", content={"source_ids": ["another_business_paper"]},
+        )
+        occupied.record_id = stable_page_id("paper", source_id, source.title)
+        runtime.store.append(occupied)
+        before = _refresh_authority_snapshot(runtime)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        _assert_refresh_authority_blocked(runtime, report, before, reason="compiled_target_conflict")
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("insert_before_transaction", [False, True])
+def test_refresh_authority_fences_target_source_partition_including_late_memory_occupancy(
+    tmp_path, verified_canonical_artifact, monkeypatch, insert_before_transaction: bool,
+) -> None:
+    from eimemory.knowledge.pages import stable_page_id
+
+    scope, _, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        source_id = "paper_target_partition_authority"
+        source, _, _, _, _ = _refresh_fixture(runtime, scope=scope, source_id=source_id)
+        source.title = "Changed source title with occupied target partition"
+        source.content["title"] = source.title
+        runtime.store.rewrite(source)
+        occupied = RecordEnvelope.create(
+            kind="memory", title="Other runtime source owns this target", scope=scope,
+            source="refresh.test.occupied", source_id="other-runtime-source",
+            summary="The compiled target must retain its existing runtime source.",
+        )
+        occupied.record_id = stable_page_id("paper", source_id, source.title)
+        if insert_before_transaction:
+            original_mutate = runtime.store.mutate_records_atomically
+            after_race = []
+
+            def interleave(mutation):
+                runtime.store.append(occupied)
+                after_race.append(_refresh_authority_snapshot(runtime))
+                return original_mutate(mutation)
+
+            monkeypatch.setattr(runtime.store, "mutate_records_atomically", interleave)
+        else:
+            runtime.store.append(occupied)
+            before = _refresh_authority_snapshot(runtime)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        if insert_before_transaction:
+            assert len(after_race) == 1
+            before = after_race[0]
+        _assert_refresh_authority_blocked(runtime, report, before, reason="compiled_target_conflict")
+    finally:
+        runtime.close()
+
+
+def test_refresh_authority_retires_default_legacy_projection_without_versioned_lineage(
+    tmp_path, verified_canonical_artifact, monkeypatch,
+) -> None:
+    scope, _, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _, _, _, page, projection_id = _refresh_fixture(runtime, scope=scope, source_id="paper_legacy_projection_fence")
+        projection = runtime.store.get_by_exact_ref(projection_id, scope=scope, source_id="default")
+        assert projection is not None
+        for container in (projection.meta, projection.provenance):
+            for key in ("source_record_ref", "projection_lineage_schema", "supporting_claim_refs"):
+                container.pop(key, None)
+        runtime.store.rewrite(projection)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        assert report["retry_required"] is False
+        assert report["recompiled_page_count"] == 1
+        assert report["retired_projection_count"] == 1
+        retired = runtime.store.get_by_exact_ref(projection_id, scope=scope, source_id="default")
+        refreshed = runtime.store.get_by_exact_ref(page.record_id, scope=scope, source_id="default")
+        assert retired is not None and retired.status == "deprecated"
+        assert refreshed is not None and refreshed.status == "active"
+    finally:
+        runtime.close()
+
+
+def test_refresh_authority_preserves_foreign_projection_with_same_bare_parent_and_projection_ids(
+    tmp_path, verified_canonical_artifact, monkeypatch,
+) -> None:
+    scope, legacy, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _, _, _, _, projection_id = _refresh_fixture(runtime, scope=scope, source_id="paper_foreign_projection_preserved")
+        local = runtime.store.get_by_exact_ref(projection_id, scope=scope, source_id="default")
+        assert local is not None
+        foreign = RecordEnvelope.from_dict(local.to_dict())
+        foreign.scope = legacy
+        for container in (foreign.meta, foreign.provenance):
+            parent_ref = dict(container["source_record_ref"])
+            parent_ref["scope"] = asdict(legacy)
+            container["source_record_ref"] = parent_ref
+        runtime.store.append(foreign)
+        before = runtime.store.get_by_exact_ref(foreign.record_id, scope=legacy, source_id="default").to_dict()
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        assert report["retry_required"] is False
+        assert report["recompiled_page_count"] == 1
+        assert report["retired_projection_count"] == 1
+        assert runtime.store.get_by_exact_ref(projection_id, scope=scope, source_id="default").status == "deprecated"
+        assert runtime.store.get_by_exact_ref(foreign.record_id, scope=legacy, source_id="default").to_dict() == before
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("foreign_dimension", ["scope", "source_id"])
+def test_refresh_authority_rejects_single_claim_authority_different_from_page_without_writes(
+    tmp_path, verified_canonical_artifact, monkeypatch, foreign_dimension: str,
+) -> None:
+    scope, legacy, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        source_id = "paper_single_claim_authority"
+        source = _source(runtime, source_id=source_id, scope=scope, canonical_text=True)
+        claim = _claim(
+            claim_id="single_foreign_authority_claim", source_id=source_id,
+            text="A lone foreign claim authority must not become local compiled evidence.",
+            scope=legacy if foreign_dimension == "scope" else scope,
+        )
+        if foreign_dimension == "source_id":
+            claim.source_id = "research-other"
+        runtime.store.append(claim)
+        page = compile_paper_knowledge(
+            paper_source_id=source_id, paper_title=source.title, claim_records=[claim],
+        ).to_records(scope=scope)[0]
+        # Historical default-origin pages need not have versioned support refs.
+        page.source_id = "default"
+        page.content.pop("supporting_claim_refs", None)
+        page.content.pop("supporting_claim_refs_schema", None)
+        page.status = "needs_refresh"
+        runtime.store.append(page)
+        before = _refresh_authority_snapshot(runtime)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        _assert_refresh_authority_blocked(runtime, report, before, reason="claim_authority_mismatch")
+    finally:
+        runtime.close()
+
+
+def test_refresh_authority_checks_actual_storage_key_when_target_sql_owner_columns_drift(
+    tmp_path, verified_canonical_artifact, monkeypatch,
+) -> None:
+    from eimemory.knowledge.pages import stable_page_id
+
+    scope, _, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        source_id = "paper_target_physical_authority"
+        source, _, _, _, _ = _refresh_fixture(runtime, scope=scope, source_id=source_id)
+        source.title = "A newly compiled target"
+        source.content["title"] = source.title
+        runtime.store.rewrite(source)
+        occupied = RecordEnvelope.create(kind="memory", title="Preserve the actual occupied slot",
+                                         scope=scope, source="refresh.test.occupied")
+        occupied.record_id = stable_page_id("paper", source_id, source.title)
+        runtime.store.append(occupied)
+        with runtime.store._lock:
+            runtime.store.sqlite.conn.execute("UPDATE records SET user_id=? WHERE record_id=?",
+                                               ("different-sql-owner", occupied.record_id))
+            runtime.store.sqlite.conn.commit()
+        before = _refresh_authority_snapshot(runtime)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        _assert_refresh_authority_blocked(runtime, report, before, reason="compiled_target_conflict")
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("malformed", ["missing_parent_kind", "missing_meta_type", "wrong_producer",
+                                      "content_parent_ref", "partial_support_refs"])
+def test_refresh_authority_rejects_incomplete_or_conflicting_projection_ownership(
+    tmp_path, verified_canonical_artifact, monkeypatch, malformed: str,
+) -> None:
+    scope, legacy, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _, _, _, _, projection_id = _refresh_fixture(runtime, scope=scope, source_id="paper_partial_projection")
+        projection = runtime.store.get_by_exact_ref(projection_id, scope=scope, source_id="default")
+        assert projection is not None
+        if malformed == "missing_parent_kind":
+            for container in (projection.meta, projection.provenance, projection.content):
+                container.pop("source_record_kind", None)
+        elif malformed == "missing_meta_type":
+            projection.meta.pop("projection_type")
+        elif malformed == "wrong_producer":
+            projection.source = "refresh.test.unrelated_producer"
+        elif malformed == "content_parent_ref":
+            projection.content["source_record_ref"] = {
+                **projection.meta["source_record_ref"], "scope": asdict(legacy),
+            }
+        else:
+            projection.provenance.pop("supporting_claim_refs")
+        runtime.store.rewrite(projection)
+        before = _refresh_authority_snapshot(runtime)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        _assert_refresh_authority_blocked(runtime, report, before, reason="projection_authority_mismatch")
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("drift", ["projection_storage_key", "projection_sql_owner", "projection_meta_type",
+                                  "old_page_storage_key", "page_status_projection"])
+def test_refresh_authority_binds_all_existing_write_targets_to_verified_physical_rows(
+    tmp_path, verified_canonical_artifact, monkeypatch, drift: str,
+) -> None:
+    import json
+
+    scope, _, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        source, _, _, page, projection_id = _refresh_fixture(runtime, scope=scope, source_id="paper_physical_bindings")
+        if drift == "old_page_storage_key":
+            source.title = "Changed title produces a separate compiled slot"
+            source.content["title"] = source.title
+            runtime.store.rewrite(source)
+        if drift == "projection_meta_type":
+            projection = runtime.store.get_by_exact_ref(projection_id, scope=scope, source_id="default")
+            projection.meta["flag"] = True
+            runtime.store.rewrite(projection)
+        with runtime.store._lock:
+            db = runtime.store.sqlite.conn
+            if drift.endswith("storage_key"):
+                record_id = page.record_id if drift == "old_page_storage_key" else projection_id
+                db.execute("UPDATE records SET storage_key=storage_key||'-drift' WHERE record_id=?", (record_id,))
+            elif drift == "projection_sql_owner":
+                db.execute("UPDATE records SET user_id='' WHERE record_id=?", (projection_id,))
+            elif drift == "page_status_projection":
+                db.execute("UPDATE records SET status='active' WHERE record_id=?", (page.record_id,))
+            else:
+                projected_meta = dict(projection.meta, flag=1)
+                db.execute("UPDATE records SET meta_json=? WHERE record_id=?", (json.dumps(projected_meta), projection_id))
+            db.commit()
+        before = _refresh_authority_snapshot(runtime)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        _assert_refresh_authority_blocked(runtime, report, before, reason="refresh_record_snapshot_mismatch")
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("abort_reason", ["target_conflict", "source_race"])
+def test_refresh_authority_aborts_owner_without_flushing_existing_pending_exports(
+    tmp_path, verified_canonical_artifact, monkeypatch, abort_reason: str,
+) -> None:
+    from eimemory.knowledge.pages import stable_page_id
+
+    scope, _, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        source_id = "paper_pending_export_abort"
+        source, _, _, _, _ = _refresh_fixture(runtime, scope=scope, source_id=source_id)
+        if abort_reason == "target_conflict":
+            source.title = "Occupied future slot"
+            source.content["title"] = source.title
+            runtime.store.rewrite(source)
+            occupied = RecordEnvelope.create(kind="memory", title="Preserve occupied target", scope=scope)
+            occupied.record_id = stable_page_id("paper", source_id, source.title)
+            runtime.store.append(occupied)
+        pending = RecordEnvelope.create(kind="reflection", title="Pending unrelated export", scope=scope,
+                                        source="refresh.test.pending")
+        with runtime.store._lock:
+            runtime.store.sqlite.enqueue_export(stream="records", payload=pending.to_dict(), operation_id="preserve-pending")
+        before = _refresh_authority_snapshot(runtime)
+        if abort_reason == "source_race":
+            original_mutate = runtime.store.mutate_records_atomically
+            after_race = []
+
+            def interleave(mutation):
+                source.summary = "Concurrent source change"
+                with runtime.store._lock:
+                    runtime.store.sqlite.upsert(source)
+                after_race.append(_refresh_authority_snapshot(runtime))
+                return original_mutate(mutation)
+
+            monkeypatch.setattr(runtime.store, "mutate_records_atomically", interleave)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        if abort_reason == "target_conflict":
+            _assert_refresh_authority_blocked(runtime, report, before, reason="compiled_target_conflict")
+        else:
+            assert report["retry_required"] is True
+            assert _refresh_authority_snapshot(runtime) == after_race[0]
+        with runtime.store._lock:
+            assert runtime.store.sqlite.conn.execute(
+                "SELECT state FROM export_outbox WHERE operation_id='preserve-pending'"
+            ).fetchone()[0] == "pending"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("read_input", ["claim_owner", "claim_source", "entity_storage_key", "paper_source"])
+def test_refresh_authority_verifies_read_only_input_exact_refs_before_compiling_writes(
+    tmp_path, verified_canonical_artifact, monkeypatch, read_input: str,
+) -> None:
+    scope, _, _ = _refresh_authority_scopes(monkeypatch)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        source, claim, entity, _, _ = _refresh_fixture(
+            runtime, scope=scope, source_id="paper_read_only_authority", include_entity=True,
+        )
+        with runtime.store._lock:
+            db = runtime.store.sqlite.conn
+            if read_input == "claim_owner":
+                db.execute("UPDATE records SET user_id='' WHERE record_id=?", (claim.record_id,))
+            elif read_input == "claim_source":
+                db.execute("UPDATE records SET source_id='other-source' WHERE record_id=?", (claim.record_id,))
+            elif read_input == "entity_storage_key":
+                db.execute("UPDATE records SET storage_key=storage_key||'-drift' WHERE record_id=?", (entity.record_id,))
+            else:
+                db.execute("UPDATE records SET source_id='other-source' WHERE record_id=?", (source.record_id,))
+            db.commit()
+        before = _refresh_authority_snapshot(runtime)
+
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+
+        _assert_refresh_authority_blocked(runtime, report, before, reason="refresh_record_snapshot_mismatch")
+        assert report["persisted"] is False and report["mutation_count"] == 0
+    finally:
+        runtime.close()

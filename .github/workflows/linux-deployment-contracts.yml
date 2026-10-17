@@ -83,6 +83,10 @@ jobs:
           tests/test_nightly_memory_context_diagnostics.py
           tests/test_knowledge_gap_review.py
           tests/test_knowledge_review_inventory.py
+          tests/test_knowledge_compiler.py
+          tests/test_knowledge_projectors.py
+          tests/test_knowledge_projector_bounds.py
+          tests/test_knowledge_refresh.py
           tests/test_capability_hypothesis_producer.py
           tests/test_dynamic_code_patch_context.py
           tests/test_capability_acceptance.py
