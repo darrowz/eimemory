@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.124] — 2026-10-17
+
+- Add an explicit Unix root-operator authority boundary for retain-both identity decisions: a root-owned exact owner/source policy and hash-chained request/revocation journal, with locking through decision commit and current-view validation. Service users cannot issue their own grants.
+- Persist/export governance decisions without rewriting either original. Revalidate both full physical versions and active authority during repair and recall; changed, revoked, overlapping or missing decisions remain unresolved. Historical exact reads retain both original versions.
+
 ## [1.14.123] — 2026-10-17
 
 - Add a bounded identity manifest preview using a read-only SQLite snapshot and existing exact readers. Verify both complete envelope and physical-row versions, canonical target, owner scope and source without changing either original or historical references.

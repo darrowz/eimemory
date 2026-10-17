@@ -28,6 +28,7 @@ _IDENTITY_OUTCOMES = frozenset({
     "source_projection_or_digest_mismatch", "source_storage_key_mismatch", "source_version_changed",
     "source_scope_not_admitted", "scope_move_unsupported", "target_conflict",
     "identity_transition_forbidden", "source_timestamp_unknown", "transaction_failed", "other",
+    "retained_both_current_canonical", "retained_current_original", "identity_decision_unresolved",
 })
 _IDENTITY_MISMATCH_FIELDS = frozenset({
     "hydration", "exact_ref", "kind", "status", "source", "title", "summary", "detail",
@@ -60,6 +61,7 @@ def _identity_command_summary(report: dict[str, Any], *, raised: bool = False) -
         "exception_raised": bool(raised),
         **{key: report[key] for key in (
             "candidate_count", "eligible_in_place_count", "repaired_count", "blocked_count", "skipped_fresh_count",
+            "retained_pair_count",
         ) if type(report.get(key)) is int and 0 <= report[key] < 2 ** 63},
         "outcome_counts": _fixed_counts(report.get("outcome_counts"), _IDENTITY_OUTCOMES),
         "mismatch_field_counts": _fixed_counts(report.get("mismatch_field_counts"), _IDENTITY_MISMATCH_FIELDS),

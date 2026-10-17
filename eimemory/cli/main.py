@@ -375,6 +375,23 @@ def _build_parser() -> argparse.ArgumentParser:
     identity_preview = identity_sub.add_parser("manifest-preview")
     identity_preview.add_argument("--manifest", required=True)
     identity_preview.add_argument("--database", required=True)
+    identity_authority_init = identity_sub.add_parser("authority-init")
+    identity_authority_init.add_argument("--owner-scope", required=True)
+    identity_authority_init.add_argument("--source-id", action="append", required=True)
+    identity_authority_init.add_argument("--service-group", required=True)
+    identity_authorize = identity_sub.add_parser("authorize")
+    identity_authorize.add_argument("--manifest", required=True)
+    identity_authorize.add_argument("--database", required=True)
+    identity_authorize.add_argument("--request-text", required=True)
+    identity_revoke = identity_sub.add_parser("decision-revoke")
+    identity_revoke.add_argument("--grant-id", required=True)
+    identity_revoke.add_argument("--reason", required=True)
+    identity_apply = identity_sub.add_parser("decision-apply")
+    identity_apply.add_argument("--grant-id", required=True)
+    identity_status = identity_sub.add_parser("decision-status")
+    identity_status.add_argument("--grant-id", required=True)
+    for identity_operation in (identity_authority_init, identity_authorize, identity_revoke, identity_apply, identity_status):
+        identity_operation.add_argument("--authority-dir", default="")
     identity_repair = identity_sub.add_parser("repair")
     identity_repair.add_argument("--apply", action="store_true")
     identity_repair.add_argument("--limit", type=int, default=0)
@@ -2981,6 +2998,16 @@ def _cmd_quality(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
 
 @register("identity")
 def _cmd_identity(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.identity_command in {"decision-apply", "decision-status"}:
+        from eimemory.identity_governance import apply_decision, decision_status
+
+        operation = apply_decision if parsed.identity_command == "decision-apply" else decision_status
+        try:
+            report = operation(runtime, grant_id=parsed.grant_id, directory=parsed.authority_dir or None)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return _print_error("identity_decision_failed", exc)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") is True else 1
     if parsed.identity_command == "report":
         report = identity_report(runtime, scope=scope)
         print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -3926,6 +3953,25 @@ def main(argv: list[str] | None = None) -> int:
         return codex_mcp_main(args_list[1:])
     parser = _build_parser()
     parsed = parser.parse_args(args_list)
+    if parsed.command == "identity" and parsed.identity_command in {"authority-init", "authorize", "decision-revoke"}:
+        from eimemory.identity_authority import initialize, authorize, revoke
+        from eimemory.core.strict_json import loads
+
+        try:
+            if parsed.identity_command == "authority-init":
+                report = initialize(parsed.authority_dir or None, owner_scope=loads(parsed.owner_scope),
+                                    source_ids=parsed.source_id, service_group=parsed.service_group)
+            elif parsed.identity_command == "authorize":
+                with open(parsed.manifest, "rb") as stream:
+                    manifest = loads(stream.read(1_000_001), max_bytes=1_000_000, max_depth=32)
+                report = authorize(parsed.authority_dir or None, database=parsed.database,
+                                   manifest=manifest, request_text=parsed.request_text)
+            else:
+                report = revoke(parsed.authority_dir or None, grant_id=parsed.grant_id, reason=parsed.reason)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return _print_error("identity_operator_request_failed", exc)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") is True else 1
     if parsed.command == "identity" and parsed.identity_command == "manifest-preview":
         from eimemory.core.strict_json import loads
         from eimemory.identity_ops import preview_identity_manifest

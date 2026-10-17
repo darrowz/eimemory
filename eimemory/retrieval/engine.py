@@ -42,6 +42,7 @@ from eimemory.recall.preference import (PreferenceRecallRequest, PREFERENCE_MEMO
     preference_recall_request, supports_preference_request)
 from eimemory.storage.runtime_store import RuntimeStore
 from eimemory.storage.recall_deadline import RecallReadDeadlineExceeded, recall_read_scope
+from .verification_budget import final_authority_deadline
 
 from .contracts import (
     CandidateHit,
@@ -388,6 +389,25 @@ class GovernedRecallEngine:
         # Quality evaluation belongs to the bounded post-delivery monitor.
         with native_target_trace_scope(self, request), verification_budget_scope(), evidence_scope(self.store, request):
             bundle = self._recall(request)
+            from eimemory.identity_governance import filter_current_records
+
+            delivered = [*bundle.items, *bundle.rules, *bundle.reflections]
+            _, identity_drops = filter_current_records(self.store, delivered, scope=request.scope.to_scope_ref(),
+                references=bundle.explanation,
+                deadline_at=final_authority_deadline(self._safe_float(
+                    request.task_context_dict().get("_recall_deadline_monotonic"))))
+            if identity_drops:
+                # Final consumption rechecks revocation/version races. Do not
+                # return stale bodies through any prebuilt explanation lane.
+                bundle = RecallBundle(items=[], rules=[], reflections=[], confidence=0.0,
+                    next_action_hint="", explanation={
+                        "retrieval_state": {"schema": "retrieval_state.v1", "status": "unavailable",
+                            "selected_count": 0, "dropped_reasons": {"identity_current_view_unresolved": identity_drops}},
+                        "relevance_selector": {"status": "unavailable", "selected_count": 0,
+                            "dropped_reasons": {"identity_current_view_unresolved": identity_drops}},
+                        "retrieval_status": "unavailable",
+                        "identity_current_view": {"ok": False, "blocked_count": identity_drops},
+                    })
             target_trace = current_target_trace(self)
             if target_trace is not None:
                 target_trace.observe("final_items", bundle.items)
@@ -1054,6 +1074,14 @@ class GovernedRecallEngine:
             )
             blocked_counts.update(diagnostic_blocked_counts)
         before_filter_items = items
+        from eimemory.identity_governance import filter_current_records
+
+        items, identity_current_drops = filter_current_records(self.store, items, scope=scope_ref, deadline_at=deadline_at)
+        if identity_current_drops:
+            blocked_counts["identity_current_view"] += identity_current_drops
+            if target_trace is not None:
+                target_trace.filter_transition(before_filter_items, items, "identity_current_view")
+        before_filter_items = items
         items, suppressed_counts = memory._filter_default_suppressed_items(
             items,
             task_context,
@@ -1185,6 +1213,8 @@ class GovernedRecallEngine:
                 source_ids=source_ids,
             )
         active_rules = [item for item in active_rules if self._record_is_exact_and_active(item)]
+        active_rules, identity_rule_drops = filter_current_records(self.store, active_rules, scope=scope_ref, deadline_at=deadline_at)
+        blocked_counts["identity_current_view"] += identity_rule_drops
         active_rules = [
             item for item in active_rules if ExactScope.from_scope(item.scope) in authorized_exact_scopes
         ]
@@ -1412,6 +1442,20 @@ class GovernedRecallEngine:
             if ExactScope.from_scope(record.scope) in authorized_exact_scopes
             and (source_ids is None or record.source_id in source_ids)
             and self._record_is_unchanged(record, deadline_at=deadline_at)]
+        current_candidates = [*items, *rules, *cascade_evidence, *raw_authority_records.values()]
+        current_candidates, identity_final_drops = filter_current_records(self.store, current_candidates,
+            scope=scope_ref, deadline_at=final_authority_deadline(deadline_at))
+        if identity_final_drops:
+            blocked_counts["identity_current_view"] += identity_final_drops
+            current_refs = {self._record_key(record) for record in current_candidates}
+            items = [record for record in items if self._record_key(record) in current_refs]
+            rules = [record for record in rules if self._record_key(record) in current_refs]
+            cascade_evidence = [record for record in cascade_evidence if self._record_key(record) in current_refs]
+            raw_evidence = [entry for entry in raw_evidence if (
+                str(entry["record"].get("record_id") or ""),
+                ExactScope.from_scope(entry["record"].get("scope") or {}),
+                str(entry["record"].get("source_id") or ""),
+            ) in current_refs]
         graph_expanded = sum(1 for item in items if self._record_key(item) not in base_ids)
         selected_refs = {self._record_key(item) for item in items}
         rule_recall_promoted_count = sum(
@@ -1425,7 +1469,6 @@ class GovernedRecallEngine:
             memories=[item for item in items if item.kind in {"memory", "rule"}],
             query=normalized_query,
         )
-        from .verification_budget import final_authority_deadline
 
         checked_auxiliary, auxiliary_drops = revalidate_auxiliary_outputs(
             self, [*rules, *raw_authority_records.values()], snapshots=auxiliary_snapshots,
@@ -1499,6 +1542,10 @@ class GovernedRecallEngine:
         reported_online_gate_counts.update(rule_online_gate_counts)
         reported_online_gate_counts.update(online_gate_counts)
         reported_online_gate_counts.update(reflection_online_gate_counts)
+        if blocked_counts.get("identity_current_view") and not items:
+            relevance_selector_state = {**relevance_selector_state, "status": "unavailable",
+                "dropped_reasons": {**relevance_selector_state.get("dropped_reasons", {}),
+                                    "identity_current_view": blocked_counts["identity_current_view"]}}
         if blocked_counts:
             recall_filters["blocked_counts"] = dict(sorted(blocked_counts.items()))
         event_graph_summary = memory._event_graph_summary(items, graph_edge_refs)

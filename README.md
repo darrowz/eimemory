@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.123" src="https://img.shields.io/badge/version-1.14.123-blue">
+  <img alt="Package version 1.14.124" src="https://img.shields.io/badge/version-1.14.124-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -87,7 +87,7 @@ expected record, selector, grounding and thresholds, without extra retrieval
 reads or candidate injection. The supplied 1.14.72 readback verifies the trace
 on that controlled failure, without certifying its recovery or formal quality.
 
-Mainline **1.14.123** adds a read-only identity manifest preview that verifies both original versions and the canonical exact view. Proposed retain-both decisions stay unresolved until a trusted human-request adapter binds owner/source authority to both complete versions; reviewer strings and release signatures do not grant that authority. This release does not apply governance decisions or certify deployment, natural-query quality or formal acceptance.
+Mainline **1.14.124** adds an explicitly configured Unix root operator adapter for exact retain-both identity decisions. A protected policy and request journal bind the owner/source, manifest and both complete original versions. Applying a decision writes a separate governance record; original payloads and historical exact references remain unchanged. Canonical recall and nightly revalidate authority and versions, and revoked or stale decisions restore the unresolved blocker. See [the authority model and operating contract](docs/identity-dualview-preview.md). A decision does not certify deployment, natural-query quality or formal acceptance.
 
 1.14.118 corrects knowledge-refresh snapshot comparison for visible duplicate IDs and blocks ambiguous scope, source, projection lineage or occupied compiler targets before any batch write. A unique shared canonical paper remains readable, and unrelated duplicates do not block an independent refresh. The 254 current identity conflicts contain real payload differences and remain protected; 162 historical pairs are still unknown. See [acceptance evidence and limits](docs/acceptance-status.md).
 
@@ -272,7 +272,7 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.123, mainline)
+## Current package status (1.14.124, mainline)
 
 The current source repair covers the audit's sixteen findings with native
 positive/negative, restart, transport-loss and authorization regressions. Review

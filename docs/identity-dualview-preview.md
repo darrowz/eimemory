@@ -37,7 +37,7 @@ only reports the data checks; `ok` and `authorization_verified` remain false,
 every manifest entry. Counts describe the fixed manifest, not a fresh global
 conflict inventory. Snapshot comparisons do not authorize a later write.
 
-The remaining integration is the trusted human-request/governance adapter:
+The required integration boundary is a trusted human-request/governance adapter:
 authenticate the actual requester and their exact owner/source authority,
 durably bind that request to the manifest digest, both full versions and the
 canonical exact view, and provide append-only conflict/revocation validation.
@@ -45,8 +45,53 @@ It must revalidate both versions and active authority in the transaction that
 persists a decision, and on current-view consumption. An arbitrary reviewer,
 `user_explicit` label, synthetic signature or deployment receipt is insufficient.
 The existing governance record store supplies persistence, not that authority.
-No adapter is invented here; production decisions, revocation persistence and
-gate integration remain disabled until that authority contract is available.
+The preview command itself never authorizes a production decision.
 Restoring an unresolved/revoked proposal needs no data rollback because preview
 has no production effects. Revocation of a future durable decision must restore
 the unresolved blocker while retaining both originals.
+
+## Protected local operator adapter (1.14.124)
+
+An explicitly configured Unix deployment root operator can act for one exact
+owner/source policy. This is a local administrator authority model, not an
+assertion that an arbitrary service account, model, review label, signature or
+release receipt is the human data owner. Root and the host filesystem are the
+trusted boundary; deployments needing an independent identity provider must
+supply that integration instead of assuming this model authenticates one.
+
+`identity authority-init --owner-scope '<complete JSON scope>' --source-id
+<partition> --service-group <runtime group>` creates
+`/etc/eimemory-identity-governance` with root-only write access. Both it and its
+ancestors must be protected from non-root modification. `--authority-dir` can
+select another equally protected directory. The service reads the default or
+`EIMEMORY_IDENTITY_AUTHORITY_DIR`; this setting cannot make a user-owned policy
+trusted.
+
+The authenticated root operator issues a request with `identity authorize
+--database <sqlite> --manifest <manifest> --request-text <actual request>`.
+The grant binds the exact policy, manifest, both complete versions and
+canonical target. It rejects overlapping active requests. The root-owned
+append-only journal records the actual effective Unix UID, request, event ID
+and hash chain; no caller-supplied identity or synthetic signature authorizes it.
+
+The runtime user runs `identity decision-apply --grant-id <id>`. A shared
+authority lock remains held through the memory database transaction. Both
+original versions are revalidated before a new governance record and its export
+are committed. Original records, indexes, exact refs and payloads are untouched.
+`identity decision-status --grant-id <id>` revalidates current state.
+
+Nightly reports valid conflicts as `retained_both_current_canonical`, separately
+from rewritten records. It also preserves the selected target's original
+metadata, reporting `retained_current_original` if that row would otherwise
+need an identity backfill. Canonical recall filters historical alternatives and
+rechecks authority/versions at consumption; it never injects an unmatched target
+or expands permission. Historical exact reads remain unchanged. An invalid,
+stale, missing or revoked decision does not certify resolution.
+
+The authenticated operator can append a revocation with `identity decision-revoke
+--grant-id <id> --reason <reason>`. Exclusive journal locking serializes it with
+decision commits and current-view checks. Revocation restores the unresolved
+blocker without rolling back or deleting either original. A changed policy
+also invalidates grants bound to its previous digest. The journal and policy
+must be included in administrator-controlled host backups; ordinary memory
+exports deliberately cannot manufacture or restore operator authority.

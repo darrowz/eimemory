@@ -216,6 +216,9 @@ def repair_hongtu_identity(
         admitted.update((tenant, agent, workspace, "") for tenant, agent, workspace, _ in list(admitted))
 
     def discover(sqlite):
+        from eimemory.identity_governance import DecisionResolver
+
+        decisions = DecisionResolver(sqlite, identity_authority) if callable(getattr(sqlite, "execute", None)) else None
         plans: list[dict[str, Any]] = []
         outcomes: list[dict[str, Any]] = []
         seen: set[tuple[str, ...]] = set()
@@ -245,6 +248,10 @@ def repair_hongtu_identity(
                 seen.add(ref)
                 snapshot_diagnostics: dict[str, tuple[str, ...]] = {}
                 try:
+                    disposition = decisions.repair_disposition(ref, scope_ref) if decisions is not None else None
+                    if disposition:
+                        outcomes.append(_outcome(ref, disposition))
+                        continue
                     current, version = _repair_snapshot(sqlite, ref, diagnostics=snapshot_diagnostics)
                     _require_eligible(current, skip_created_at_or_after)
                     proposed = normalize_hongtu_record(current)
@@ -260,6 +267,9 @@ def repair_hongtu_identity(
                             (storage["storage_key"], *target[:4], target[5]),
                         ).fetchone()
                         if occupied is not None:
+                            if decisions is not None and decisions.pair(ref, target):
+                                outcomes.append(_outcome(ref, "retained_both_current_canonical"))
+                                continue
                             raise _RepairSkipped("target_conflict")
                     if not storage.get("ok"):
                         raise _RepairSkipped(str(storage["reason"]))
@@ -274,7 +284,10 @@ def repair_hongtu_identity(
         report = build_identity_report(capture())
         return report, plans, outcomes
 
-    report, plans, outcomes = runtime.store.read_consistent(discover)
+    from eimemory.identity_governance import optional_authority
+
+    with optional_authority() as identity_authority:
+        report, plans, outcomes = runtime.store.read_consistent(discover)
     repaired_ids: list[str] = []
     if apply:
         for plan in plans:
@@ -282,6 +295,11 @@ def repair_hongtu_identity(
             snapshot_diagnostics = plan["snapshot_diagnostics"]
 
             def mutate(sqlite):
+                from eimemory.identity_governance import DecisionResolver
+
+                disposition = DecisionResolver(sqlite, write_authority).repair_disposition(ref, scope_ref)
+                if disposition:
+                    raise _RepairSkipped(disposition)
                 current, version = _repair_snapshot(sqlite, ref, diagnostics=snapshot_diagnostics)
                 if version != plan["version"]:
                     raise _RepairSkipped("source_version_changed")
@@ -315,7 +333,8 @@ def repair_hongtu_identity(
                 return _outcome(ref, "applied", snapshot_diagnostics=snapshot_diagnostics), [proposed], []
 
             try:
-                outcome = runtime.store.mutate_records_atomically(mutate)
+                with optional_authority() as write_authority:
+                    outcome = runtime.store.mutate_records_atomically(mutate)
             except _RepairSkipped as exc:
                 # Raising within the owner rolls back and avoids post-commit
                 # projection/outbox flushing for a rejected/no-op candidate.
@@ -328,7 +347,8 @@ def repair_hongtu_identity(
             if outcome["reason"] == "applied":
                 repaired_ids.append(ref[5])
 
-    benign = {"fresh", "ingest_stamped", "no_longer_eligible"}
+    benign = {"fresh", "ingest_stamped", "no_longer_eligible", "retained_both_current_canonical",
+              "retained_current_original"}
     blocked = [item for item in outcomes if item["reason"] not in benign | {"applied"}]
     counts: dict[str, int] = {}
     mismatch_counts: dict[str, int] = {}
@@ -354,6 +374,7 @@ def repair_hongtu_identity(
         "candidate_count": report["repair_candidate_count"],
         "eligible_in_place_count": len(plans),
         "repaired_count": len(repaired_ids),
+        "retained_pair_count": counts.get("retained_both_current_canonical", 0),
         "repaired_record_ids": repaired_ids[:100],
         "skipped_fresh_count": counts.get("fresh", 0) + counts.get("ingest_stamped", 0),
         "blocked_count": len(blocked),
