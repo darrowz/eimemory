@@ -17,6 +17,7 @@ from eimemory.storage import independent_evidence as cat
 from eimemory.retrieval import caller_assistance as assist
 from eimemory.retrieval.independent_evidence import evidence_scope
 from eimemory.retrieval.engine import GovernedRecallEngine
+from eimemory.retrieval.contracts import CandidateRequest
 from eimemory.retrieval.evidence_fragments import evidence_fragments, POLICY
 from eimemory.retrieval.postgres_vector import candidate_record_keyword_text
 from eimemory.retrieval.lightweight_admission import LightweightAdmission, LightweightConfig
@@ -41,7 +42,7 @@ def system(tmp_path,monkeypatch):
     store.append(record)
     text=candidate_record_keyword_text(record,max_text_chars=16000)
     fragment=next(f for f in evidence_fragments(text) if '材料链接处理时' in f['text'])
-    request=NS(query=QUERY,scope=scope,source_ids=('fixture',),task_context_dict=lambda:{})
+    request=CandidateRequest.create(query=QUERY,scope=scope,source_ids=('fixture',),limit=1)
     with cat.connect(store,writable=True) as conn:
         cat.install(conn)
         packet=cat.prepare(conn,{'scope':vars_scope(scope),'source_id':'fixture','record_id':record.record_id,
@@ -69,13 +70,16 @@ def select(system,*,validate=lambda r:True,query=QUERY):
 
 
 def test_real_default_engine_wrapper_keeps_local_admission_unverified(system):
-    system.engine._recall=lambda request:select(system)
-    items,report=system.engine.recall(system.request)
+    def recall(request):
+        items,report=select(system)
+        return RecallBundle(items=items,rules=[],reflections=[],confidence=.9,next_action_hint='',
+                            explanation={'relevance_selector':report})
+    system.engine._recall=recall
+    bundle=system.engine.recall(system.request)
+    items,report=bundle.items,bundle.explanation['relevance_selector']
     assert items==[system.record] and not system.calls
     assert report['status']=='evidence_found'
     assert 'caller_assistance' not in report and 'independent_scored' not in report
-    bundle=RecallBundle(items=items,rules=[],reflections=[],confidence=.9,next_action_hint='',
-                        explanation={'relevance_selector':report})
     compact=bundle.to_compact_dict(limit=1)
     assert compact['items'][0]['record_id']==system.record.record_id
     assert 'proofs' not in compact
