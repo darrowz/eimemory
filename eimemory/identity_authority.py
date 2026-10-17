@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 import uuid
 
 from eimemory.core.strict_json import loads
@@ -44,25 +45,81 @@ def _require_root():
         raise IdentityAuthorityError("identity_authenticated_root_operator_required")
 
 
+def _namespace_owner():
+    """Host root may be an overflow UID in a systemd PrivateUsers namespace."""
+    if not sys.platform.startswith("linux"):
+        return 0, False
+    try:
+        mappings = [tuple(map(int, line.split())) for line in Path('/proc/self/uid_map').read_text().splitlines()]
+        if mappings == [(0, 0, 4294967295)]:
+            return 0, False
+        for inside, outside, length in mappings:
+            if outside == 0 and length:
+                return inside, True
+        return int(Path('/proc/sys/kernel/overflowuid').read_text()), True
+    except (OSError, ValueError) as exc:
+        raise IdentityAuthorityError('identity_authority_namespace_unavailable') from exc
+
+
+def _inode_flags(fd):
+    """Only host ext filesystems can supply this kernel-backed root seal.
+
+    FUSE/tmpfs/user-namespace filesystems must never emulate the authority.
+    Linux FS_IOC_SETFLAGS requires CAP_LINUX_IMMUTABLE for i/a flags.
+    """
+    import array
+    import ctypes
+    import fcntl
+
+    if not sys.platform.startswith('linux') or ctypes.sizeof(ctypes.c_long) != 8:
+        raise IdentityAuthorityError('identity_authority_seal_platform_unsupported')
+    buffer = ctypes.create_string_buffer(256)
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.fstatfs.argtypes = [ctypes.c_int, ctypes.c_void_p]
+    libc.fstatfs.restype = ctypes.c_int
+    if libc.fstatfs(fd, ctypes.byref(buffer)) != 0:
+        raise OSError(ctypes.get_errno(), 'identity_authority_statfs_failed')
+    if ctypes.c_long.from_buffer(buffer).value != 0xEF53:
+        raise IdentityAuthorityError('identity_authority_seal_requires_ext_filesystem')
+    flags = array.array('l', [0])
+    fcntl.ioctl(fd, 0x80086601, flags, True)
+    return flags[0]
+
+
+def _seal_required(fd, flag):
+    if not _inode_flags(fd) & flag:
+        raise IdentityAuthorityError('identity_authority_host_seal_missing')
+
+
 def _directory(path):
     if os.name != "posix" or not path.is_absolute() or ".." in path.parts:
         raise IdentityAuthorityError("identity_authority_path_invalid")
+    owner, private = _namespace_owner()
     for parent in [*reversed(path.parents), path]:
         meta = parent.lstat()
         # A root-owned sticky /tmp cannot rename another owner's directory.
         sticky = bool(meta.st_mode & stat.S_ISVTX) and parent != path
-        if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid != 0
+        if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid != owner
                 or (meta.st_mode & 0o022 and not sticky)):
             raise IdentityAuthorityError("identity_authority_directory_untrusted")
+    if private:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            _seal_required(fd, 0x10)
+        finally:
+            os.close(fd)
 
 
 def _open(path, flags):
     fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     try:
         meta = os.fstat(fd)
-        if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != 0
+        owner, private = _namespace_owner()
+        if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != owner
                 or meta.st_mode & 0o022 or meta.st_nlink != 1):
             raise IdentityAuthorityError("identity_authority_file_untrusted")
+        if private:
+            _seal_required(fd, 0x10 if path.name == 'policy.json' else 0x20)
         return fd
     except BaseException:
         os.close(fd)
@@ -132,6 +189,33 @@ def initialize(directory, *, owner_scope, source_ids, service_group):
     return {"ok": True, "policy_digest": digest(policy)}
 
 
+def seal(directory=None, *, enabled=True):
+    """Initial-namespace root seals policy/directory and append-only requests."""
+    _require_root()
+    if _namespace_owner()[1]:
+        raise IdentityAuthorityError('identity_authority_seal_requires_host_root')
+    import array
+    import fcntl
+
+    path = authority_directory(directory)
+    with snapshot(directory, exclusive=True):
+        entries = [(path / 'requests.jsonl', 0x20), (path / 'policy.json', 0x10), (path, 0x10)]
+        if not enabled:
+            entries.reverse()
+        for entry, bit in entries:
+            fd = os.open(entry, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                before = _inode_flags(fd)
+                flags = array.array('l', [(before | bit) if enabled else (before & ~bit)])
+                fcntl.ioctl(fd, 0x40086602, flags)
+                if bool(_inode_flags(fd) & bit) != enabled:
+                    raise IdentityAuthorityError('identity_authority_seal_not_applied')
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    return {'ok': True, 'host_kernel_seal': enabled, 'filesystem_contract': 'linux_ext_root_inode_flags.v1'}
+
+
 class AuthoritySnapshot:
     def __init__(self, policy, events):
         self.policy = policy
@@ -165,13 +249,13 @@ class AuthoritySnapshot:
 
 @contextmanager
 def snapshot(directory=None, *, exclusive=False, blocking=True):
-    import fcntl
-
     if exclusive:
         _require_root()
     path = authority_directory(directory)
     _directory(path)
-    fd = _open(path / "requests.jsonl", os.O_RDWR if exclusive else os.O_RDONLY)
+    import fcntl
+
+    fd = _open(path / "requests.jsonl", (os.O_RDWR | os.O_APPEND) if exclusive else os.O_RDONLY)
     try:
         mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
         fcntl.flock(fd, mode if blocking else mode | fcntl.LOCK_NB)

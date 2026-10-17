@@ -374,3 +374,80 @@ print('protected read-only service access verified')
                                 cwd=parent, env=env, capture_output=True, text=True, timeout=20)
         assert result.returncode == 0, result.stderr
         assert "read-only service access verified" in result.stdout
+
+
+@pytest.fixture
+def sealed_pair(pair):
+    from eimemory.identity_authority import seal
+
+    try:
+        seal(pair[4])
+    except (OSError, IdentityAuthorityError) as exc:
+        try:seal(pair[4], enabled=False)
+        except (OSError, IdentityAuthorityError):pass
+        pytest.skip("Host ext filesystem/CAP_LINUX_IMMUTABLE unavailable: " + str(exc))
+    try:
+        yield pair
+    finally:
+        seal(pair[4], enabled=False)
+
+
+def test_sealed_journal_still_supports_root_authorization_and_revocation(sealed_pair):
+    runtime, _, old, current, directory = sealed_pair
+    authority = grant(sealed_pair);apply_decision(runtime, grant_id=authority["grant_id"])
+    prefix = (directory / "requests.jsonl").read_bytes()
+    revoke(directory, grant_id=authority["grant_id"], reason="Sealed append-only revocation")
+    assert (directory / "requests.jsonl").read_bytes().startswith(prefix)
+    assert not decision_status(runtime, grant_id=authority["grant_id"])["ok"]
+    assert not filter_current_records(runtime.store, [old, current], scope=current.scope)[0]
+
+
+def test_private_namespace_requires_a_real_kernel_seal(pair, monkeypatch):
+    import eimemory.identity_authority as authority
+
+    monkeypatch.setattr(authority, "_namespace_owner", lambda: (0, True))
+    with pytest.raises(IdentityAuthorityError, match="seal_missing|requires_ext_filesystem"):
+        with snapshot(pair[4]):pass
+
+
+def test_kernel_seal_is_validated_for_each_private_namespace_read(sealed_pair, monkeypatch):
+    import eimemory.identity_authority as authority
+
+    grant(sealed_pair)
+    with monkeypatch.context() as context:
+        context.setattr(authority, "_namespace_owner", lambda: (0, True))
+        with snapshot(sealed_pair[4]) as (value, _):
+            assert len(value.grants) == 1
+        with pytest.raises(PermissionError):
+            (sealed_pair[4] / "policy.json").write_text("forged")
+
+
+def test_private_namespace_rejects_a_missing_journal_append_seal(sealed_pair, monkeypatch):
+    import array
+    import fcntl
+    import eimemory.identity_authority as authority
+
+    fd = os.open(sealed_pair[4] / "requests.jsonl", os.O_RDONLY)
+    try:
+        flags = array.array('l', [authority._inode_flags(fd) & ~0x20])
+        fcntl.ioctl(fd, 0x40086602, flags)
+    finally:os.close(fd)
+    with monkeypatch.context() as context:
+        context.setattr(authority, "_namespace_owner", lambda: (0, True))
+        with pytest.raises(IdentityAuthorityError, match="seal_missing"):
+            with snapshot(sealed_pair[4]):pass
+
+
+def test_userspace_filesystem_cannot_emulate_a_kernel_seal(pair, monkeypatch):
+    import ctypes
+    from types import SimpleNamespace
+    from eimemory.identity_authority import _inode_flags
+
+    def fake_statfs(fd, buffer):
+        ctypes.c_long.from_buffer(buffer._obj).value = 0x65735546  # FUSE_SUPER_MAGIC
+        return 0
+    monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: SimpleNamespace(fstatfs=fake_statfs))
+    fd = os.open(pair[4] / "policy.json", os.O_RDONLY)
+    try:
+        with pytest.raises(IdentityAuthorityError, match="requires_ext_filesystem"):_inode_flags(fd)
+    finally:os.close(fd)

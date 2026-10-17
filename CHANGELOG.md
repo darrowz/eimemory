@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.126] — 2026-10-17
+
+- Validate operator authority inside systemd PrivateUsers without trusting an overflow UID: host-root kernel seals protect the directory/policy and append-only journal on Linux ext filesystems. Keep user namespaces and read-only source mounts; unsupported or unsealed authority remains unresolved.
+
 ## [1.14.125] — 2026-10-17
 
 - Register the protected identity authority and current-view modules in the recall, governance and storage-integrity release domains. Both remain production changes requiring closure; unregistered files still fail closed.

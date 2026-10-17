@@ -386,11 +386,14 @@ def _build_parser() -> argparse.ArgumentParser:
     identity_revoke = identity_sub.add_parser("decision-revoke")
     identity_revoke.add_argument("--grant-id", required=True)
     identity_revoke.add_argument("--reason", required=True)
+    identity_seal = identity_sub.add_parser("authority-seal")
+    identity_unseal = identity_sub.add_parser("authority-unseal")
     identity_apply = identity_sub.add_parser("decision-apply")
     identity_apply.add_argument("--grant-id", required=True)
     identity_status = identity_sub.add_parser("decision-status")
     identity_status.add_argument("--grant-id", required=True)
-    for identity_operation in (identity_authority_init, identity_authorize, identity_revoke, identity_apply, identity_status):
+    for identity_operation in (identity_authority_init, identity_authorize, identity_revoke, identity_apply, identity_status,
+                               identity_seal, identity_unseal):
         identity_operation.add_argument("--authority-dir", default="")
     identity_repair = identity_sub.add_parser("repair")
     identity_repair.add_argument("--apply", action="store_true")
@@ -3953,8 +3956,9 @@ def main(argv: list[str] | None = None) -> int:
         return codex_mcp_main(args_list[1:])
     parser = _build_parser()
     parsed = parser.parse_args(args_list)
-    if parsed.command == "identity" and parsed.identity_command in {"authority-init", "authorize", "decision-revoke"}:
-        from eimemory.identity_authority import initialize, authorize, revoke
+    if parsed.command == "identity" and parsed.identity_command in {"authority-init", "authorize", "decision-revoke",
+                                                                  "authority-seal", "authority-unseal"}:
+        from eimemory.identity_authority import initialize, authorize, revoke, seal
         from eimemory.core.strict_json import loads
 
         try:
@@ -3966,8 +3970,10 @@ def main(argv: list[str] | None = None) -> int:
                     manifest = loads(stream.read(1_000_001), max_bytes=1_000_000, max_depth=32)
                 report = authorize(parsed.authority_dir or None, database=parsed.database,
                                    manifest=manifest, request_text=parsed.request_text)
-            else:
+            elif parsed.identity_command == "decision-revoke":
                 report = revoke(parsed.authority_dir or None, grant_id=parsed.grant_id, reason=parsed.reason)
+            else:
+                report = seal(parsed.authority_dir or None, enabled=parsed.identity_command == "authority-seal")
         except (OSError, ValueError, RuntimeError) as exc:
             return _print_error("identity_operator_request_failed", exc)
         print(json.dumps(report, ensure_ascii=False, indent=2))

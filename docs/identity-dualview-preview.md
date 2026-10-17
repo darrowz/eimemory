@@ -95,3 +95,21 @@ blocker without rolling back or deleting either original. A changed policy
 also invalidates grants bound to its previous digest. The journal and policy
 must be included in administrator-controlled host backups; ordinary memory
 exports deliberately cannot manufacture or restore operator authority.
+
+### Linux service user namespaces (1.14.126)
+
+`PrivateUsers=yes` maps host root to an overflow UID. An overflow UID alone is
+never accepted as root authority. Before a service in such a namespace can
+consume requests, the initial-namespace root operator runs `identity
+authority-seal`: the policy and authority directory receive the Linux immutable
+inode flag, and the journal receives the append-only flag. Reads verify those
+kernel flags on the actual open descriptors on a Linux ext filesystem. FUSE,
+tmpfs and unsupported platforms fail closed. These flags require host
+`CAP_LINUX_IMMUTABLE`; an unprivileged namespace or a caller-supplied UID cannot
+manufacture the seal. See the [Linux inode flag contract](https://man7.org/linux/man-pages/man2/FS_IOC_SETFLAGS.2const.html).
+
+Authorization and revocation append with `O_APPEND` while holding the journal
+lock. `identity authority-unseal` is an explicit host-root maintenance operation;
+namespace reads become unresolved while any required seal is absent. Host
+backups must restore root ownership and reapply the seal before service use.
+The service's user namespace and immutable source mounts remain enabled.
