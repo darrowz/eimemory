@@ -66,7 +66,7 @@ def controlled(runtime):
     ("What are my preferences", {"preference_query_markers": ["preferences"]}, intent("research", .8), True, "typed_request"),
     (PRIVATE, {"preference_query_markers": [PRIVATE]}, intent("research", .8), True, "custom_marker"),
     ("preference cache", {}, intent("research", .8), False, "research_exempt"),
-    ("preference cache", {}, intent(), True, "default_marker"),
+    ("preference cache", {}, intent(), False, "no_match"),
     ("Atlas layout", {}, intent("operator_preference", .65, ("preference",)), True, "intent_fallback"),
     ("Atlas layout", {}, intent("operator_preference", .64, ("preference",)), False, "no_match"),
     ("Atlas layout", {}, intent("operator_preference", .9, ("layout",)), False, "no_match"),
@@ -82,28 +82,26 @@ def test_route_decision_retains_existing_priority_and_boundaries(tmp_path, query
         assert PRIVATE not in json.dumps(safe)
 
 
-def test_native_technical_miss_retains_route_and_target_reason_through_both_receipts(tmp_path):
+def test_native_technical_query_keeps_target_and_route_through_both_receipts(tmp_path):
     with Runtime.create(root=tmp_path) as runtime:
         target = memory(runtime, "Orchid preference cache layout")
         report = controlled(runtime)
         sample = report["samples"][0]
-        assert sample["passed"] is False and sample["failure_reason"] == "known_item_missing"
-        assert report["pass_count"] == 0 and report["fail_count"] == 1
+        assert sample["passed"] is True and sample["expected_rank"] == 1
+        assert report["pass_count"] == 1 and report["fail_count"] == 0
         diagnostic = sample["retrieval_diagnostics"]
         route = diagnostic["preference_route"]
-        assert route["entry"] == "default_marker" and route["builtin_marker"] == "preference"
+        assert route["entry"] == "no_match" and route["builtin_marker"] == ""
         assert route["intent_name"] == "generic" and route["intent_confidence"] == 0.0
-        assert route["selected"] is route["filter_applied"] is True
+        assert route["selected"] is route["filter_applied"] is False
         assert diagnostic["target_trace"]["preference_route"] == route
-        assert diagnostic["target_trace"]["preference_rejections"] == [
-            {"branch": "preference_query", "reason": "no_explicit_preference"}]
+        assert diagnostic["target_trace"].get("preference_rejections", []) == []
         report["dataset_source"] = "controlled_records"
         receipt = _memory_eval_report_record(report, scope=SCOPE)
         runtime.store.append(receipt)
         diagnostics = nightly_result_diagnostics({"memory_eval_ci": report}, [])
-        detail = diagnostics["memory_benchmark"]["failed_case_refs"][0]["retrieval_diagnostics"]
-        assert detail["preference_route"] == route
-        assert detail["target_trace"]["preference_rejections"] == diagnostic["target_trace"]["preference_rejections"]
+        assert diagnostics["memory_benchmark"]["case_results"][0]["passed"] is True
+        assert diagnostics["memory_benchmark"].get("failed_case_refs", []) == []
         summary = supervisor_summary(command="nightly", ok=True, duration_ms=1, memory_peak=0)
         summary["nightly_diagnostics"] = diagnostics
         saved_id = persist_supervisor_summary(runtime, scope=SCOPE, summary=summary).record_id
@@ -237,7 +235,7 @@ def test_call_through_override_is_called_once_without_claiming_native_decision(t
         monkeypatch.setattr(runtime.memory, "_is_preference_query", override)
         bundle = runtime.memory.recall(query=target.title, scope=asdict(SCOPE), task_context=CONTEXT, limit=5)
         assert calls == [True]
-        assert bundle.items == []
+        assert [item.record_id for item in bundle.items] == [target.record_id]
         assert bundle.explanation["preference_route"]["entry"] == "unobserved"
 
 
@@ -271,11 +269,12 @@ def test_native_decisions_are_evaluated_once_with_or_without_target_observation(
         monkeypatch.setattr(runtime.memory, "_preference_query_decision", route_once)
         monkeypatch.setattr(runtime.memory, "_preference_candidate_decision", candidate_once)
         plain = runtime.memory.recall(query=target.title, scope=asdict(SCOPE), task_context=CONTEXT, limit=5)
-        assert calls == ["route", "candidate"]
+        assert calls == ["route"]
         calls.clear()
         report = controlled(runtime)
-        assert calls == ["route", "candidate"]
-        assert plain.items == [] and report["pass_count"] == 0
+        assert calls == ["route"]
+        assert [item.record_id for item in plain.items] == [target.record_id]
+        assert report["pass_count"] == 1
 
 
 def test_custom_marker_value_is_not_stored_in_either_controlled_projection(tmp_path, monkeypatch):

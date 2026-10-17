@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## 1.14.120 — 2026-10-17
+
+- Prevent descriptive preference keywords in queries or goals from selecting the preference-only view; retain explicit requests, caller context and candidate safety.
+- Enumerate exact physical identity-repair rows in bounded pages; unavailable envelopes remain counted blockers rather than disappearing during hydration.
+- Preserve occupied-target conflicts, exact owner/source and transaction CAS. Same derived ID/source does not authorize replacing distinct evidence.
+- Add fixed regression and holdout coverage to the existing focused CI gates. Local tests and service health do not certify formal quality.
+
 ## [1.14.119] - 2026-10-17
 
 ### Fixed

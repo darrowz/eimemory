@@ -101,17 +101,20 @@ def repair_hongtu_identity(
         discovered: set[tuple[str, ...]] = set()
 
         def capture():
-            candidates = (candidate for exact in sorted(admitted)
-                          for candidate in _iter_records(SimpleNamespace(store=sqlite), limit=limit, scope=ScopeRef(*exact)))
-            for candidate in candidates:
-                if _scope_tuple(candidate.scope) not in admitted:
+            candidates = (entry for exact in sorted(admitted)
+                          for entry in _iter_repair_records(sqlite, limit=limit, scope=ScopeRef(*exact)))
+            for identity, candidate in candidates:
+                if identity[:4] not in admitted:
                     continue
-                identity = _exact_ref(candidate)
                 if identity in discovered:
                     continue
                 if limit is not None and limit > 0 and len(discovered) >= limit:
                     break
                 discovered.add(identity)
+                if candidate is None:
+                    outcomes.append(_outcome(identity, "source_projection_or_digest_mismatch",
+                                             mismatch_fields=("hydration",)))
+                    continue
                 yield candidate
                 if not needs_hongtu_identity_repair(candidate):
                     continue
@@ -495,6 +498,45 @@ def _record_at_or_after(record: RecordEnvelope, bound: str) -> bool:
     time_ref = getattr(record, "time", None)
     stamp = str(getattr(time_ref, "created_at", "") or getattr(time_ref, "updated_at", "") or "")
     return _utc_instant(stamp) >= _utc_instant(bound)
+
+
+def _iter_repair_records(sqlite, *, scope: ScopeRef, limit: int | None):
+    """Page physical refs so unavailable envelopes cannot vanish from a repair."""
+    from eimemory.storage.sqlite_store import SqliteRecordStore
+
+    if not isinstance(sqlite, SqliteRecordStore):
+        for record in _iter_records(SimpleNamespace(store=sqlite), scope=scope, limit=limit):
+            yield _exact_ref(record), record
+        return
+    offset = 0
+    while True:
+        size = 500 if limit is None or limit <= 0 else min(500, limit - offset)
+        if size <= 0:
+            return
+        rows = sqlite.execute(
+            "WITH selected AS (SELECT storage_key, updated_at, record_id FROM records "
+            "WHERE tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ? "
+            "ORDER BY updated_at DESC, record_id DESC LIMIT ? OFFSET ?) "
+            "SELECT records.* FROM selected JOIN records USING (storage_key) "
+            "ORDER BY selected.updated_at DESC, selected.record_id DESC",
+            (*_scope_tuple(scope), size, offset),
+        ).fetchall()
+        if not rows:
+            return
+        page_count = len(rows)
+        for row in rows:
+            ref = (*(row[key] for key in ("tenant_id", "agent_id", "workspace_id", "user_id")),
+                   row["source_id"], row["record_id"])
+            try:
+                record = sqlite._record_from_storage_row(row, hydrate=True)
+            except (OSError, ValueError, TypeError, RuntimeError):
+                record = None
+            if record is not None and _exact_ref(record) != ref:
+                record = None
+            yield ref, record
+        del row, record
+        rows.clear()
+        offset += page_count
 
 
 def _iter_records(

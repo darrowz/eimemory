@@ -4,7 +4,7 @@ from __future__ import annotations
 from math import isfinite
 
 PREFERENCE_ROUTE_SCHEMA = "preference_query_route.v1"
-ROUTE_ENTRIES = frozenset({"typed_request", "custom_marker", "research_exempt", "default_marker",
+ROUTE_ENTRIES = frozenset({"typed_request", "custom_marker", "explicit_context", "research_exempt", "default_marker",
                            "intent_fallback", "no_match", "unobserved"})
 BUILTIN_MARKERS = frozenset({"preference", "reply style", "communication style", "operator preference",
                              "user preference", "偏好", "喜欢", "讨厌", "沟通风格", "回复风格"})

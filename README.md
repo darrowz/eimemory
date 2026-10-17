@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.119" src="https://img.shields.io/badge/version-1.14.119-blue">
+  <img alt="Package version 1.14.120" src="https://img.shields.io/badge/version-1.14.120-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -87,7 +87,7 @@ expected record, selector, grounding and thresholds, without extra retrieval
 reads or candidate injection. The supplied 1.14.72 readback verifies the trace
 on that controlled failure, without certifying its recovery or formal quality.
 
-Mainline **1.14.119** marks structurally valid knowledge pages for canonical refresh when active supporting claims change within the exact same owner and source. It preserves the old evidence and records the real refresh cause. Preference-filter diagnostics observe the existing routing and exact-target rejection without changing selection, and retain only bounded fixed fields. The 1.14.118 nightly completes scheduling but exits at identity repair with 254 conflicts; controlled memory still fails five of ten. The newer source requires its own deployment and same-commit evidence.
+Mainline **1.14.120** limits built-in preference routing to bounded requests and counts unavailable physical rows as identity-repair blockers. It retains 1.14.119's exact-owner/source support refresh, occupied-target conflicts and nonzero command outcomes. Candidate tests do not certify deployment, natural-query quality or formal acceptance; those require separate release-bound receipts.
 
 1.14.118 corrects knowledge-refresh snapshot comparison for visible duplicate IDs and blocks ambiguous scope, source, projection lineage or occupied compiler targets before any batch write. A unique shared canonical paper remains readable, and unrelated duplicates do not block an independent refresh. The 254 current identity conflicts contain real payload differences and remain protected; 162 historical pairs are still unknown. See [acceptance evidence and limits](docs/acceptance-status.md).
 
@@ -272,7 +272,7 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.119, mainline)
+## Current package status (1.14.120, mainline)
 
 The current source repair covers the audit's sixteen findings with native
 positive/negative, restart, transport-loss and authorization regressions. Review

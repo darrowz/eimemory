@@ -1525,7 +1525,7 @@ class MemoryAPI:
     def _preference_query_decision(
         self, query: str, task_context: dict, *, recall_intent: RecallIntent | None = None,
     ) -> tuple[bool, dict]:
-        from eimemory.recall.preference import preference_recall_request
+        from eimemory.recall.preference import canonical_preference_context, preference_recall_request
         from eimemory.retrieval.preference_diagnostics import PREFERENCE_ROUTE_SCHEMA
         request = preference_recall_request(query, task_context)
         diagnostic = {
@@ -1543,13 +1543,27 @@ class MemoryAPI:
         if custom_markers and any(marker.lower() in lowered or marker in haystack for marker in custom_markers):
             return True, {**diagnostic, "entry": "custom_marker", "custom_marker_matched": True}
         diagnostic["custom_marker_matched"] = False
+        if any(canonical_preference_context(task_context.get(key)) == "operator_preference"
+               for key in ("intent", "task_intent", "task_type", "query_type")):
+            return True, {**diagnostic, "entry": "explicit_context"}
         # Research may discuss preferences without requesting personal memory.
         # Explicit caller markers above still take precedence over this heuristic.
         if recall_intent is not None and recall_intent.name == "research":
             return False, {**diagnostic, "entry": "research_exempt"}
-        marker = _DEFAULT_PREFERENCE_QUERY_MARKER_RE.search(haystack)
+        request_text = " ".join(str(query or "").split()).rstrip("？?。.!！").strip()
+        marker = _DEFAULT_PREFERENCE_QUERY_MARKER_RE.search(request_text)
         if marker:
-            return True, {**diagnostic, "entry": "default_marker", "builtin_marker": marker.group(0).lower()}
+            from eimemory.identity import operator_preference_markers
+            owners = "|".join(re.escape(owner) for owner in (*operator_preference_markers(), "my", "user") if owner)
+            shorthand = re.fullmatch(
+                rf"(?:(?:{owners})(?:的|'s)?\s*)?(?:{_DEFAULT_PREFERENCE_QUERY_MARKER_RE.pattern})",
+                request_text, re.IGNORECASE,
+            )
+            personal_question = re.fullmatch(r"我(?:不喜欢|喜欢|讨厌)(?:什么|哪些)", request_text)
+            if shorthand or personal_question:
+                return True, {**diagnostic, "entry": "default_marker", "builtin_marker": marker.group(0).lower()}
+            # A topic inferred from this same substring cannot turn a description into a request.
+            return False, diagnostic
         if recall_intent is None or recall_intent.name not in {"operator_preference", "living_posture"}:
             return False, diagnostic
         intent_terms = " ".join(str(term or "") for term in recall_intent.query_terms).lower()
