@@ -2907,9 +2907,11 @@ def _run_dynamic_capability_evolution(runtime: Runtime, *, scope: dict) -> dict[
                 "enabled": True,
                 "status": (
                     "applied" if int(report.get("applied_count") or 0) > 0
+                    else "no_dynamic_gaps" if report.get("ok") is True
+                         and report.get("status") == "no_dynamic_gaps" and not results
                     else "evaluated" if report.get("ok") is True
                     else "blocked" if results
-                    else "no_dynamic_gaps"
+                    else "blocked"
                 ),
                 "work_item_count": len(results),
                 "evaluated_work_item_count": sum(

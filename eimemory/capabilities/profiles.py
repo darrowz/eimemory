@@ -697,11 +697,11 @@ def _wrap_profile_scope(name: str) -> None:
     """Fall back to a renamed agent's legacy registry partition (see service._registry_scope).
 
     Profiles bind the scope they were registered under and are never rewritten
-    by an agent rename. When the canonical agent has no profile in its exact
-    scope, retry the configured legacy agent ids; otherwise re-raise.
+    by an agent rename. Fall back only to the same single registry partition
+    selected by CapabilityService; an independent canonical registry cannot
+    borrow a missing profile from a legacy partition.
     """
     import functools
-    from dataclasses import replace as _replace
 
     original = getattr(CapabilityProfiles, name)
 
@@ -712,21 +712,15 @@ def _wrap_profile_scope(name: str) -> None:
         except CapabilityProfileError as exc:
             if "exact scope" not in str(exc) or kwargs.get("runtime_scope") is None:
                 raise
-            from eimemory.identity import HONGTU_AGENT_ID, legacy_agent_ids
+            from eimemory.capabilities.service import CapabilityService, _registry_scope
 
-            try:
-                scope = exact_runtime_scope(kwargs["runtime_scope"])
-            except Exception:  # noqa: BLE001
-                raise exc from None
-            if scope.agent_id != HONGTU_AGENT_ID:
+            scope = exact_runtime_scope(kwargs["runtime_scope"])
+            selected = _registry_scope(CapabilityService(self._store), scope, kwargs.get("capability_scope"))
+            if selected == scope:
+                # An independent canonical registry must not borrow a legacy
+                # profile simply because its own selected profile is absent.
                 raise
-            for legacy in legacy_agent_ids():
-                try:
-                    return original(self, *args, **{**kwargs, "runtime_scope": _replace(scope, agent_id=legacy)})
-                except CapabilityProfileError as retry_exc:
-                    if "exact scope" not in str(retry_exc):
-                        raise
-            raise
+            return original(self, *args, **{**kwargs, "runtime_scope": selected})
 
     setattr(CapabilityProfiles, name, wrapper)
 

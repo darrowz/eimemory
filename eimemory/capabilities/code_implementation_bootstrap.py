@@ -344,7 +344,21 @@ def advertise_code_implementation_v2(
             time.sleep(PROVIDER_HEALTH_RETRY_DELAY_SECONDS)
     if health is None:
         raise AssertionError("provider health retry loop exited without a result")
+    if (health.get("ok") is not True or health.get("nonce") != nonce
+            or health.get("provider_instance_id") != binding.provider_instance_id
+            or health.get("implementation_digest") != binding.implementation_digest):
+        return {"ok": False, "status": "blocked", "reason": "provider_health_binding_mismatch", "qualifying": False}
     health_digest = sha256(canonical_json(health).encode()).hexdigest()
+    # Check restoration authority and the full bounded active-binding set
+    # before the first advertisement/lifecycle write. A rejected advertisement
+    # must leave a previously replaced binding stale.
+    try:
+        _checked_current_binding(runtime, runtime_scope, capability_scope, binding)
+        runtime.capabilities.incubation_context(
+            binding.capability_id, runtime_scope=runtime_scope, capability_scope=capability_scope, limit=100)
+    except Exception as exc:
+        return {"ok": False, "status": "blocked", "reason": f"binding_lifecycle_preflight_failed:{type(exc).__name__}",
+                "qualifying": False}
     service = AdapterCapabilityService(runtime, adapter_id=CODE_IMPLEMENTATION_ADAPTER_ID, provider_kind=PROVIDER_KIND)
     result = service.advertise_capabilities(
         {
@@ -383,6 +397,16 @@ def advertise_code_implementation_v2(
         runtime_scope=runtime_scope,
         now=advertised_at,
     )
+    replaced = []
+    if result.get("ok") is True:
+        try:
+            # Restore only our own replacement event after the successful live
+            # health proof and advertisement, then stale obsolete digests.
+            _restore_replaced_binding(runtime, runtime_scope, capability_scope, binding, health_digest)
+            replaced = _replace_previous_bindings(runtime, runtime_scope, capability_scope, binding, health_digest)
+        except Exception as exc:
+            return {**result, "ok": False, "status": "blocked",
+                    "reason": f"binding_replacement_failed:{type(exc).__name__}", "qualifying": False}
     return {
         **result,
         "capability_id": CAPABILITY_ID,
@@ -390,9 +414,81 @@ def advertise_code_implementation_v2(
         "binding_id": BINDING_ID,
         "implementation_digest": binding.implementation_digest,
         "health_attestation_digest": health_digest,
+        "replaced_binding_transitions": replaced,
         "manual_bootstrap": True,
         "qualifying": False,
     }
+
+
+def _binding_transition(runtime, runtime_scope, capability_scope, row, status, binding, health_digest):
+    return runtime.capabilities.transition_status(
+        entity_type="binding", entity_id=row["entity_id"], entity_digest=row["entity_digest"],
+        target_status=status, runtime_scope=runtime_scope, capability_scope=capability_scope,
+        expected_state_version=row["state_version"], expected_state_digest=row["state_digest"],
+        effective_at=now_iso(), reason="provider_instance_replaced" if status == "stale" else "provider_instance_restored",
+        provenance={"source": "eimemory.code_implementation_bootstrap", "schema": CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA,
+                    "replacement_binding_id": binding.binding_id, "health_attestation_digest": health_digest,
+                    "manual_bootstrap": True, "qualifying": False},
+        request_key=f"code-implementation:binding:{status}:{row['entity_id']}:{row['state_digest']}:{binding.binding_digest}",
+    ).to_dict()
+
+
+def _checked_current_binding(runtime, runtime_scope, capability_scope, binding):
+    row = runtime.capabilities.binding_context(
+        binding.binding_id, runtime_scope=runtime_scope, capability_scope=capability_scope)
+    if row is None or row["entity_digest"] != binding.binding_digest:
+        raise ValueError("current_binding_not_registered")
+    if row["status"] == "active":
+        return row
+    history = runtime.capabilities.list_lifecycle_events(
+        entity_type="binding", entity_id=binding.binding_id, runtime_scope=runtime_scope,
+        capability_scope=capability_scope, limit=100)
+    if (row["status"] != "stale" or not history or len(history) >= 100
+            or history[-1]["state_digest"] != row["state_digest"]
+            or history[-1]["reason"] != "provider_instance_replaced"
+            or history[-1]["provenance"].get("source") != "eimemory.code_implementation_bootstrap"):
+        raise ValueError("current_binding_not_active")
+    return row
+
+
+def _restore_replaced_binding(runtime, runtime_scope, capability_scope, binding, health_digest):
+    # A previous release can become current again, but an operator's stale,
+    # disabled or revoked state is never replaced by this automatic refresh.
+    row = _checked_current_binding(runtime, runtime_scope, capability_scope, binding)
+    if row["status"] == "active":
+        return
+    _binding_transition(runtime, runtime_scope, capability_scope, row, "active", binding, health_digest)
+
+
+def _replace_previous_bindings(runtime, runtime_scope, capability_scope, binding, health_digest):
+    """One live provider instance cannot serve several implementation digests.
+
+    Keep all immutable descriptors and evidence. Only bindings owned by this
+    bootstrap, for this exact provider instance and revision, become stale.
+    Other providers, revisions, scopes and operator lifecycle decisions remain
+    independent. The successful health check and advertisement precede this.
+    """
+    context = runtime.capabilities.incubation_context(
+        binding.capability_id, runtime_scope=runtime_scope, capability_scope=capability_scope, limit=100)
+    rows = context.get("bindings") or []
+    current = [row for row in rows if row["entity_id"] == binding.binding_id
+               and row["entity_digest"] == binding.binding_digest and row["status"] == "active"]
+    if len(current) != 1:
+        raise ValueError("current_binding_not_active")
+    transitions = []
+    for row in rows:
+        descriptor = row.get("descriptor") or {}
+        if (row["entity_id"] == binding.binding_id
+                or descriptor.get("capability_revision_id") != binding.capability_revision_id
+                or descriptor.get("provider_kind") != binding.provider_kind
+                or descriptor.get("provider_instance_id") != binding.provider_instance_id
+                or descriptor.get("implementation_digest") == binding.implementation_digest
+                or tuple(descriptor.get("operations") or ()) != tuple(binding.operations)
+                or (descriptor.get("provenance") or {}).get("source") != "eimemory.code_implementation_bootstrap"):
+            continue
+        transitions.append(_binding_transition(
+            runtime, runtime_scope, capability_scope, row, "stale", binding, health_digest))
+    return transitions
 
 
 __all__ = [

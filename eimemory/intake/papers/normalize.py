@@ -81,7 +81,11 @@ def build_paper_provenance(input_data: dict[str, Any] | None = None) -> dict[str
         input_keys.update(str(key) for key in upstream_input_keys)
     provenance = deep_merge_dicts(upstream_dict, {
         "input_keys": sorted(str(key) for key in input_data.keys()),
-        "input_kind": "paper_intake",
+        # Preserve the real intake path. The capability bridge independently
+        # verifies its candidate, approval history and canonical artifact; this
+        # provenance marker is not an approval or an applicability decision.
+        "input_kind": ("paper_intake_pipeline" if upstream_dict.get("input_kind") == "paper_intake_pipeline"
+                       else "paper_intake"),
     })
     provenance["input_keys"] = sorted(input_keys)
     return provenance

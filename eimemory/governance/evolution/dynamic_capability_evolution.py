@@ -204,12 +204,17 @@ def build_dynamic_capability_evolution_plan(
         "profile_key": str(profile_key),
         "capability_scope": capability_scope,
         "runtime_scope": asdict(scope),
+        "profile_id": str(projection.get("profile_id") or ""),
+        "profile_digest": str(projection.get("profile_digest") or ""),
         "projection_digest": str(projection.get("projection_digest") or ""),
         "input_watermark": str(projection.get("input_watermark") or ""),
+        "projection_ok": projection.get("ok") is True,
+        "projection_snapshot_count": len(projection.get("snapshots") or []),
+        "projection_blocked_count": len(projection.get("blocked") or []),
         "catalog_status": str(cases.get("status") or "ready") if isinstance(cases, Mapping) else "invalid",
         "work_items": work_items,
     }
-    return {**material, "plan_digest": _digest(material), "ok": bool(cases.get("ok", True)) if isinstance(cases, Mapping) else False}
+    return {**material, "plan_digest": _digest(material), "ok": cases.get("ok") is True if isinstance(cases, Mapping) else False}
 
 
 def collect_dynamic_capability_independent_evidence(
@@ -747,10 +752,26 @@ def execute_dynamic_capability_evolution(
         "evidence_collection": evidence_collection or {},
         "auto_collect_independent_evidence": bool(auto_collect_independent_evidence),
         "auto_propose_code_patch": bool(auto_propose_code_patch),
+        "profile_projection": {key: plan.get(key) for key in (
+            "profile_id", "profile_digest", "projection_digest", "input_watermark", "projection_ok",
+            "projection_snapshot_count", "projection_blocked_count")},
     }
+    # A complete, nonempty current profile can already meet every requirement.
+    # This is a verified no-op, not an experiment or an improvement claim. An
+    # empty/failed projection or unavailable catalog cannot establish it.
+    no_dynamic_gaps = (not plan["work_items"] and plan.get("ok") is True
+                       and plan.get("projection_ok") is True
+                       and plan.get("projection_snapshot_count", 0) > 0
+                       and plan.get("projection_blocked_count") == 0
+                       and bool(plan.get("profile_id"))
+                       and all(isinstance(plan.get(key), str) and len(plan[key]) == 64
+                               and all(character in "0123456789abcdef" for character in plan[key])
+                               for key in ("profile_digest", "projection_digest", "input_watermark")))
     return {
         **material,
-        "ok": all(item.get("status") in {"evaluated", "applied"} for item in results) if results else False,
+        "ok": all(item.get("status") in {"evaluated", "applied"} for item in results) if results else no_dynamic_gaps,
+        "status": "no_dynamic_gaps" if no_dynamic_gaps else "evaluated" if results and all(
+            item.get("status") in {"evaluated", "applied"} for item in results) else "blocked",
         "applied_count": applied,
         "execution_digest": _digest(material),
     }

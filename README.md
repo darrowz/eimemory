@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.127" src="https://img.shields.io/badge/version-1.14.127-blue">
+  <img alt="Package version 1.14.128" src="https://img.shields.io/badge/version-1.14.128-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -87,7 +87,7 @@ expected record, selector, grounding and thresholds, without extra retrieval
 reads or candidate injection. The supplied 1.14.72 readback verifies the trace
 on that controlled failure, without certifying its recovery or formal quality.
 
-Mainline **1.14.127** bounds primary and supplementary FTS scans to verified small exact partitions, avoiding global matches that consume the collection deadline before scope filtering. It preserves global bm25, ordering, authority checks and incomplete-result refusal. The protected retain-both identity adapter continues to preserve both original versions; see [the authority model and operating contract](docs/identity-dualview-preview.md). Controlled retrieval success does not certify natural-query quality or formal acceptance.
+Mainline **1.14.128** keeps capability profiles and their real observations in the same exact registry partition after a configured agent rename, retires replaced bindings only after authenticated provider health and advertisement, and normalizes per-agent recall discovery to the base workspace. Genuine approved paper-pipeline sources retain their provenance for strict applicability review. Primary and supplementary FTS scans remain bounded to verified exact partitions with the original deadlines and ranking. These repairs do not replace natural-query, source-approval or formal release evidence.
 
 1.14.118 corrects knowledge-refresh snapshot comparison for visible duplicate IDs and blocks ambiguous scope, source, projection lineage or occupied compiler targets before any batch write. A unique shared canonical paper remains readable, and unrelated duplicates do not block an independent refresh. The 254 current identity conflicts contain real payload differences and remain protected; 162 historical pairs are still unknown. See [acceptance evidence and limits](docs/acceptance-status.md).
 
@@ -272,7 +272,7 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.127, mainline)
+## Current package status (1.14.128, mainline)
 
 The current source repair covers the audit's sixteen findings with native
 positive/negative, restart, transport-loss and authorization regressions. Review
@@ -284,14 +284,14 @@ and [production acceptance status](docs/acceptance-status.md).
 
 The controlled-target eligibility and native source diagnostics remain
 available. An ineligible target is not an evaluable pass; empty eligible datasets
-cannot pass. The latest operator readback binds 1.14.126 / `9fbd50df` to
-October 17 nightly `rec_ffb100dfe120` and independent command outcome
-`ref_6751e5ceaba6`. Controlled memory passes nine of ten: one target is returned,
-but source collection exhausts its budget and remains incomplete. Production
-recall passes three of three with three accepted cases. Identity repair reports
-zero blockers and retains both original versions for all 254 governed pairs.
-The command exits 1 at `memory_eval_ci`; formal recall quality and
-dynamic-capability evidence remain unaccepted.
+cannot pass. The latest operator readback binds 1.14.127 / `e78f1c11` to
+October 18 nightly `rec_d8fabd35788b` and independent command outcome
+`ref_185a0628fe88`. Controlled memory passes ten of ten with complete source
+collection; the previous incomplete target returns in 308 ms. Production recall
+passes three of three with three accepted cases. Identity repair reports zero
+blockers and retains both original versions for all 254 governed pairs.
+The command exits 0 with no failed steps. Formal overall recall quality still
+awaits the other agents' valid evidence; dynamic capability evidence also waits.
 The newer mainline source changes require their own deployment and same-commit
 nightly evidence before production recovery is claimed.
 

@@ -36,6 +36,11 @@ jobs:
           tests/test_rule_evidence_selection.py
           tests/test_model_identity_contracts_regression.py
           tests/test_code_implementation_provider.py
+          tests/test_code_implementation_owner.py
+          tests/test_code_binding_lifecycle_review.py
+          tests/test_capability_gap_diagnostics.py
+          tests/test_dynamic_noop_review.py
+          tests/test_v1_14_87_per_agent_recall.py
           tests/test_openclaw_host_identity.py
           tests/test_hermes_handoff_outbox.py
           tests/test_business_closure_evaluation.py
@@ -90,7 +95,6 @@ jobs:
           tests/test_real_effect_cycle.py
           tests/test_runtime_effect_sources.py
           tests/test_hermes_identity_checks.py
-          tests/test_capability_gap_diagnostics.py
           tests/test_capability_hypothesis_producer.py
           tests/test_knowledge_gap_review.py
           tests/test_knowledge_review_inventory.py

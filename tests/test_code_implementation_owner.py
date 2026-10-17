@@ -286,6 +286,101 @@ def test_refresh_versions_revision_and_binding_when_prior_v8_digest_is_registere
     assert bindings[BINDING_ID]["implementation_digest"] == IMPLEMENTATION_DIGEST
 
 
+def test_refresh_stales_only_replaced_bindings_for_the_attested_provider(tmp_path, monkeypatch):
+    authority = tmp_path / "production-authority"
+    _seed(authority)
+    runtime = Runtime.create(root=authority)
+    current = bootstrap_module.code_implementation_binding()
+    prior = replace(current, binding_id="binding.previous-digest", implementation_digest="a" * 64,
+                    environment_fingerprint={**current.environment_fingerprint, "implementation_digest": "a" * 64})
+    independent = replace(prior, binding_id="binding.independent-provider", provider_instance_id="another-provider")
+    unmanaged = replace(prior, binding_id="binding.operator-owned", provenance={"source": "operator"})
+    same_digest = replace(current, binding_id="binding.same-digest-alias")
+    try:
+        revision = bootstrap_module.code_implementation_revision()
+        runtime.capabilities.register_revision(revision, runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+                                              request_key=f"code-implementation:revision:{revision.contract_digest}")
+        for binding in (prior, independent, unmanaged, same_digest):
+            runtime.capabilities.bind(binding, runtime_scope=PRODUCTION_RUNTIME_SCOPE)
+    finally:
+        runtime.close()
+    monkeypatch.setenv("EIMEMORY_ROOT", str(authority))
+    monkeypatch.setattr(bootstrap_module, "CodeImplementationSocketClient", _HealthyClient)
+    result = refresh_code_implementation_owner(now=STAMP)
+    assert result["ok"], result
+    transitions = result["advertisement"]["replaced_binding_transitions"]
+    assert [row["entity_id"] for row in transitions] == [prior.binding_id]
+    runtime = Runtime.create(root=authority)
+    try:
+        previous = runtime.capabilities.binding_context(prior.binding_id, runtime_scope=PRODUCTION_RUNTIME_SCOPE, capability_scope="global")
+        assert previous["status"] == "stale"
+        assert previous["descriptor"]["binding_digest"] == prior.binding_digest
+        for binding in (current, independent, unmanaged, same_digest):
+            assert runtime.capabilities.binding_context(binding.binding_id, runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+                                                       capability_scope="global")["status"] == "active"
+        history = runtime.capabilities.list_lifecycle_events(entity_type="binding", entity_id=prior.binding_id,
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE, capability_scope="global")
+        assert history[-1]["reason"] == "provider_instance_replaced"
+        assert history[-1]["provenance"]["health_attestation_digest"] == result["advertisement"]["health_attestation_digest"]
+    finally:
+        runtime.close()
+    again = refresh_code_implementation_owner(now=STAMP)
+    assert again["ok"] and again["advertisement"]["replaced_binding_transitions"] == []
+
+
+def test_failed_provider_health_does_not_stale_previous_bindings(tmp_path, monkeypatch):
+    from eimemory.adapters.hermes.code_implementation import CodeImplementationError
+
+    authority = tmp_path / "production-authority"
+    _seed(authority)
+    runtime = Runtime.create(root=authority)
+    prior = replace(bootstrap_module.code_implementation_binding(), binding_id="binding.previous-digest",
+                    implementation_digest="a" * 64)
+    try:
+        revision = bootstrap_module.code_implementation_revision()
+        runtime.capabilities.register_revision(revision, runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+                                              request_key=f"code-implementation:revision:{revision.contract_digest}")
+        runtime.capabilities.bind(prior, runtime_scope=PRODUCTION_RUNTIME_SCOPE)
+    finally:
+        runtime.close()
+    class Unavailable:
+        def health(self, **_kwargs):
+            raise CodeImplementationError("provider_health_attestation_mismatch")
+    monkeypatch.setenv("EIMEMORY_ROOT", str(authority))
+    monkeypatch.setattr(bootstrap_module, "CodeImplementationSocketClient", Unavailable)
+    blocked = refresh_code_implementation_owner(now=STAMP)
+    assert blocked["ok"] is False and blocked["reason"] == "provider_health_unavailable"
+    runtime = Runtime.create(root=authority)
+    try:
+        assert runtime.capabilities.binding_context(prior.binding_id, runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+                                                   capability_scope="global")["status"] == "active"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("reason,source,restored", [
+    ("provider_instance_replaced", "eimemory.code_implementation_bootstrap", True),
+    ("operator_staled", "operator", False),
+])
+def test_attested_refresh_restores_only_its_own_replacement_state(tmp_path, monkeypatch, reason, source, restored):
+    authority = tmp_path / "production-authority"
+    _seed(authority)
+    monkeypatch.setenv("EIMEMORY_ROOT", str(authority))
+    monkeypatch.setattr(bootstrap_module, "CodeImplementationSocketClient", _HealthyClient)
+    assert refresh_code_implementation_owner(now=STAMP)["ok"]
+    runtime = Runtime.create(root=authority)
+    try:
+        row = runtime.capabilities.binding_context(BINDING_ID, runtime_scope=PRODUCTION_RUNTIME_SCOPE, capability_scope="global")
+        runtime.capabilities.transition_status(entity_type="binding", entity_id=BINDING_ID,
+            entity_digest=row["entity_digest"], target_status="stale", runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            capability_scope="global", expected_state_version=row["state_version"], expected_state_digest=row["state_digest"],
+            effective_at=bootstrap_module.now_iso(), reason=reason, provenance={"source": source})
+    finally:
+        runtime.close()
+    result = refresh_code_implementation_owner(now=STAMP)
+    assert result["ok"] is restored, result
+
+
 def test_owner_status_reports_timer_catalog_and_fail_closed_effect_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

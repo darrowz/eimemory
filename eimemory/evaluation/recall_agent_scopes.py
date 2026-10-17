@@ -53,8 +53,10 @@ def recall_agent_scopes(runtime: Any, scope: dict, *, window_days: int = DISCOVE
             rows = run_locked(lambda records: records.execute(sql, params).fetchall())
         except Exception:  # noqa: BLE001 - discovery failure yields no scopes, never a pass
             rows = []
+    from eimemory.adapters.runtime.channel import base_scope_from_channel, runtime_channel_from_scope
+
     totals: dict[str, int] = {}
-    dominant: dict[str, tuple[int, str, str]] = {}
+    traffic_scopes: dict[tuple[str, str, str], int] = {}
     for row in rows:
         # Renamed agents report under their canonical id (reads fan out to the
         # legacy id), so one agent is never split into two gate entries.
@@ -65,7 +67,19 @@ def recall_agent_scopes(runtime: Any, scope: dict, *, window_days: int = DISCOVE
             continue
         count = int(row[3] or 0)
         totals[agent] = totals.get(agent, 0) + count
-        candidate = (count, str(row[1] or ""), str(row[2] or ""))
+        traffic_scope = {**base, "agent_id": agent,
+                         "workspace_id": str(row[1] or ""), "user_id": str(row[2] or "")}
+        channel = runtime_channel_from_scope(traffic_scope)
+        workspace = (base_scope_from_channel(channel, traffic_scope)["workspace_id"]
+                     if channel else traffic_scope["workspace_id"])
+        # Discovery returns a base scope, which collection/review expands once
+        # per channel. Count the same logical workspace across channels (and
+        # renamed agent ids) before choosing its dominant user partition.
+        key = (agent, workspace, traffic_scope["user_id"])
+        traffic_scopes[key] = traffic_scopes.get(key, 0) + count
+    dominant: dict[str, tuple[int, str, str]] = {}
+    for (agent, workspace, user), count in traffic_scopes.items():
+        candidate = (count, workspace, user)
         if agent not in dominant or candidate[0] > dominant[agent][0] or (
                 candidate[0] == dominant[agent][0] and candidate[1:] < dominant[agent][1:]):
             dominant[agent] = candidate

@@ -43,8 +43,52 @@ def test_discovers_differently_named_agents_from_real_traffic_only(tmp_path, mon
         scopes = recall_agent_scopes(runtime, BASE)
     assert [s["agent_id"] for s in scopes] == ["alpha", "beta"]
     # Each agent is evaluated where its real traffic lands, not the base scope.
-    assert all(s["workspace_id"] == "lab::channel::hermes" and s["user_id"] == "u" and s["tenant_id"] == "acme" for s in scopes)
+    assert all(s["workspace_id"] == "lab" and s["user_id"] == "u" and s["tenant_id"] == "acme" for s in scopes)
     assert [s["discovered_decisions"] for s in scopes] == [2, 1]
+
+
+def test_discovered_base_scope_collects_and_reviews_actual_channel(tmp_path, monkeypatch):
+    from eimemory.adapters.runtime.channel import resolve_channel_scope
+    from eimemory.evaluation.production_query_auto_review import auto_review_pending_production_queries
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+
+    monkeypatch.delenv("EIMEMORY_RECALL_GATE_AGENTS", raising=False)
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", "fixture-only-0123456789-abcdefghijklmnopqrstuvwxyz")
+    with Runtime.create(root=tmp_path) as runtime:
+        conn = runtime.store.sqlite.conn
+        _decision(conn, "alpha")
+        scope = recall_agent_scopes(runtime, BASE)[0]
+        exact = ScopeRef.from_dict(resolve_channel_scope("hermes", scope))
+        # A real-shaped pending observation already in the traffic partition
+        # must be reviewed there, without creating a nested channel workspace.
+        pending = RecordEnvelope.create(kind="evaluation_packet", title="Pending production query",
+            content={"case_id": "real-case", "channel": "hermes"}, scope=exact,
+            source="eimemory.production_recall.pending_case", source_id="hermes",
+            meta={"report_type": "production_recall_pending_case"})
+        runtime.store.append(pending)
+        report = auto_review_pending_production_queries(runtime, scope=scope, dry_run=True)
+        assert report["by_channel"]["hermes"]["scanned"] == 1
+        assert report["by_channel"]["openclaw"]["scanned"] == 0
+        assert report["review_results"][0]["reasons"] == ["pending_capture_boundary_invalid"]
+        assert report["accepted_count"] == 0
+        assert {item.scope.workspace_id for item in runtime.store.list_records_by_meta_value(
+            kinds=["evaluation_packet"], scope=exact, meta_key="report_type",
+            meta_value="production_recall_pending_case", status="active", limit=10)} == {"lab::channel::hermes"}
+
+
+def test_channel_counts_choose_same_logical_workspace_before_dominance(tmp_path, monkeypatch):
+    monkeypatch.delenv("EIMEMORY_RECALL_GATE_AGENTS", raising=False)
+    with Runtime.create(root=tmp_path) as runtime:
+        conn = runtime.store.sqlite.conn
+        _decision(conn, "alpha", session="hermes", n=2)
+        _decision(conn, "alpha", session="codex", n=2)
+        _decision(conn, "alpha", session="other-user", n=3)
+        conn.execute("UPDATE proactive_decisions SET workspace_id='lab::channel::codex' WHERE session_id='codex'")
+        conn.execute("UPDATE proactive_decisions SET user_id='other' WHERE session_id='other-user'")
+        conn.commit()
+        discovered = recall_agent_scopes(runtime, BASE)
+    assert discovered == [{"tenant_id": "acme", "workspace_id": "lab", "user_id": "u",
+                           "agent_id": "alpha", "discovered_decisions": 7, "source": "traffic"}]
 
 
 def test_explicit_override(tmp_path, monkeypatch):

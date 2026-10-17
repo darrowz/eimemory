@@ -11,6 +11,14 @@ AIGC:
 
 # Changelog
 
+## [1.14.128] — 2026-10-18
+
+- Resolve capability profiles, observations and projections through the same exact registry partition after a configured agent rename. An independent canonical registry cannot borrow a missing legacy profile.
+- Report an explicitly verified no-gap plan as no evolution required only when the current profile has a complete non-empty successful projection. Missing catalogs, empty profiles and failed projections remain failures; no execution or promotion evidence is invented.
+- Retire replaced implementation bindings only after the same provider instance attests its live digest and advertises successfully. Preserve historical descriptors and evidence, distinct providers and explicit operator lifecycle decisions; permit rollback restoration only for an authenticated bootstrap replacement.
+- Normalize discovered recall traffic to its base workspace before per-channel collection and review, preventing nested channel suffixes and aggregating the same logical partition across channels.
+- Preserve the genuine paper-intake pipeline provenance marker so approved canonical sources can reach the existing strict applicability review. Unreviewed historical metadata remains unapproved.
+
 ## [1.14.127] — 2026-10-18
 
 - Bound primary as well as supplementary FTS scans to a complete, verified exact partition of at most 1024 mapped rows. Preserve global bm25, scope/source/status filters, ranking and the existing recall deadline; unavailable, inconsistent or truncated maps retain the original query.

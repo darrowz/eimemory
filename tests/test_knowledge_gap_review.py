@@ -85,6 +85,37 @@ def _model(_system, prompt):
         "applicability": "applicable", "relation_type": "informs_eval", "quotes": [TEXT]})
 
 
+def test_real_paper_pipeline_preserves_approved_candidate_and_canonical_lineage(registered):
+    runtime, _, _, path = registered
+    scope = ScopeRef.from_dict(SCOPE)
+    uri = "https://paper.example.test/real-pipeline"
+    source = runtime.sources.add_source({"source_id": "source-real-pipeline", "source_kind": "paper",
+        "uri": uri, "enabled": True, "metadata": {"connector_id": "test.native", "trust": 0.85}})
+    pdf = path / "real-pipeline.pdf"
+    pdf.write_bytes(_minimal_pdf(TEXT))
+    artifacts = materialize_paper_artifacts(runtime.store.root, {"pdf_file": str(pdf)})
+    candidate = RecordEnvelope.create(kind="knowledge_candidate", title="Real pipeline paper", summary=TEXT,
+        content={"source_id": source.source_id, "source_kind": "paper", "source_uri": uri, "uri": uri,
+                 "abstract": TEXT, "pdf_blob_ref": artifacts["pdf_blob_ref"],
+                 "normalized_text_ref": artifacts["normalized_text_ref"],
+                 "metadata": {"artifact": artifacts["artifact"]}},
+        scope=scope, source="test.native", status="candidate")
+    candidate.meta["source_trust_decision"] = resolve_source_trust(
+        candidate.to_dict(), registry=runtime.sources, connector_id="test.native").to_dict()
+    runtime.store.append(candidate)
+    approved = review_candidate(runtime, candidate.record_id, "approve", "native-reviewer", scope=scope)
+    result = runtime.promote_paper_candidate(approved, scope=SCOPE)
+    assert result["ok"]
+    paper = runtime.store.get_by_id(result["paper_source_id"], scope=scope, exact_scope=True)
+    assert paper.provenance["input_kind"] == "paper_intake_pipeline"
+    assert paper.provenance["record_id"] == candidate.record_id
+    assert paper.provenance["artifact_status"] == "ready"
+    verified_candidate, trust = review._source_review(runtime, scope, paper)
+    assert verified_candidate.meta["promoted_to_paper_source_id"] == paper.record_id
+    assert trust.reasons == ("registry_verified",)
+    assert any(row.get("decision") == "approve" for row in verified_candidate.meta["review_history"])
+
+
 def _run(registered, executor=_model):
     runtime, _, _, _ = registered
     return review.review_gap_knowledge(runtime, runtime_scope=SCOPE, capability_scope="global",

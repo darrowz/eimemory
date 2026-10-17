@@ -1,5 +1,6 @@
 import pytest
 from dataclasses import replace
+from datetime import datetime, timezone
 
 from eimemory.api.runtime import Runtime
 from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog
@@ -128,3 +129,130 @@ def test_nightly_producer_executes_the_registered_diagnostic_path(registered, mo
     report = _run_capability_hypothesis_producer(runtime, scope=SCOPE)
     assert report["status"] == "diagnosed"
     assert report["diagnostics"][0]["passed"] and report["diagnostics"][0]["gap_closed"]
+
+
+def test_renamed_agent_projects_acceptance_from_its_exact_registry_partition(registered, monkeypatch):
+    import eimemory.identity as identity
+    from eimemory.capabilities.projector import CapabilityStateProjector
+    from eimemory.capabilities.observations import CapabilityObservations
+    from eimemory.capabilities.profiles import CapabilityProfileError
+    from eimemory.capabilities.registry import CapabilityRegistry
+
+    runtime, profile, catalog = registered
+    canonical = {**SCOPE, "agent_id": "renamed-agent"}
+    monkeypatch.setattr(identity, "HONGTU_AGENT_ID", canonical["agent_id"])
+    monkeypatch.setenv("EIMEMORY_LEGACY_AGENT_IDS", SCOPE["agent_id"])
+    before = build_dynamic_capability_evolution_plan(
+        runtime, profile_key=profile.profile_key, runtime_scope=canonical, catalog=catalog)
+    assert before["work_items"][0]["reason"] == "hypothesis_missing_or_ambiguous"
+    report = produce_capability_hypotheses(
+        runtime, profile_key=profile.profile_key, runtime_scope=canonical, catalog=catalog)
+    assert report["diagnostics"][0]["passed"] and report["diagnostics"][0]["gap_closed"]
+    observations = CapabilityObservations(runtime.store)
+    assert observations.list(runtime_scope=SCOPE, capability_scope="global")
+    assert observations.list(runtime_scope=canonical, capability_scope="global") == []
+    projection = CapabilityStateProjector(runtime.store).project(
+        profile.profile_key, runtime_scope=canonical, capability_scope="global", persist=True,
+        at_time=datetime.now(timezone.utc).isoformat()).to_dict()
+    assert projection["ok"] and projection["snapshots"]
+    assert build_dynamic_capability_evolution_plan(
+        runtime, profile_key=profile.profile_key, runtime_scope=canonical, catalog=catalog)["work_items"] == []
+    # A configured agent rename never opens another workspace's partition.
+    with pytest.raises(CapabilityProfileError):
+        CapabilityStateProjector(runtime.store).project(
+            profile.profile_key, runtime_scope={**canonical, "workspace_id": "foreign"}, capability_scope="global")
+    # Once a separate canonical registry exists, legacy profile/evidence may
+    # not fill missing inputs in that independently owned partition.
+    CapabilityRegistry(runtime.store).register_definition(_definition(), runtime_scope=canonical)
+    with pytest.raises(CapabilityProfileError):
+        CapabilityStateProjector(runtime.store).project(
+            profile.profile_key, runtime_scope=canonical, capability_scope="global")
+
+
+def test_acceptance_closes_gap_as_verified_noop_through_nightly_contract(registered, monkeypatch):
+    from eimemory.scheduler.jobs import _run_dynamic_capability_evolution
+    from eimemory.scheduler.result_contract import _nightly_step, nightly_result_diagnostics
+
+    runtime, profile, catalog = registered
+    runtime.capability_catalog = catalog
+    before = runtime.build_dynamic_capability_evolution_plan(profile_key=profile.profile_key, scope=SCOPE)
+    assert before["projection_ok"] is False and before["work_items"]
+    acceptance = runtime.run_capability_acceptance(
+        profile_key=profile.profile_key, scope=SCOPE, runtime_scope=SCOPE, persist=True)
+    assert acceptance["ok"] and acceptance["trace_count"] == 1
+    after = runtime.build_dynamic_capability_evolution_plan(profile_key=profile.profile_key, scope=SCOPE)
+    assert after["ok"] and after["projection_ok"]
+    assert after["projection_snapshot_count"] == 1 and after["projection_blocked_count"] == 0
+    assert after["work_items"] == []
+    monkeypatch.setattr("eimemory.governance.evolution.dynamic_capability_evolution.run_autonomous_evolution",
+                        lambda *args, **kwargs: pytest.fail("a complete reliable profile needs no change"))
+    execution = runtime.execute_dynamic_capability_evolution(profile_key=profile.profile_key, scope=SCOPE)
+    assert execution["ok"] and execution["status"] == "no_dynamic_gaps"
+    assert execution["results"] == [] and execution["applied_count"] == 0
+    assert execution["evidence_collection"] == {}
+    assert execution["profile_projection"]["projection_ok"]
+    assert list_capability_hypotheses(runtime, runtime_scope=SCOPE) == []
+    monkeypatch.setattr("eimemory.scheduler.jobs._capability_v3_profile_key", lambda: profile.profile_key)
+    steps = []
+    report = _nightly_step(steps, "dynamic_capability_evolution",
+                          lambda: _run_dynamic_capability_evolution(runtime, scope=SCOPE))
+    assert report["ok"] and report["status"] == "no_dynamic_gaps"
+    assert report["work_item_count"] == report["evaluated_work_item_count"] == report["blocked_work_item_count"] == 0
+    diagnostics = nightly_result_diagnostics({"dynamic_capability_evolution": report}, steps)
+    assert diagnostics["execution_ok"] and diagnostics["failed_steps"] == [] and diagnostics["evidence_waits"] == []
+
+
+def test_verified_noop_requires_catalog_and_untruncated_current_evidence(registered):
+    from eimemory.core.clock import now_iso
+    runtime, profile, catalog = registered
+    runtime.capability_catalog = catalog
+    assert runtime.run_capability_acceptance(
+        profile_key=profile.profile_key, scope=SCOPE, runtime_scope=SCOPE, persist=True)["ok"]
+    # Missing selected catalog cases cannot be called a verified no-op even
+    # when observations independently satisfy the profile.
+    no_catalog = runtime.execute_dynamic_capability_evolution(
+        profile_key=profile.profile_key, scope=SCOPE, catalog=CapabilityEvaluationCatalog())
+    assert not no_catalog["ok"] and no_catalog["status"] == "blocked"
+    truncated = runtime.execute_dynamic_capability_evolution(
+        profile_key=profile.profile_key, scope=SCOPE, observation_limit=1)
+    assert not truncated["ok"] and truncated["status"] == "blocked"
+    assert not truncated["profile_projection"]["projection_ok"]
+    binding = runtime.capabilities.binding_context("binding.dynamic.catalog:v1", runtime_scope=SCOPE,
+                                                   capability_scope="global")
+    runtime.capabilities.transition_status(entity_type="binding", entity_id=binding["entity_id"],
+        entity_digest=binding["entity_digest"], target_status="stale", runtime_scope=SCOPE,
+        capability_scope="global", expected_state_version=binding["state_version"],
+        expected_state_digest=binding["state_digest"], effective_at=now_iso(),
+        reason="operator_staled", provenance={"source": "operator"})
+    stale = runtime.execute_dynamic_capability_evolution(profile_key=profile.profile_key, scope=SCOPE)
+    assert not stale["ok"] and stale["status"] == "blocked"
+
+
+@pytest.mark.parametrize("projection", [
+    {"ok": True, "snapshots": [], "blocked": []},
+    {"snapshots": [{"snapshot_id": "unknown"}], "blocked": []},
+    {"ok": False, "snapshots": [{"snapshot_id": "failed"}], "blocked": []},
+])
+def test_incomplete_projection_cannot_certify_no_dynamic_gaps(registered, monkeypatch, projection):
+    from types import SimpleNamespace
+    runtime, profile, catalog = registered
+    monkeypatch.setattr("eimemory.governance.evolution.dynamic_capability_evolution.CapabilityStateProjector.project",
+                        lambda *args, **kwargs: SimpleNamespace(to_dict=lambda: projection))
+    result = runtime.execute_dynamic_capability_evolution(profile_key=profile.profile_key, scope=SCOPE, catalog=catalog)
+    assert result["results"] == [] and not result["ok"] and result["status"] == "blocked"
+
+
+def test_unavailable_catalog_and_empty_profile_never_certify_noop(registered, monkeypatch):
+    from eimemory.capabilities.contracts import CapabilityContractError
+    from eimemory.evaluation.capability_catalog import CatalogResolutionError
+    from eimemory.governance.evolution.dynamic_capability_evolution import DynamicCapabilityEvolutionError
+
+    runtime, profile, _ = registered
+    with pytest.raises(CapabilityContractError):
+        replace(profile, requirements={})
+    runtime.capability_catalog = None
+    def unavailable():
+        raise CatalogResolutionError("catalog_not_configured")
+    monkeypatch.setattr("eimemory.evaluation.capability_catalog.application_capability_catalog", unavailable)
+    with pytest.raises(DynamicCapabilityEvolutionError, match="evaluation_catalog_untrusted"):
+        runtime.execute_dynamic_capability_evolution(profile_key=profile.profile_key, scope=SCOPE)

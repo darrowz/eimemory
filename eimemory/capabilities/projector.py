@@ -113,6 +113,13 @@ class CapabilityStateProjector:
 
         scope = exact_runtime_scope(runtime_scope)
         logical_scope = _capability_scope(capability_scope)
+        # The service keeps immutable registry entities and observations in
+        # the original partition after an explicitly configured agent rename.
+        # Profile resolution alone already follows that partition; evidence,
+        # relations and persisted snapshots must use the same exact scope.
+        from eimemory.capabilities.service import CapabilityService, _registry_scope
+
+        scope = exact_runtime_scope(_registry_scope(CapabilityService(self._store), scope, logical_scope))
         if not isinstance(observation_limit, int) or isinstance(observation_limit, bool):
             raise CapabilityProjectionError("observation_limit must be an integer")
         if not 1 <= observation_limit <= 500:
