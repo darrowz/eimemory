@@ -12,6 +12,8 @@ from typing import Any
 
 from eimemory.api.memory import MemoryAPI
 from eimemory.contracts.recall_boundary import authority_digest, exact_ref, scope_tuple
+from eimemory.knowledge.evidence_contracts import versioned_record_ref
+from eimemory.knowledge.refresh import _existing_snapshot_error, _support_lineage_snapshot
 from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory
 from eimemory.metadata import business_metadata
 from eimemory.models.relation_records import RelationRecord
@@ -53,6 +55,68 @@ _OPERATIONAL_INCIDENT_KEYWORDS = (
     "aborted",
     "usage limit",
 )
+
+
+class _SupportLineageAborted(Exception):
+    """Roll back a stale plan without flushing unrelated pending exports."""
+
+
+def _reconcile_changed_support_lineage(store, *, pages: list[RecordEnvelope], scope: ScopeRef) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "support_lineage_marked_count": 0,
+        "support_lineage_blocked": [],
+        "support_lineage_retry_required_count": 0,
+    }
+    plans: list[tuple[RecordEnvelope, list[RecordEnvelope]]] = []
+    for page in pages:
+        if page.kind != "knowledge_page" or page.status != "active" or page.scope != scope:
+            continue
+        claims, reason, changed = _support_lineage_snapshot(page, store=store)
+        if reason:
+            report["support_lineage_blocked"].append({"record_id": page.record_id, "reason": reason})
+        elif changed:
+            plans.append((page, claims))
+    if not plans:
+        return report
+    owner = getattr(store, "mutate_records_atomically", None)
+    if not callable(owner):
+        report["support_lineage_blocked"].extend(
+            {"record_id": page.record_id, "reason": "atomic_owner_unavailable"} for page, _claims in plans
+        )
+        return report
+
+    def mutation(sqlite):
+        current_pages: list[RecordEnvelope] = []
+        for page, planned_claims in plans:
+            current = sqlite.get_by_exact_ref(page.record_id, scope=scope, source_id=page.source_id)
+            if current is None or versioned_record_ref(current) != versioned_record_ref(page):
+                report["support_lineage_retry_required_count"] = len(plans)
+                raise _SupportLineageAborted()
+            claims, reason, changed = _support_lineage_snapshot(current, store=sqlite)
+            if (reason or not changed
+                    or [versioned_record_ref(claim) for claim in claims]
+                    != [versioned_record_ref(claim) for claim in planned_claims]):
+                report["support_lineage_retry_required_count"] = len(plans)
+                raise _SupportLineageAborted()
+            if _existing_snapshot_error(sqlite, [current, *claims]):
+                report["support_lineage_blocked"].append(
+                    {"record_id": page.record_id, "reason": "support_snapshot_mismatch"}
+                )
+                raise _SupportLineageAborted()
+            current_pages.append(current)
+        # Validate the entire batch before changing a status or enqueueing an export.
+        for page in current_pages:
+            page.status = "needs_refresh"
+            page.meta["refresh_reason"] = "support_lineage_changed"
+            page.touch()
+            sqlite.upsert(page, commit=False)
+        report["support_lineage_marked_count"] = len(current_pages)
+        return report, current_pages, []
+
+    try:
+        return owner(mutation)
+    except _SupportLineageAborted:
+        return report
 
 
 class EvolutionAPI:
@@ -1271,6 +1335,8 @@ class EvolutionAPI:
             page.touch()
             self.store.append(page)
             page_refresh_count += 1
+        support_lineage = _reconcile_changed_support_lineage(self.store, pages=pages, scope=scope_ref)
+        page_refresh_count += support_lineage["support_lineage_marked_count"]
         relation_count = len(
             [
                 record
@@ -1285,6 +1351,7 @@ class EvolutionAPI:
             "new_contradiction_count": len(new_contradiction_ids),
             "page_refresh_count": page_refresh_count,
             "conflicted_claim_count": len(conflicted_claim_ids),
+            **support_lineage,
         }
 
     def _demote_conflicting_claim(self, claim: RecordEnvelope, contradiction_pair: tuple[str, str]) -> None:

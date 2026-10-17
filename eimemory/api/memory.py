@@ -1516,37 +1516,67 @@ class MemoryAPI:
         *,
         recall_intent: RecallIntent | None = None,
     ) -> bool:
+        return self._preference_query_decision(query, task_context, recall_intent=recall_intent)[0]
+
+    # Stable identity lets the engine preserve subclass/instance overrides of
+    # the historical bool hooks instead of bypassing them for observation.
+    _preference_query_bool_implementation = _is_preference_query
+
+    def _preference_query_decision(
+        self, query: str, task_context: dict, *, recall_intent: RecallIntent | None = None,
+    ) -> tuple[bool, dict]:
         from eimemory.recall.preference import preference_recall_request
-        if preference_recall_request(query, task_context) is not None:
-            return True
+        from eimemory.retrieval.preference_diagnostics import PREFERENCE_ROUTE_SCHEMA
+        request = preference_recall_request(query, task_context)
+        diagnostic = {
+            "schema": PREFERENCE_ROUTE_SCHEMA, "entry": "no_match", "builtin_marker": "",
+            "custom_marker_matched": None, "typed_mode": request.mode if request else "",
+            "typed_attribute": request.attribute if request else "", "intent_topic_match": None,
+            "intent_name": recall_intent.name if type(recall_intent) is RecallIntent else None,
+            "intent_confidence": recall_intent.confidence if type(recall_intent) is RecallIntent else None,
+        }
+        if request is not None:
+            return True, {**diagnostic, "entry": "typed_request"}
         haystack = f"{query} " + " ".join(str(task_context.get(key) or "") for key in ("intent", "goal", "task_type"))
         lowered = haystack.lower()
         custom_markers = tuple(dict.fromkeys(self._string_list(task_context.get("preference_query_markers"))))
         if custom_markers and any(marker.lower() in lowered or marker in haystack for marker in custom_markers):
-            return True
+            return True, {**diagnostic, "entry": "custom_marker", "custom_marker_matched": True}
+        diagnostic["custom_marker_matched"] = False
         # Research may discuss preferences without requesting personal memory.
         # Explicit caller markers above still take precedence over this heuristic.
         if recall_intent is not None and recall_intent.name == "research":
-            return False
-        if _DEFAULT_PREFERENCE_QUERY_MARKER_RE.search(haystack):
-            return True
+            return False, {**diagnostic, "entry": "research_exempt"}
+        marker = _DEFAULT_PREFERENCE_QUERY_MARKER_RE.search(haystack)
+        if marker:
+            return True, {**diagnostic, "entry": "default_marker", "builtin_marker": marker.group(0).lower()}
         if recall_intent is None or recall_intent.name not in {"operator_preference", "living_posture"}:
-            return False
+            return False, diagnostic
         intent_terms = " ".join(str(term or "") for term in recall_intent.query_terms).lower()
         intent_marker_match = any(marker in intent_terms for marker in ("preference", "reply style", "communication style"))
-        return recall_intent.confidence >= 0.65 and intent_marker_match
+        selected = recall_intent.confidence >= 0.65 and intent_marker_match
+        return selected, {**diagnostic, "entry": "intent_fallback" if selected else "no_match",
+                          "intent_topic_match": intent_marker_match}
 
     def _is_preference_recall_candidate(self, item: RecordEnvelope, query: str) -> bool:
+        return self._preference_candidate_decision(item, query)[0]
+
+    _preference_candidate_bool_implementation = _is_preference_recall_candidate
+
+    def _preference_candidate_decision(self, item: RecordEnvelope, query: str) -> tuple[bool, str]:
         if item.kind != "memory":
-            return False
+            return False, "not_memory"
         text = self._record_text(item)
         memory_type = str(business_metadata(item.meta).get("memory_type") or item.content.get("memory_type") or "").strip()
         from eimemory.recall.preference import PREFERENCE_MEMORY_TYPES
         if memory_type.lower() in PREFERENCE_MEMORY_TYPES:
-            return not self._looks_like_recall_diagnostic(text, query)
+            selected = not self._looks_like_recall_diagnostic(text, query)
+            return selected, "" if selected else "recall_diagnostic"
         if self._looks_like_recall_diagnostic(text, query):
-            return False
-        return self._looks_like_explicit_preference(text)
+            return False, "recall_diagnostic"
+        selected = self._looks_like_explicit_preference(text)
+        reason = ("" if selected else "no_explicit_preference") if type(selected) is bool else "unobserved"
+        return selected, reason
 
     def _matching_active_rule_recall_items(
         self,

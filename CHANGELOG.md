@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.119] - 2026-10-17
+
+### Fixed
+- Knowledge reconciliation schedules canonical refresh when a structurally valid page's active supporting claims change version within its exact owner and source. It preserves the previous evidence, rejects malformed, missing or foreign references, and checks all page/support physical snapshots and versions before an atomic status update. Source approvals, identity-conflict refusals and canonical-artifact requirements remain unchanged.
+- Support-only refresh propagates its actual cause without declaring an invented contradiction resolved. Existing contradiction audit evidence and occupied-target/projection-parent guards remain in force.
+- Controlled preference-filter diagnostics retain bounded fixed routing and exact-target rejection measurements from the actual predicate calls through nightly persistence. Existing routing, boolean overrides, candidates and quality thresholds are preserved; custom markers, query text and arbitrary diagnostic fields are not persisted. The 1.14.118 readback still has five controlled misses and 254 identity conflicts; this source change does not establish production recovery.
+
 ## [1.14.118] - 2026-10-17
 
 ### Fixed

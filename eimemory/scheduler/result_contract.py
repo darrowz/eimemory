@@ -788,6 +788,8 @@ def _controlled_retrieval_diagnostics(value: object) -> dict:
         # The shared projection preserves source_trace only when this native
         # invocation recorded it; older traces acquire no source history.
         result["target_trace"] = safe_target_trace_report(report["target_trace"])
+        if "preference_route" in result["target_trace"]:
+            result["preference_route"] = result["target_trace"]["preference_route"]
     return result
 
 

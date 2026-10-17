@@ -67,6 +67,7 @@ jobs:
           tests/test_controlled_memory_filter_transitions.py
           tests/test_controlled_memory_failed_diagnostics_limit.py
           tests/test_controlled_memory_target_trace.py
+          tests/test_preference_route_observations.py
           tests/test_sqlite_target_source_trace.py
           tests/test_verifier_boundary_diagnostics.py
           tests/test_memory_benchmark_context.py
@@ -87,6 +88,7 @@ jobs:
           tests/test_knowledge_projectors.py
           tests/test_knowledge_projector_bounds.py
           tests/test_knowledge_refresh.py
+          tests/test_knowledge_support_lineage_refresh.py
           tests/test_capability_hypothesis_producer.py
           tests/test_dynamic_code_patch_context.py
           tests/test_capability_acceptance.py

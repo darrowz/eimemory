@@ -1,5 +1,92 @@
 # Receipt-based acceptance status
 
+## October 17 support-version reconciliation and preference diagnostics: 1.14.119
+
+An isolated reproduction with a real local PDF and verified canonical manifest
+shows an independent knowledge lifecycle gap: updating an active claim within
+the same exact owner/source invalidates a compiled page's versioned support,
+but contradiction-only reconciliation leaves the page active and schedules
+no rebuild. This is not attribution of the production identity conflicts.
+
+1.14.119 validates the complete typed support-reference structure and ID set
+before classifying any changed version. Only an unblocked active page belonging to the
+caller's exact scope, with active, safe, sufficiently confident supporting
+claims in the same exact source partition, can be marked `needs_refresh` for
+`support_lineage_changed`. The transaction rechecks the page, every supporting
+version, original payloads, SQL projections and physical keys before writing.
+Concurrent changes roll back without flushing unrelated pending exports.
+The old content, references, evidence, claims and approval states are retained.
+Missing, malformed or cross-scope/source support stays blocked; the first
+changed reference cannot hide an invalid later one.
+
+The existing canonical refresh then rebuilds eligible pages from verified
+artifacts and current exact claims. It records the actual refresh cause;
+a support-only rebuild does not invent a resolved contradiction. Existing
+contradiction history remains explicit. Occupied compiler targets and
+old-scope projection parent references retain the 1.14.118 refusal boundary.
+The new trigger also checks sibling pages that compilation could replace;
+an unsafe sibling cannot be silently reactivated by refreshing a safe page.
+Deprecated history that is not a replacement target remains deprecated.
+This does not resolve identity forks, supply missing source reviews or certify
+knowledge applicability, capability evolution or quality acceptance.
+
+The production five preference misses still need their triggering branch
+identified. New diagnostics observe the existing preference route and
+candidate predicate once, without changing their ordering or result. Only
+fixed route, built-in marker, typed-request and target rejection fields may
+be retained; custom marker contents, query text and arbitrary classifier
+reasons are excluded. Overridden legacy boolean hooks remain authoritative,
+with unavailable internal measurements explicitly unobserved. A controlled
+report can retain this evidence only from its owned native trace, through
+the bounded persistence projection. These observations do not themselves fix
+the five misses or turn controlled probes into formal quality evidence.
+
+The 1.14.118 scheduler and command outcome below remain the latest production
+evidence. 1.14.119 requires its own deployment and same-commit nightly.
+Local verification passes 1,128 tests and 85 subtests, including real PDF
+artifact rebuilding, unsafe-sibling refusal, physical/CAS/outbox boundaries,
+unchanged preference predicates, legacy boolean hooks and owned-trace
+persistence/privacy. Compilation, metadata consistency and diff checks pass.
+
+## October 17 production readback: 1.14.118
+
+The operator reports a nightly from October 17, 09:06:49–09:12:10
+(Asia/Shanghai), bound to 1.14.118 and exact commit
+`702cfb712d0b02f773d18088c213d5d5e3edbd5c`. Scheduler report
+`ref_7726a33634bc`, run `rec_32471b395b6c`, has `execution_ok=true` and no
+failed steps. Production recall passes three cases, with accepted cases 3/3
+and no repeated scope blocker. Controlled memory evaluates ten cases, passes
+five and fails five, with zero unevaluable cases. Formal recall quality is
+still false; dynamic-capability and quality evidence remain pending.
+Both GitHub workflows for that exact commit completed successfully; their
+technical checks do not replace the failing production command outcome.
+
+The same-run independent command outcome `ref_ea3be2b8fa2a` instead ends
+with exit 1 and `first_failed_phase=identity_repair`: 34 records repaired,
+eight fresh outcomes and 254 `target_conflict` refusals, with 254 blocked.
+Scheduler completion does not certify the overall command or quality gate.
+The unchanged conflict count does not establish unchanged conflict membership.
+
+All five detailed failures were retained without truncation. Each has
+`known_item_missing`, `evaluable=true`, an untruncated title query, the target
+present after hydration, and target-specific `preference_query` removal at
+the filtered stage. Four case IDs overlap the earlier five preference misses;
+`controlled-memory-1f573d172df67857b392e265`, previously incomplete, is now
+evaluable and also removed at that branch. The earlier
+`controlled-memory-032dc1298fb9eff04df1484c` is absent from this failure list;
+that absence alone does not establish its current dataset membership or pass.
+Selector grounding counts describe the remaining candidates.
+
+Replay generation reports ten cases selected after scanning 21 records,
+11 episode-evidence skips, `scan_truncated=true`, `selection_truncated=true`
+and a stable-before cutoff of `2026-10-17T01:06:50Z`. Ten source record/digest
+bindings were saved, but no separate dataset fingerprint is present in the
+summary. Case counts alone do not prove identical datasets. The report still
+lacks the preference route's triggering entry and candidate rejection reason;
+same-bound-snapshot classification is required before attributing these five
+to a particular marker or intent rule. No production rerun or write was
+performed by this investigation.
+
 ## October 17 conflict classification and refresh authority boundaries: 1.14.118
 
 The operator's read-only classification separates the current reconstructed

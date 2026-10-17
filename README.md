@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.118" src="https://img.shields.io/badge/version-1.14.118-blue">
+  <img alt="Package version 1.14.119" src="https://img.shields.io/badge/version-1.14.119-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -87,7 +87,9 @@ expected record, selector, grounding and thresholds, without extra retrieval
 reads or candidate injection. The supplied 1.14.72 readback verifies the trace
 on that controlled failure, without certifying its recovery or formal quality.
 
-Mainline **1.14.118** corrects knowledge-refresh snapshot comparison for visible duplicate IDs and blocks ambiguous scope, source, projection lineage or occupied compiler targets before any batch write. A unique shared canonical paper remains readable, and unrelated duplicates do not block an independent refresh. The 254 current identity conflicts contain real payload differences and remain protected; 162 historical pairs are still unknown. See [acceptance evidence and limits](docs/acceptance-status.md).
+Mainline **1.14.119** marks structurally valid knowledge pages for canonical refresh when active supporting claims change within the exact same owner and source. It preserves the old evidence and records the real refresh cause. Preference-filter diagnostics observe the existing routing and exact-target rejection without changing selection, and retain only bounded fixed fields. The 1.14.118 nightly completes scheduling but exits at identity repair with 254 conflicts; controlled memory still fails five of ten. The newer source requires its own deployment and same-commit evidence.
+
+1.14.118 corrects knowledge-refresh snapshot comparison for visible duplicate IDs and blocks ambiguous scope, source, projection lineage or occupied compiler targets before any batch write. A unique shared canonical paper remains readable, and unrelated duplicates do not block an independent refresh. The 254 current identity conflicts contain real payload differences and remain protected; 162 historical pairs are still unknown. See [acceptance evidence and limits](docs/acceptance-status.md).
 
 1.14.117 gives the deterministic structured-recall selector the existing in-budget hydration and final-validation reserve. Collection receives an earlier cutoff inside the existing hard deadline. Incomplete collection remains degraded and cannot pass controlled evaluation merely because its target was returned. Slow collections may stop earlier; production acceptance requires the new release's own evidence.
 
@@ -270,7 +272,7 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.118, mainline)
+## Current package status (1.14.119, mainline)
 
 The current source repair covers the audit's sixteen findings with native
 positive/negative, restart, transport-loss and authorization regressions. Review
@@ -282,11 +284,13 @@ and [production acceptance status](docs/acceptance-status.md).
 
 The controlled-target eligibility and native source diagnostics remain
 available. An ineligible target is not an evaluable pass; empty eligible datasets
-cannot pass. The latest operator readback verifies deployment of 1.14.115 /
-`194659fa` and same-commit nightly `ref_6d66ae9cd54f` on October 17. Production
-recall passes three cases and accepted cases reach 3/3, while controlled memory
-passes four of ten, `memory_eval_ci` fails and the overall command exits 1.
-Formal recall quality and dynamic-capability evidence remain unaccepted.
+cannot pass. The latest operator readback binds 1.14.118 / `702cfb71` to
+October 17 nightly `ref_7726a33634bc` and independent command outcome
+`ref_ea3be2b8fa2a`. Scheduling completes, production recall passes three cases
+and accepted cases reach 3/3. Controlled memory passes five of ten, with all
+five failures at the preference filter and zero unevaluable cases. The command
+exits 1 at identity repair with 254 target conflicts. Formal recall quality and
+dynamic-capability evidence remain unaccepted.
 The newer mainline source changes require their own deployment and same-commit
 nightly evidence before production recovery is claimed.
 

@@ -54,6 +54,7 @@ from .contracts import (
 )
 from .sqlite_source import SQLiteCandidateSource
 from .diagnostics import summarize_sources
+from .preference_diagnostics import PREFERENCE_ROUTE_SCHEMA, safe_preference_route
 from .relevance import RelevanceAdmission, RelevanceConfig, record_digest
 from .fusion import FUSION_POLICY_VERSION, fuse_ranked_components, page_pool_key
 from .postgres_vector import (
@@ -69,6 +70,16 @@ from .postgres_vector import (
 # replay metrics is part of the recall PERF backlog.
 _TASK_CONTEXT_FIRST_CONFIDENCE = 0.92
 _BASELINE_CONFIDENCE = 0.81
+
+
+def _native_preference_bool(memory, predicate, implementation: str) -> bool:
+    """Optional diagnostics cannot bypass an overridden historical bool hook."""
+    from eimemory.api.memory import MemoryAPI
+    try:
+        return (getattr(predicate, "__self__", None) is memory
+                and getattr(predicate, "__func__", None) is getattr(MemoryAPI, implementation))
+    except Exception:
+        return False
 
 
 def _bounded_keyword_field_text(value: object) -> str:
@@ -1058,24 +1069,44 @@ class GovernedRecallEngine:
             blocked_counts["task_evidence_missing"] += len(items) - len(task_items)
             items = task_items
         report_items = [item for item in items if report_query and memory._is_recallable_report_record(item)]
-        preference_query = memory._is_preference_query(
-            normalized_query,
-            task_context,
-            recall_intent=recall_intent,
-        ) and not report_query
+        preference_predicate = memory._is_preference_query
+        if _native_preference_bool(memory, preference_predicate, "_preference_query_bool_implementation"):
+            preference_selected, preference_route = memory._preference_query_decision(
+                normalized_query, task_context, recall_intent=recall_intent)
+        else:
+            preference_selected = preference_predicate(
+                normalized_query, task_context, recall_intent=recall_intent)
+            preference_route = {"schema": PREFERENCE_ROUTE_SCHEMA, "entry": "unobserved"}
+        preference_query = preference_selected and not report_query
+        preference_route = safe_preference_route({**preference_route, "selected": preference_selected,
+            "filter_applied": preference_query, "report_bypassed": bool(report_query)})
+        if target_trace is not None:
+            target_trace.observe_preference_route(preference_route)
         raw_requested = recall_filters.get("requested_kinds") or []
         requested_kinds = {
             str(kind)
             for kind in raw_requested
             if isinstance(raw_requested, (list, tuple, set)) and str(kind)
         }
+        def preference_candidate_allowed(item):
+            if item.kind in requested_kinds:
+                return True
+            predicate = memory._is_preference_recall_candidate
+            if _native_preference_bool(memory, predicate, "_preference_candidate_bool_implementation"):
+                selected, reason = memory._preference_candidate_decision(item, normalized_query)
+            else:
+                selected = predicate(item, normalized_query)
+                reason = "unobserved"
+            # The original comprehension tested the hook's truth value once.
+            # Keep that contract for custom bool-like return objects too.
+            selected = bool(selected)
+            if not selected and target_trace is not None:
+                target_trace.observe_preference_rejection(item, "preference_query", reason)
+            return selected
+
         if preference_query:
             before_filter_items = items
-            items = [
-                item for item in items
-                if item.kind in requested_kinds
-                or memory._is_preference_recall_candidate(item, normalized_query)
-            ]
+            items = [item for item in items if preference_candidate_allowed(item)]
             if target_trace is not None:
                 target_trace.filter_transition(before_filter_items, items, "preference_query")
         graph_expanded = 0
@@ -1108,11 +1139,7 @@ class GovernedRecallEngine:
             blocked_counts.update(graph_suppressed_counts)
             if preference_query:
                 before_filter_items = items
-                items = [
-                    item for item in items
-                    if item.kind in requested_kinds
-                    or memory._is_preference_recall_candidate(item, normalized_query)
-                ]
+                items = [item for item in items if preference_candidate_allowed(item)]
                 if target_trace is not None:
                     target_trace.filter_transition(before_filter_items, items, "preference_query")
         if base_items and profile_config["graph_depth"] > 0 and not recall_deadline_exceeded():
@@ -1139,11 +1166,7 @@ class GovernedRecallEngine:
                 blocked_counts.update(edge_suppressed_counts)
                 if preference_query:
                     before_filter_items = items
-                    items = [
-                        item for item in items
-                        if item.kind in requested_kinds
-                        or memory._is_preference_recall_candidate(item, normalized_query)
-                    ]
+                    items = [item for item in items if preference_candidate_allowed(item)]
                     if target_trace is not None:
                         target_trace.filter_transition(before_filter_items, items, "preference_query")
         # PERF: skip the always-on active-rule fan-out when the caller already
@@ -1265,8 +1288,15 @@ class GovernedRecallEngine:
             if target_trace is not None:
                 target_trace.filter_transition(before_filter_items, items, "task_evidence")
         if preference_request is not None and self.relevance_admission is None:
-            supported = [item for item in items if item.kind != "memory"
-                         or supports_preference_request(preference_request, item)]
+            def preference_attribute_supported(item):
+                if item.kind != "memory":
+                    return True
+                selected = supports_preference_request(preference_request, item)
+                if not selected and target_trace is not None:
+                    target_trace.observe_preference_rejection(
+                        item, "preference_attribute", "requested_assertion_not_proven")
+                return selected
+            supported = [item for item in items if preference_attribute_supported(item)]
             if target_trace is not None:
                 target_trace.filter_transition(items, supported, "preference_attribute")
             blocked_counts["preference_attribute_missing"] += len(items) - len(supported)
@@ -1555,6 +1585,7 @@ class GovernedRecallEngine:
                 "confidence_band": confidence_band,
                 **({"raw_evidence": raw_evidence} if raw_hybrid else {}),
                 "preference_query": preference_query,
+                "preference_route": preference_route,
                 "report_query": report_query,
                 "recall_view": final_view.to_dict(),
                 "engine_diagnostics": engine_diagnostics,

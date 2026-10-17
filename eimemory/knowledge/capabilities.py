@@ -218,13 +218,16 @@ def refresh_capability_applicability_marker(
     *,
     reason: str = "",
     resolved_contradiction_ids: list[str] | tuple[str, ...] | None = None,
+    contradiction_state: str | None = None,
 ) -> dict[str, Any]:
     """Return a passive refresh marker without recreating a direct conflict gate.
 
     The knowledge projector treats direct ``contradiction_ids`` as unsafe.  A
     rebuilt page therefore carries only resolved audit ids in this separate
     marker; the link bridge can keep the trace while the projector sees a safe
-    page built from active claims.
+    page built from active claims. Callers rebuilding changed support without
+    a contradiction can explicitly preserve that absence; omitted state keeps
+    the established refresh mapping.
     """
 
     state = str(refresh_state or "").strip().lower()
@@ -235,7 +238,11 @@ def refresh_capability_applicability_marker(
     }
     if state not in mapping:
         raise KnowledgeCapabilityBridgeError("unsupported knowledge refresh state")
-    source_status, applicability, contradiction_state = mapping[state]
+    source_status, applicability, default_contradiction_state = mapping[state]
+    if contradiction_state is None:
+        contradiction_state = default_contradiction_state
+    elif not isinstance(contradiction_state, str) or contradiction_state not in {"none", "resolved", "contradicted"}:
+        raise KnowledgeCapabilityBridgeError("unsupported knowledge refresh contradiction state")
     audit_ids = _safe_string_list(resolved_contradiction_ids or (), field="resolved_contradiction_ids")
     return {
         "schema_version": KNOWLEDGE_CAPABILITY_REFRESH_SCHEMA,

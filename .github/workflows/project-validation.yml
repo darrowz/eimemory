@@ -69,10 +69,12 @@ jobs:
           tests/test_experience_outcome.py
           tests/test_recall_engine.py
           tests/test_preference_generic_query_routing.py
+          tests/test_preference_route_observations.py
           tests/test_knowledge_compiler.py
           tests/test_knowledge_projectors.py
           tests/test_knowledge_projector_bounds.py
           tests/test_knowledge_refresh.py
+          tests/test_knowledge_support_lineage_refresh.py
           tests/test_promotion_safety.py
           tests/test_promotion_manager.py
           tests/test_release_closure.py

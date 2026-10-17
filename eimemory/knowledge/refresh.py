@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from eimemory.core import strict_json
@@ -12,11 +12,15 @@ from eimemory.intake.papers import artifacts as paper_artifacts
 from eimemory.intake.papers.artifacts import PaperArtifactError
 from eimemory.knowledge.capabilities import (
     KNOWLEDGE_CAPABILITY_MARKER_KEY,
+    _effective_contradiction_state,
     refresh_capability_applicability_marker,
 )
 from eimemory.knowledge.compiler import compile_paper_knowledge
-from eimemory.knowledge.evidence_contracts import versioned_record_ref
-from eimemory.knowledge.projectors import PROJECTOR_SOURCE, PROJECTION_LINEAGE_SCHEMA, stable_projection_id
+from eimemory.knowledge.evidence_contracts import assess_record_confidence, versioned_record_ref
+from eimemory.knowledge.projectors import (
+    MAX_SUPPORTING_CLAIMS, MIN_CLAIM_CONFIDENCE, SUPPORT_LINEAGE_SCHEMA,
+    PROJECTOR_SOURCE, PROJECTION_LINEAGE_SCHEMA, stable_projection_id,
+)
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.storage.jsonl import payload_digest, payload_set_fingerprint
 from eimemory.storage.runtime_store import RuntimeStore
@@ -62,12 +66,87 @@ class _RefreshPlan:
     source_claims: list[RecordEnvelope]
     source_entities: list[RecordEnvelope]
     invalidated_record_ids: set[str]
+    refresh_reason: str = "claim_contradiction"
     contradiction_audit_ids: tuple[str, ...] = ()
     blocked_reason: str = ""
+    lineage_blocked_reason: str = ""
     source_version_digest: str = ""
     compile_input_digest: str = ""
     refresh_run_id: str = ""
     compiled_records: list[RecordEnvelope] | None = None
+
+
+def _support_lineage_snapshot(page: RecordEnvelope, *, store, allow_marked: bool = False) -> tuple[list[RecordEnvelope], str, bool]:
+    """Classify complete typed lineage before considering a version change.
+
+    A changed first reference must not hide a malformed, missing or foreign
+    later reference. Old references remain evidence of the previous compile;
+    this reader never repairs or substitutes them.
+    """
+    if not isinstance(page.content, dict):
+        return [], "invalid_support_lineage", False
+    if (any(not isinstance(container, dict) for container in (page.meta, page.provenance))
+            or not (page.status == "active" or (allow_marked and page.status == "needs_refresh"
+                                      and page.meta.get("refresh_reason") == "support_lineage_changed"))
+            or any(bool(container.get(key)) for container in (page.meta, page.content, page.provenance)
+                   for key in ("deprecated", "contradiction_ids", "contradiction_claim_ids", "conflict"))
+            or _has_declared_contradiction(page)):
+        return [], "unsafe_page", False
+    refs = page.content.get("supporting_claim_refs")
+    if (page.content.get("supporting_claim_refs_schema") != SUPPORT_LINEAGE_SCHEMA
+            or not isinstance(refs, list) or not refs or len(refs) > MAX_SUPPORTING_CLAIMS):
+        return [], "missing_support_lineage", False
+    fields = {"record_id", "kind", "scope", "source_id", "version_digest"}
+    scope_fields = {"tenant_id", "agent_id", "workspace_id", "user_id"}
+    seen: set[str] = set()
+    for ref in refs:
+        if not isinstance(ref, dict) or set(ref) != fields:
+            return [], "invalid_support_lineage", False
+        scope = ref.get("scope")
+        claim_id = ref.get("record_id")
+        if (ref.get("kind") != "claim_card"
+                or not isinstance(claim_id, str) or not claim_id or claim_id in seen
+                or not isinstance(ref.get("source_id"), str) or not ref["source_id"]
+                or not isinstance(ref.get("version_digest"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", ref["version_digest"]) is None
+                or not isinstance(scope, dict) or set(scope) != scope_fields
+                or any(not isinstance(value, str) for value in scope.values())):
+            return [], "invalid_support_lineage", False
+        try:
+            if asdict(ScopeRef.from_dict(scope)) != scope:
+                return [], "invalid_support_lineage", False
+        except (TypeError, ValueError):
+            return [], "invalid_support_lineage", False
+        seen.add(claim_id)
+    ids = page.content.get("supporting_claim_ids")
+    if (not isinstance(ids, (list, tuple)) or any(not isinstance(item, str) or not item for item in ids)
+            or len(ids) != len(seen) or set(ids) != seen):
+        return [], "support_ids_mismatch", False
+    # Only versions within the page's exact owner/source are recoverable here.
+    # Legacy/shared visibility and identity aliases do not grant write authority.
+    if any(ref["scope"] != asdict(page.scope) or ref["source_id"] != page.source_id for ref in refs):
+        return [], "support_scope_source_mismatch", False
+    claims: list[RecordEnvelope] = []
+    changed = False
+    for ref in refs:
+        claim = store.get_by_exact_ref(ref["record_id"], scope=page.scope, source_id=page.source_id)
+        if claim is None:
+            return [], "support_missing", False
+        if (claim.record_id != ref["record_id"] or claim.scope != page.scope
+                or claim.source_id != page.source_id or claim.kind != "claim_card"
+                or claim.status != "active"
+                or any(not isinstance(container, dict) for container in (claim.meta, claim.content, claim.provenance))
+                or any(bool(container.get(key))
+                       for container in (claim.meta, claim.content, claim.provenance)
+                       for key in ("deprecated", "contradiction_ids", "contradiction_claim_ids", "conflict"))
+                or _has_declared_contradiction(claim)):
+            return [], "unsafe_support", False
+        confidence = assess_record_confidence(claim)
+        if confidence.state != "valid" or confidence.value is None or confidence.value < MIN_CLAIM_CONFIDENCE:
+            return [], "low_support_confidence", False
+        changed = changed or versioned_record_ref(claim) != ref
+        claims.append(claim)
+    return claims, "", changed
 
 
 def refresh_knowledge_pages(
@@ -107,6 +186,8 @@ def refresh_knowledge_pages(
         scope=scope_ref,
     )
     for plan in plans:
+        if plan.lineage_blocked_reason:
+            return _authority_blocked_report(plans, plan.lineage_blocked_reason)
         reason = _plan_authority_error(plan, inputs=inputs, scope=scope_ref)
         if reason:
             return _authority_blocked_report(plans, reason)
@@ -248,6 +329,7 @@ def _prepare_plans(
             source_claims=source_claims,
             source_entities=source_entities,
             invalidated_record_ids=invalidated_record_ids,
+            refresh_reason=_refresh_reason(source_stale_pages, source_records=[*source_pages, *source_claims]),
             contradiction_audit_ids=_contradiction_audit_ids(source_pages),
         )
         canonical_text, blocked_reason = _canonical_source_text(store, source_record)
@@ -307,6 +389,19 @@ def _prepare_plans(
                 plan.compiled_records = compilation.to_records(scope=scope)
             except Exception as exc:  # pragma: no cover - defensive failure-closed boundary
                 plan.blocked_reason = f"recompile_failed_{type(exc).__name__}"
+        if any(page.meta.get("refresh_reason") == "support_lineage_changed" for page in source_stale_pages):
+            # A safe sibling cannot rehabilitate a malformed or blocked page.
+            # Mixed reasons and the final audit reason never bypass this fence.
+            replacement_ids = {page.record_id for page in plan.compiled_records or ()}
+            for page in source_pages:
+                # Historical pages that stay deprecated retain their original
+                # evidence and still pass the full physical snapshot guard.
+                if page.status == "deprecated" and page.record_id not in replacement_ids:
+                    continue
+                _supports, reason, _changed = _support_lineage_snapshot(page, store=store, allow_marked=True)
+                if reason:
+                    plan.lineage_blocked_reason = "support_lineage_peer_" + reason
+                    break
         plans.append(plan)
     return plans
 
@@ -914,7 +1009,7 @@ def _annotate_recompiled_page(
     page.provenance.pop("contradiction_claim_ids", None)
     page.content["refresh"] = {
         "state": "recompiled",
-        "reason": "claim_contradiction",
+        "reason": plan.refresh_reason,
         "refresh_run_id": plan.refresh_run_id,
         "source_version_digest": plan.source_version_digest,
         "compile_input_digest": plan.compile_input_digest,
@@ -927,7 +1022,7 @@ def _annotate_recompiled_page(
         page.provenance["resolved_contradiction_ids"] = audit_ids
         page.evidence = _dedupe_strings([*page.evidence, *audit_ids])
     page.meta["refresh_state"] = "recompiled"
-    page.meta["refresh_reason"] = "claim_contradiction"
+    page.meta["refresh_reason"] = plan.refresh_reason
     page.meta["refresh_run_id"] = plan.refresh_run_id
     page.meta["source_version_digest"] = plan.source_version_digest
     page.meta["compile_input_digest"] = plan.compile_input_digest
@@ -937,8 +1032,9 @@ def _annotate_recompiled_page(
     page.provenance["compile_input_digest"] = plan.compile_input_digest
     capability_marker = refresh_capability_applicability_marker(
         "recompiled",
-        reason="claim_contradiction",
+        reason=plan.refresh_reason,
         resolved_contradiction_ids=audit_ids,
+        contradiction_state=("none" if plan.refresh_reason == "support_lineage_changed" and not audit_ids else None),
     )
     page.content[KNOWLEDGE_CAPABILITY_MARKER_KEY] = capability_marker
     page.meta[KNOWLEDGE_CAPABILITY_MARKER_KEY] = capability_marker
@@ -979,6 +1075,27 @@ def _record_source_ids(record: RecordEnvelope) -> list[str]:
         if normalized and normalized not in result:
             result.append(normalized)
     return result
+
+
+def _has_declared_contradiction(record: RecordEnvelope) -> bool:
+    """A support-only rebuild cannot erase a conflicting declaration."""
+    if record.status == "conflicted" or _effective_contradiction_state(record, None) == "contradicted":
+        return True
+    return any(
+        isinstance(container, dict)
+        and isinstance(container.get(key), dict)
+        and container[key].get("contradiction_state") == "contradicted"
+        for container in (record.content, record.meta, record.provenance)
+        for key in (KNOWLEDGE_CAPABILITY_MARKER_KEY, "knowledge_capability_refresh")
+    )
+
+
+def _refresh_reason(stale_pages: list[RecordEnvelope], *, source_records: list[RecordEnvelope]) -> str:
+    """Keep the existing contradiction path and recognize the owner stale marker."""
+    if (stale_pages and all(page.meta.get("refresh_reason") == "support_lineage_changed" for page in stale_pages)
+            and not any(_has_declared_contradiction(record) for record in source_records)):
+        return "support_lineage_changed"
+    return "claim_contradiction"
 
 
 def _contradiction_audit_ids(records: list[RecordEnvelope]) -> tuple[str, ...]:

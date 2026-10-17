@@ -16,6 +16,9 @@ from typing import Any
 from eimemory.models.records import RecordEnvelope
 from eimemory.models.source_partitions import normalize_source_ids
 from .contracts import CandidateHit, CandidateRef, CandidateRequest, ExactScope
+from .preference_diagnostics import (
+    safe_preference_route, safe_preference_rejections, CANDIDATE_REJECTIONS,
+)
 
 
 SCHEMA = "controlled_target_stage_trace.v1"
@@ -94,6 +97,10 @@ def safe_target_trace_report(value: Any) -> dict[str, Any]:
               "does_not_certify_answer": True, "stages": result}
     if isinstance(value.get("source_trace"), dict) and value["source_trace"].get("schema") == SOURCE_SCHEMA:
         report["source_trace"] = safe_source_trace_report(value["source_trace"])
+    if "preference_route" in value:
+        report["preference_route"] = safe_preference_route(value["preference_route"])
+    if "preference_rejections" in value:
+        report["preference_rejections"] = safe_preference_rejections(value["preference_rejections"])
     return report
 
 
@@ -139,6 +146,8 @@ class _TargetTrace:
         self.status = "not_observed"
         self.rows: dict[str, dict[str, Any]] = {}
         self.source_trace = None
+        self.preference_route_observation = None
+        self.preference_rejection_observations = []
 
     def owned(self) -> bool:
         return self.thread == get_ident() and self.task is _task()
@@ -245,10 +254,29 @@ class _TargetTrace:
         except Exception:
             pass
 
+    def observe_preference_route(self, decision):
+        if self.owned() and _active.get() is self:
+            self.preference_route_observation = safe_preference_route(decision)
+
+    def observe_preference_rejection(self, item, branch, reason):
+        try:
+            if (self.owned() and _active.get() is self and self._matches_ref(item)
+                    and branch in {"preference_query", "preference_attribute"}
+                    and reason in CANDIDATE_REJECTIONS):
+                value = {"branch": branch, "reason": reason}
+                if value not in self.preference_rejection_observations and len(self.preference_rejection_observations) < 2:
+                    self.preference_rejection_observations.append(value)
+        except Exception:
+            pass
+
     def report(self):
         report = {"schema": SCHEMA, "status": self.status, "stages": list(self.rows.values())}
         if self.source_trace is not None:
             report["source_trace"] = self.source_trace.report()
+        if self.preference_route_observation is not None:
+            report["preference_route"] = self.preference_route_observation
+        if self.preference_rejection_observations:
+            report["preference_rejections"] = self.preference_rejection_observations
         return safe_target_trace_report(report)
 
 

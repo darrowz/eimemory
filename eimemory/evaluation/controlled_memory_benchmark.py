@@ -230,7 +230,10 @@ def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]
         sample["retrieval_diagnostics"] = _controlled_retrieval_diagnostics(
             {}, task_context=case["task_context"], returned_count=0, operation_unavailable=True)
         if trace is not None:
-            sample["retrieval_diagnostics"]["target_trace"] = trace.report()
+            observed_trace = trace.report()
+            sample["retrieval_diagnostics"]["target_trace"] = observed_trace
+            if "preference_route" in observed_trace:
+                sample["retrieval_diagnostics"]["preference_route"] = observed_trace["preference_route"]
         return finish("controlled_retrieval_unavailable")
     returned = list(bundle.items)[:case["limit"]]
     sample["returned_refs"] = [_binding(item) for item in returned]
@@ -239,7 +242,10 @@ def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]
     sample["retrieval_diagnostics"] = _controlled_retrieval_diagnostics(
         explanation, task_context=case["task_context"], returned_count=len(returned))
     if trace is not None:
-        sample["retrieval_diagnostics"]["target_trace"] = trace.report()
+        observed_trace = trace.report()
+        sample["retrieval_diagnostics"]["target_trace"] = observed_trace
+        if "preference_route" in observed_trace:
+            sample["retrieval_diagnostics"]["preference_route"] = observed_trace["preference_route"]
     if explanation.get("retrieval_status") in {"unavailable", "degraded"}:
         return finish("controlled_retrieval_incomplete")
     # Do not certify a result if source authority changed while retrieval ran.
