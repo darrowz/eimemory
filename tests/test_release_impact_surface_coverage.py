@@ -77,6 +77,8 @@ def test_every_tracked_production_file_has_a_domain() -> None:
         ("eimemory/knowledge/ingest.py", {"memory.recall", "memory.governance"}),
         ("eimemory/persona/context_router.py", {"memory.recall"}),
         ("eimemory/raw/synthetic.py", {"memory.recall"}),
+        ("eimemory/identity_authority.py", {"memory.recall", "memory.governance", "storage.integrity"}),
+        ("eimemory/identity_governance.py", {"memory.recall", "memory.governance", "storage.integrity"}),
         ("integrations/hermes/host-patches/memory-sync-snapshot.patch", {"channel.delivery", "deployment.runtime"}),
     ],
 )

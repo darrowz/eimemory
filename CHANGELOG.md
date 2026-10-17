@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.125] — 2026-10-17
+
+- Register the protected identity authority and current-view modules in the recall, governance and storage-integrity release domains. Both remain production changes requiring closure; unregistered files still fail closed.
+
 ## [1.14.124] — 2026-10-17
 
 - Add an explicit Unix root-operator authority boundary for retain-both identity decisions: a root-owned exact owner/source policy and hash-chained request/revocation journal, with locking through decision commit and current-view validation. Service users cannot issue their own grants.
