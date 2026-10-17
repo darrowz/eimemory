@@ -16,7 +16,7 @@ from eimemory.retrieval import caller_assistance
     'supported', 'topical', 'quote_only', 'cross_record', 'external',
     'revoked', 'cross_scope', 'no_answer', 'unavailable', 'duplicate',
     'ambiguous_id', 'ambiguous_scope', 'tail', 'summary', 'wrong_span',
-    'changed', 'budget', 'cross_window', 'changed_store', 'replay_changed', 'malformed_high',
+    'changed', 'budget', 'cross_window', 'changed_store', 'replay_changed', 'malformed_high', 'wrong_model',
 ])
 def test_proof_delivery(tmp_path, monkeypatch, case):
     query = '用户怎么称呼'
@@ -32,13 +32,15 @@ def test_proof_delivery(tmp_path, monkeypatch, case):
     runtime, engine, service = _service(tmp_path, [record])
     monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED', '1')
     monkeypatch.setenv('EIMEMORY_INDEPENDENT_EVIDENCE_MODE', 'off')
+    monkeypatch.setenv('EIMEMORY_RECALL_EXPECTED_MODEL', 'synthetic-proof-verifier')
     selected = [] if case in {'topical', 'no_answer'} else [{'id': '0', 'quote': quote}]
     if case == 'quote_only':
         selected = [{'id': '0', 'quote': record.content['text']}]
     def complete(**kwargs):
         if case == 'unavailable':
             raise RuntimeError('synthetic unavailable')
-        return SimpleNamespace(text=json.dumps({'selected': selected}))
+        return SimpleNamespace(text=json.dumps({'selected': selected}),
+            model_id='other-verifier' if case == 'wrong_model' else 'synthetic-proof-verifier')
     monkeypatch.setattr(caller_assistance, 'configured_client', lambda: SimpleNamespace(
         timeout_seconds=1, complete=complete))
     def recall(**kwargs):
@@ -48,7 +50,7 @@ def test_proof_delivery(tmp_path, monkeypatch, case):
         items, review = caller_assistance.verify_candidates(query=query,
             candidates=[(record, candidate_record_keyword_text(record, max_text_chars=16000))], limit=3)
         state = {'status': review['status'], 'caller_assistance': review}
-        if case not in {'topical', 'quote_only', 'no_answer', 'unavailable'}:
+        if case not in {'topical', 'quote_only', 'no_answer', 'unavailable', 'wrong_model'}:
             assert len(items) == 1 and state['caller_assistance']['proofs']
         else:
             assert not items

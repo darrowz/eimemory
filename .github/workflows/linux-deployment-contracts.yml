@@ -57,6 +57,7 @@ jobs:
           tests/test_independent_evidence_repo_integration.py
           tests/test_recall_budget_reserve.py
           tests/test_sqlite_sparse_fts.py
+          tests/test_proactive_proof_delivery.py
           tests/test_governance_env.py
           tests/test_payload_segments.py
           tests/test_production_recall_bootstrap_deploy.py

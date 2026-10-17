@@ -5326,28 +5326,27 @@ class SqliteRecordStore:
         where, params = self._recall_index_where(kinds=kinds, scope=scope, recall_filters=recall_filters, alias="i")
         # Hydration admits only status=active; non-active index rows only starve the pool.
         where.append("i.status = 'active'")
-        tables = "FROM recall_index_fts JOIN recall_index i ON i.storage_key = recall_index_fts.storage_key "
         tie_order = ""
         if rank_offset > 0 and recall_filters.get("_exact_scope") and self._fts_key_map_ready():
             # A small exact partition need not scan global long-query matches.
             mapped = self.conn.execute(
-                "SELECT i.storage_key, f.storage_key AS fts_key FROM recall_index i "
+                "SELECT i.storage_key, f.storage_key AS fts_key, k.fts_rowid FROM recall_index i "
                 "LEFT JOIN recall_index_fts_keys k ON k.storage_key = i.storage_key "
                 "LEFT JOIN recall_index_fts f ON f.rowid = k.fts_rowid WHERE "
                 + " AND ".join(where) + " LIMIT 129", params,
             ).fetchall()
             if mapped and len(mapped) <= 128 and all(row["storage_key"] == row["fts_key"] for row in mapped):
-                tables = (
-                    "FROM recall_index i CROSS JOIN recall_index_fts_keys k ON k.storage_key = i.storage_key "
-                    "CROSS JOIN recall_index_fts ON recall_index_fts.rowid = k.fts_rowid "
-                    "AND i.storage_key = recall_index_fts.storage_key "
-                )
+                # One interval keeps MATCH setup shared across all scoped rows.
+                # Exact scope/source predicates still reject intervening rows.
+                rowids = [row["fts_rowid"] for row in mapped]
+                where.append("recall_index_fts.rowid >= ? AND recall_index_fts.rowid <= ?")
+                params.extend((min(rowids), max(rowids)))
                 # The original MATCH scan visits tied rows in FTS rowid order.
                 tie_order = ", recall_index_fts.rowid ASC"
         sql = (
             "SELECT i.storage_key, i.record_id, i.source_id, i.tenant_id, i.agent_id, i.workspace_id, i.user_id, "
             "i.quality_score, i.updated_at, bm25(recall_index_fts) AS bm25_score "
-            + tables +
+            "FROM recall_index_fts JOIN recall_index i ON i.storage_key = recall_index_fts.storage_key "
             "WHERE recall_index_fts MATCH ? AND "
             + " AND ".join(where)
             + " ORDER BY bm25_score ASC, i.quality_score DESC, i.updated_at DESC" + tie_order + " LIMIT ?"

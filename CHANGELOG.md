@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## 1.14.122 — 2026-10-17
+
+- Avoid repeating supplementary FTS MATCH setup for every row in a small exact partition. Scan one interval covering all verified mapped rowids, retaining exact scope/source/status filters, global bm25, ordering and the original deadline.
+- Cover many local matches with a deterministic SQLite work regression and interleaved foreign records with an ordering/isolation holdout. Preserve missing-map and large-partition fallback, hard deadlines and changed-source refusal.
+- Keep latest-failure baseline invalidation and all production quality thresholds unchanged. Local tests and offline equivalence do not certify deployment or formal nightly acceptance.
+
 ## 1.14.121 — 2026-10-17
 
 - Avoid scanning unrelated global matches during supplementary long-query FTS for small exact partitions. Reuse the existing key-to-rowid map after bounded consistency checks; preserve the MATCH expression, global bm25 scores, quality/time order and tied FTS row order.

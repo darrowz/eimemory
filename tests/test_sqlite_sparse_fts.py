@@ -116,12 +116,15 @@ def test_slow_large_foreign_fts_preserves_completeness_and_authority(tmp_path, m
         assert not any(key.startswith('foreign-') for key in visits)
 
 
-@pytest.mark.parametrize('damage', ['', 'missing_table', 'missing_key', 'wrong_key', 'large_partition'])
+@pytest.mark.parametrize('damage', ['', 'missing_table', 'missing_key', 'wrong_key', 'large_partition', 'interleaved'])
 def test_supplement_exactly_matches_original_bm25_order_and_partition(tmp_path, damage):
     with closing(RuntimeStore(tmp_path)) as store:
         target = put(store, 0)
         for n in range(1, 36 if damage != 'large_partition' else 140):
             put(store, n, text=QUERY if n % 3 else 'orchid00 orchid31 near negative')
+            if damage == 'interleaved':
+                put(store, 300 + n, scope=replace(SCOPE, user_id='foreign'))
+                put(store, 400 + n, source='other')
         put(store, 200, scope=replace(SCOPE, user_id='foreign'))
         put(store, 201, source='other')
         with store._lock:
@@ -147,3 +150,37 @@ def test_supplement_exactly_matches_original_bm25_order_and_partition(tmp_path, 
             assert [v['rank'] for v in selected.values()] == list(range(46,62))
             assert all(v['sources'] == ['fts'] for v in selected.values())
             assert len(expected) == 16
+
+
+def test_many_local_matches_do_not_repeat_global_fts_work(tmp_path):
+    """A sparse scope can match every row; MATCH setup must stay bounded."""
+    with closing(RuntimeStore(tmp_path)) as store:
+        for n in range(55):
+            target = put(store, n)
+        add_foreign_projection_noise(store, target, count=256)
+        sqlite = store.sqlite
+        work = {}
+        results = {}
+        for name in ('original', 'optimized'):
+            if name == 'original':
+                sqlite._fts_key_map_ready = lambda: False
+            else:
+                del sqlite._fts_key_map_ready
+            instructions = [0]
+            def progress():
+                instructions[0] += 100
+                return 0
+            sqlite.conn.set_progress_handler(progress, 100)
+            try:
+                selected = {}
+                sqlite._collect_fts_candidates(selected,
+                    fts_query=sqlite._long_query_fts_query(QUERY), kinds=['memory'],
+                    scope=SCOPE, limit=16,
+                    recall_filters={'_exact_scope': True, '_source_ids': ('synthetic',)},
+                    rank_offset=36.)
+                results[name] = selected
+                work[name] = instructions[0]
+            finally:
+                sqlite.conn.set_progress_handler(None, 0)
+        assert results['optimized'] == results['original']
+        assert work['optimized'] <= 2 * work['original'], work

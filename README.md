@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.121" src="https://img.shields.io/badge/version-1.14.121-blue">
+  <img alt="Package version 1.14.122" src="https://img.shields.io/badge/version-1.14.122-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -87,7 +87,7 @@ expected record, selector, grounding and thresholds, without extra retrieval
 reads or candidate injection. The supplied 1.14.72 readback verifies the trace
 on that controlled failure, without certifying its recovery or formal quality.
 
-Mainline **1.14.121** confines supplementary FTS matching to small exact partitions through the existing verified key map, preserving global bm25 ranking and the original collection deadline. Missing maps and larger partitions retain the original query. Incomplete retrieval remains uncertifiable, and occupied identity conflicts remain blocked. Candidate tests do not certify deployment, natural-query quality or formal acceptance; those require separate release-bound receipts.
+Mainline **1.14.122** scans one verified rowid interval for supplementary FTS in small exact partitions, avoiding repeated MATCH setup while preserving global bm25, exact scope/source filtering, ranking and the original deadline. Missing maps and larger partitions retain the original query. Incomplete retrieval remains uncertifiable, and occupied identity conflicts remain blocked. Candidate tests do not certify deployment, natural-query quality or formal acceptance; those require separate release-bound receipts.
 
 1.14.118 corrects knowledge-refresh snapshot comparison for visible duplicate IDs and blocks ambiguous scope, source, projection lineage or occupied compiler targets before any batch write. A unique shared canonical paper remains readable, and unrelated duplicates do not block an independent refresh. The 254 current identity conflicts contain real payload differences and remain protected; 162 historical pairs are still unknown. See [acceptance evidence and limits](docs/acceptance-status.md).
 
@@ -272,7 +272,7 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.121, mainline)
+## Current package status (1.14.122, mainline)
 
 The current source repair covers the audit's sixteen findings with native
 positive/negative, restart, transport-loss and authorization regressions. Review
@@ -284,13 +284,13 @@ and [production acceptance status](docs/acceptance-status.md).
 
 The controlled-target eligibility and native source diagnostics remain
 available. An ineligible target is not an evaluable pass; empty eligible datasets
-cannot pass. The latest operator readback binds 1.14.118 / `702cfb71` to
-October 17 nightly `ref_7726a33634bc` and independent command outcome
-`ref_ea3be2b8fa2a`. Scheduling completes, production recall passes three cases
-and accepted cases reach 3/3. Controlled memory passes five of ten, with all
-five failures at the preference filter and zero unevaluable cases. The command
-exits 1 at identity repair with 254 target conflicts. Formal recall quality and
-dynamic-capability evidence remain unaccepted.
+cannot pass. The latest operator readback binds 1.14.121 / `6f8c284b` to
+October 17 nightly `ref_7bdd8cd3bb59` and independent command outcome
+`ref_aad5e850f6cc`. Controlled memory passes ten of ten, but all three production
+queries return empty and the latest prior baseline is unqualified. Accepted
+labels reach 3/3 without establishing production recall quality. The command
+exits 1 at the scheduler; identity repair separately retains 254 target conflicts.
+Formal recall quality and dynamic-capability evidence remain unaccepted.
 The newer mainline source changes require their own deployment and same-commit
 nightly evidence before production recovery is claimed.
 
