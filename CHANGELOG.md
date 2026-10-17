@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.123] — 2026-10-17
+
+- Add a bounded identity manifest preview using a read-only SQLite snapshot and existing exact readers. Verify both complete envelope and physical-row versions, canonical target, owner scope and source without changing either original or historical references.
+- Keep every proposed retain-both decision unresolved: existing review labels and release signatures do not bind a human data-owner decision to these versions. Revoked, conflicting and changed versions remain blocked; preview is not migration or production acceptance.
+
 ## 1.14.122 — 2026-10-17
 
 - Avoid repeating supplementary FTS MATCH setup for every row in a small exact partition. Scan one interval covering all verified mapped rowids, retaining exact scope/source/status filters, global bm25, ordering and the original deadline.

@@ -41,6 +41,127 @@ class _RepairSkipped(Exception):
         self.mismatch_fields = mismatch_fields
 
 
+def preview_identity_manifest(db_path, manifest: dict[str, Any]) -> dict[str, Any]:
+    """Validate a bounded proposal against one read-only physical snapshot.
+
+    This is neither an authority importer nor an apply path. Existing reviewer,
+    trust-label and release-signing contracts cannot attest a human's decision
+    over these two data versions. Until that trusted request binding exists,
+    even a fully verified proposal remains unresolved.
+    """
+    from pathlib import Path
+    import sqlite3
+    from threading import RLock
+
+    from eimemory.storage.sqlite_store import SqliteRecordStore
+
+    scope_keys = ("tenant_id", "agent_id", "workspace_id", "user_id")
+    if not isinstance(manifest, dict) or manifest.get("schema") != "identity_dualview_preview.v1":
+        raise ValueError("identity_manifest_invalid")
+    owner = manifest.get("owner_scope")
+    source_id = manifest.get("source_id")
+    items = manifest.get("items")
+    if (not isinstance(owner, dict) or set(owner) != set(scope_keys)
+            or any(not isinstance(owner[key], str) for key in scope_keys)
+            or not isinstance(source_id, str) or not source_id.strip()
+            or not isinstance(items, list) or not 1 <= len(items) <= 1000):
+        raise ValueError("identity_manifest_invalid")
+    owner_ref = tuple(owner[key] for key in scope_keys)
+
+    def ref(item, side):
+        value = item.get(side + "_ref") if isinstance(item, dict) else None
+        if not isinstance(value, list) or len(value) != 6 or any(not isinstance(v, str) for v in value):
+            raise _RepairSkipped("invalid_exact_ref")
+        if not value[0] or not value[4] or not value[5]:
+            raise _RepairSkipped("invalid_exact_ref")
+        return tuple(value)
+
+    seen: dict[tuple[str, ...], int] = {}
+    duplicates: set[int] = set()
+    for index, item in enumerate(items):
+        try:
+            refs = [ref(item, side) for side in ("source", "target")]
+        except _RepairSkipped:
+            continue
+        for exact in refs:
+            if exact in seen:
+                duplicates.update((seen[exact], index))
+            seen[exact] = index
+
+    # Match the existing maintenance probes: no schema bootstrap, migrations,
+    # Runtime creation, segment writes, outbox flushing or model calls.
+    connection = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    probe = object.__new__(SqliteRecordStore)
+    probe.conn = connection
+    lock = RLock()
+    probe.bind_runtime_lock(lock)
+    outcomes: list[dict[str, Any]] = []
+    verified = 0
+    current_verified = 0
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("BEGIN")
+        with lock:
+            for index, item in enumerate(items):
+                try:
+                    if index in duplicates:
+                        raise _RepairSkipped("conflicting_manifest_entries")
+                    old_ref, target_ref = (ref(item, side) for side in ("source", "target"))
+                    if (target_ref[:4] != owner_ref or old_ref[0] != target_ref[0]
+                            or old_ref[3:] != target_ref[3:] or old_ref[4] != source_id
+                            or old_ref == target_ref):
+                        raise _RepairSkipped("owner_scope_source_mismatch")
+                    old, old_version = _repair_snapshot(probe, old_ref)
+                    target, target_version = _repair_snapshot(probe, target_ref)
+                    if (old.source != target.source or old.kind != target.kind
+                            or _exact_ref(normalize_hongtu_record(old)) != target_ref):
+                        raise _RepairSkipped("canonical_target_mismatch")
+                    for side, version in (("source", old_version), ("target", target_version)):
+                        supplied = item.get(side + "_version")
+                        if not isinstance(supplied, list) or tuple(supplied) != version:
+                            raise _RepairSkipped(side + "_version_changed")
+                    if old.status != "active" or target.status != "active":
+                        raise _RepairSkipped("inactive_version")
+                    verified += 1
+                    if item.get("current") != "target":
+                        raise _RepairSkipped("canonical_current_required")
+                    # The production exact reader used by _repair_snapshot
+                    # resolved the canonical original, without alias fallback.
+                    current_verified += 1
+                    decision = item.get("decision")
+                    if decision == "revoked":
+                        raise _RepairSkipped("decision_revoked")
+                    if decision == "unresolved":
+                        raise _RepairSkipped("decision_unresolved")
+                    if decision != "retain_both":
+                        raise _RepairSkipped("invalid_decision")
+                    reason = "owner_authorization_binding_unavailable"
+                except _RepairSkipped as exc:
+                    reason = exc.reason
+                outcomes.append({"item_index": index, "reason": reason})
+        counts: dict[str, int] = {}
+        for outcome in outcomes:
+            reason = outcome["reason"]
+            counts[reason] = counts.get(reason, 0) + 1
+        return {
+            "schema": "identity_dualview_preview.v1", "ok": False,
+            "status": "preview_blocked", "apply": False,
+            "manifest_digest": payload_digest(manifest),
+            "manifest_pair_count": len(items), "verified_pair_count": verified,
+            "current_view": "canonical_exact_original", "current_exact_verified_count": current_verified,
+            "validation_ok": verified == current_verified == len(items)
+                and set(counts) <= {"owner_authorization_binding_unavailable", "decision_revoked", "decision_unresolved"},
+            "authorization_verified": False, "resolved_count": 0,
+            "unresolved_count": len(items), "repaired_count": 0,
+            "database_changes": connection.total_changes,
+            "outcome_counts": counts, "outcomes": outcomes,
+        }
+    finally:
+        connection.rollback()
+        connection.close()
+
+
 def identity_report(runtime, *, limit: int | None = None, scope=None) -> dict[str, Any]:
     return build_identity_report(_iter_records(runtime, limit=limit, scope=scope))
 

@@ -372,6 +372,9 @@ def _build_parser() -> argparse.ArgumentParser:
     identity = sub.add_parser("identity")
     identity_sub = identity.add_subparsers(dest="identity_command")
     identity_sub.add_parser("report")
+    identity_preview = identity_sub.add_parser("manifest-preview")
+    identity_preview.add_argument("--manifest", required=True)
+    identity_preview.add_argument("--database", required=True)
     identity_repair = identity_sub.add_parser("repair")
     identity_repair.add_argument("--apply", action="store_true")
     identity_repair.add_argument("--limit", type=int, default=0)
@@ -3923,6 +3926,20 @@ def main(argv: list[str] | None = None) -> int:
         return codex_mcp_main(args_list[1:])
     parser = _build_parser()
     parsed = parser.parse_args(args_list)
+    if parsed.command == "identity" and parsed.identity_command == "manifest-preview":
+        from eimemory.core.strict_json import loads
+        from eimemory.identity_ops import preview_identity_manifest
+        import sqlite3
+
+        try:
+            with open(parsed.manifest, "rb") as stream:
+                manifest = loads(stream.read(1_000_001))
+            report = preview_identity_manifest(parsed.database, manifest)
+        except (OSError, ValueError, sqlite3.Error):
+            print(json.dumps({"ok": False, "error": "identity_manifest_invalid"}))
+            return 2
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") is True else 1
     pre_runtime = _ops_before_settings(parsed)
     if pre_runtime is not None:
         return pre_runtime
