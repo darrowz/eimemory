@@ -5327,15 +5327,19 @@ class SqliteRecordStore:
         # Hydration admits only status=active; non-active index rows only starve the pool.
         where.append("i.status = 'active'")
         tie_order = ""
-        if rank_offset > 0 and recall_filters.get("_exact_scope") and self._fts_key_map_ready():
-            # A small exact partition need not scan global long-query matches.
+        if recall_filters.get("_exact_scope") and self._fts_key_map_ready():
+            # Bound primary and supplementary MATCH scans to a verified, complete
+            # small partition. Common primary terms otherwise visit global hits
+            # before scope filtering and can exhaust the collection deadline.
+            # The extra row detects truncation; incomplete maps and larger
+            # partitions retain the original query, never a partial candidate set.
             mapped = self.conn.execute(
                 "SELECT i.storage_key, f.storage_key AS fts_key, k.fts_rowid FROM recall_index i "
                 "LEFT JOIN recall_index_fts_keys k ON k.storage_key = i.storage_key "
                 "LEFT JOIN recall_index_fts f ON f.rowid = k.fts_rowid WHERE "
-                + " AND ".join(where) + " LIMIT 129", params,
+                + " AND ".join(where) + " LIMIT 1025", params,
             ).fetchall()
-            if mapped and len(mapped) <= 128 and all(row["storage_key"] == row["fts_key"] for row in mapped):
+            if mapped and len(mapped) <= 1024 and all(row["storage_key"] == row["fts_key"] for row in mapped):
                 # One interval keeps MATCH setup shared across all scoped rows.
                 # Exact scope/source predicates still reject intervening rows.
                 rowids = [row["fts_rowid"] for row in mapped]

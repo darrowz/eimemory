@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.127] — 2026-10-18
+
+- Bound primary as well as supplementary FTS scans to a complete, verified exact partition of at most 1024 mapped rows. Preserve global bm25, scope/source/status filters, ranking and the existing recall deadline; unavailable, inconsistent or truncated maps retain the original query.
+- Reproduce the short-query collection timeout with 527 local rows and unrelated global matches. Cover complete retrieval, hard deadlines, changed authority, tied ordering, interleaved foreign rows and mapping fallback. Controlled success remains separate from formal recall-quality and dynamic-capability acceptance.
+
 ## [1.14.126] — 2026-10-17
 
 - Validate operator authority inside systemd PrivateUsers without trusting an overflow UID: host-root kernel seals protect the directory/policy and append-only journal on Linux ext filesystems. Keep user namespaces and read-only source mounts; unsupported or unsealed authority remains unresolved.

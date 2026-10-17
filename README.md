@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.126" src="https://img.shields.io/badge/version-1.14.126-blue">
+  <img alt="Package version 1.14.127" src="https://img.shields.io/badge/version-1.14.127-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -87,7 +87,7 @@ expected record, selector, grounding and thresholds, without extra retrieval
 reads or candidate injection. The supplied 1.14.72 readback verifies the trace
 on that controlled failure, without certifying its recovery or formal quality.
 
-Mainline **1.14.126** adds an explicitly configured Unix root operator adapter for exact retain-both identity decisions. A protected policy and request journal bind the owner/source, manifest and both complete original versions. Applying a decision writes a separate governance record; original payloads and historical exact references remain unchanged. Canonical recall and nightly revalidate authority and versions, and revoked or stale decisions restore the unresolved blocker. See [the authority model and operating contract](docs/identity-dualview-preview.md). A decision does not certify deployment, natural-query quality or formal acceptance.
+Mainline **1.14.127** bounds primary and supplementary FTS scans to verified small exact partitions, avoiding global matches that consume the collection deadline before scope filtering. It preserves global bm25, ordering, authority checks and incomplete-result refusal. The protected retain-both identity adapter continues to preserve both original versions; see [the authority model and operating contract](docs/identity-dualview-preview.md). Controlled retrieval success does not certify natural-query quality or formal acceptance.
 
 1.14.118 corrects knowledge-refresh snapshot comparison for visible duplicate IDs and blocks ambiguous scope, source, projection lineage or occupied compiler targets before any batch write. A unique shared canonical paper remains readable, and unrelated duplicates do not block an independent refresh. The 254 current identity conflicts contain real payload differences and remain protected; 162 historical pairs are still unknown. See [acceptance evidence and limits](docs/acceptance-status.md).
 
@@ -272,7 +272,7 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.126, mainline)
+## Current package status (1.14.127, mainline)
 
 The current source repair covers the audit's sixteen findings with native
 positive/negative, restart, transport-loss and authorization regressions. Review
@@ -284,13 +284,14 @@ and [production acceptance status](docs/acceptance-status.md).
 
 The controlled-target eligibility and native source diagnostics remain
 available. An ineligible target is not an evaluable pass; empty eligible datasets
-cannot pass. The latest operator readback binds 1.14.121 / `6f8c284b` to
-October 17 nightly `ref_7bdd8cd3bb59` and independent command outcome
-`ref_aad5e850f6cc`. Controlled memory passes ten of ten, but all three production
-queries return empty and the latest prior baseline is unqualified. Accepted
-labels reach 3/3 without establishing production recall quality. The command
-exits 1 at the scheduler; identity repair separately retains 254 target conflicts.
-Formal recall quality and dynamic-capability evidence remain unaccepted.
+cannot pass. The latest operator readback binds 1.14.126 / `9fbd50df` to
+October 17 nightly `rec_ffb100dfe120` and independent command outcome
+`ref_6751e5ceaba6`. Controlled memory passes nine of ten: one target is returned,
+but source collection exhausts its budget and remains incomplete. Production
+recall passes three of three with three accepted cases. Identity repair reports
+zero blockers and retains both original versions for all 254 governed pairs.
+The command exits 1 at `memory_eval_ci`; formal recall quality and
+dynamic-capability evidence remain unaccepted.
 The newer mainline source changes require their own deployment and same-commit
 nightly evidence before production recovery is claimed.
 

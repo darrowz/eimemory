@@ -1,4 +1,4 @@
-"""Sparse exact partitions must not scan unrelated long-query FTS matches."""
+"""Sparse exact partitions must not scan unrelated global FTS matches."""
 from contextlib import closing
 from dataclasses import replace
 from types import SimpleNamespace
@@ -47,7 +47,8 @@ def add_foreign_projection_noise(store, template, count=4096):
 
 
 @pytest.mark.parametrize('guard', ['complete', 'hard_deadline', 'authority_changed'])
-def test_slow_large_foreign_fts_preserves_completeness_and_authority(tmp_path, monkeypatch, guard):
+@pytest.mark.parametrize('query', [QUERY, 'Hermes deployment replay'])
+def test_slow_large_foreign_fts_preserves_completeness_and_authority(tmp_path, monkeypatch, guard, query):
     clock = [100.0]
     for module in ('eimemory.api.memory', 'eimemory.retrieval.engine',
                    'eimemory.retrieval.authority_gate', 'eimemory.retrieval.verification_budget',
@@ -58,8 +59,8 @@ def test_slow_large_foreign_fts_preserves_completeness_and_authority(tmp_path, m
     monkeypatch.setenv('EIMEMORY_RECALL_BUDGET_SECONDS', '3')
     monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_REQUIRED', '0')
     with closing(RuntimeStore(tmp_path)) as store:
-        target = put(store, 0)
-        for n in range(1, 55):
+        target = put(store, 0, text=query)
+        for n in range(1, 527 if query != QUERY else 55):
             put(store, n, text=f'unrelated synthetic filler {n}')
         add_foreign_projection_noise(store, target)
         # Charge the same deterministic latency for each FTS key lookup.
@@ -74,7 +75,7 @@ def test_slow_large_foreign_fts_preserves_completeness_and_authority(tmp_path, m
             owner.conn.create_function('synthetic_key_latency', 1, slow_key)
         original = recall_deadline._ReadConnection.execute
         def execute(connection, sql, parameters=()):
-            if 'bm25(recall_index_fts)' in sql and parameters[0].count(' OR ') > 12:
+            if 'bm25(recall_index_fts)' in sql:
                 sql = sql.replace('recall_index_fts.storage_key',
                     'synthetic_key_latency(recall_index_fts.storage_key)')
             return original(connection, sql, parameters)
@@ -103,7 +104,7 @@ def test_slow_large_foreign_fts_preserves_completeness_and_authority(tmp_path, m
             monkeypatch.setattr(engine, '_select_post_fusion_items', changed_source)
         runtime = SimpleNamespace(store=store, memory=MemoryAPI(store, recall_engine=engine))
         sample = _run_case(runtime, _case(target), SCOPE, ('synthetic',))
-        assert visits, 'long-query SQL must reach the controlled slow boundary'
+        assert visits, 'native FTS SQL must reach the controlled slow boundary'
         if guard != 'complete':
             assert guarded == [guard]
             assert not sample['evaluable'] and not sample['passed']
@@ -117,16 +118,22 @@ def test_slow_large_foreign_fts_preserves_completeness_and_authority(tmp_path, m
 
 
 @pytest.mark.parametrize('damage', ['', 'missing_table', 'missing_key', 'wrong_key', 'large_partition', 'interleaved'])
-def test_supplement_exactly_matches_original_bm25_order_and_partition(tmp_path, damage):
+@pytest.mark.parametrize('rank_offset', [0., 36.])
+def test_fts_exactly_matches_original_bm25_order_and_partition(tmp_path, damage, rank_offset):
     with closing(RuntimeStore(tmp_path)) as store:
         target = put(store, 0)
-        for n in range(1, 36 if damage != 'large_partition' else 140):
+        for n in range(1, 36):
             put(store, n, text=QUERY if n % 3 else 'orchid00 orchid31 near negative')
             if damage == 'interleaved':
                 put(store, 300 + n, scope=replace(SCOPE, user_id='foreign'))
                 put(store, 400 + n, source='other')
         put(store, 200, scope=replace(SCOPE, user_id='foreign'))
         put(store, 201, source='other')
+        if damage == 'large_partition':
+            add_foreign_projection_noise(store, target, count=1025)
+            with store._lock:
+                store.sqlite.conn.execute("UPDATE recall_index SET workspace_id=? WHERE workspace_id='foreign'", (SCOPE.workspace_id,))
+                store.sqlite.conn.commit()
         with store._lock:
             sqlite = store.sqlite
             if damage == 'missing_table':
@@ -138,16 +145,23 @@ def test_supplement_exactly_matches_original_bm25_order_and_partition(tmp_path, 
             filters = {'_exact_scope': True, '_source_ids': ('synthetic',)}
             where, params = sqlite._recall_index_where(kinds=['memory'], scope=SCOPE, recall_filters=filters, alias='i')
             where.append("i.status = 'active'")
-            expression = sqlite._long_query_fts_query(QUERY)
+            expression = sqlite._long_query_fts_query(QUERY) if rank_offset else sqlite._fts_query(QUERY)
             baseline_sql = ('SELECT i.storage_key FROM recall_index_fts JOIN recall_index i '
                 'ON i.storage_key = recall_index_fts.storage_key WHERE recall_index_fts MATCH ? AND ' +
                 ' AND '.join(where) + ' ORDER BY bm25(recall_index_fts) ASC, i.quality_score DESC, i.updated_at DESC LIMIT ?')
             expected = [str(r[0]) for r in sqlite.conn.execute(baseline_sql, [expression,*params,16])]
             selected = {}
-            sqlite._collect_fts_candidates(selected, fts_query=expression, kinds=['memory'], scope=SCOPE,
-                limit=16, recall_filters=filters, rank_offset=36.)
+            statements = []
+            sqlite.conn.set_trace_callback(statements.append)
+            try:
+                sqlite._collect_fts_candidates(selected, fts_query=expression, kinds=['memory'], scope=SCOPE,
+                    limit=16, recall_filters=filters, rank_offset=rank_offset)
+            finally:
+                sqlite.conn.set_trace_callback(None)
+            match_sql = next(sql for sql in statements if 'bm25(recall_index_fts)' in sql)
+            assert ('recall_index_fts.rowid >=' in match_sql) is (damage in ('', 'interleaved'))
             assert list(selected) == expected
-            assert [v['rank'] for v in selected.values()] == list(range(46,62))
+            assert [v['rank'] for v in selected.values()] == list(range(int(10 + rank_offset), int(26 + rank_offset)))
             assert all(v['sources'] == ['fts'] for v in selected.values())
             assert len(expected) == 16
 
