@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## 1.14.121 — 2026-10-17
+
+- Avoid scanning unrelated global matches during supplementary long-query FTS for small exact partitions. Reuse the existing key-to-rowid map after bounded consistency checks; preserve the MATCH expression, global bm25 scores, quality/time order and tied FTS row order.
+- Retain the original query for large partitions or unavailable/inconsistent maps. No new index, schema migration, budget increase, quality exemption or identity cleanup.
+- Keep hard deadlines, changed-source rejection and incomplete-result certification refusal covered by isolated native regressions. Local results do not establish deployment or nightly acceptance.
+
 ## 1.14.120 — 2026-10-17
 
 - Prevent descriptive preference keywords in queries or goals from selecting the preference-only view; retain explicit requests, caller context and candidate safety.

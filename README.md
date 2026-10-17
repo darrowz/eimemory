@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.120" src="https://img.shields.io/badge/version-1.14.120-blue">
+  <img alt="Package version 1.14.121" src="https://img.shields.io/badge/version-1.14.121-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -87,7 +87,7 @@ expected record, selector, grounding and thresholds, without extra retrieval
 reads or candidate injection. The supplied 1.14.72 readback verifies the trace
 on that controlled failure, without certifying its recovery or formal quality.
 
-Mainline **1.14.120** limits built-in preference routing to bounded requests and counts unavailable physical rows as identity-repair blockers. It retains 1.14.119's exact-owner/source support refresh, occupied-target conflicts and nonzero command outcomes. Candidate tests do not certify deployment, natural-query quality or formal acceptance; those require separate release-bound receipts.
+Mainline **1.14.121** confines supplementary FTS matching to small exact partitions through the existing verified key map, preserving global bm25 ranking and the original collection deadline. Missing maps and larger partitions retain the original query. Incomplete retrieval remains uncertifiable, and occupied identity conflicts remain blocked. Candidate tests do not certify deployment, natural-query quality or formal acceptance; those require separate release-bound receipts.
 
 1.14.118 corrects knowledge-refresh snapshot comparison for visible duplicate IDs and blocks ambiguous scope, source, projection lineage or occupied compiler targets before any batch write. A unique shared canonical paper remains readable, and unrelated duplicates do not block an independent refresh. The 254 current identity conflicts contain real payload differences and remain protected; 162 historical pairs are still unknown. See [acceptance evidence and limits](docs/acceptance-status.md).
 
@@ -272,7 +272,7 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.120, mainline)
+## Current package status (1.14.121, mainline)
 
 The current source repair covers the audit's sixteen findings with native
 positive/negative, restart, transport-loss and authorization regressions. Review

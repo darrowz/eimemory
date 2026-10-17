@@ -20,11 +20,13 @@ def configure_verbatim_verifier(monkeypatch, text):
     from types import SimpleNamespace
     from eimemory.retrieval import caller_assistance as ca
     monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED', '1')
+    monkeypatch.setenv('EIMEMORY_RECALL_EXPECTED_MODEL', 'synthetic-verifier')
     def complete(**kwargs):
         rows = json.loads(kwargs['user_prompt'])['candidates']
         matches = [row for row in rows if text in json.dumps(row, ensure_ascii=False)]
-        return SimpleNamespace(text=json.dumps({'selected': [
-            {'id': matches[0]['id'], 'quote': text}] if matches else []}))
+        return SimpleNamespace(model_id='synthetic-verifier', provider_id='synthetic',
+            text=json.dumps({'selected': [
+                {'id': matches[0]['id'], 'quote': text}] if matches else []}))
     monkeypatch.setattr(ca, 'configured_client', lambda: SimpleNamespace(timeout_seconds=30, complete=complete))
 
 

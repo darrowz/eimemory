@@ -42,6 +42,7 @@ def test_invalid_config_and_empty_explicit_sources_are_rejected(monkeypatch):
         namespace("hermes", BASE, [])
 
 
+@pytest.mark.usefixtures("trusted_dataset_path_ancestors")
 def test_native_hermes_callback_is_visible_to_default_report_and_attribution(live):
     from datetime import datetime, timezone
     from eimemory.governance.learning.effect_hypotheses import produce_effect_hypotheses

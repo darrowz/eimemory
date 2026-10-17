@@ -318,6 +318,7 @@ def test_hermes_remove_survives_jsonl_rebuild_without_restoring_secret_content(t
     assert retry["ok"] is True and retry["result"]["idempotent"] is True
 
 
+@pytest.mark.usefixtures("trusted_dataset_path_ancestors")
 def test_hermes_fallback_keys_apply_distinct_remove_and_replace_writes_with_stable_retries(tmp_path: Path) -> None:
     runtime = Runtime.create(root=tmp_path)
     bridge = EIBrainRPCBridge(runtime)
