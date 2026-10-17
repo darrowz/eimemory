@@ -2256,7 +2256,8 @@ _run_pre_switch_production_recall_bootstrap() {
     EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
     EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
     "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/run_with_governance_env.py" \
-      --env-file "$GOVERNANCE_ENV_FILE" --optional -- \
+      --env-file "$GOVERNANCE_ENV_FILE" --optional \
+      --optional-runtime-authority-env-file "$EIMEMORY_CONFIG_DIR/runtime-authority.env" -- \
       "$RELEASE_DIR/.venv/bin/python" -I -B \
         "$RELEASE_DIR/deploy/bootstrap_production_recall.py" \
         --candidate-commit "$COMMIT" --prior-commit "$trusted_prior" \
@@ -2370,7 +2371,8 @@ _run_post_switch_closure() {
     EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
     EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
     "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/run_with_governance_env.py" \
-      --env-file "$GOVERNANCE_ENV_FILE" --optional -- \
+      --env-file "$GOVERNANCE_ENV_FILE" --optional \
+      --optional-runtime-authority-env-file "$EIMEMORY_CONFIG_DIR/runtime-authority.env" -- \
       "$RELEASE_DIR/.venv/bin/eimemory" learn release-closure \
         --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
         --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$trusted_prior" \

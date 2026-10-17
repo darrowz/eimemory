@@ -19,6 +19,10 @@ RECALL_LANE_MEMORY_TYPE_ALIASES: dict[str, str] = {
     "audit": "audit_record",
     "audit_record": "audit_record",
     "diagnostic": "audit_record",
+    # Deployment provider replays deliberately persist their receipt through
+    # the normal memory adapter. Their declared type is operational evidence,
+    # not a default-use business fact or a controlled positive source.
+    "deployment_evidence": "audit_record",
     "incident": "incident_report",
     "incident_report": "incident_report",
     "log": "run_log",

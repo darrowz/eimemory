@@ -12,6 +12,13 @@ def test_governance_exec_suppresses_child_and_grandchild_bytecode(tmp_path):
     (release / 'bytecode_probe.py').write_text('VALUE = 1\n')
     wrapper = release / 'deploy' / 'run_with_governance_env.py'
     shutil.copyfile(Path(__file__).parents[1] / 'deploy' / wrapper.name, wrapper)
+    # The installed wrapper imports this release-owned invocation helper.
+    core = release / 'eimemory' / 'core'
+    core.mkdir(parents=True)
+    (core.parent / '__init__.py').touch()
+    (core / '__init__.py').touch()
+    shutil.copyfile(Path(__file__).parents[1] / 'eimemory' / 'core' / 'python_invocation.py',
+                    core / 'python_invocation.py')
     env = dict(os.environ, PYTHONPATH=str(release))
     env.pop('PYTHONDONTWRITEBYTECODE', None)
     env.pop('PYTHONHOME', None)

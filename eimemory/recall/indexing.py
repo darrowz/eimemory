@@ -170,7 +170,7 @@ def classify_source_class(record: RecordEnvelope) -> str:
         return "operational_projection"
     if any(term in source for term in ("diagnostic", "traceback", "panic")) or source == "health" or source.endswith(".health"):
         return "diagnostic"
-    if any(term in source for term in ("deploy", "deployment")) or any(
+    if memory_type == "deployment_evidence" or any(term in source for term in ("deploy", "deployment")) or any(
         term in text for term in ("release=/opt", "/opt/eimemory/releases")
     ):
         return "deployment"

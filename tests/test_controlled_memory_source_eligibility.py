@@ -18,6 +18,7 @@ REASONS = {
     "capture_reject": "source_record_capture_rejected",
     "episode": "source_record_episode_evidence",
     "evidence_only": "source_record_evidence_only",
+    "deployment": "source_record_evidence_only",
 }
 
 
@@ -46,6 +47,9 @@ def make_ineligible(runtime, record, mode):
             # Legacy raw turns can retain a fact type; the shared provenance
             # predicate must still recognize this as L0 episode evidence.
             current.meta = {**current.meta, "capture_origin":"turn_sync", "memory_layer":"l0"}
+        elif mode == "deployment":
+            current.meta = {**current.meta, "memory_type":"deployment_evidence"}
+            current.content = {**current.content, "memory_type":"deployment_evidence"}
         else:
             current.source = "operator.diagnostic"
         sqlite.upsert(current, commit=False)

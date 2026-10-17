@@ -954,12 +954,20 @@ def _run_production_recall_eval(
             stable_before=stable_before,
         )
         if not _dataset_cases(dataset):
-            return {
+            report = {
                 "ok": True,
                 "configured": configured,
                 "seeded": False,
                 "eval_skipped_reason": skipped_reason,
             }
+            if dataset_source == "agent_accepted_cases_incomplete":
+                report.update({"sample_count": 0, "dataset_source": dataset_source,
+                               "dataset_progress": dict(dataset["dataset_progress"])})
+                report["quality_gate"] = evaluate_production_recall_quality_gate(report)
+                report["gate_ok"] = False
+                report["accepted"] = False
+                report["blocked_reason"] = skipped_reason
+            return report
         # A channel dataset may use the independently resolved private pin;
         # metadata cannot supply any part of that authorized scope.
         scope = resolve_production_recall_evaluation_scope(scope=scope, dataset=dataset)
@@ -1409,9 +1417,11 @@ def _per_agent_production_recall_dataset(
     if raw:
         try:
             mapping = json.loads(raw)
-        except ValueError:
-            mapping = None
-        path = str(mapping.get(agent) or "").strip() if isinstance(mapping, dict) else ""
+        except ValueError as exc:
+            raise DatasetUnreadableError("production recall agent dataset mapping is invalid") from exc
+        if not isinstance(mapping, dict) or (agent in mapping and not isinstance(mapping[agent], str)):
+            raise DatasetUnreadableError("production recall agent dataset mapping is invalid")
+        path = str(mapping.get(agent) or "").strip()
         if path:
             return _load_json_dataset(path), True, "agent_env", "production_recall_dataset_empty"
     root = getattr(getattr(runtime, "store", None), "root", None)
@@ -1422,7 +1432,7 @@ def _per_agent_production_recall_dataset(
             return (_load_json_dataset(str(_resolve_production_recall_dataset_pointer(pointer))), True,
                     "agent_conventional_path", "production_recall_dataset_empty")
         candidate = base / "production_recall.json"
-        if candidate.is_file():
+        if candidate.exists() or candidate.is_symlink():
             return _load_json_dataset(str(candidate)), True, "agent_conventional_path", "production_recall_dataset_empty"
     try:
         from eimemory.evaluation.production_query_dataset import build_production_query_dataset
@@ -1432,7 +1442,44 @@ def _per_agent_production_recall_dataset(
         return None
     if built.get("ready") is True and _dataset_cases(built.get("dataset") or {}):
         return built["dataset"], True, "agent_accepted_cases", "production_recall_dataset_empty"
+    if (built.get("ok") is True and built.get("ready") is False
+            and isinstance(built.get("dataset"), dict)
+            and isinstance(built.get("progress"), dict)
+            and not str(os.environ.get("EIMEMORY_PRODUCTION_RECALL_DATASET") or "").strip()
+            and _production_recall_conventional_path(runtime) is None
+            and _has_verified_pending_production_query(runtime, scope=scope)):
+        # An authenticated natural capture awaiting independent labels is a
+        # strict evidence wait. Do not substitute another agent's dataset or
+        # turn partial accepted cases into an executable/accepted dataset.
+        return ({**built["dataset"], "cases": [], "dataset_progress": dict(built["progress"])},
+                False, "agent_accepted_cases_incomplete", "recall_quality_evidence_incomplete")
     return None
+
+
+def _has_verified_pending_production_query(runtime: Runtime, *, scope: dict) -> bool:
+    from eimemory.adapters.runtime.channel import (
+        SUPPORTED_RUNTIME_CHANNELS, resolve_channel_scope, runtime_channel_from_scope,
+    )
+    from eimemory.evaluation.production_query_dataset import (
+        pending_production_query_capture_validation_error,
+    )
+
+    requested_channel = runtime_channel_from_scope(scope)
+    workspace = str(scope.get("workspace_id") or "")
+    if "::channel::" in workspace and (not requested_channel or workspace.count("::channel::") != 1):
+        return False
+    channels = [requested_channel] if requested_channel else sorted(SUPPORTED_RUNTIME_CHANNELS)
+    for channel in channels:
+        exact = ScopeRef.from_dict(resolve_channel_scope(channel, scope))
+        pending = runtime.store.list_records_by_meta_value(
+            kinds=["evaluation_packet"], scope=exact,
+            meta_key="report_type", meta_value="production_recall_pending_case",
+            status="active", limit=500,
+        ) or []
+        if any(not pending_production_query_capture_validation_error(
+                runtime, record, exact_scope=exact, channel=channel) for record in pending):
+            return True
+    return False
 
 
 def _production_recall_conventional_path(runtime: Runtime) -> Path | None:
@@ -1448,7 +1495,7 @@ def _production_recall_conventional_path(runtime: Runtime) -> Path | None:
         Path("production_recall.json"),
     ):
         candidate = Path(root) / relative
-        if candidate.is_file():
+        if candidate.exists() or candidate.is_symlink():
             return candidate
     return None
 

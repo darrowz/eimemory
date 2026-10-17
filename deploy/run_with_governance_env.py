@@ -39,6 +39,7 @@ ALLOWED_KEYS = frozenset(
     }
 )
 KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+RUNTIME_AUTHORITY_KEY = "EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE"
 
 
 class GovernanceEnvironmentError(RuntimeError):
@@ -50,6 +51,18 @@ def load_governance_environment(
     *,
     base_environment: Mapping[str, str] | None = None,
     optional: bool = False,
+) -> dict[str, str]:
+    return _load_allowlisted_environment(
+        path, base_environment=base_environment, optional=optional, allowed_keys=ALLOWED_KEYS,
+    )
+
+
+def _load_allowlisted_environment(
+    path: str | Path,
+    *,
+    base_environment: Mapping[str, str] | None,
+    optional: bool,
+    allowed_keys: frozenset[str],
 ) -> dict[str, str]:
     target = Path(path)
     environment = dict(os.environ if base_environment is None else base_environment)
@@ -95,8 +108,29 @@ def load_governance_environment(
             raise GovernanceEnvironmentError(f"governance environment key is duplicated: {key}")
         seen.add(key)
         value = _parse_value(raw_value.strip(), line_number=line_number)
-        if key in ALLOWED_KEYS:
+        if key in allowed_keys:
             environment[key] = value
+    return environment
+
+
+def load_runtime_authority_environment(
+    path: str | Path,
+    *,
+    base_environment: Mapping[str, str] | None = None,
+    optional: bool = False,
+) -> dict[str, str]:
+    """Import only the operator pin path; never import RPC credentials or routes."""
+    environment = dict(os.environ if base_environment is None else base_environment)
+    authority = _load_allowlisted_environment(
+        path, base_environment={}, optional=optional,
+        allowed_keys=frozenset({RUNTIME_AUTHORITY_KEY}),
+    )
+    inherited = environment.get(RUNTIME_AUTHORITY_KEY, "")
+    configured = authority.get(RUNTIME_AUTHORITY_KEY, "")
+    if inherited and configured and inherited != configured:
+        raise GovernanceEnvironmentError("runtime authority pin conflicts with inherited configuration")
+    if configured:
+        environment[RUNTIME_AUTHORITY_KEY] = configured
     return environment
 
 
@@ -119,6 +153,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env-file", required=True, type=Path)
     parser.add_argument("--optional", action="store_true")
+    authority_arguments = parser.add_mutually_exclusive_group()
+    authority_arguments.add_argument("--runtime-authority-env-file", type=Path)
+    authority_arguments.add_argument("--optional-runtime-authority-env-file", type=Path)
     parser.add_argument("--check-research-review", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -142,6 +179,12 @@ def main(argv: list[str] | None = None) -> int:
             # systemd does not inherit the deployment controller's model route.
             base_environment=service_environment if args.check_research_review else None,
         )
+        authority_path = args.runtime_authority_env_file or args.optional_runtime_authority_env_file
+        if authority_path is not None:
+            environment = load_runtime_authority_environment(
+                authority_path, base_environment=environment,
+                optional=args.optional_runtime_authority_env_file is not None,
+            )
         # -I/-B protect this wrapper, not the exec'd console entry point.
         # Pin the gate to the wrapper's release instead of inherited checkout
         # paths, user-site packages, or the controller's working directory.

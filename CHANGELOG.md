@@ -11,9 +11,16 @@ AIGC:
 
 # Changelog
 
+## [1.14.130] — 2026-10-18
+
+- Carry the existing private release-scope binding path from a dedicated protected runtime authority environment file into standard deployment and registered closure reruns. Load only that authority path through the validated parser; RPC secrets are not imported and conflicting explicit authority remains a failure.
+- Classify typed deployment evidence in the existing operational audit lane, keeping deployment self-tests out of ordinary memory retrieval and controlled business-memory samples. Historical records and failed reports remain available.
+- Keep real, validated natural traffic with too few accepted labels as an explicit evidence wait. Empty or invalid captures and explicit dataset configuration errors remain failures; per-agent thresholds are unchanged.
+- Cover the production environment split: the RPC process had a valid unique channel pin while the independent closure process lacked its path. Missing authority still fails closed; dataset metadata cannot supply it.
+
 ## [1.14.129] — 2026-10-18
 
-- Align the configured release recall evaluator with the independently authorized operator channel, using the same strict scope resolution as nightly. Base-scope discovery no longer overwrites a passing channel evaluation with a scope-mismatch result. Dataset metadata cannot grant authority or change the caller's identity.
+- Align the configured release recall evaluator with the independently authorized operator channel, using the same strict scope resolution as nightly. Base-scope discovery uses the authorized channel when the private pin is available, preserving the exact caller boundary. Dataset metadata cannot grant authority or change the caller's identity.
 - Cover the actual dataset-build, traffic-discovery and configured-gate chain, including foreign users, explicit channel conflicts and untrusted dataset scope.
 
 ## [1.14.128] — 2026-10-18

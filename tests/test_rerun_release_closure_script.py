@@ -24,6 +24,7 @@ def _release(tmp_path: Path) -> Path:
 
 def _run(tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
     env = {**os.environ, "INSTALL_ROOT": str(tmp_path), "EIMEMORY_ROOT": str(tmp_path / "root"),
+           "EIMEMORY_CONFIG_DIR": str(tmp_path / "config"),
            "EIMEMORY_LOG_DIR": str(tmp_path / "logs"), "EIMEMORY_DEPLOY_SCOPE_USER": "darrow"}
     return subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True, env=env, check=False)
 

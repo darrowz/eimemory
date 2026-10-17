@@ -2441,12 +2441,15 @@ class Runtime:
             scope=exact_scope,
         )
         if not configured or not _dataset_cases(dataset):
+            incomplete = dataset_source == "agent_accepted_cases_incomplete"
             return {
                 "ok": False,
                 "accepted": False,
                 "gate_status": "not_run",
-                "blocked_reason": skipped_reason or "production_recall_dataset_unconfigured",
+                "blocked_reason": "production_dataset_not_ready" if incomplete else (
+                    skipped_reason or "production_recall_dataset_unconfigured"),
                 "dataset_source": dataset_source,
+                **({"dataset_progress": dict(dataset["dataset_progress"])} if incomplete else {}),
             }
         exact_scope = resolve_production_recall_evaluation_scope(scope=exact_scope, dataset=dataset)
         preload_report = self.run_production_recall_eval(

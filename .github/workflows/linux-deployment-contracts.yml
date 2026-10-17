@@ -77,6 +77,7 @@ jobs:
           tests/test_nightly_evidence_workflow.py
           tests/test_controlled_memory_benchmark.py
           tests/test_controlled_memory_source_eligibility.py
+          tests/test_deployment_evidence_recall_boundary.py
           tests/test_controlled_memory_query_validity.py
           tests/test_controlled_memory_filter_transitions.py
           tests/test_controlled_memory_failed_diagnostics_limit.py
@@ -86,7 +87,11 @@ jobs:
           tests/test_verifier_boundary_diagnostics.py
           tests/test_memory_benchmark_context.py
           tests/test_configured_recall_channel_scope.py
+          tests/test_configured_recall_evidence_wait.py
           tests/test_configured_gate_scope_boundary_review.py
+          tests/test_runtime_authority_env.py
+          tests/test_governance_bytecode_boundary.py
+          tests/test_release_runtime_authority_wiring.py
           tests/test_logical_scope_pin_alias.py
           tests/test_nightly_controlled_memory_benchmark.py
           tests/test_nightly_production_recall_scope.py
