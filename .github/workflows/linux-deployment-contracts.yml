@@ -30,6 +30,13 @@ jobs:
       - name: Install package and test runner
         run: python -B -m pip install --no-compile '.[pdf]' pytest
 
+      - name: Verify protected Unix operator authority with actual root permissions
+        run: >-
+          sudo env PYTHONDONTWRITEBYTECODE=1
+          EIMEMORY_SYSTEM_SETTINGS_PATH=/tmp/eimemory-ci-no-system-settings.json
+          "$(command -v python)" -B -m pytest -q -p no:cacheprovider --strict-markers
+          tests/test_identity_governance.py
+
       - name: Run Linux deployment and filesystem contracts
         run: >-
           python -B -m pytest -q --strict-markers
@@ -127,10 +134,3 @@ jobs:
           tests/test_l1_queue_newly_dead.py
           tests/test_l1_worker_no_recall_audit.py
           tests/test_l1_worker_local_interfaces.py
-
-      - name: Verify protected Unix operator authority with actual root permissions
-        run: >-
-          sudo env PYTHONDONTWRITEBYTECODE=1
-          EIMEMORY_SYSTEM_SETTINGS_PATH=/tmp/eimemory-ci-no-system-settings.json
-          "$(command -v python)" -B -m pytest -q -p no:cacheprovider --strict-markers
-          tests/test_identity_governance.py

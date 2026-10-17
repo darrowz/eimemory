@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import threading
@@ -368,7 +369,11 @@ for name in ('policy.json', 'requests.jsonl'):
     raise AssertionError('service can edit protected authority')
 print('protected read-only service access verified')
 """
-        env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+        source = parent / "source"
+        # Hosted CI checkouts may have non-traversable account-home parents.
+        # Copy the real package, without altering its authority implementation.
+        shutil.copytree(Path(__file__).resolve().parents[1] / "eimemory", source / "eimemory")
+        env = {**os.environ, "PYTHONPATH": str(source),
                "EIMEMORY_IDENTITY_AUTHORITY_DIR": str(directory), "PYTHONDONTWRITEBYTECODE": "1"}
         result = subprocess.run(["runuser", "-u", account.pw_name, "--", "/usr/bin/python3", "-B", "-c", script],
                                 cwd=parent, env=env, capture_output=True, text=True, timeout=20)
