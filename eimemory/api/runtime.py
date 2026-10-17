@@ -2429,8 +2429,13 @@ class Runtime:
         """Run only the configured production-redacted dataset for a release."""
 
         from eimemory.scheduler.jobs import _dataset_cases, _production_recall_dataset
+        from eimemory.evaluation.production_query_dataset import resolve_bound_logical_scope
+        from eimemory.scheduler.memory_benchmark_context import resolve_production_recall_evaluation_scope
 
         exact_scope = dict(scope or {})
+        logical_scope, resolution = resolve_bound_logical_scope(exact_scope)
+        if resolution.get("rewritten") is True:
+            exact_scope = logical_scope
         dataset, configured, dataset_source, skipped_reason = _production_recall_dataset(
             self,
             scope=exact_scope,
@@ -2443,6 +2448,7 @@ class Runtime:
                 "blocked_reason": skipped_reason or "production_recall_dataset_unconfigured",
                 "dataset_source": dataset_source,
             }
+        exact_scope = resolve_production_recall_evaluation_scope(scope=exact_scope, dataset=dataset)
         preload_report = self.run_production_recall_eval(
             dataset,
             seed=False,

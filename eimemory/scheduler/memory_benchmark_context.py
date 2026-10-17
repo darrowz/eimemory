@@ -20,6 +20,26 @@ _SCOPE_FIELDS = {"tenant_id", "agent_id", "workspace_id", "user_id"}
 _MARKER = "::channel::"
 
 
+def resolve_production_recall_evaluation_scope(*, scope: dict | ScopeRef,
+                                             dataset: object) -> dict[str, Any]:
+    """Align a dataset only with independently authorized operator context.
+
+    Stored dataset scope can confirm an exact private pin, never select a
+    tenant, agent, workspace, user or channel for the caller.
+    """
+    requested = asdict(scope) if isinstance(scope, ScopeRef) else dict(scope or {})
+    logical_scope, resolution = resolve_bound_logical_scope(requested)
+    caller = logical_scope if resolution.get("rewritten") is True else requested
+    context = resolve_memory_benchmark_context(scope=caller)
+    if (isinstance(dataset, dict) and context.get("ok") is True
+            and context["resolution"].get("channel_source") == "operator_binding"
+            and context["resolution"].get("matching_channel_count") == 1
+            and ScopeRef.from_dict(dataset.get("scope") or {})
+            == ScopeRef.from_dict(context["scope"])):
+        return dict(context["scope"])
+    return dict(caller)
+
+
 def resolve_memory_benchmark_context(*, scope: dict | ScopeRef) -> dict[str, Any]:
     """Never derive permission from stored records or an installed client.
 

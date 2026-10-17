@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.129] — 2026-10-18
+
+- Align the configured release recall evaluator with the independently authorized operator channel, using the same strict scope resolution as nightly. Base-scope discovery no longer overwrites a passing channel evaluation with a scope-mismatch result. Dataset metadata cannot grant authority or change the caller's identity.
+- Cover the actual dataset-build, traffic-discovery and configured-gate chain, including foreign users, explicit channel conflicts and untrusted dataset scope.
+
 ## [1.14.128] — 2026-10-18
 
 - Resolve capability profiles, observations and projections through the same exact registry partition after a configured agent rename. An independent canonical registry cannot borrow a missing legacy profile.

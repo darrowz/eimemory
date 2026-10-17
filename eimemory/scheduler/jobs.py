@@ -947,9 +947,7 @@ def _run_production_recall_eval(
         logical_scope, scope_resolution = resolve_bound_logical_scope(scope)
         if scope_resolution.get("rewritten") is True:
             scope = logical_scope
-        from eimemory.scheduler.memory_benchmark_context import resolve_memory_benchmark_context
-
-        operator_context = resolve_memory_benchmark_context(scope=scope)
+        from eimemory.scheduler.memory_benchmark_context import resolve_production_recall_evaluation_scope
         dataset, configured, dataset_source, skipped_reason = _production_recall_dataset(
             runtime,
             scope=scope,
@@ -964,12 +962,7 @@ def _run_production_recall_eval(
             }
         # A channel dataset may use the independently resolved private pin;
         # metadata cannot supply any part of that authorized scope.
-        if (isinstance(dataset, dict) and operator_context.get("ok") is True
-                and operator_context["resolution"].get("channel_source") == "operator_binding"
-                and operator_context["resolution"].get("matching_channel_count") == 1
-                and ScopeRef.from_dict(dataset.get("scope") or {})
-                == ScopeRef.from_dict(operator_context["scope"])):
-            scope = dict(operator_context["scope"])
+        scope = resolve_production_recall_evaluation_scope(scope=scope, dataset=dataset)
         try:
             report = _json_safe(run_eval(dataset, seed=False, scope=scope, persist_report=True))
         except TypeError as exc:
