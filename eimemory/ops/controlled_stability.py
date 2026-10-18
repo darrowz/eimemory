@@ -41,6 +41,12 @@ REQUIRED_AGENTS = frozenset({"hongrui", "hongtai", "hongxin", "xiaomage"})
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _PROPERTIES = "Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,NRestarts,MainPID,UnitFileState"
+_JOURNAL_ERROR_PATTERNS = (
+    ("crash", r"segfault|core-dump|dumped core"),
+    ("oom", r"oom-kill|out of memory|killed process"),
+    ("database_read_write_failure", r"database is locked|database is read.only|attempt to write a readonly|disk i/o error|"
+     r"database or disk is full|sqlite.*(?:permission denied|operationalerror|databaseerror)"),
+)
 
 # Run the installed native configuration and repository in an isolated child
 # with the live RPC environment. This avoids mutating this caller's environment
@@ -426,24 +432,65 @@ def _recent_backup(database_path: Path, live_schema_identity: str) -> dict[str, 
         "snapshot_content_hash_recomputed": False, "certifies_application_release": False}
 
 
+def _journal_output(args: list[str]) -> str:
+    """Distinguish native grep's empty match from a failed journal observation."""
+    deadline = time.monotonic() + 12
+
+    def run(command):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("readonly_command_timeout")
+        result = subprocess.run(command, capture_output=True, text=True, timeout=remaining, check=False,
+                                env={**os.environ, "LC_ALL": "C", "TZ": "UTC"})
+        if time.monotonic() > deadline:
+            raise TimeoutError("readonly_command_timeout")
+        if result.stderr:
+            raise RuntimeError("journal_command_unavailable")
+        if len(result.stdout.encode()) > 2 * 1024 * 1024:
+            raise ValueError("readonly_command_output_limit")
+        return result
+
+    # A grep with no matches exits 1 without output. First establish that the
+    # same user's units and full window are readable without the grep filter.
+    preflight = ["--lines=1" if arg.startswith("--lines=") else arg for arg in args
+                 if not arg.startswith(("--grep=", "--case-sensitive="))]
+    readable = run(preflight)
+    if readable.returncode != 0:
+        raise RuntimeError("journal_preflight_unavailable")
+    preflight_lines = readable.stdout.splitlines()
+    if (len(preflight_lines) > 1 or any(not isinstance(strict_json_loads(line, max_bytes=262144), dict)
+                                        for line in preflight_lines)):
+        raise ValueError("journal_preflight_contract_invalid")
+    result = run(args)
+    if result.returncode == 0 or (result.returncode == 1 and result.stdout == ""):
+        return result.stdout
+    raise RuntimeError("journal_command_unavailable")
+
+
 def _journal() -> dict[str, Any]:
-    args = ["journalctl", "--user", "--since=-10min", "--no-pager", "--output=json", "--lines=2001"]
+    pattern = "|".join("(?:" + value + ")" for _name, value in _JOURNAL_ERROR_PATTERNS)
+    end = datetime.now(timezone.utc).timestamp()
+    args = ["journalctl", "--user", "--quiet", f"--since=@{end - 600:.6f}", f"--until=@{end:.6f}", "--no-pager", "--all",
+            "--output=json", "--lines=2001", "--grep=" + pattern, "--case-sensitive=no"]
     for unit in RUNTIME_UNITS + JOB_UNITS:
         args += ["--unit=" + unit]
-    lines = _run(args).splitlines()
+    lines = _journal_output(args).splitlines()
     if len(lines) > 2000:
         raise ValueError("journal_window_truncated")
-    counters = {"crash": 0, "oom": 0, "database_read_write_failure": 0}
+    counters = {name: 0 for name, _pattern in _JOURNAL_ERROR_PATTERNS}
     for line in lines:
         entry = strict_json_loads(line, max_bytes=262144)
-        message = str(entry.get("MESSAGE", "")).lower()
-        counters["crash"] += int(bool(re.search(r"segfault|core-dump|dumped core", message)))
-        counters["oom"] += int(bool(re.search(r"oom-kill|out of memory|killed process", message)))
-        counters["database_read_write_failure"] += int(bool(re.search(
-            r"database is locked|database is read.only|attempt to write a readonly|disk i/o error|"
-            r"database or disk is full|sqlite.*(?:permission denied|operationalerror|databaseerror)", message)))
+        if not isinstance(entry, dict) or not isinstance(entry.get("MESSAGE"), str):
+            raise ValueError("journal_message_contract_invalid")
+        matched = {name: bool(re.search(pattern, entry["MESSAGE"], re.IGNORECASE))
+                   for name, pattern in _JOURNAL_ERROR_PATTERNS}
+        if not any(matched.values()):
+            raise ValueError("journal_filter_contract_invalid")
+        for name, found in matched.items():
+            counters[name] += int(found)
     return {"ok": not any(counters.values()), "window_seconds": 600,
             "observation_scope": "allowlisted_user_unit_journal", "entries_observed": len(lines),
+            "entry_selection": "native_error_pattern_matches",
             "native_database_counters_available": False, "observed_error_counts": counters}
 
 

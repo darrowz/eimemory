@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.144] — 2026-10-18
+
+- Inspect the full allowlisted journal window for the same native error patterns before applying bounded result limits. Normal multiline nightly output must not exhaust error-observation capacity; real errors, incomplete scans and command failures remain blocking.
+
 ## [1.14.143] — 2026-10-18
 
 - Begin the full controlled stability wait after replay, live and channel checks finish. A long replay can create real memories and must not consume the projection catch-up observation interval before the final strict health sample.

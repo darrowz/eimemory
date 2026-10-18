@@ -207,8 +207,8 @@ def test_unsafe_sidecar_rejected(tmp_path):
 
 
 def test_journal_exports_only_counts_not_messages(monkeypatch):
-    monkeypatch.setattr(probe, "_run", lambda args: '\n'.join(json.dumps({"MESSAGE": value}) for value in
-        ["secretbusiness", "sqlite3.OperationalError: database is locked", "Failed with result oom-kill", "segfault"]))
+    monkeypatch.setattr(probe, "_journal_output", lambda args: '\n'.join(json.dumps({"MESSAGE": value}) for value in
+        ["secretbusiness sqlite3.OperationalError: database is locked", "Failed with result oom-kill", "segfault"]))
     report = probe._journal()
     assert report["observed_error_counts"] == {"crash": 1, "oom": 1, "database_read_write_failure": 1}
     assert not report["ok"]
@@ -216,8 +216,135 @@ def test_journal_exports_only_counts_not_messages(monkeypatch):
 
 
 def test_truncated_journal_is_unknown_not_zero(monkeypatch):
-    monkeypatch.setattr(probe, "_run", lambda args: '\n'.join('{}' for _ in range(2001)))
+    monkeypatch.setattr(probe, "_journal_output", lambda args: '\n'.join('{}' for _ in range(2001)))
     with pytest.raises(ValueError, match="truncated"):
+        probe._journal()
+
+
+def test_journal_native_filter_and_classifier_share_patterns_and_keep_old_errors(monkeypatch):
+    import re
+
+    entries = [dict(MESSAGE="private OLD DATABASE IS LOCKED", _SYSTEMD_USER_UNIT=probe.RUNTIME_UNITS[0])]
+    entries += [dict(MESSAGE="normal private nightly output " + "x" * 1500) for _ in range(3256)]
+    commands = []
+
+    def native(args, **kwargs):
+        commands.append(args)
+        pattern = next((arg.removeprefix("--grep=") for arg in args if arg.startswith("--grep=")), None)
+        selected = entries
+        if pattern is not None:
+            assert pattern == "|".join("(?:" + value + ")" for _name, value in probe._JOURNAL_ERROR_PATTERNS)
+            assert "--case-sensitive=no" in args
+            selected = [entry for entry in entries if re.search(pattern, entry["MESSAGE"], re.IGNORECASE)]
+        count = int(next(arg.removeprefix("--lines=") for arg in args if arg.startswith("--lines=")))
+        return SimpleNamespace(returncode=0, stderr="", stdout="\n".join(json.dumps(entry) for entry in selected[-count:]))
+
+    monkeypatch.setattr(probe.subprocess, "run", native)
+    report = probe._journal()
+    assert not report["ok"] and report["entries_observed"] == 1
+    assert report["observed_error_counts"] == {"crash": 0, "oom": 0, "database_read_write_failure": 1}
+    assert "private" not in json.dumps(report)
+    assert len(commands) == 2
+    for args in commands:
+        assert all("--unit=" + unit in args for unit in probe.RUNTIME_UNITS + probe.JOB_UNITS)
+        assert "--quiet" in args and "--all" in args
+    bounds = [[arg for arg in args if arg.startswith(("--since=", "--until="))] for args in commands]
+    assert bounds[0] == bounds[1]
+    assert float(bounds[0][1].removeprefix("--until=@")) - float(bounds[0][0].removeprefix("--since=@")) == 600
+    assert "--lines=1" in commands[0] and "--lines=2001" in commands[1]
+
+
+def test_journal_exact_native_no_match_requires_successful_readability_preflight(monkeypatch):
+    results = iter([SimpleNamespace(returncode=0, stdout=json.dumps({"MESSAGE": "normal"}), stderr=""),
+                    SimpleNamespace(returncode=1, stdout="", stderr="")])
+    monkeypatch.setattr(probe.subprocess, "run", lambda *args, **kwargs: next(results))
+    report = probe._journal()
+    assert report["ok"] and report["entries_observed"] == 0
+    assert set(report["observed_error_counts"].values()) == {0}
+
+
+@pytest.mark.parametrize("returncode,stdout,stderr", [(1, "", "permission failure"), (1, "{}", ""),
+    (2, "", ""), (-15, "", ""), (0, "", "partial observation")])
+def test_journal_command_failure_is_never_an_empty_match(monkeypatch, returncode, stdout, stderr):
+    results = iter([SimpleNamespace(returncode=0, stdout="", stderr=""),
+                    SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)])
+    monkeypatch.setattr(probe.subprocess, "run", lambda *args, **kwargs: next(results))
+    with pytest.raises(RuntimeError, match="journal_command_unavailable"):
+        probe._journal()
+
+
+@pytest.mark.parametrize("returncode,stdout,stderr", [(1, "", ""), (0, "", "permission failure"),
+    (0, "not json", ""), (0, "[]", ""), (0, "{}\n{}", "")])
+def test_journal_preflight_failure_blocks_before_grep(monkeypatch, returncode, stdout, stderr):
+    calls = []
+    def native(args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+    monkeypatch.setattr(probe.subprocess, "run", native)
+    with pytest.raises((RuntimeError, ValueError)):
+        probe._journal()
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("phase", ["preflight", "filtered"])
+def test_journal_output_limit_is_preserved_in_both_phases(monkeypatch, phase):
+    calls = []
+    def native(args, **kwargs):
+        calls.append(args)
+        oversized = phase == "preflight" or len(calls) == 2
+        return SimpleNamespace(returncode=0, stdout="x" * (2 * 1024 * 1024 + 1) if oversized else "", stderr="")
+    monkeypatch.setattr(probe.subprocess, "run", native)
+    with pytest.raises(ValueError, match="readonly_command_output_limit"):
+        probe._journal()
+
+
+def test_journal_two_phases_share_twelve_second_deadline(monkeypatch):
+    clock = {"now": 100.0}
+    timeouts = []
+    monkeypatch.setattr(probe.time, "monotonic", lambda: clock["now"])
+    def native(args, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        clock["now"] += 7 if len(timeouts) == 1 else 3
+        return SimpleNamespace(returncode=0 if len(timeouts) == 1 else 1, stdout="", stderr="")
+    monkeypatch.setattr(probe.subprocess, "run", native)
+    assert probe._journal()["ok"]
+    assert timeouts == [12, 5]
+
+
+def test_journal_preflight_using_all_time_does_not_grant_more_time_to_grep(monkeypatch):
+    clock = {"now": 100.0}
+    calls = []
+    monkeypatch.setattr(probe.time, "monotonic", lambda: clock["now"])
+    def native(args, **kwargs):
+        calls.append(args)
+        clock["now"] += 12.01
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(probe.subprocess, "run", native)
+    with pytest.raises(TimeoutError, match="readonly_command_timeout"):
+        probe._journal()
+    assert len(calls) == 1
+
+
+def test_journal_timeout_is_not_an_empty_match(monkeypatch):
+    def native(args, **kwargs):
+        raise probe.subprocess.TimeoutExpired(args, kwargs["timeout"])
+    monkeypatch.setattr(probe.subprocess, "run", native)
+    with pytest.raises(probe.subprocess.TimeoutExpired):
+        probe._journal()
+
+
+@pytest.mark.parametrize("entry", [None, [], "segfault", {}, {"message": "segfault"},
+    {"MESSAGE": None}, {"MESSAGE": 42}, {"MESSAGE": ["segfault"]},
+    {"MESSAGE": list(b"database is locked")}, {"MESSAGE": {"value": "segfault"}}, {"MESSAGE": "normal"}])
+def test_journal_unknown_or_array_messages_cannot_be_counted_as_zero(monkeypatch, entry):
+    monkeypatch.setattr(probe, "_journal_output", lambda args: json.dumps(entry))
+    with pytest.raises(ValueError, match="journal_(message|filter)_contract_invalid"):
+        probe._journal()
+
+
+def test_journal_oversized_matched_entry_is_not_accepted(monkeypatch):
+    monkeypatch.setattr(probe, "_journal_output", lambda args: json.dumps({"MESSAGE": "segfault " + "x" * 262144}))
+    with pytest.raises(ValueError):
         probe._journal()
 
 
