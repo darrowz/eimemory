@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.145] — 2026-10-18
+
+- Count verified historical business memories as qualified business samples under explicit protected operator purpose and exact source/version grants. Preserve native origin and derivation evidence, signed current-release receipts, complete recall and all runtime gates.
+- Align the main CLI business summary, standalone release diagnosis and quality-gap intake with qualified historical business evidence. Preserve online collection waits separately instead of creating spurious recall-repair gaps.
+- Separate business origin from controlled validation method. Use verified historical business qualification for the main business recall result and release closure; report ongoing natural traffic independently without presenting its empty count as missing historical business samples.
+
 ## [1.14.144] — 2026-10-18
 
 - Inspect the full allowlisted journal window for the same native error patterns before applying bounded result limits. Normal multiline nightly output must not exhaust error-observation capacity; real errors, incomplete scans and command failures remain blocking.

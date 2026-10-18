@@ -1,7 +1,8 @@
-"""Operator-authorized existing-memory operational acceptance.
+"""Operator-authorized existing-memory recall and historical business qualification.
 
-This separate certificate proves bounded current known-item retrieval. It never
-creates natural queries, relevance gold, host delivery or natural quality.
+This certificate proves bounded current recall. Explicit protected historical
+business purpose also qualifies the exact real business source memories. It
+never invents historical queries, host delivery or new natural observations.
 Authorization comes only from a protected root policy; reports cannot grant it.
 """
 from copy import deepcopy
@@ -17,6 +18,7 @@ from eimemory import identity_authority
 from eimemory.core import strict_json
 from eimemory.core.clock import now_iso
 from eimemory.evaluation import controlled_memory_benchmark as benchmark
+from eimemory.evaluation import historical_business_qualification as historical
 from eimemory.governance.learning.effect_policy import canonical, digest, seal, verify
 from eimemory.governance.release.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.identity_ops import _repair_snapshot, _RepairSkipped
@@ -85,7 +87,7 @@ def _validate_policy(value, owner):
     fields = {'schema', 'mode', 'request_digest', 'owner_scope', 'agents', 'stable_before',
               'minimum_cases_per_scope', 'max_cases_per_scope', 'freshness_seconds', 'engine_contract_digest'}
     if (not isinstance(value, dict) or not fields.issubset(value)
-            or set(value) - fields - {'additional_owner_scopes'}
+            or set(value) - fields - {'additional_owner_scopes', 'purpose', 'business_sources'}
             or value.get('schema') != POLICY_SCHEMA or value.get('mode') != MODE
             or re.fullmatch('[0-9a-f]{64}', str(value.get('request_digest', ''))) is None
             or value.get('request_digest') == '0' * 64):
@@ -136,6 +138,7 @@ def _validate_policy(value, owner):
                 or len(set(sources)) != len(sources) or tuple(sorted(sources)) != normalize_source_ids(sources)):
             _error('policy_agents_invalid')
         seen.add(exact.agent_id)
+    historical.validate_business_policy(value)
     normalized = deepcopy(value)
     for entry in normalized['agents']:
         entry['source_ids'] = sorted(entry['source_ids'])
@@ -229,7 +232,8 @@ def _validate_versions(sqlite, agents):
         for sample in agent['samples']:
             pairs = [(sample['source_binding'], sample['source_version']),
                      *zip(sample['returned'], sample['returned_versions']),
-                     *[(item['binding'], item['version']) for item in sample.get('cascade_evidence', [])]]
+                     *[(item['binding'], item['version']) for item in sample.get('cascade_evidence', [])],
+                     *[(item['binding'], item['version']) for item in sample.get('business_provenance', {}).get('parents', [])]]
             for binding, expected in pairs:
                 scope = _scope(binding['scope'])
                 ref = (*[getattr(scope, k) for k in ('tenant_id', 'agent_id', 'workspace_id', 'user_id')],
@@ -352,6 +356,10 @@ def _evaluate_agent(runtime, entry, policy, cutoff):
     if len(cases) < policy['minimum_cases_per_scope']:
         _error('insufficient_existing_records')
     before = {case['case_id']: _physical(runtime, case['source_binding'], scope, sources, cutoff) for case in cases}
+    business_before = {}
+    if policy.get('purpose') == historical.PURPOSE:
+        business_before = {case['case_id']: historical.business_provenance(
+            runtime, case['source_binding'], before[case['case_id']], scope, sources, cutoff, policy) for case in cases}
     observation = {}
 
     def recall(**kwargs):
@@ -411,6 +419,11 @@ def _evaluate_agent(runtime, entry, policy, cutoff):
         evidence.append(dict(case_id=case['case_id'], source_binding=binding, source_version=version,
             query_digest=digest(case['query']), context_digest=digest(case['task_context']),
             passed=passed, expected_rank=sample.get('expected_rank'), **observation))
+        if policy.get('purpose') == historical.PURPOSE:
+            provenance = historical.business_provenance(runtime, binding, version, scope, sources, cutoff, policy)
+            if provenance != business_before[case['case_id']]:
+                _error('business_origin_changed')
+            evidence[-1]['business_provenance'] = provenance
     accepted = all(s['passed'] for s in evidence)
     reason = next((sample['failure_reason'] for sample in evidence if not sample['passed']), '')
     return dict(scope=asdict(scope), source_ids=list(sources), sample_count=len(evidence),
@@ -427,9 +440,14 @@ def _public(body, *, persisted=False):
             complete=bool(entry['samples']) and all(s['complete'] for s in entry['samples']), blocked_reason=entry['blocked_reason']))
     passed = body.get('accepted') is True
     accepted = passed and persisted
+    qualification = deepcopy(body.get('business_qualification', {}))
+    if qualification and not persisted:
+        qualification['accepted'] = False
+        qualification['record_id'] = ''
     return dict(ok=passed, accepted=accepted, status='accepted' if accepted else 'evaluated' if passed else 'failed',
         passed_threshold=passed,
         schema=SCHEMA, mode=MODE, evidence_class=EVIDENCE_CLASS,
+        acceptance_purpose=body.get('acceptance_purpose', 'operational'), business_qualification=qualification,
         policy_digest=body.get('policy_digest', ''), release_identity=body.get('release_identity', {}),
         record_id=body.get('record_id', '') if persisted else '', persisted=persisted,
         certifies_natural_queries=False, certifies_no_answer=False, host_delivery_certified=False,
@@ -479,10 +497,14 @@ def run_controlled_production_acceptance(runtime, *, scope, persist=True, stable
             accepted=accepted, agents=agents, certifies_natural_queries=False, certifies_no_answer=False,
             host_delivery_certified=False, memory_contribution_certified=False, natural_samples_created=0,
             blocked_reason='' if accepted else 'controlled_acceptance_case_failed')
+        body['acceptance_purpose'] = policy.get('purpose', 'operational')
+        body['business_qualification'] = historical.business_qualification(body)
         content = seal(body, SCHEMA)
         if persist:
-            record = RecordEnvelope.create(kind='evaluation_packet', title='Controlled existing-memory operational acceptance',
-                summary='Operator-authorized known-item retrieval; natural evidence remains separate.',
+            record = RecordEnvelope.create(kind='evaluation_packet', title=('Verified historical business-memory qualification' if policy.get('purpose') == historical.PURPOSE
+                       else 'Controlled existing-memory operational acceptance'),
+                summary=('Existing real business memories qualified by native controlled recall.' if policy.get('purpose') == historical.PURPOSE
+                         else 'Operator-authorized known-item retrieval; natural evidence remains separate.'),
                 content=content, scope=owner, source=SOURCE, source_id='default',
                 meta={'report_type': SCHEMA, 'release_key': digest(release), 'policy_digest': digest(policy),
                       'report_digest': digest(content)})
@@ -549,6 +571,9 @@ def verify_controlled_production_acceptance(runtime, *, scope, release=None, rec
                     'host_delivery_certified', 'memory_contribution_certified'))
                 or type(body.get('natural_samples_created')) is not int or body['natural_samples_created'] != 0):
             _error('report_authority_invalid')
+        if (body.get('acceptance_purpose', 'operational') != policy.get('purpose', 'operational')
+                or body.get('business_qualification', {}) != historical.business_qualification(body)):
+            _error('business_qualification_invalid')
         age = (datetime.now(timezone.utc) - _instant(body.get('completed_at'))).total_seconds()
         if age < 0 or age > policy['freshness_seconds'] or _instant(body['started_at']) > _instant(body['completed_at']):
             _error('report_expired')
@@ -574,6 +599,11 @@ def verify_controlled_production_acceptance(runtime, *, scope, release=None, rec
                 if record_ref in seen or version != sample.get('source_version'):
                     _error('source_version_changed')
                 seen.add(record_ref)
+                if policy.get('purpose') == historical.PURPOSE:
+                    provenance = historical.business_provenance(
+                        runtime, binding, version, exact, sources, body['stable_before'], policy)
+                    if provenance != sample.get('business_provenance'):
+                        _error('business_origin_changed')
                 source = runtime.store.get_by_exact_ref(binding['record_id'], scope=exact, source_id=binding['source_id'])
                 case = benchmark._case(source)
                 if (case is None or sample.get('case_id') != case['case_id']

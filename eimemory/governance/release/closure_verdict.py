@@ -512,10 +512,12 @@ def split_release_conclusions(
 
         accepted = bool(not contradiction and _ordinary_receipt_ok(report)
                         and controlled_production_closure_report_ok(report))
+        historical_business = report.get("closure_scope") == "historical_business"
         return {
             "ordinary_release_admission": "admitted" if accepted else "denied",
             "l5_certification": "not_certified",
-            "production_quality": "controlled_accepted" if accepted else "uncertified",
+            "production_quality": ("historical_business_accepted" if historical_business else "controlled_accepted")
+                                  if accepted else "uncertified",
             "historical_pending_blocks_ordinary_release": False,
         }
     evidence_ok = type(sample_count) is int and sample_count > 0
@@ -707,7 +709,7 @@ def summarize_release_closure(report: object, *, execution: Mapping | None = Non
         controlled = _object(obj.get('controlled_production_acceptance'))
         stability = _object(obj.get('stability'))
         result.update(
-            closure_scope='operational_only', acceptance_basis='controlled_existing_memory',
+            closure_scope=obj.get('closure_scope'), acceptance_basis='controlled_existing_memory',
             evidence_class='operator_controlled_existing_memory',
             certifies_natural_queries=False, certifies_no_answer=False,
             natural_certification='not_certified', natural_samples_created=obj.get('natural_samples_created'),
@@ -715,7 +717,17 @@ def summarize_release_closure(report: object, *, execution: Mapping | None = Non
             controlled_production_acceptance_ok=bool(admitted and controlled.get('accepted') is True),
             controlled_production_acceptance_record_id=str(controlled.get('record_id') or ''),
             stability_ok=bool(admitted and stability.get('ok') is True),
+            business_qualified=False, business_qualification={},
         )
+        if obj.get('closure_scope') == 'historical_business':
+            qualification = _object(controlled.get('business_qualification'))
+            result.update(
+                acceptance_purpose=obj.get('acceptance_purpose'),
+                business_origin=obj.get('business_origin'), validation_method=obj.get('validation_method'),
+                business_qualification=qualification if admitted else {},
+                business_qualified=bool(admitted and qualification.get('accepted') is True),
+                natural_online_evidence=_object(obj.get('natural_online_evidence')),
+            )
     from eimemory.governance.release.closure_blockers import closure_blockers
     result['closure_blockers'] = closure_blockers(obj)
     # Keep admission diagnostics tied to validated producer contracts.

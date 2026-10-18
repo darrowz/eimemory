@@ -107,3 +107,177 @@ def test_native_run_requires_successful_second_verification():
     assert result["ok"] is False and result["accepted"] is False
     assert result["runtime_authority_verified"] is False
     assert result["error"] == "controlled_production_receipt_invalid"
+
+
+def historical_business_receipt():
+    value = accepted_receipt()
+    value.update(persisted=True, acceptance_purpose="historical_business_qualification",
+                 certifies_no_answer=False, host_delivery_certified=False, memory_contribution_certified=False)
+    value["agents"] = [
+        {"agent_id": agent, "scope_digest": str(index) * 64, "source_ids": ["hermes"],
+         "sample_count": 3, "pass_count": 3, "fail_count": 0,
+         "accepted": True, "complete": True, "blocked_reason": ""}
+        for index, agent in enumerate(("hongrui", "hongtai", "hongxin", "xiaomage"), 1)
+    ]
+    value["business_qualification"] = {
+        "schema": "historical_business_qualification.v1",
+        "purpose": "historical_business_qualification", "accepted": True,
+        "business_origin": "historical_business", "validation_method": "controlled_recall",
+        "sample_count": 12, "pass_count": 12, "fail_count": 0,
+        **{key: deepcopy(value[key]) for key in ("agents", "policy_digest", "record_id", "release_identity")},
+    }
+    value["verification"] = {key: deepcopy(item) for key, item in value.items()
+                             if key not in {"verification", "runtime_authority_verified"}}
+    return value
+
+
+def _natural_wait_report():
+    gate = {"ok": False, "blocked_reason": "recall_quality_evidence_incomplete",
+            "blocking_metrics": {}, "recall_quality_evidence": {"execution_ok": True}}
+    return {
+        "controlled_production_acceptance": historical_business_receipt(),
+        "recall_quality_gate": gate,
+        "production_recall": {"ok": False, "execution_ok": True,
+            "blocked_reason": "recall_quality_evidence_incomplete", "quality_gate": deepcopy(gate)},
+        "recall_quality_per_agent": {"agents": {
+            agent: {"ok": False, "sample_count": 0, "blocked_reason": "recall_quality_evidence_incomplete"}
+            for agent in ("hongtai", "hongxin", "xiaomage")}, "combined": {"ok": False}},
+    }
+
+
+def test_qualified_historical_business_counts_are_main_business_evidence_with_online_progress_separate():
+    report = _natural_wait_report()
+    original = deepcopy(report)
+    report["dynamic_capability_evolution"] = {"ok": False, "enabled": True, "status": "blocked",
+        "execution": {"ok": False, "applied_count": 0, "results": [
+            {"status": "blocked", "reason": "hypothesis_missing_or_ambiguous", "candidate_hypothesis_count": 0}]}}
+    result = nightly_result_diagnostics(report, [])
+    assert result["execution_ok"] and result["recall_quality_accepted"]
+    assert result["recall_quality_acceptance_basis"] == "historical_business_memory_controlled"
+    assert result["production_operational_accepted"]
+    assert result["production_acceptance_basis"] == "controlled_existing_memory"
+    assert result["natural_recall_quality_accepted"] is False
+    assert result["natural_evidence_waits"] == ["production_recall", "recall_quality_gate"]
+    assert "production_recall" not in result["evidence_waits"]
+    assert "recall_quality_gate" not in result["evidence_waits"]
+    assert result["evidence_waits"] == ["dynamic_capability_evolution"]
+    main = result["recall_quality_per_agent"]
+    assert main["combined"] == {"ok": True, "blocked_reason": "", "agent_count": 4,
+                                "sample_count": 12, "pass_count": 12, "fail_count": 0}
+    assert all(row["sample_count"] == row["pass_count"] == 3 for row in main["agents"].values())
+    assert all(row["sample_count"] == 0 for row in result["natural_recall_quality_per_agent"]["agents"].values())
+    assert result["recall_quality_evidence"]["formal_business_evidence"] is True
+    assert result["recall_quality_evidence"]["validation_method"] == "controlled_recall"
+    assert result["natural_recall_quality_evidence"] == {"execution_ok": True}
+    assert result["controlled_production_acceptance"]["certifies_natural_queries"] is False
+    assert result["controlled_production_acceptance"]["natural_samples_created"] == 0
+    assert "label_trust_accepted" not in result["recall_quality_evidence"]
+    assert all(report[key] == value for key, value in original.items())
+
+
+@pytest.mark.parametrize("key,value", [
+    ("schema", "foreign.v1"), ("purpose", "operational"), ("accepted", False),
+    ("accepted", 1), ("business_origin", "generated"), ("validation_method", "natural"),
+    ("sample_count", 11), ("pass_count", 11), ("fail_count", False), ("fail_count", 1),
+    ("record_id", "foreign"), ("policy_digest", "c" * 64),
+    ("release_identity", {"release_commit": "c" * 40}),
+    ("unknown", "PRIVATE-UNKNOWN"),
+])
+def test_historical_business_qualification_must_match_its_native_receipt(key, value):
+    receipt = historical_business_receipt()
+    receipt["business_qualification"][key] = value
+    receipt["verification"]["business_qualification"][key] = deepcopy(value)
+    diagnostic = controlled_acceptance_diagnostics(receipt)
+    assert diagnostic["accepted"] is True, "operational receipt is a separate claim"
+    assert diagnostic["business_qualification"]["accepted"] is False
+
+
+@pytest.mark.parametrize("key,value", [
+    ("sample_count", 2), ("sample_count", True), ("pass_count", 2),
+    ("fail_count", False), ("fail_count", 1), ("accepted", False),
+    ("complete", False), ("blocked_reason", "retrieval_incomplete"),
+    ("scope_digest", "invalid"), ("source_ids", []),
+])
+def test_historical_business_agents_require_three_complete_passes_each(key, value):
+    receipt = historical_business_receipt()
+    for agents in (receipt["agents"], receipt["business_qualification"]["agents"],
+                   receipt["verification"]["agents"], receipt["verification"]["business_qualification"]["agents"]):
+        agents[0][key] = deepcopy(value)
+    assert controlled_acceptance_diagnostics(receipt)["business_qualification"]["accepted"] is False
+
+
+@pytest.mark.parametrize("damage", ["purpose", "persisted", "verification_missing", "agents_mismatch",
+                                   "business_mismatch", "duplicate_agent", "duplicate_scope"])
+def test_historical_business_acceptance_requires_independent_matching_verified_projection(damage):
+    receipt = historical_business_receipt()
+    if damage == "purpose":
+        receipt["acceptance_purpose"] = "operational"
+    elif damage == "persisted":
+        receipt["persisted"] = False
+    elif damage == "verification_missing":
+        receipt["verification"].pop("business_qualification")
+    elif damage == "agents_mismatch":
+        receipt["verification"]["agents"][0]["sample_count"] = 4
+    elif damage == "business_mismatch":
+        receipt["verification"]["business_qualification"]["pass_count"] = 11
+    else:
+        field = "agent_id" if damage == "duplicate_agent" else "scope_digest"
+        for agents in (receipt["agents"], receipt["business_qualification"]["agents"],
+                       receipt["verification"]["agents"], receipt["verification"]["business_qualification"]["agents"]):
+            agents[1][field] = agents[0][field]
+    assert controlled_acceptance_diagnostics(receipt)["business_qualification"]["accepted"] is False
+
+
+@pytest.mark.parametrize("failure", ["storage", "authority", "quality", "step"])
+def test_historical_business_evidence_does_not_hide_current_execution_or_source_failures(failure):
+    report = _natural_wait_report()
+    steps = []
+    if failure == "storage":
+        report["storage_maintenance"] = {"ok": False, "error": "storage_failed"}
+    elif failure == "authority":
+        report["recall_quality_gate"]["release_source_validation"] = {"ok": False}
+    elif failure == "quality":
+        report["recall_quality_gate"] = {"ok": False, "blocked_reason": "false_recall_rate_above_threshold",
+                                        "blocking_metrics": {"false_recall_rate": 1}}
+    else:
+        steps = [{"step": "source_version_check", "ok": False}]
+    result = nightly_result_diagnostics(report, steps)
+    assert result["execution_ok"] is False
+    assert result["recall_quality_accepted"] is False
+    assert result["production_operational_accepted"] is False
+    assert result["failed_steps"]
+    assert result["recall_quality_per_agent"] == result["natural_recall_quality_per_agent"]
+
+
+def test_business_projection_does_not_copy_private_case_data():
+    receipt = historical_business_receipt()
+    for agents in (receipt["agents"], receipt["business_qualification"]["agents"],
+                   receipt["verification"]["agents"], receipt["verification"]["business_qualification"]["agents"]):
+        agents[0]["query"] = "PRIVATE-HISTORICAL-QUERY"
+        agents[0]["scope"] = {"user_id": "PRIVATE-EXACT-USER"}
+    result = nightly_result_diagnostics({"controlled_production_acceptance": receipt}, [])
+    assert result["recall_quality_accepted"] is True
+    assert "PRIVATE-" not in json.dumps(result)
+
+
+def test_existing_natural_quality_acceptance_remains_independent_when_history_is_not_qualified():
+    from eimemory.evaluation.real_query_schema import (
+        PRODUCTION_REAL_QUERY_REPORT_SCHEMA, PRODUCTION_REAL_QUERY_POLICY,
+    )
+    gate = {"ok": True, "recall_quality_evidence": {
+        "evaluation_contract": PRODUCTION_REAL_QUERY_REPORT_SCHEMA,
+        "formal_business_evidence": True, "label_trust_accepted": True,
+        "release_authority_verified": True, "authority_record_id": "natural-record"}}
+    quality = {"schema": PRODUCTION_REAL_QUERY_REPORT_SCHEMA,
+        "policy_schema": PRODUCTION_REAL_QUERY_POLICY, "dataset_kind": "production",
+        "accepted": True, "gate_status": "accepted", "persisted": True,
+        "persisted_record_id": "natural-record", "quality_gate": deepcopy(gate)}
+    report = {"recall_quality_gate": gate, "recall_quality": quality,
+        "controlled_production_acceptance": accepted_receipt(),
+        "recall_quality_per_agent": {"agents": {"hongrui": {"ok": True, "sample_count": 3}},
+                                     "combined": {"ok": True}}}
+    result = nightly_result_diagnostics(report, [])
+    assert result["recall_quality_accepted"] and result["natural_recall_quality_accepted"]
+    assert result["recall_quality_acceptance_basis"] == "natural_production_queries"
+    assert result["recall_quality_per_agent"] == result["natural_recall_quality_per_agent"]
+    assert result["recall_quality_evidence"] == result["natural_recall_quality_evidence"]

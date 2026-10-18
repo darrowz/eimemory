@@ -418,3 +418,120 @@ def test_native_operator_policy_file_and_all_ancestors_are_protected(tmp_path, d
     if damage == 'valid':assert cpa._read_policy(path)=={'probe':True}
     else:
         with pytest.raises(cpa.ControlledAcceptanceError):cpa._read_policy(path)
+
+
+@pytest.fixture
+def historical_business_setup(setup):
+    from hashlib import sha256
+    policy = setup.policy
+    policy['purpose'] = 'historical_business_qualification'
+    policy['business_sources'] = []
+    for records in setup.memories.values():
+        for index, record in enumerate(records):
+            record.source = 'hermes.memory'
+            record.meta = {
+                'memory_type': 'fact', 'authoritative': True, 'runtime_channel': 'hermes',
+                'source_event_id': record.record_id + ':original-import',
+                'quality': {'capture_decision': 'accept'},
+                'native_import': {'schema': 'hermes_native_memory_import.v1',
+                    'file': '/original-business/MEMORY.md', 'line': index + 1,
+                    'file_digest': 'd' * 64,
+                    'text_digest': sha256(record.content['text'].strip().encode()).hexdigest()},
+            }
+            setup.runtime.store.append(record)
+            binding = cpa.benchmark._binding(record)
+            version = cpa._physical(setup.runtime, binding, record.scope, ('hermes',), policy['stable_before'])
+            policy['business_sources'].append(dict(source_binding=binding, source_version=version,
+                                                  origin_source=record.source))
+    return setup
+
+
+def test_verified_historical_business_samples_are_qualified_without_inventing_online_traffic(historical_business_setup):
+    setup = historical_business_setup
+    before = setup.runtime.store.count_records(kinds=['memory'])
+    result = run(setup)
+    assert result['accepted'], result
+    business = result['business_qualification']
+    assert result['acceptance_purpose'] == 'historical_business_qualification'
+    assert business['accepted'] and business['business_origin'] == 'historical_business'
+    assert business['validation_method'] == 'controlled_recall'
+    assert business['sample_count'] == business['pass_count'] == 12 and business['fail_count'] == 0
+    assert business['agents'] == result['agents']
+    assert business['record_id'] == result['record_id'] and business['policy_digest'] == result['policy_digest']
+    assert business['release_identity'] == RELEASE
+    assert result['natural_samples_created'] == 0 and not result['certifies_natural_queries']
+    assert not result['host_delivery_certified'] and not result['memory_contribution_certified']
+    assert setup.runtime.store.count_records(kinds=['memory']) == before
+    checked = verified(setup, record_id=result['record_id'])
+    assert checked['business_qualification'] == business and checked['accepted'], checked
+    packet = setup.runtime.store.get_by_exact_ref(result['record_id'], scope=OWNER, source_id='default')
+    assert all(sample['business_provenance']['schema'] == 'historical_business_provenance.v1'
+               for agent in packet.content['agents'] for sample in agent['samples'])
+    assert 'green notebook' not in cpa.canonical(result)
+
+
+def test_historical_business_dry_run_is_not_an_accepted_business_certificate(historical_business_setup):
+    result = run(historical_business_setup, persist=False)
+    assert result['passed_threshold'] and not result['accepted']
+    assert not result['business_qualification']['accepted'] and not result['business_qualification']['record_id']
+    assert not verified(historical_business_setup)['accepted']
+
+
+def test_ordinary_operational_receipt_does_not_acquire_historical_business_purpose(setup):
+    result = run(setup)
+    assert result['accepted'] and result['acceptance_purpose'] == 'operational'
+    assert result['business_qualification'] == {}
+    assert verified(setup)['business_qualification'] == {}
+
+
+@pytest.mark.parametrize('field', ['purpose', 'scope', 'version', 'missing_source', 'duplicate_source'])
+def test_historical_business_authority_is_explicit_and_exact_before_any_recall(historical_business_setup, field):
+    setup = historical_business_setup
+    if field == 'purpose': setup.policy['purpose'] = 'arbitrary_business_claim'
+    elif field == 'scope': setup.policy['business_sources'][0]['source_binding']['scope']['user_id'] = 'other-user'
+    elif field == 'version': setup.policy['business_sources'][0]['source_version'] = ['0' * 64]
+    elif field == 'missing_source': setup.policy['business_sources'].pop()
+    else: setup.policy['business_sources'][1] = deepcopy(setup.policy['business_sources'][0])
+    with pytest.raises(cpa.ControlledAcceptanceError):
+        run(setup)
+    assert not setup.calls
+
+
+@pytest.mark.parametrize('field', ['count', 'agent', 'policy', 'record', 'purpose', 'provenance'])
+def test_signed_historical_business_fields_are_recomputed_not_accepted_as_labels(historical_business_setup, field):
+    setup = historical_business_setup
+    result = run(setup); assert result['accepted'], result
+    packet = setup.runtime.store.get_by_exact_ref(result['record_id'], scope=OWNER, source_id='default')
+    if field == 'count': packet.content['business_qualification']['sample_count'] += 1
+    elif field == 'agent': packet.content['business_qualification']['agents'][0]['pass_count'] -= 1
+    elif field == 'policy': packet.content['business_qualification']['policy_digest'] = '0' * 64
+    elif field == 'record': packet.content['business_qualification']['record_id'] = 'cpa_other'
+    elif field == 'purpose': packet.content['acceptance_purpose'] = 'operational'
+    else: packet.content['agents'][0]['samples'][0]['business_provenance']['source_metadata_digest'] = '0' * 64
+    packet.content = cpa.seal({k:v for k,v in packet.content.items() if k not in {'key_id', 'signature'}}, cpa.SCHEMA)
+    packet.meta['report_digest'] = cpa.digest(packet.content)
+    setup.runtime.store.append(packet)
+    assert not verified(setup, record_id=result['record_id'])['accepted']
+
+
+def test_new_business_purpose_invalidates_prior_operational_receipt(historical_business_setup):
+    setup = historical_business_setup
+    sources = setup.policy.pop('business_sources'); setup.policy.pop('purpose')
+    old = run(setup); assert old['accepted'] and old['business_qualification'] == {}
+    setup.policy.update(purpose='historical_business_qualification', business_sources=sources)
+    assert not verified(setup, record_id=old['record_id'])['accepted']
+    current = run(setup)
+    assert current['accepted'] and current['business_qualification']['accepted']
+
+
+def test_historical_authorized_source_still_rejects_acceptance_generated_memory(historical_business_setup):
+    setup = historical_business_setup
+    record = setup.memories['hongtai'][0]
+    record.meta['acceptance_generated'] = True
+    setup.runtime.store.append(record)
+    binding = cpa.benchmark._binding(record)
+    setup.policy['business_sources'][3] = dict(source_binding=binding,
+        source_version=cpa._physical(setup.runtime,binding,record.scope,('hermes',),setup.policy['stable_before']),
+        origin_source=record.source)
+    result = run(setup)
+    assert not result['accepted'] and not result['business_qualification']['accepted']

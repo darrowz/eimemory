@@ -344,8 +344,68 @@ def channel_wait_report_ok(report: Any) -> bool:
     )
 
 
+def historical_business_qualification_ok(controlled: Any) -> bool:
+    """Check the native verifier's business projection, not its signature.
+
+    Historical business origin and controlled validation are independent axes.
+    The native acceptance verifier supplies provenance and current authority;
+    this pure contract prevents a summary from changing purpose or counts.
+    """
+    controlled = _object(controlled)
+    qualification = _object(controlled.get("business_qualification"))
+    agents = controlled.get("agents")
+    identity = _object(controlled.get("release_identity"))
+    if not (
+        controlled.get("ok") is True and controlled.get("accepted") is True
+        and controlled.get("persisted") is True and controlled.get("status") == "accepted"
+        and controlled.get("schema") == "controlled_production_acceptance.v1"
+        and controlled.get("mode") == "controlled_existing_memory"
+        and controlled.get("evidence_class") == "operator_controlled_existing_memory"
+        and controlled.get("acceptance_purpose") == "historical_business_qualification"
+        and qualification.get("schema") == "historical_business_qualification.v1"
+        and qualification.get("purpose") == "historical_business_qualification"
+        and qualification.get("accepted") is True
+        and qualification.get("business_origin") == "historical_business"
+        and qualification.get("validation_method") == "controlled_recall"
+        and set(qualification) == {"schema", "purpose", "accepted", "business_origin", "validation_method",
+                                    "policy_digest", "record_id", "release_identity", "sample_count",
+                                    "pass_count", "fail_count", "agents"}
+        and isinstance(controlled.get("policy_digest"), str) and _SHA64.fullmatch(controlled["policy_digest"])
+        and _name(controlled.get("record_id"))
+        and qualification.get("policy_digest") == controlled["policy_digest"]
+        and qualification.get("record_id") == controlled["record_id"]
+        and qualification.get("release_identity") == controlled.get("release_identity")
+        and set(identity) == {"release_commit", "release_version", "deployment_receipt_id", "release_session_id"}
+        and isinstance(identity.get("release_commit"), str) and _SHA40.fullmatch(identity["release_commit"])
+        and all(_name(identity.get(key)) for key in ("release_version", "deployment_receipt_id", "release_session_id"))
+        and _rows(agents) and _unique(agents, "agent_id") and _unique(agents, "scope_digest")
+        and qualification.get("agents") == agents
+    ):
+        return False
+    count = 0
+    for agent in agents:
+        if not (
+            _integer(agent.get("sample_count"), minimum=3)
+            and isinstance(agent.get("scope_digest"), str) and _SHA64.fullmatch(agent["scope_digest"])
+            and isinstance(agent.get("source_ids"), list) and agent["source_ids"]
+            and all(_name(source) for source in agent["source_ids"])
+            and len(set(agent["source_ids"])) == len(agent["source_ids"])
+            and type(agent.get("pass_count")) is int and agent["pass_count"] == agent["sample_count"]
+            and type(agent.get("fail_count")) is int and agent["fail_count"] == 0
+            and agent.get("accepted") is True and agent.get("complete") is True
+            and not agent.get("blocked_reason")
+        ):
+            return False
+        count += agent["sample_count"]
+    return bool(
+        type(qualification.get("sample_count")) is int and qualification["sample_count"] == count
+        and type(qualification.get("pass_count")) is int and qualification["pass_count"] == count
+        and type(qualification.get("fail_count")) is int and qualification["fail_count"] == 0
+    )
+
+
 def controlled_production_closure_report_ok(report: Any) -> bool:
-    """A distinct operational acceptance; never a natural-query or L5 certificate."""
+    """Verify bounded acceptance; historical business does not imply online or L5."""
     report = _object(report)
     receipt = _object(report.get("deployment_receipt"))
     deployment = _object(report.get("deployment"))
@@ -355,11 +415,29 @@ def controlled_production_closure_report_ok(report: Any) -> bool:
     stability = _object(report.get("stability"))
     transport = _object(report.get("rpc_controlled_probe"))
     commit = receipt.get("commit")
+    historical_business = historical_business_qualification_ok(controlled)
+    expected_scope = "historical_business" if historical_business else "operational_only"
+    if historical_business:
+        if (report.get("business_qualification") != controlled.get("business_qualification")
+                or report.get("acceptance_purpose") != "historical_business_qualification"
+                or report.get("business_origin") != "historical_business"
+                or report.get("validation_method") != "controlled_recall"
+                or report.get("natural_online_evidence") != {
+                    **_object(report.get("natural_evidence")),
+                    "observation_only": True, "blocks_business_closure": False,
+                }):
+            return False
+    elif (controlled.get("acceptance_purpose") not in (None, "operational")
+          or report.get("acceptance_purpose") not in (None, "operational")
+          or controlled.get("business_qualification") not in (None, {})
+          or report.get("business_qualification") not in (None, {})
+          or report.get("business_origin") or report.get("validation_method")):
+        return False
     if not (
         report.get("report_type") == "controlled_production_release_closure"
         and report.get("ok") is True and report.get("closure_complete") is True
         and report.get("data_accumulating") is False
-        and report.get("closure_scope") == "operational_only"
+        and report.get("closure_scope") == expected_scope
         and report.get("acceptance_basis") == "controlled_existing_memory"
         and report.get("evidence_class") == "operator_controlled_existing_memory"
         and report.get("certifies_natural_queries") is False

@@ -167,6 +167,20 @@ def closure_blockers(report: Any) -> dict[str, Any]:
         'sample_count': recall.get('sample_count') if type(recall.get('sample_count')) is int and recall['sample_count'] >= 0 else None,
         'repair_complete': False,
     }
+    if node.get('report_type') == 'controlled_production_release_closure':
+        from eimemory.governance.release.closure_contracts import controlled_production_closure_report_ok
+
+        if node.get('closure_scope') == 'historical_business' and controlled_production_closure_report_ok(node):
+            qualification = _obj(node.get('business_qualification'))
+            result['recall_evidence'] = {
+                'quality_accepted': True, 'quality_assessment_status': 'accepted',
+                'production_accepted': True, 'reason_code': 'historical_business_accepted',
+                'action': 'continue_real_business_sampling',
+                'business_origin': 'historical_business', 'validation_method': 'controlled_recall',
+                'sample_count': qualification['sample_count'], 'repair_complete': False,
+                'agents': qualification['agents'],
+            }
+            result['natural_online_evidence'] = dict(_obj(node.get('natural_online_evidence')))
     result['non_recall_evidence'] = _non_recall_evidence(node)
     result['scope'] = {key: _obj(node.get('scope')).get(key, '')
                        for key in ('tenant_id', 'agent_id', 'workspace_id', 'user_id')}

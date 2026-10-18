@@ -43,6 +43,7 @@ def ingest_quality_gate_reports(
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope or {}))
     ignored: list[str] = []
+    collection_waits: list[dict[str, str]] = []
 
     pending_findings = verified_delivery_findings(runtime, scope=scope_ref)
     from eimemory.evaluation.semantic_relevance_monitor import monitor_channel_deliveries
@@ -55,6 +56,10 @@ def ingest_quality_gate_reports(
             ignored.append(str(report_name))
             continue
         report = dict(raw_report or {}) if isinstance(raw_report, Mapping) else {}
+        if _collection_evidence_wait(str(report_name), report):
+            collection_waits.append({"report_name": str(report_name),
+                                     "reason": "recall_quality_evidence_incomplete"})
+            continue
         finding = _quality_finding(str(report_name), report)
         if finding is None:
             ignored.append(str(report_name))
@@ -80,6 +85,8 @@ def ingest_quality_gate_reports(
         "deduplicated_record_ids": deduplicated,
         "resolved_record_ids": resolved,
         "ignored_reports": ignored,
+        "collection_wait_count": len(collection_waits),
+        "collection_waits": collection_waits,
         "findings": findings,
         "semantic_relevance": semantic_report,
         "scope": asdict(scope_ref),
@@ -90,6 +97,24 @@ def ingest_quality_gate_reports(
             "release_gate_changed": False,
         },
     }
+
+
+def _collection_evidence_wait(report_name: str, report: dict[str, Any]) -> bool:
+    """Sample collection is distinct from a measured, repairable recall miss.
+
+    Reuse nightly's strict wait boundary: execution and source failures never
+    become collection waits, and no prior natural-quality gap is resolved here.
+    """
+    from eimemory.scheduler.result_contract import (
+        _authority_boundary_failed, _has_report_failure, _quality_wait_is_non_actionable,
+    )
+    gate = _gate(report)
+    return bool(
+        report_name in {"production_recall", "recall_quality"}
+        and report.get("execution_ok") is True
+        and not _has_report_failure(report) and not _authority_boundary_failed(report)
+        and _quality_wait_is_non_actionable(gate)
+    )
 
 
 def _ingest_verified_findings(runtime: Any, *, findings: list[dict[str, Any]], scope: ScopeRef) -> dict[str, Any]:

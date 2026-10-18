@@ -17,6 +17,10 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from eimemory.core.strict_json import loads
+from eimemory.scheduler.controlled_acceptance_diagnostics import _historical_business_agents
+from eimemory.scheduler.result_contract import (
+    _aggregate_nightly_ok, _authority_boundary_failed, _has_report_failure,
+)
 
 MAX_BYTES = 16 * 1024 * 1024
 _CODE = re.compile(r'[A-Za-z0-9_.:-]{1,160}')
@@ -55,6 +59,69 @@ def identity(report):
             return (commit, candidate.get('deployment_receipt_id') or candidate.get('receipt_id')
                     or candidate.get('promotion_request_id'), candidate.get('release_session_id') or candidate.get('session_id'))
     return ('', '', '')
+
+
+def _historical_business_reported(nightly, diagnostics, nightly_identities, *, expected_commit,
+                                  expected_receipt, expected_session):
+    """Correlate the native scheduler's verified BQ, without authenticating it.
+
+    The independent verifier ran in nightly. This read-only tool still reports
+    supplied evidence only, and must reject contradictory raw execution gates.
+    """
+    controlled = obj(diagnostics.get('controlled_production_acceptance'))
+    qualification = obj(controlled.get('business_qualification'))
+    evidence = obj(diagnostics.get('recall_quality_evidence'))
+    release = obj(qualification.get('release_identity'))
+    agents = _historical_business_agents(qualification.get('agents'))
+    count = sum(agent['sample_count'] for agent in agents.values())
+    release_key = identity(qualification)
+    if not (
+        diagnostics.get('schema') == 'nightly_execution_diagnostics.v1'
+        and diagnostics.get('execution_ok') is True and diagnostics.get('failed_steps') == []
+        and diagnostics.get('recall_quality_accepted') is True
+        and diagnostics.get('recall_quality_acceptance_basis') == 'historical_business_memory_controlled'
+        and _aggregate_nightly_ok(nightly, [])
+        and not any(_has_report_failure(value) or _authority_boundary_failed(value)
+                    for value in (nightly, diagnostics, controlled))
+        and controlled.get('accepted') is True and controlled.get('status') == 'accepted'
+        and controlled.get('mode') == 'controlled_existing_memory'
+        and controlled.get('acceptance_purpose') == 'historical_business_qualification'
+        and controlled.get('certifies_natural_queries') is False
+        and type(controlled.get('natural_samples_created')) is int and controlled['natural_samples_created'] == 0
+        and set(qualification) == {'schema', 'purpose', 'accepted', 'business_origin', 'validation_method',
+                                  'sample_count', 'pass_count', 'fail_count', 'agents', 'policy_digest',
+                                  'record_id', 'release_identity'}
+        and qualification.get('schema') == 'historical_business_qualification.v1'
+        and qualification.get('purpose') == 'historical_business_qualification'
+        and qualification.get('accepted') is True and agents
+        and qualification.get('business_origin') == 'historical_business'
+        and qualification.get('validation_method') == 'controlled_recall'
+        and isinstance(qualification.get('policy_digest'), str)
+        and re.fullmatch('[0-9a-f]{64}', qualification['policy_digest'])
+        and qualification.get('policy_digest') == controlled.get('policy_digest')
+        and isinstance(qualification.get('record_id'), str) and qualification['record_id']
+        and qualification.get('record_id') == controlled.get('record_id')
+        and set(release) == {'release_commit', 'release_version', 'deployment_receipt_id', 'release_session_id'}
+        and all(isinstance(value, str) and 1 <= len(value) <= 256 and value.isprintable()
+                for value in release.values())
+        and release_key[0] == expected_commit
+        and (not expected_receipt or release_key[1] == expected_receipt)
+        and (not expected_session or release_key[2] == expected_session)
+        and release_key in nightly_identities
+        and all(all(not reported or reported == expected for reported, expected in zip(key, release_key))
+                for key in nightly_identities)
+        and type(qualification.get('sample_count')) is int and qualification['sample_count'] == count
+        and type(qualification.get('pass_count')) is int and qualification['pass_count'] == count
+        and type(qualification.get('fail_count')) is int and qualification['fail_count'] == 0
+        and evidence.get('evaluation_contract') == qualification['schema']
+        and evidence.get('formal_business_evidence') is True and evidence.get('release_authority_verified') is True
+        and evidence.get('authority_record_id') == qualification['record_id']
+        and evidence.get('policy_digest') == qualification['policy_digest']
+        and all(type(evidence.get(key)) is int and evidence[key] == qualification[key]
+                for key in ('sample_count', 'pass_count', 'fail_count'))
+    ):
+        return {}
+    return qualification
 
 
 def diagnose(*, expected_commit: str, reports: dict, expected_receipt: str = '', expected_session: str = '') -> dict:
@@ -115,6 +182,10 @@ def diagnose(*, expected_commit: str, reports: dict, expected_receipt: str = '',
     elif nightly_binding_reason:
         add('nightly_execution', nightly_binding_state, nightly_binding_reason,
             first_failed_step=code(diagnostics.get('first_failed_step'), 'unspecified'))
+    elif (_has_report_failure(nightly) or _authority_boundary_failed(nightly)
+          or not _aggregate_nightly_ok(nightly, [])):
+        add('nightly_execution', 'failed', 'raw_nightly_execution_or_authority_failed',
+            first_failed_step=code(diagnostics.get('first_failed_step'), 'unspecified'))
     elif type(diagnostics.get('execution_ok')) is bool:
         add('nightly_execution', 'reported_pass' if diagnostics['execution_ok'] else 'failed',
             'execution_completed' if diagnostics['execution_ok'] else 'nightly_step_failed',
@@ -170,6 +241,10 @@ def diagnose(*, expected_commit: str, reports: dict, expected_receipt: str = '',
     quality = obj(nightly.get('recall_quality_gate'))
     evidence = (obj(nightly.get('recall_quality_evidence')) or obj(quality.get('recall_quality_evidence'))
                 or obj(diagnostics.get('recall_quality_evidence')))
+    historical = _historical_business_reported(
+        nightly, diagnostics, nightly_identities, expected_commit=expected_commit,
+        expected_receipt=expected_receipt, expected_session=expected_session,
+    ) if not nightly_binding_reason else {}
     if not quality and evidence:
         # Preserve the stored diagnostic state; never fabricate quality evidence.
         state = evidence.get('status')
@@ -177,12 +252,22 @@ def diagnose(*, expected_commit: str, reports: dict, expected_receipt: str = '',
                    'blocked_reason': 'recall_quality_evidence_incomplete' if state == 'insufficient'
                                      else 'recall_quality_gate_failed',
                    'evidence_status': state}
-    if not quality:
+    if _has_report_failure(quality) or _authority_boundary_failed(quality):
+        add('recall_quality', 'failed', 'recall_quality_execution_or_authority_failed')
+    elif historical:
+        add('recall_quality', 'reported_pass', 'historical_business_quality_reported_not_release_certification',
+            acceptance_basis='historical_business_memory_controlled', business_origin='historical_business',
+            validation_method='controlled_recall', sample_count=historical['sample_count'],
+            natural_online_accepted=diagnostics.get('natural_recall_quality_accepted') is True,
+            natural_online_waiting=bool(diagnostics.get('natural_evidence_waits')))
+    elif not quality:
         add('recall_quality', 'unverified', 'quality_gate_not_run_or_missing')
     elif quality.get('ok') is False:
-        waiting = quality.get('blocked_reason') == 'recall_quality_evidence_incomplete' and not quality.get('blocking_metrics')
+        hard_failure = _has_report_failure(quality) or _authority_boundary_failed(quality)
+        waiting = quality.get('blocked_reason') == 'recall_quality_evidence_incomplete' and not hard_failure
         add('recall_quality', 'waiting' if waiting else 'failed',
-            code(quality.get('blocked_reason'), 'recall_quality_failed'),
+            'recall_quality_execution_or_authority_failed' if hard_failure
+            else code(quality.get('blocked_reason'), 'recall_quality_failed'),
             evidence_status=code(evidence.get('status') or quality.get('evidence_status'), 'unknown'),
             missing_roles=[v for v in evidence.get('missing_roles', []) if isinstance(v, str) and _CODE.fullmatch(v)][:20],
             missing_metrics=[v for v in evidence.get('missing_metrics', []) if isinstance(v, str) and _CODE.fullmatch(v)][:40])

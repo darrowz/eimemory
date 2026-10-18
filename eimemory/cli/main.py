@@ -103,19 +103,38 @@ def _print_report_exit(report: dict[str, Any]) -> int:
 
 def _nightly_cli_summary(report: dict[str, Any]) -> dict[str, Any]:
     gate = report.get("recall_quality_gate") if isinstance(report.get("recall_quality_gate"), dict) else {}
+    summary = dict(report.get("supervisor_summary") or {})
+    diagnostics = report.get("nightly_diagnostics") or summary.get("nightly_diagnostics")
+    diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+    natural_gate = {
+        "ok": gate.get("ok") if gate else None,
+        "blocked_reason": str(gate.get("blocked_reason") or ""),
+        "skipped_reason": str(gate.get("skipped_reason") or ""),
+        "blocking_metrics": dict(gate.get("blocking_metrics") or {}),
+    }
     return {
         "schema": "eimemory.nightly.cli_summary.v1",
         "ok": bool(report.get("ok")),
         "active_rule_count": int(report.get("active_rule_count") or 0),
         "promotion_candidate_count": int(report.get("promotion_candidate_count") or 0),
         "memory_count": int(report.get("memory_count") or 0),
-        "supervisor_summary": dict(report.get("supervisor_summary") or {}),
-        "recall_quality_gate": {
-            "ok": gate.get("ok") if gate else None,
-            "blocked_reason": str((gate or {}).get("blocked_reason") or ""),
-            "skipped_reason": str((gate or {}).get("skipped_reason") or ""),
-            "blocking_metrics": dict((gate or {}).get("blocking_metrics") or {}),
+        "supervisor_summary": summary,
+        "business_recall_quality": {
+            "schema": "eimemory.business_recall_quality_summary.v1",
+            "accepted": diagnostics.get("recall_quality_accepted")
+                if type(diagnostics.get("recall_quality_accepted")) is bool else None,
+            "acceptance_basis": diagnostics.get("recall_quality_acceptance_basis", "not_reported"),
+            "evidence": diagnostics.get("recall_quality_evidence") or {},
+            "per_agent": diagnostics.get("recall_quality_per_agent") or {"status": "not_run"},
         },
+        # Compatibility name retains the exact online gate. The main business
+        # conclusion above can also be backed by verified historical business.
+        "recall_quality_gate": natural_gate,
+        "natural_recall_quality_gate": dict(natural_gate),
+        "natural_recall_quality_accepted": diagnostics.get("natural_recall_quality_accepted")
+            if type(diagnostics.get("natural_recall_quality_accepted")) is bool else None,
+        "natural_recall_quality_per_agent": diagnostics.get("natural_recall_quality_per_agent")
+            or {"status": "not_run"},
     }
 
 

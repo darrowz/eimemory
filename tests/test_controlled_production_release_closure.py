@@ -8,6 +8,7 @@ import pytest
 from eimemory.governance.release import release_closure as closure
 from eimemory.governance.release.release_closure import _wait_for_controlled_window
 from eimemory.governance.release.closure_contracts import controlled_production_closure_report_ok
+from eimemory.governance.release.closure_blockers import closure_blockers
 from eimemory.governance.release.closure_verdict import summarize_release_closure
 from eimemory.ops.controlled_stability import assess_controlled_stability as assess_stability
 from eimemory.ops import controlled_rpc_probe
@@ -110,6 +111,104 @@ def test_operational_success_is_not_natural_quality_or_l5_certification():
     assert result["l5_certification"] == "not_certified" and result["l5_certified"] is False
     assert result["certifies_natural_queries"] is False and result["long_term_stability_certified"] is False
     assert result["closure_scope"] == "operational_only"
+
+
+def historical_acceptance():
+    accepted = controlled_acceptance()
+    accepted["acceptance_purpose"] = "historical_business_qualification"
+    count = sum(row["sample_count"] for row in accepted["agents"])
+    accepted["business_qualification"] = {
+        "schema": "historical_business_qualification.v1",
+        "purpose": "historical_business_qualification", "accepted": True,
+        "business_origin": "historical_business", "validation_method": "controlled_recall",
+        "policy_digest": accepted["policy_digest"], "record_id": accepted["record_id"],
+        "release_identity": deepcopy(accepted["release_identity"]),
+        "sample_count": count, "pass_count": count, "fail_count": 0,
+        "agents": deepcopy(accepted["agents"]),
+    }
+    return accepted
+
+
+def historical_report():
+    report = complete_report()
+    report.update(closure_scope="historical_business", business_origin="historical_business",
+        validation_method="controlled_recall", acceptance_purpose="historical_business_qualification",
+        controlled_production_acceptance=historical_acceptance())
+    report["business_qualification"] = deepcopy(report["controlled_production_acceptance"]["business_qualification"])
+    report["natural_evidence"] = {"certifies_natural_queries": False, "natural_samples_created": 0,
+        "agents": [{"agent_id": "colleague", "accepted_case_count": 0, "required_case_count": 3}]}
+    report["natural_online_evidence"] = {**report["natural_evidence"],
+        "observation_only": True, "blocks_business_closure": False}
+    return report
+
+
+def test_real_historical_business_counts_as_business_qualification_with_online_collection_separate():
+    report = historical_report()
+    assert controlled_production_closure_report_ok(report)
+    result = summary(report)
+    assert result["ok"] is True and result["closure_complete"] is True
+    assert result["production_quality"] == "historical_business_accepted"
+    assert result["closure_scope"] == "historical_business" and result["business_qualified"] is True
+    assert result["business_qualification"]["sample_count"] == 6
+    assert all(agent["pass_count"] == agent["sample_count"] == 3
+               for agent in result["business_qualification"]["agents"])
+    assert result["natural_online_evidence"]["agents"][0]["accepted_case_count"] == 0
+    assert result["natural_online_evidence"]["blocks_business_closure"] is False
+    assert result["certifies_natural_queries"] is False
+    assert result["l5_certification"] == "not_certified" and result["long_term_stability_certified"] is False
+    blockers = closure_blockers(report)
+    assert blockers["recall_evidence"]["production_accepted"] is True
+    assert blockers["recall_evidence"]["quality_assessment_status"] == "accepted"
+    assert blockers["recall_evidence"]["sample_count"] == 6
+    assert blockers["natural_online_evidence"]["observation_only"] is True
+
+
+@pytest.mark.parametrize("path,value", [
+    (("closure_scope",), "operational_only"),
+    (("acceptance_purpose",), "operational"),
+    (("business_origin",), "synthetic"), (("validation_method",), "natural_online"),
+    (("business_qualification", "sample_count"), 7),
+    (("business_qualification", "accepted"), False),
+    (("controlled_production_acceptance", "acceptance_purpose"), "operational"),
+    (("controlled_production_acceptance", "business_qualification", "purpose"), "operational"),
+    (("controlled_production_acceptance", "business_qualification", "schema"), "unknown"),
+    (("controlled_production_acceptance", "business_qualification", "business_origin"), "synthetic"),
+    (("controlled_production_acceptance", "business_qualification", "validation_method"), "natural_online"),
+    (("controlled_production_acceptance", "business_qualification", "accepted"), False),
+    (("controlled_production_acceptance", "business_qualification", "sample_count"), True),
+    (("controlled_production_acceptance", "business_qualification", "pass_count"), 7),
+    (("controlled_production_acceptance", "business_qualification", "fail_count"), 1),
+    (("controlled_production_acceptance", "business_qualification", "policy_digest"), "f" * 64),
+    (("controlled_production_acceptance", "business_qualification", "record_id"), "foreign"),
+    (("controlled_production_acceptance", "business_qualification", "release_identity", "release_session_id"), "foreign"),
+    (("controlled_production_acceptance", "business_qualification", "agents", 0, "sample_count"), 4),
+    (("natural_online_evidence", "blocks_business_closure"), True),
+    (("natural_online_evidence", "agents", 0, "accepted_case_count"), 3),
+    (("stability", "ok"), False), (("rpc_controlled_probe", "cases", 0, "collection_complete"), False),
+])
+def test_historical_business_closure_rejects_scope_count_purpose_or_gate_inflation(path, value):
+    report = historical_report()
+    # The display projection is independently serialized from its source.
+    report["natural_online_evidence"] = deepcopy(report["natural_online_evidence"])
+    target = report
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    assert controlled_production_closure_report_ok(report) is False
+    result = summary(report)
+    assert result["ok"] is False and result["business_qualified"] is False
+    assert result["business_qualification"] == {}
+    assert result["production_quality"] == "uncertified"
+    assert closure_blockers(report)["recall_evidence"]["production_accepted"] is False
+
+
+def test_outer_business_labels_cannot_upgrade_an_operational_certificate():
+    report = complete_report()
+    report.update(closure_scope="historical_business", business_origin="historical_business",
+                  validation_method="controlled_recall")
+    report["business_qualification"] = historical_acceptance()["business_qualification"]
+    assert not controlled_production_closure_report_ok(report)
+    assert summary(report)["production_quality"] == "uncertified"
 
 
 @pytest.mark.parametrize("path,value", [
@@ -230,6 +329,42 @@ def test_selected_pipeline_uses_fresh_native_verifier_and_keeps_natural_pending(
     assert len(calls) == 2 and calls[0] == calls[1]
     assert report["natural_evidence"]["agents"][0]["accepted_case_count"] == 0
     assert report["natural_evidence"]["agents"][0]["required_case_count"] == 3
+
+
+def test_historical_business_pipeline_promotes_only_current_native_qualification(pipeline):
+    pipeline.core.load_controlled_policy = lambda runtime, scope: {
+        "stable_before": "2026-01-01T00:00:00Z", "agents": [{"scope": SCOPE}],
+        "purpose": "historical_business_qualification"}
+    pipeline.core.run_controlled_production_acceptance = lambda *args, **kwargs: historical_acceptance()
+    calls = []
+
+    def verify(runtime, **kwargs):
+        calls.append(kwargs)
+        return historical_acceptance()
+
+    pipeline.core.verify_controlled_production_acceptance = verify
+    report = pipeline.run()
+    assert report["ok"] is True and len(calls) == 2
+    assert report["closure_scope"] == "historical_business"
+    assert report["business_qualification"]["sample_count"] == 6
+    assert report["natural_evidence"]["agents"][0]["accepted_case_count"] == 0
+    assert report["natural_online_evidence"]["blocks_business_closure"] is False
+    assert summary(report)["production_quality"] == "historical_business_accepted"
+
+
+@pytest.mark.parametrize("changed_at", ["first", "final"])
+def test_historical_business_pipeline_rejects_missing_or_changed_native_qualification(pipeline, changed_at):
+    pipeline.core.load_controlled_policy = lambda runtime, scope: {
+        "stable_before": "2026-01-01T00:00:00Z", "agents": [{"scope": SCOPE}],
+        "purpose": "historical_business_qualification"}
+    pipeline.core.run_controlled_production_acceptance = lambda *args, **kwargs: historical_acceptance()
+    observations = iter([controlled_acceptance()] if changed_at == "first" else
+                        [historical_acceptance(), controlled_acceptance()])
+    pipeline.core.verify_controlled_production_acceptance = lambda *args, **kwargs: next(observations)
+    report = pipeline.run()
+    assert report["ok"] is False and report["closure_complete"] is False
+    assert report["blocked_reason"] == "historical_business_qualification_invalid"
+    assert summary(report)["production_quality"] == "uncertified"
 
 
 @pytest.mark.parametrize("failed", ["policy", "run", "verify", "transport", "replay", "live", "channel", "stability"])

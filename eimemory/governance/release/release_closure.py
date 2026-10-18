@@ -378,7 +378,8 @@ def _run_controlled_operational_closure(
         run_controlled_production_acceptance, verify_controlled_production_acceptance,
     )
     from eimemory.governance.release.closure_contracts import (
-        controlled_production_closure_report_ok, legacy_release_replay_ok,
+        controlled_production_closure_report_ok, historical_business_qualification_ok,
+        legacy_release_replay_ok,
     )
     from eimemory.ops.controlled_stability import collect_controlled_stability_sample
     from eimemory.ops.controlled_rpc_probe import run_controlled_rpc_probe
@@ -390,6 +391,7 @@ def _run_controlled_operational_closure(
         closure_scope="operational_only", certifies_natural_queries=False, certifies_no_answer=False,
         natural_certification="not_certified", l5_certification="not_certified",
         natural_samples_created=0,
+        acceptance_purpose=str(policy.get("purpose") or "operational"),
     )
     database_path = runtime.store.sqlite.path
     executed = run_controlled_production_acceptance(
@@ -408,6 +410,12 @@ def _run_controlled_operational_closure(
     if verified.get("ok") is not True or verified.get("accepted") is not True:
         return _blocked(report, "controlled_production_acceptance",
                         _failure_reason(verified, "controlled_production_acceptance_verification_failed"))
+    if policy.get("purpose") == "historical_business_qualification":
+        if not historical_business_qualification_ok(verified):
+            return _blocked(report, "controlled_production_acceptance", "historical_business_qualification_invalid")
+        report.update(closure_scope="historical_business", business_origin="historical_business",
+                      validation_method="controlled_recall",
+                      business_qualification=verified["business_qualification"])
     transport = run_controlled_rpc_probe(runtime, scope=scope, expected_commit=release.commit)
     report["rpc_controlled_probe"] = transport
     if transport.get("ok") is not True:
@@ -422,6 +430,9 @@ def _run_controlled_operational_closure(
         report["stability"] = first_sample
         return _blocked(report, "stability", _failure_reason(first_sample, "controlled_stability_failed"))
     report["natural_evidence"] = _controlled_natural_progress(runtime, policy=policy)
+    report["natural_online_evidence"] = {
+        **report["natural_evidence"], "observation_only": True, "blocks_business_closure": False,
+    }
 
     runner = getattr(runtime, "run_weak_capability_replay_gate", None)
     if not callable(runner):
@@ -469,6 +480,10 @@ def _run_controlled_operational_closure(
     if verified.get("ok") is not True or verified.get("accepted") is not True:
         return _blocked(report, "controlled_production_acceptance",
                         _failure_reason(verified, "controlled_production_acceptance_verification_failed"))
+    if policy.get("purpose") == "historical_business_qualification":
+        if not historical_business_qualification_ok(verified):
+            return _blocked(report, "controlled_production_acceptance", "historical_business_qualification_invalid")
+        report["business_qualification"] = verified["business_qualification"]
     report.update(ok=True, closure_complete=True, data_accumulating=False)
     if not controlled_production_closure_report_ok(report):
         return _blocked(report, "controlled_report_contract", "controlled_production_closure_contract_invalid")

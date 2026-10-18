@@ -1108,18 +1108,38 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
     gate = gate if isinstance(gate, dict) else {}
     execution_ok = _aggregate_nightly_ok(report, steps)
     controlled = controlled_acceptance_diagnostics(report.get("controlled_production_acceptance"))
+    business = controlled.get("business_qualification") or {}
+    historical_accepted = execution_ok and business.get("accepted") is True
+    natural_accepted = _formal_recall_accepted(report.get("recall_quality"), gate)
+    natural_agents = _per_agent_diagnostics(report.get("recall_quality_per_agent"))
+    all_waits = list(dict.fromkeys(waits))
+    natural_waits = [name for name in all_waits if name in {"production_recall", "recall_quality_gate"}]
+    business_waits = [name for name in all_waits if not historical_accepted or name not in natural_waits]
+    historical_evidence = {
+        "evaluation_contract": "historical_business_qualification.v1",
+        "formal_business_evidence": True,
+        "business_origin": "historical_business", "validation_method": "controlled_recall",
+        "authority_record_id": controlled.get("record_id"),
+        "policy_digest": controlled.get("policy_digest"), "release_authority_verified": True,
+        **{key: business.get(key) for key in ("sample_count", "pass_count", "fail_count")},
+    } if historical_accepted else None
     return {
         "schema": "nightly_execution_diagnostics.v1",
         "execution_ok": execution_ok,
         "first_failed_step": failures[0] if failures else "",
         "failed_steps": failures,
-        "evidence_waits": list(dict.fromkeys(waits)),
-        "recall_quality_accepted": _formal_recall_accepted(report.get("recall_quality"), gate),
+        "evidence_waits": business_waits,
+        "natural_evidence_waits": natural_waits,
+        "recall_quality_accepted": natural_accepted or historical_accepted,
+        "recall_quality_acceptance_basis": "historical_business_memory_controlled" if historical_accepted
+            else "natural_production_queries" if natural_accepted else "not_accepted",
+        "natural_recall_quality_accepted": natural_accepted,
         "controlled_production_acceptance": controlled,
         "production_operational_accepted": execution_ok and controlled["accepted"],
         "production_acceptance_basis": "controlled_existing_memory"
             if controlled["accepted"] else "natural_quality_only",
-        "recall_quality_evidence": gate.get("recall_quality_evidence") or {},
+        "recall_quality_evidence": historical_evidence or gate.get("recall_quality_evidence") or {},
+        "natural_recall_quality_evidence": gate.get("recall_quality_evidence") or {},
         "memory_benchmark_status": (report.get("memory_eval_ci") or {}).get("memory_benchmark_status", "not_run")
             if isinstance(report.get("memory_eval_ci"), dict) else "not_run",
         "memory_benchmark_accepted": isinstance(report.get("memory_eval_ci"), dict)
@@ -1135,7 +1155,9 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
             (report.get("semantic_relevance_monitor") or {}).get("explicit")
             if isinstance(report.get("semantic_relevance_monitor"), dict) else None),
         "production_recall_smoke": _production_recall_smoke_diagnostics(report.get("production_recall")),
-        "recall_quality_per_agent": _per_agent_diagnostics(report.get("recall_quality_per_agent")),
+        "recall_quality_per_agent": _historical_business_per_agent_diagnostics(business)
+            if historical_accepted else natural_agents,
+        "natural_recall_quality_per_agent": natural_agents,
         "release_acceptance": "not_evaluated_by_scheduler",
         "last_success_at_semantics": "current_run_not_historical_last_success",
         **({"dynamic_capability_evolution": _dynamic_failure_diagnostics(
@@ -1149,6 +1171,27 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
             report.get("research_closure_review"))}
            if "research_closure_review" in failures
               or research_provider_diagnostics_reported(report.get("research_closure_review")) else {}),
+    }
+
+
+def _historical_business_per_agent_diagnostics(business: dict) -> dict:
+    """Business origin and current validation method are separate dimensions."""
+    agents = {
+        entry["agent_id"]: {
+            "ok": True, "blocked_reason": "", "complete": True,
+            **{key: entry[key] for key in ("sample_count", "pass_count", "fail_count")},
+            "evaluation_contract": "historical_business_qualification.v1",
+            "business_origin": "historical_business", "validation_method": "controlled_recall",
+        } for entry in business["agents"]
+    }
+    return {
+        "status": "evaluated", "rule": "all_authorized_historical_business_scopes_must_pass",
+        "business_origin": "historical_business", "validation_method": "controlled_recall",
+        "agents": agents,
+        "combined": {
+            "ok": True, "blocked_reason": "", "agent_count": len(agents),
+            **{key: business[key] for key in ("sample_count", "pass_count", "fail_count")},
+        },
     }
 
 
