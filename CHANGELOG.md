@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.138] — 2026-10-18
+
+- Preserve bounded answer-bearing spans from authoritative completed conversation records in native compact recall, with exact parent and quote bindings. Keep independently selected evidence and caller proofs authoritative.
+
 ## [1.14.137] — 2026-10-18
 
 - Preserve the native recall output in historical semantic maintenance instead of applying an unrelated explicit-tool display filter. Bind its output contract to signed capture and review evidence.

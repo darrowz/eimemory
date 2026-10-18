@@ -159,6 +159,11 @@ jobs:
           tests/test_semantic_gap_repair.py
           tests/test_semantic_gap_repair_flow.py
           tests/test_recall_request_local_route.py
+          tests/test_conversation_compact_projection.py
+          tests/test_compact_final_proof_binding.py
+          tests/test_cumulative_compact_budget.py
+          tests/test_caller_compact_diagnostics.py
+          tests/test_task_recall_repair.py
           tests/test_postgres_vector_source.py
           tests/test_llm_command_client.py
           tests/test_caller_assistance.py

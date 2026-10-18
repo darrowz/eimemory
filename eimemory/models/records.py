@@ -392,11 +392,15 @@ class RecallBundle:
                             or score.get('scope') != asdict(item.scope)
                             or not score.get('admitted')):
                         continue
+                    if score.get('fragment_id'):
+                        _discard_conversation_projection(compact)
                     text = candidate_record_keyword_text(item,
                         max_text_chars=int(score.get('projection_text_chars') or 16000))
                     fragment = next((f for f in evidence_fragments(text)
                                      if f['id'] == score.get('fragment_id')), None)
                     if fragment:
+                        compact.pop('conversation_projection', None)
+                        compact.pop('evidence_projection', None)
                         compact['evidence_excerpt'] = fragment['text']
                         compact['evidence_fragment_id'] = fragment['id']
                         compact['evidence_span'] = [fragment['start'], fragment['end']]
@@ -412,8 +416,11 @@ class RecallBundle:
                 proofs = bind_selected_proofs(caller.get('proofs'), self.items[:bounded_limit])
                 by_id = {proof['record_id']:proof for proof in proofs}
                 for item, compact in zip(self.items[:bounded_limit], payload['items']):
+                    if by_id.get(item.record_id):
+                        _discard_conversation_projection(compact)
                     excerpt = verified_parent_excerpt(item, by_id.get(item.record_id))
                     if excerpt:
+                        compact.pop('conversation_projection', None)
                         compact.pop('evidence_fragment_id', None)
                         compact.update(excerpt)
         from eimemory.retrieval.diagnostics import compact_recall_diagnostics
@@ -443,6 +450,15 @@ def compact_record(record: RecordEnvelope) -> dict[str, Any]:
     }
     if memory_type:
         payload["memory_type"] = _compact_text(memory_type, maximum=64)
+    if record.kind == 'memory' and memory_type == 'conversation':
+        from eimemory.contracts.conversation_projection import project_conversation_answer, SCHEMA
+        from eimemory.knowledge.evidence_contracts import versioned_record_ref
+        parent = content.get('text')
+        ref = versioned_record_ref(record)
+        projection = project_conversation_answer(parent, ref)
+        if projection is not None and (quote := projection.reconstruct(parent, ref)):
+            payload.update(evidence_excerpt=quote, evidence_span=[projection.start, projection.end],
+                           evidence_projection=SCHEMA, conversation_projection=projection.to_dict())
     # Preserve applicability before bounded presentation drops the tail.
     from eimemory.recall.memory_scope import is_task_scoped_memory
     if any(is_task_scoped_memory(str(value or ''))
@@ -455,6 +471,12 @@ def compact_record(record: RecordEnvelope) -> dict[str, Any]:
     return payload
 
 _compact_record = compact_record  # backward-compatible private alias
+
+
+def _discard_conversation_projection(compact: dict[str, Any]) -> None:
+    if compact.pop('conversation_projection', None) is not None:
+        for key in ('evidence_excerpt', 'evidence_span', 'evidence_projection'):
+            compact.pop(key, None)
 
 
 def _compact_explanation(explanation: dict[str, Any]) -> dict[str, Any]:
@@ -538,6 +560,11 @@ def _fit_compact_payload(payload: dict[str, Any], *, maximum_bytes: int) -> dict
             # never delete a selected record or its proof to make space.
             for collection_name in ("items", "rules", "reflections"):
                 for item in payload.get(collection_name, []):
+                    # A completed-turn answer is the bounded alternative to a
+                    # question-only prefix. Do not silently lose it at the last
+                    # output boundary; an unrepresentable result fails closed.
+                    if item.get('conversation_projection'):
+                        continue
                     if item.pop("evidence_excerpt", None) is not None:
                         changed = True
             if not changed:

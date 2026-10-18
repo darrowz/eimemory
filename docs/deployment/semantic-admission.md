@@ -273,3 +273,5 @@ verify resolution to the reviewed launcher. Retain the failed host session and
 the exact environment change; this requires no hook-trust bypass. If the host
 uses `shell_environment_policy.inherit=core`, set the nonsecret maintenance flag
 through an invocation-local `shell_environment_policy.set` override as well.
+
+Completed conversation presentation preserves a bounded contiguous answer span from the same authoritative `content.text` when its native turn structure is unambiguous. Parent, quote, physical record and scope bindings identify the quoted source; the span does not certify factual correctness, host delivery or memory contribution. Existing selected fragments and verifier proofs take priority, and missing historical receipt fields remain unknown.
