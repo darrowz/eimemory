@@ -421,7 +421,6 @@ def _run_controlled_operational_closure(
     if first_sample.get("ok") is not True:
         report["stability"] = first_sample
         return _blocked(report, "stability", _failure_reason(first_sample, "controlled_stability_failed"))
-    started = time.monotonic()
     report["natural_evidence"] = _controlled_natural_progress(runtime, policy=policy)
 
     runner = getattr(runtime, "run_weak_capability_replay_gate", None)
@@ -447,8 +446,10 @@ def _run_controlled_operational_closure(
 
     from eimemory.ops.controlled_stability import assess_controlled_stability
 
-    # The selected acceptance proves only this bounded window. Sleep in short
-    # slices so no individual wait can prevent the controller from stopping it.
+    # Replay, live and channel gates can write memory and advance index authority.
+    # Allow a full observation window after they finish, even when they took
+    # longer than the window themselves. Keep each sleep short and interruptible.
+    started = time.monotonic()
     _wait_for_controlled_window(started)
     last_sample = collect_controlled_stability_sample(
         expected_commit=release.commit, database_path=database_path,

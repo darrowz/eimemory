@@ -6,6 +6,7 @@ import sys
 import pytest
 
 from eimemory.governance.release import release_closure as closure
+from eimemory.governance.release.release_closure import _wait_for_controlled_window
 from eimemory.governance.release.closure_contracts import controlled_production_closure_report_ok
 from eimemory.governance.release.closure_verdict import summarize_release_closure
 from eimemory.ops.controlled_stability import assess_controlled_stability as assess_stability
@@ -330,3 +331,44 @@ def test_health_refresh_wait_uses_native_ttl_and_short_monotonic_slices(monkeypa
     closure._wait_for_controlled_health_refresh()
     assert clock["now"] - 100.0 > health_probe.health_fragment_cache_ttl_seconds()
     assert all(0 < seconds <= 1.0 for seconds in sleeps)
+
+
+def test_long_mutating_gates_are_followed_by_a_full_stability_window(pipeline, monkeypatch):
+    import time
+
+    clock = {"now": 100.0}
+    samples_at = []
+    sleeps = []
+    finished_at = {}
+    original_collect = pipeline.monitor.collect_controlled_stability_sample
+    replay_result, live_result = replay(), live()
+    channel_result = complete_report()["channel_acceptance"]
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    def collect(**kwargs):
+        samples_at.append(clock["now"])
+        return original_collect(**kwargs)
+
+    def gate(name, duration, result):
+        def run(**kwargs):
+            clock["now"] += duration
+            finished_at[name] = clock["now"]
+            return result
+        return run
+
+    monkeypatch.setattr(time, "sleep", sleep)
+    monkeypatch.setattr(closure, "_wait_for_controlled_window", _wait_for_controlled_window)
+    monkeypatch.setattr(pipeline.monitor, "collect_controlled_stability_sample", collect)
+    monkeypatch.setattr(pipeline.runtime, "run_weak_capability_replay_gate", gate("replay", 80, replay_result))
+    monkeypatch.setattr(pipeline.runtime, "run_live_task_acceptance", gate("live", 12, live_result))
+    monkeypatch.setattr(pipeline.runtime, "record_external_channel_acceptance", gate("channel", 1, channel_result))
+    report = pipeline.run()
+    assert report["ok"] is True
+    assert samples_at[0] == 100.0
+    assert finished_at == {"replay": 180.0, "live": 192.0, "channel": 193.0}
+    assert samples_at[1] - finished_at["channel"] == 60.0
+    assert sum(sleeps) == 60.0 and all(0 < seconds <= 1.0 for seconds in sleeps)

@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.143] — 2026-10-18
+
+- Begin the full controlled stability wait after replay, live and channel checks finish. A long replay can create real memories and must not consume the projection catch-up observation interval before the final strict health sample.
+
 ## [1.14.142] — 2026-10-18
 
 - Wait for the native health snapshot lifetime after successful authenticated controlled RPC probes before the first operational stability observation. Preserve strict PostgreSQL readiness and independent source checks; do not clear caches or retry a failed sample.
