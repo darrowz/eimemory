@@ -43,6 +43,39 @@ OUTCOME_RULE_SOURCES = {"diagnosis_pattern", "operator_gap", "visual_evidence_ga
 MAX_PRODUCTION_RECALL_DATASET_BYTES = 8 * 1024 * 1024
 
 
+def _run_controlled_production_acceptance(runtime: Runtime, *, scope: dict,
+                                         stable_before: str) -> dict:
+    """Run and revalidate a protected opt-in; never upgrade natural labels."""
+    from eimemory.evaluation.controlled_production_acceptance import (
+        load_controlled_policy, run_controlled_production_acceptance,
+        verify_controlled_production_acceptance,
+    )
+    try:
+        policy = load_controlled_policy(runtime, scope)
+        if policy is None:
+            return {"ok": True, "accepted": False, "status": "not_configured",
+                    "mode": "disabled", "certifies_natural_queries": False,
+                    "natural_samples_created": 0}
+        report = run_controlled_production_acceptance(
+            runtime, scope=scope, persist=True, stable_before=stable_before)
+        if not isinstance(report, dict):
+            return {"ok": False, "error": "controlled_production_report_invalid"}
+        if report.get("ok") is not True or report.get("accepted") is not True:
+            return report
+        verification = verify_controlled_production_acceptance(
+            runtime, scope=scope, record_id=str(report.get("record_id") or ""))
+        verified = (isinstance(verification, dict) and verification.get("ok") is True
+                    and verification.get("accepted") is True
+                    and verification.get("record_id") == report.get("record_id"))
+        return {**report, "ok": verified, "accepted": verified,
+                "runtime_authority_verified": verified, "verification": verification,
+                **({} if verified else {"error": "controlled_production_receipt_invalid"})}
+    except (OSError, ValueError, RuntimeError) as exc:
+        return {"ok": False, "accepted": False, "status": "unavailable",
+                "error": "controlled_production_acceptance_unavailable",
+                "error_type": type(exc).__name__}
+
+
 class DatasetUnreadableError(ValueError):
     """The dataset path or opened file failed a security invariant."""
 
@@ -262,6 +295,15 @@ def run_nightly_jobs(
                 primary_report=production_recall_report if isinstance(production_recall_report, dict) else {},
                 stable_before=recall_stable_before,
             ),
+        )
+        # An operator may explicitly approve existing-memory controls for
+        # production operation. Natural traffic and its quality verdict remain
+        # independently collected above; this is a separate signed receipt.
+        controlled_production_report = _nightly_step(
+            step_reports,
+            "controlled_production_acceptance",
+            lambda: _run_controlled_production_acceptance(
+                runtime, scope=scope, stable_before=recall_stable_before),
         )
         rule_evolution_report = _nightly_step(
             step_reports,
@@ -487,6 +529,7 @@ def run_nightly_jobs(
             # SCH-01: missing quality gate defaults ok:False; aggregate allowlists
             # only the non-actionable incomplete-evidence wait via _quality_wait_is_non_actionable.
             "recall_quality_per_agent": recall_per_agent_report,
+            "controlled_production_acceptance": controlled_production_report,
             "recall_quality_gate": _per_agent_bounded_gate(
                 production_recall_report.get("quality_gate"), recall_per_agent_report)
             if isinstance(production_recall_report.get("quality_gate"), dict)

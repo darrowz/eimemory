@@ -274,8 +274,15 @@ def needs_verification(query, chosen, *, independent_evidence=()):
 
 def identity():
     from .independent_evidence import identity as local_identity
-    configuration = [os.environ.get('EIMEMORY_RECALL_LLM_COMMAND') or os.environ.get('EIMEMORY_LLM_COMMAND',''),
-                     os.environ.get('EIMEMORY_LLM_MODEL',''),
+    recall_command = os.environ.get('EIMEMORY_RECALL_LLM_COMMAND')
+    forwarded = {part.strip() for part in os.environ.get('EIMEMORY_LLM_ENV_ALLOW', '').split(',')}
+    # Governance can configure a separate generic reviewer in the same process.
+    # A dedicated recall command never receives that model unless the operator
+    # explicitly forwards it through CommandLLMClient's environment allowlist.
+    generic_model = (os.environ.get('EIMEMORY_LLM_MODEL', '')
+                     if not recall_command or 'EIMEMORY_LLM_MODEL' in forwarded else '')
+    configuration = [recall_command or os.environ.get('EIMEMORY_LLM_COMMAND',''),
+                     generic_model,
                      os.environ.get('EIMEMORY_OPENCLAW_GATEWAY_MODULE',''),
                      os.environ.get('EIMEMORY_OPENCLAW_GATEWAY_EXPORT',''),
                      os.environ.get('EIMEMORY_OPENCLAW_GATEWAY_MODE',''),

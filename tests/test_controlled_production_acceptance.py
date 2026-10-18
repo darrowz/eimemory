@@ -1,0 +1,309 @@
+from copy import deepcopy
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
+import json
+import os
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from eimemory.api.runtime import Runtime
+from eimemory.evaluation import controlled_production_acceptance as cpa
+from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
+
+OWNER = ScopeRef(agent_id='hongrui', workspace_id='embodied', user_id='operator')
+SCOPES = [ScopeRef(agent_id=agent, workspace_id='embodied::channel::hermes', user_id='member-' + agent)
+          for agent in ('hongrui', 'hongtai', 'hongxin', 'xiaomage')]
+RELEASE = dict(release_commit='a' * 40, release_version='1.14.140',
+               deployment_receipt_id='receipt-fixture', release_session_id='session-fixture')
+
+
+@pytest.fixture
+def setup(tmp_path, monkeypatch):
+    monkeypatch.setenv('EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY', 'fixture-only-0123456789-abcdefghijklmnopqrstuvwxyz')
+    monkeypatch.delenv(cpa.POLICY_ENV, raising=False)
+    monkeypatch.delenv('EIMEMORY_RECALL_GATE_AGENTS', raising=False)
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    policy = dict(schema=cpa.POLICY_SCHEMA, mode=cpa.MODE, request_digest='b' * 64,
+        owner_scope=asdict(OWNER), agents=[dict(scope=asdict(s), source_ids=['hermes']) for s in SCOPES],
+        stable_before=cutoff, minimum_cases_per_scope=3, max_cases_per_scope=3, freshness_seconds=3600)
+    monkeypatch.setattr(cpa, '_read_policy', lambda path: deepcopy(policy))
+    monkeypatch.setenv(cpa.POLICY_ENV, str(tmp_path / 'policy.json'))
+    monkeypatch.setattr(cpa, '_release', lambda runtime, scope: (deepcopy(RELEASE), {'record_ref': 'receipt-fixture', 'record_digest': 'c' * 64}))
+    with Runtime.create(root=tmp_path / 'runtime') as runtime:
+        memories = {}
+        for scope in SCOPES:
+            records = []
+            for index in range(3):
+                record = RecordEnvelope.create(kind='memory', title=f'{scope.agent_id} known project {index}',
+                    summary=f'Project {index} uses an established green notebook.',
+                    content={'text': f'Project {index} uses an established green notebook.', 'memory_type': 'fact'},
+                    source='operator.memory', source_id='hermes', scope=scope, meta={'memory_type': 'fact'})
+                record.time.created_at = '2020-01-01T00:00:00Z'
+                record.time.updated_at = '2020-01-01T00:00:00Z'
+                runtime.store.append(record);records.append(record)
+            memories[scope.agent_id] = records
+        calls = []
+        def recall(**kwargs):
+            calls.append(kwargs)
+            scope = ScopeRef.from_dict(kwargs['scope'])
+            record = next(r for r in memories[scope.agent_id] if r.title == kwargs['query'])
+            return RecallBundle(items=[record], rules=[], reflections=[], confidence=1, next_action_hint='',
+                explanation={'retrieval_status': 'evidence_found',
+                    'relevance_selector': {'status': 'evidence_found', 'collection_complete': True},
+                    'engine_diagnostics': {'source_searches': 1, 'source_budget_exhausted': 0, 'drops': {}, 'fallback': False}})
+        monkeypatch.setattr(runtime.memory, 'recall', recall)
+        policy['engine_contract_digest'] = cpa.digest(cpa.controlled_retrieval_contract(runtime))
+        yield SimpleNamespace(runtime=runtime, policy=policy, memories=memories, calls=calls,
+                              recall=recall, monkeypatch=monkeypatch)
+
+
+def run(setup, **kwargs):
+    return cpa.run_controlled_production_acceptance(setup.runtime, scope=asdict(OWNER), **kwargs)
+
+
+def verified(setup, **kwargs):
+    return cpa.verify_controlled_production_acceptance(setup.runtime, scope=asdict(OWNER), **kwargs)
+
+
+def test_native_seedless_all_four_scopes_signed_receipt_revalidates_without_natural_labels(setup):
+    before = setup.runtime.store.count_records(kinds=['memory'])
+    report = run(setup)
+    assert report['ok'] and report['accepted'] and len(report['agents']) == 4
+    assert len(setup.calls) == 12
+    assert all(a['sample_count'] == a['pass_count'] == 3 and a['complete'] for a in report['agents'])
+    assert report['natural_samples_created'] == 0
+    assert not report['certifies_natural_queries'] and not report['certifies_no_answer']
+    assert setup.runtime.store.count_records(kinds=['memory']) == before
+    assert setup.runtime.store.count_records(kinds=['evaluation_packet']) == 1
+    result = verified(setup, record_id=report['record_id'])
+    assert result['ok'] and result['record_id'] == report['record_id'], result
+    assert len(setup.calls) == 12, 'verification cannot run recall or a judge'
+    assert 'member-hongtai' not in json.dumps(result) and 'green notebook' not in json.dumps(result)
+
+
+def test_dry_run_cannot_be_imported_as_persisted_acceptance(setup):
+    report = run(setup, persist=False)
+    assert report['passed_threshold'] and not report['accepted'] and not report['record_id'] and not report['persisted']
+    assert not verified(setup)['ok']
+
+
+def test_old_targets_can_coexist_with_valid_newer_same_scope_results(setup):
+    newer={}
+    for scope in SCOPES:
+        record=RecordEnvelope.create(kind='memory',title='New live fact after the old target cutoff',
+            summary='A newly captured legitimate live fact.',content={'text':'A legitimate new fact.','memory_type':'fact'},
+            source='operator.memory',source_id='hermes',scope=scope,meta={'memory_type':'fact'})
+        setup.runtime.store.append(record);newer[scope.agent_id]=record
+    def recall(**kwargs):
+        bundle=setup.recall(**kwargs);bundle.items.append(newer[kwargs['scope']['agent_id']]);return bundle
+    setup.monkeypatch.setattr(setup.runtime.memory,'recall',recall)
+    report=run(setup)
+    assert report['accepted'],report
+    assert verified(setup,record_id=report['record_id'])['accepted']
+
+
+@pytest.mark.parametrize('change', ['collection', 'selector', 'top', 'source_budget', 'recall_budget',
+    'missing_source_budget', 'missing_drops', 'truncated_drops', 'fallback', 'missing_fallback',
+    'boolean_budget', 'negative_budget', 'none_budget'])
+def test_final_hit_never_certifies_incomplete_unknown_or_fallback_retrieval(setup, change):
+    def recall(**kwargs):
+        bundle = setup.recall(**kwargs)
+        selector = bundle.explanation['relevance_selector'];engine = bundle.explanation['engine_diagnostics']
+        if change == 'collection': selector['collection_complete'] = False
+        if change == 'selector': selector['status'] = 'degraded'
+        if change == 'top': bundle.explanation['retrieval_status'] = 'degraded'
+        if change == 'source_budget': engine['source_budget_exhausted'] = 2
+        if change == 'recall_budget': engine['drops']['recall_budget_exhausted'] = 2
+        if change == 'missing_source_budget': engine.pop('source_budget_exhausted')
+        if change == 'missing_drops': engine.pop('drops')
+        if change == 'truncated_drops': engine['drops'] = {str(i): 1 for i in range(8)}
+        if change == 'fallback': engine['fallback'] = True
+        if change == 'missing_fallback': engine.pop('fallback')
+        if change == 'boolean_budget': engine['source_budget_exhausted'] = False
+        if change == 'negative_budget': engine['drops']['recall_budget_exhausted'] = -1
+        if change == 'none_budget': engine['drops']['recall_budget_exhausted'] = None
+        return bundle
+    setup.monkeypatch.setattr(setup.runtime.memory, 'recall', recall)
+    report = run(setup)
+    assert not report['accepted'] and not verified(setup)['accepted']
+
+
+@pytest.mark.parametrize('section', ['items', 'rules', 'reflections'])
+def test_every_actual_returned_section_is_exact_scope_and_source_checked(setup, section):
+    foreign = deepcopy(setup.memories['hongtai'][0])
+    def recall(**kwargs):
+        bundle = setup.recall(**kwargs)
+        if kwargs['scope']['agent_id'] == 'hongrui': getattr(bundle, section).append(foreign)
+        return bundle
+    setup.monkeypatch.setattr(setup.runtime.memory, 'recall', recall)
+    assert not run(setup)['accepted']
+
+
+@pytest.mark.parametrize('change', ['payload', 'source', 'status', 'policy', 'release', 'engine', 'hmac', 'expiry', 'duplicate'])
+def test_certificate_is_invalidated_by_current_authority_or_signed_evidence_drift(setup, change):
+    report = run(setup);assert report['accepted']
+    if change in {'payload', 'source', 'status'}:
+        record = setup.memories['hongtai'][0]
+        if change == 'payload': record.content['text'] = 'Changed after the successful measurement.'
+        if change == 'source':
+            def move(sqlite):
+                sqlite.execute('UPDATE records SET source_id=? WHERE record_id=?', ('other-source', record.record_id))
+                sqlite.commit()
+            setup.runtime.store.run_locked(move)
+        if change == 'status': record.status = 'superseded'
+        if change != 'source': setup.runtime.store.append(record)
+    elif change == 'policy': setup.policy['request_digest'] = 'd' * 64
+    elif change == 'release':
+        setup.monkeypatch.setattr(cpa, '_release', lambda runtime, scope: ({**RELEASE, 'release_session_id': 'new-session'}, {}))
+    elif change == 'engine':
+        setup.monkeypatch.setattr(cpa, '_engine', lambda runtime: {'identity_digest': 'd' * 64})
+    else:
+        record = setup.runtime.store.get_by_exact_ref(report['record_id'], scope=OWNER, source_id='default')
+        if change == 'hmac': record.content['signature'] = '0' * 64
+        if change == 'expiry':
+            record.content['completed_at'] = '2020-01-01T00:00:00Z'
+            record.content['started_at'] = '2020-01-01T00:00:00Z'
+            record.content = cpa.seal({k:v for k,v in record.content.items() if k not in {'key_id','signature'}}, cpa.SCHEMA)
+        if change == 'duplicate':
+            record.content['agents'][0]['samples'][1] = deepcopy(record.content['agents'][0]['samples'][0])
+            record.content = cpa.seal({k:v for k,v in record.content.items() if k not in {'key_id','signature'}}, cpa.SCHEMA)
+        record.meta['report_digest'] = cpa.digest(record.content)
+        setup.runtime.store.append(record)
+    assert not verified(setup, record_id=report['record_id'])['ok']
+
+
+def test_later_failed_attempt_blocks_reuse_of_older_accepted_certificate(setup):
+    prior = run(setup);assert prior['accepted']
+    setup.monkeypatch.setattr(setup.runtime.memory, 'recall', lambda **kw: RecallBundle(
+        items=[], rules=[], reflections=[], confidence=0, next_action_hint='', explanation={}))
+    failed = run(setup);assert not failed['accepted'] and failed['record_id']
+    assert not verified(setup, record_id=prior['record_id'])['ok']
+    assert not verified(setup)['ok']
+
+
+@pytest.mark.parametrize('mutation', ['status', 'release_meta', 'source', 'kind'])
+def test_mutable_envelope_cannot_hide_a_newer_failed_high_water(setup, mutation):
+    prior = run(setup);assert prior['accepted']
+    setup.monkeypatch.setattr(setup.runtime.memory, 'recall', lambda **kw: RecallBundle(
+        items=[], rules=[], reflections=[], confidence=0, next_action_hint='', explanation={}))
+    failed = run(setup);assert failed['record_id'] and not failed['accepted']
+    record = setup.runtime.store.get_by_exact_ref(failed['record_id'], scope=OWNER, source_id='default')
+    if mutation == 'status':record.status = 'rejected'
+    if mutation == 'release_meta':record.meta['release_key'] = '0' * 64
+    if mutation == 'source':record.source = 'unrelated.producer'
+    if mutation == 'kind':record.kind = 'reflection'
+    setup.runtime.store.append(record)
+    assert not verified(setup)['accepted']
+    assert not verified(setup, record_id=prior['record_id'])['accepted']
+
+
+@pytest.mark.parametrize('damage', ['scope', 'source', 'wildcard', 'quota', 'age', 'unknown', 'duplicate_agent'])
+def test_policy_is_explicit_bounded_scope_authority_before_any_recall(setup, damage):
+    policy = setup.policy
+    if damage == 'scope': policy['owner_scope']['user_id'] = 'other'
+    if damage == 'source': policy['agents'][0]['source_ids'] = []
+    if damage == 'wildcard': policy['agents'][0]['scope']['user_id'] = '*'
+    if damage == 'quota': policy['minimum_cases_per_scope'] = 2
+    if damage == 'age': policy['freshness_seconds'] = 86401
+    if damage == 'unknown': policy['accepted'] = True
+    if damage == 'duplicate_agent': policy['agents'].append(deepcopy(policy['agents'][0]))
+    with pytest.raises(cpa.ControlledAcceptanceError): run(setup)
+    assert not setup.calls
+
+
+def test_missing_default_is_disabled_but_explicit_missing_is_error(tmp_path, monkeypatch):
+    monkeypatch.delenv(cpa.POLICY_ENV, raising=False)
+    monkeypatch.setattr(cpa, 'DEFAULT_POLICY', str(tmp_path/'absent'/'policy.json'))
+    assert cpa.load_controlled_policy(None, OWNER) is None
+    monkeypatch.setenv(cpa.POLICY_ENV, str(tmp_path/'absent'/'policy.json'))
+    with pytest.raises(cpa.ControlledAcceptanceError): cpa.load_controlled_policy(None, OWNER)
+
+
+def test_operator_policy_cannot_omit_a_discovered_traffic_agent(setup):
+    setup.monkeypatch.setenv('EIMEMORY_RECALL_GATE_AGENTS', 'hongrui,hongtai,hongxin,xiaomage,uncovered-colleague')
+    with pytest.raises(cpa.ControlledAcceptanceError, match='traffic_agent_not_authorized'):
+        run(setup)
+    assert not setup.calls
+
+
+def test_policy_binds_the_live_runtime_configuration_before_recall(setup):
+    setup.policy['engine_contract_digest'] = 'f' * 64
+    result = run(setup)
+    assert result['blocked_reason'] == 'controlled_acceptance_production_engine_contract_mismatch'
+    assert not setup.calls
+
+
+def test_source_change_after_individual_cases_is_rejected_in_the_append_transaction(setup):
+    original=setup.runtime.store.mutate_records_atomically
+    def raced(callback):
+        source=setup.memories['hongrui'][0]
+        source.content['text']='Concurrent authoritative source update before certificate commit.'
+        setup.runtime.store.append(source)
+        return original(callback)
+    setup.monkeypatch.setattr(setup.runtime.store,'mutate_records_atomically',raced)
+    result=run(setup)
+    assert not result['accepted'] and not result['record_id']
+    assert setup.runtime.store.count_records(kinds=['evaluation_packet']) == 0
+
+
+def test_verification_final_snapshot_catches_change_to_an_already_checked_source(setup):
+    report=run(setup);assert report['accepted']
+    original=cpa._physical
+    count=0
+    def raced(*args,**kwargs):
+        nonlocal count
+        result=original(*args,**kwargs);count+=1
+        if count==3:
+            source=setup.memories['hongrui'][0]
+            source.content['text']='Changed after the first verification read.'
+            setup.runtime.store.append(source)
+        return result
+    setup.monkeypatch.setattr(cpa,'_physical',raced)
+    assert not verified(setup,record_id=report['record_id'])['accepted']
+
+
+def test_postgres_cold_to_warm_state_and_watermark_do_not_change_configuration_certificate(setup):
+    from eimemory.retrieval.postgres_vector import IndexState
+    engine = setup.runtime.memory.recall_engine
+    raw = deepcopy(engine.effective_identity())
+    raw['candidate_source'].update(candidate_source_type='PostgresVectorCandidateSource',
+        enabled=True, configured=True, config_fingerprint='e' * 64, projection_fingerprint='f' * 64,
+        embedding={'provider_type': 'fixture', 'model': 'fixture', 'fingerprint': 'a' * 64},
+        postgres={'state': 'bypassed', 'committed_watermark': '', 'index_revision': '1',
+                  'circuit': 'closed', 'index_verified': False, 'query_valid': False, 'bypass_reason': 'cold'})
+    state = IndexState(ready=True, watermark='old-watermark', authority_revision='1',
+        embedding_fingerprint='a' * 64, projection_digest_schema='fixture.v1', projection_fingerprint='f' * 64)
+    setup.monkeypatch.setattr(engine, 'effective_identity', lambda: deepcopy(raw))
+    setup.monkeypatch.setattr(engine, 'candidate_source', SimpleNamespace(repository=SimpleNamespace(read_index_state=lambda:state)))
+    setup.policy['engine_contract_digest'] = cpa.digest(cpa.controlled_retrieval_contract(setup.runtime))
+    def recall(**kwargs):
+        raw['candidate_source']['authority_revision'] = '3'
+        raw['candidate_source']['postgres'].update(state='available', committed_watermark='new-watermark',
+            index_revision='3', index_verified=True, query_valid=True, bypass_reason='')
+        return setup.recall(**kwargs)
+    setup.monkeypatch.setattr(setup.runtime.memory, 'recall', recall)
+    result=run(setup)
+    assert result['accepted'],result
+    assert verified(setup, record_id=result['record_id'])['accepted']
+    raw['candidate_source']['config_fingerprint'] = 'b' * 64
+    assert not verified(setup, record_id=result['record_id'])['accepted']
+
+
+@pytest.mark.skipif(os.name != 'posix' or not hasattr(os, 'geteuid') or os.geteuid() != 0,
+                    reason='native root-owned policy requires Linux root')
+@pytest.mark.parametrize('damage', ['valid', 'writable', 'symlink', 'foreign_owner', 'parent_writable', 'parent_symlink'])
+def test_native_operator_policy_file_and_all_ancestors_are_protected(tmp_path, damage):
+    parent=tmp_path/'authority';parent.mkdir();path=parent/'policy.json'
+    path.write_text('{"probe":true}');path.chmod(0o640)
+    if damage == 'writable':path.chmod(0o660)
+    if damage == 'foreign_owner':os.chown(path,65534,65534)
+    if damage == 'parent_writable':parent.chmod(0o777)
+    if damage == 'symlink':
+        target=parent/'target.json';path.rename(target);path.symlink_to(target)
+    if damage == 'parent_symlink':
+        target=tmp_path/'target';parent.rename(target);parent.symlink_to(target,target_is_directory=True)
+    if damage == 'valid':assert cpa._read_policy(path)=={'probe':True}
+    else:
+        with pytest.raises(cpa.ControlledAcceptanceError):cpa._read_policy(path)

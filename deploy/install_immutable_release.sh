@@ -2281,6 +2281,8 @@ _run_pre_switch_production_recall_bootstrap() {
     EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
     "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/run_with_governance_env.py" \
       --env-file "$GOVERNANCE_ENV_FILE" --optional \
+      --runtime-recall-config-dir "$EIMEMORY_CONFIG_DIR" \
+      --runtime-recall-root "$EIMEMORY_ROOT" \
       --optional-runtime-authority-env-file "$EIMEMORY_CONFIG_DIR/runtime-authority.env" -- \
       "$RELEASE_DIR/.venv/bin/python" -I -B \
         "$RELEASE_DIR/deploy/bootstrap_production_recall.py" \
@@ -2391,11 +2393,16 @@ _run_post_switch_closure() {
   local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"
   closure_output="$(mktemp "$INSTALL_ROOT/.release-closure-${COMMIT}-XXXXXXXX.json")"
   chmod 0600 "$closure_output"
-  if env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
+  if [ "$(id -u)" -eq 0 ]; then
+    chown "$SERVICE_USER:$SERVICE_GROUP" "$closure_output"
+  fi
+  if _run_as_service_user env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
     EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
     EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
     "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/run_with_governance_env.py" \
       --env-file "$GOVERNANCE_ENV_FILE" --optional \
+      --runtime-recall-config-dir "$EIMEMORY_CONFIG_DIR" \
+      --runtime-recall-root "$EIMEMORY_ROOT" \
       --optional-runtime-authority-env-file "$EIMEMORY_CONFIG_DIR/runtime-authority.env" -- \
       "$RELEASE_DIR/.venv/bin/eimemory" learn release-closure \
         --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
@@ -2411,7 +2418,7 @@ _run_post_switch_closure() {
   # One processor reads the original bytes once, preserves them, computes
   # the summary and registers the incident from that same snapshot.
   if summary_json="$(
-    env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
+    _run_as_service_user env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
       "$RELEASE_DIR/.venv/bin/python" -I -B "$RELEASE_DIR/deploy/record_release_closure_incident.py" \
       --path "$closure_output" --enforce-gate \
       --evidence-dir "$EIMEMORY_LOG_DIR/release-closure-captures" \

@@ -3,6 +3,42 @@ import pytest
 from eimemory.retrieval import caller_assistance as assistance
 
 
+def test_dedicated_recall_identity_does_not_bind_unforwarded_governance_model(monkeypatch):
+    from eimemory.llm.command_client import _subprocess_env
+    monkeypatch.setenv('EIMEMORY_RECALL_LLM_COMMAND', '["dedicated-recall-bridge"]')
+    monkeypatch.setenv('EIMEMORY_LLM_COMMAND', '["independent-governance-reviewer"]')
+    monkeypatch.delenv('EIMEMORY_LLM_ENV_ALLOW', raising=False)
+    monkeypatch.delenv('EIMEMORY_LLM_MODEL', raising=False)
+    original = assistance.identity()
+    monkeypatch.setenv('EIMEMORY_LLM_MODEL', 'governance-review-model')
+    assert assistance.identity() == original
+    assert 'EIMEMORY_LLM_MODEL' not in _subprocess_env()
+
+
+@pytest.mark.parametrize('dedicated,forwarded', [(False, False), (True, True)])
+def test_recall_identity_keeps_generic_model_when_fallback_or_explicitly_forwarded(monkeypatch, dedicated, forwarded):
+    from eimemory.llm.command_client import _subprocess_env
+    monkeypatch.setenv('EIMEMORY_LLM_COMMAND', '["generic-command"]')
+    if dedicated: monkeypatch.setenv('EIMEMORY_RECALL_LLM_COMMAND', '["dedicated-command"]')
+    else: monkeypatch.delenv('EIMEMORY_RECALL_LLM_COMMAND', raising=False)
+    if forwarded: monkeypatch.setenv('EIMEMORY_LLM_ENV_ALLOW', ' PATH, EIMEMORY_LLM_MODEL , ')
+    else: monkeypatch.delenv('EIMEMORY_LLM_ENV_ALLOW', raising=False)
+    monkeypatch.setenv('EIMEMORY_LLM_MODEL', 'model-before')
+    previous = assistance.identity()['configuration_digest']
+    monkeypatch.setenv('EIMEMORY_LLM_MODEL', 'model-after')
+    assert assistance.identity()['configuration_digest'] != previous
+    if forwarded: assert _subprocess_env()['EIMEMORY_LLM_MODEL'] == 'model-after'
+
+
+def test_dedicated_recall_identity_keeps_expected_recall_model_validation(monkeypatch):
+    monkeypatch.setenv('EIMEMORY_RECALL_LLM_COMMAND', '["dedicated-command"]')
+    monkeypatch.delenv('EIMEMORY_LLM_ENV_ALLOW', raising=False)
+    monkeypatch.setenv('EIMEMORY_RECALL_EXPECTED_MODEL', 'expected-before')
+    original = assistance.identity()['configuration_digest']
+    monkeypatch.setenv('EIMEMORY_RECALL_EXPECTED_MODEL', 'expected-after')
+    assert assistance.identity()['configuration_digest'] != original
+
+
 def test_assistance_requires_verbatim_authoritative_span(monkeypatch):
     record = SimpleNamespace(record_id='memory-1')
     client = SimpleNamespace(timeout_seconds=90, complete=lambda **_: SimpleNamespace(

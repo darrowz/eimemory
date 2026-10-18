@@ -139,6 +139,13 @@ def isolate_eimemory_config_environment(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("EIMEMORY_CONFIG_PATH", raising=False)
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "eimemory-root"))
     monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path / "openclaw-loop"))
+    # A deployment may intentionally enable the protected production policy.
+    # Unrelated tests must not consume that live operator authorization. Tests
+    # of explicit policies override this missing default with their own fixture.
+    from eimemory.evaluation import controlled_production_acceptance
+    monkeypatch.delenv(controlled_production_acceptance.POLICY_ENV, raising=False)
+    monkeypatch.setattr(controlled_production_acceptance, "DEFAULT_POLICY",
+                        str(tmp_path / "isolated-controlled-policy" / "policy.json"))
     # Explicit trust anchors for code-evolution tests (never source-level author defaults).
     monkeypatch.setenv("EIMEMORY_TRUSTED_REPOSITORY_ROOT", "/dev-project/eimemory")
     monkeypatch.setenv("EIMEMORY_TRUSTED_REMOTE", "origin")

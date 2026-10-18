@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.140] — 2026-10-18
+
+- Add explicit operator-authorized production operation acceptance from existing-memory controls. Bind each colleague's native, seedless results to the protected policy, live retrieval configuration, deployment receipt, signatures and exact source versions. Preserve natural sampling, labels and certification separately.
+- Complete the selected operational release closure through deployment, storage, controlled recall, replay, live and channel gates plus two actual host stability observations. Report controlled production acceptance independently of natural quality and L5 certification.
+- Load the same ordered recall profiles in standard bootstrap, closure and registered reruns as RPC/nightly. Reject incomplete source or selector collection even when a controlled target was returned.
+- Keep closure and evidence capture under the database service owner when started by root. Bind recall identity to the effective verifier configuration so an unrelated governance model does not invalidate a dedicated recall verifier.
+
 ## [1.14.139] — 2026-10-18
 
 - Add root-authorized, record/version-bound Hermes subject projections with exact original host-turn and user evidence. Preserve legacy records and signed quality history; recheck grants and source versions during retrieval, cached delivery and sample acceptance.

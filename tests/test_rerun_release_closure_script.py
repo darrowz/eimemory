@@ -12,6 +12,9 @@ COMMIT = "7" * 40
 
 
 def _release(tmp_path: Path) -> Path:
+    database = tmp_path / "root" / "state" / "eimemory.sqlite"
+    database.parent.mkdir(parents=True)
+    database.touch()
     release = tmp_path / "releases" / COMMIT
     (release / "deploy").mkdir(parents=True)
     (release / ".venv" / "bin").mkdir(parents=True)

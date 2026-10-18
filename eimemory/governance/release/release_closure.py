@@ -151,6 +151,18 @@ def run_release_closure(
             ),
         )
 
+    from eimemory.evaluation.controlled_production_acceptance import load_controlled_policy
+
+    try:
+        controlled_policy = load_controlled_policy(runtime, scope_payload)
+    except (OSError, ValueError) as exc:
+        return _blocked(report, "controlled_policy", "controlled_policy_invalid:" + type(exc).__name__)
+    if controlled_policy is not None:
+        return _run_controlled_operational_closure(
+            runtime, report=report, scope=scope_payload, identity_kwargs=identity_kwargs,
+            release=receipt_identity, policy=controlled_policy,
+        )
+
     run_recall = getattr(runtime, "run_configured_production_recall_gate", None)
     if not callable(run_recall):
         return _blocked(report, "production_recall_gate", "production_recall_gate_runner_unavailable")
@@ -355,6 +367,133 @@ def run_release_closure(
         live_acceptance=live_acceptance,
         bootstrap_pending=bootstrap_pending,
     )
+
+
+def _run_controlled_operational_closure(
+    runtime: Any, *, report: dict[str, Any], scope: dict[str, Any],
+    identity_kwargs: dict[str, Any], release: ReleaseIdentity, policy: dict[str, Any],
+) -> dict[str, Any]:
+    """Exercise the release under explicit operator authority, without L5 claims."""
+    from eimemory.evaluation.controlled_production_acceptance import (
+        run_controlled_production_acceptance, verify_controlled_production_acceptance,
+    )
+    from eimemory.governance.release.closure_contracts import (
+        controlled_production_closure_report_ok, legacy_release_replay_ok,
+    )
+    from eimemory.ops.controlled_stability import collect_controlled_stability_sample
+    from eimemory.ops.controlled_rpc_probe import run_controlled_rpc_probe
+    import time
+
+    report.update(
+        report_type="controlled_production_release_closure", legacy_compatibility=False,
+        acceptance_basis="controlled_existing_memory", evidence_class="operator_controlled_existing_memory",
+        closure_scope="operational_only", certifies_natural_queries=False, certifies_no_answer=False,
+        natural_certification="not_certified", l5_certification="not_certified",
+        natural_samples_created=0,
+    )
+    database_path = runtime.store.sqlite.path
+    executed = run_controlled_production_acceptance(
+        runtime, scope=scope, persist=True, stable_before=str(policy.get("stable_before") or ""),
+    )
+    report["controlled_production_acceptance"] = executed
+    reference = str(executed.get("record_id") or executed.get("persisted_record_id") or "")
+    if executed.get("ok") is not True or executed.get("accepted") is not True or not reference:
+        return _blocked(report, "controlled_production_acceptance",
+                        _failure_reason(executed, "controlled_production_acceptance_failed"))
+    verified = verify_controlled_production_acceptance(
+        runtime, scope=scope, release=release, record_id=reference, limit=500,
+    )
+    report["controlled_production_acceptance"] = verified
+    report["record_ids"]["controlled_production_acceptance"] = reference
+    if verified.get("ok") is not True or verified.get("accepted") is not True:
+        return _blocked(report, "controlled_production_acceptance",
+                        _failure_reason(verified, "controlled_production_acceptance_verification_failed"))
+    transport = run_controlled_rpc_probe(runtime, scope=scope, expected_commit=release.commit)
+    report["rpc_controlled_probe"] = transport
+    if transport.get("ok") is not True:
+        return _blocked(report, "rpc_controlled_probe", "controlled_rpc_probe_failed")
+    first_sample = collect_controlled_stability_sample(
+        expected_commit=release.commit, database_path=database_path,
+    )
+    if first_sample.get("ok") is not True:
+        report["stability"] = first_sample
+        return _blocked(report, "stability", _failure_reason(first_sample, "controlled_stability_failed"))
+    started = time.monotonic()
+    report["natural_evidence"] = _controlled_natural_progress(runtime, policy=policy)
+
+    runner = getattr(runtime, "run_weak_capability_replay_gate", None)
+    if not callable(runner):
+        return _blocked(report, "replay_bootstrap", "legacy_capability_replay_runner_unavailable")
+    replay = runner(scope=scope, persist=True, loop_id="controlled_production_release_closure")
+    report["replay_bootstrap"] = replay
+    if not legacy_release_replay_ok(replay):
+        return _blocked(report, "replay_bootstrap", _failure_reason(replay, "legacy_capability_replay_failed"))
+    live = runtime.run_live_task_acceptance(**identity_kwargs)
+    report["live_acceptance"] = live
+    if not _live_acceptance_ok(live, receipt=report["deployment_receipt"]):
+        return _blocked(report, "live_acceptance", _failure_reason(live, "live_acceptance_failed"))
+    recorder = getattr(runtime, "record_external_channel_acceptance", None)
+    if not callable(recorder):
+        return _blocked(report, "channel_acceptance", "external_channel_acceptance_recorder_unavailable")
+    channel = recorder(scope=scope, current_release=release)
+    report["channel_acceptance"] = channel
+    report["record_ids"]["channel_acceptance"] = str(channel.get("record_id") or "")
+    if channel.get("ok") is not True:
+        return _blocked(report, "channel_acceptance",
+                        _failure_reason(channel, "current_release_channel_acceptance_missing"))
+
+    from eimemory.ops.controlled_stability import assess_controlled_stability
+
+    # The selected acceptance proves only this bounded window. Sleep in short
+    # slices so no individual wait can prevent the controller from stopping it.
+    _wait_for_controlled_window(started)
+    last_sample = collect_controlled_stability_sample(
+        expected_commit=release.commit, database_path=database_path,
+    )
+    stability = assess_controlled_stability(
+        [first_sample, last_sample], expected_commit=release.commit, minimum_interval_seconds=60,
+    )
+    report["stability"] = stability
+    if stability.get("ok") is not True:
+        return _blocked(report, "stability", _failure_reason(stability, "controlled_stability_failed"))
+    # Live probes and the observation window are not authority caches. Recheck
+    # the exact signed record, policy, high-water and physical sources last.
+    verified = verify_controlled_production_acceptance(
+        runtime, scope=scope, release=release, record_id=reference, limit=500,
+    )
+    report["controlled_production_acceptance"] = verified
+    if verified.get("ok") is not True or verified.get("accepted") is not True:
+        return _blocked(report, "controlled_production_acceptance",
+                        _failure_reason(verified, "controlled_production_acceptance_verification_failed"))
+    report.update(ok=True, closure_complete=True, data_accumulating=False)
+    if not controlled_production_closure_report_ok(report):
+        return _blocked(report, "controlled_report_contract", "controlled_production_closure_contract_invalid")
+    return report
+
+
+def _wait_for_controlled_window(started: float) -> None:
+    import time
+
+    while (remaining := 60.0 - (time.monotonic() - started)) > 0:
+        time.sleep(min(remaining, 1.0))
+
+
+def _controlled_natural_progress(runtime: Any, *, policy: dict[str, Any]) -> dict[str, Any]:
+    """Read natural-case progress without relabeling it or awarding certification."""
+    from eimemory.evaluation.production_query_dataset import build_production_query_dataset
+
+    agents = []
+    for configured in policy.get("agents") or []:
+        exact = dict(configured["scope"])
+        built = build_production_query_dataset(runtime, scope=exact)
+        progress = built.get("progress") if isinstance(built.get("progress"), dict) else {}
+        agents.append({
+            "agent_id": str(exact.get("agent_id") or ""),
+            "accepted_case_count": progress.get("accepted_case_count"),
+            "required_case_count": progress.get("required_case_count"),
+            "natural_certification": "not_certified_by_controlled_acceptance",
+        })
+    return {"certifies_natural_queries": False, "natural_samples_created": 0, "agents": agents}
 
 
 def _continue_release_closure(

@@ -246,7 +246,7 @@ def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]
         sample["retrieval_diagnostics"]["target_trace"] = observed_trace
         if "preference_route" in observed_trace:
             sample["retrieval_diagnostics"]["preference_route"] = observed_trace["preference_route"]
-    if explanation.get("retrieval_status") in {"unavailable", "degraded"}:
+    if _retrieval_explicitly_incomplete(explanation):
         return finish("controlled_retrieval_incomplete")
     # Do not certify a result if source authority changed while retrieval ran.
     after = runtime.store.get_by_exact_ref(current.record_id, scope=scope, source_id=current.source_id)
@@ -261,6 +261,32 @@ def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]
     sample.update(expected_rank=rank, recall_at_k=float(bool(rank)),
                   mrr=round(1 / rank, 3) if rank else 0.0, passed=bool(rank))
     return finish("" if rank else "known_item_missing")
+
+
+def _retrieval_explicitly_incomplete(explanation: dict[str, Any]) -> bool:
+    """A final hit cannot override explicitly failed collection diagnostics.
+
+    Older diagnostic adapters may omit these fields. Production acceptance
+    separately requires positive, fully typed proof of every completion field.
+    Complete lexical fallback remains a valid controlled diagnostic.
+    """
+    if explanation.get("retrieval_status") in {"unavailable", "degraded"}:
+        return True
+    selector = explanation.get("relevance_selector")
+    if isinstance(selector, dict) and (
+            ("collection_complete" in selector and selector["collection_complete"] is not True)
+            or selector.get("status") in {"unavailable", "degraded"}):
+        return True
+    engine = explanation.get("engine_diagnostics")
+    if not isinstance(engine, dict):
+        return False
+    for values, key in ((engine, "source_budget_exhausted"),
+                        (engine.get("drops"), "recall_budget_exhausted")):
+        if isinstance(values, dict) and key in values:
+            value = values[key]
+            if type(value) is not int or value != 0:
+                return True
+    return False
 
 
 def _query_generation_metadata(record: Any, query: str, *, cleaned_query: str) -> dict[str, Any]:

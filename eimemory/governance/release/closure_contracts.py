@@ -11,6 +11,8 @@ import math
 import re
 from typing import Any, Iterable
 
+from eimemory.ei_bridge.protocol import EIMEMORY_RPC_CONTRACT_VERSION
+
 LIVE_ACCEPTANCE_CASE_IDS = (
     "store.sqlite_query", "store.scoped_record_read", "memory.store_search_read",
     "sources.registry_read", "governance.policy_ledger_read",
@@ -340,3 +342,150 @@ def channel_wait_report_ok(report: Any) -> bool:
         and identity.get("deployment_receipt_id") == receipt.get("promotion_request_id")
         and identity.get("release_session_id") == receipt.get("release_session_id")
     )
+
+
+def controlled_production_closure_report_ok(report: Any) -> bool:
+    """A distinct operational acceptance; never a natural-query or L5 certificate."""
+    report = _object(report)
+    receipt = _object(report.get("deployment_receipt"))
+    deployment = _object(report.get("deployment"))
+    controlled = _object(report.get("controlled_production_acceptance"))
+    identity = _object(controlled.get("release_identity"))
+    channel = _object(report.get("channel_acceptance"))
+    stability = _object(report.get("stability"))
+    transport = _object(report.get("rpc_controlled_probe"))
+    commit = receipt.get("commit")
+    if not (
+        report.get("report_type") == "controlled_production_release_closure"
+        and report.get("ok") is True and report.get("closure_complete") is True
+        and report.get("data_accumulating") is False
+        and report.get("closure_scope") == "operational_only"
+        and report.get("acceptance_basis") == "controlled_existing_memory"
+        and report.get("evidence_class") == "operator_controlled_existing_memory"
+        and report.get("certifies_natural_queries") is False
+        and report.get("certifies_no_answer") is False
+        and report.get("natural_certification") == "not_certified"
+        and report.get("l5_certification") == "not_certified"
+        and type(report.get("natural_samples_created")) is int and report["natural_samples_created"] == 0
+        and not report.get("blocked_stage") and not report.get("blocked_reason")
+        and isinstance(commit, str) and _SHA40.fullmatch(commit)
+        and receipt.get("ok") is True and _name(receipt.get("promotion_request_id"))
+        and _name(receipt.get("release_session_id")) and _name(receipt.get("release_path"))
+        and all(deployment.get(key) == receipt.get(key)
+                for key in ("commit", "version", "promotion_request_id", "release_path"))
+        and _object(report.get("storage_migrations")).get("ok") is True
+        and controlled.get("ok") is True and controlled.get("accepted") is True
+        and controlled.get("status") == "accepted"
+        and controlled.get("schema") == "controlled_production_acceptance.v1"
+        and controlled.get("persisted") is True
+        and controlled.get("mode") == "controlled_existing_memory"
+        and controlled.get("evidence_class") == "operator_controlled_existing_memory"
+        and controlled.get("certifies_natural_queries") is False
+        and controlled.get("certifies_no_answer") is False
+        and controlled.get("host_delivery_certified") is False
+        and controlled.get("memory_contribution_certified") is False
+        and type(controlled.get("natural_samples_created")) is int and controlled["natural_samples_created"] == 0
+        and _name(controlled.get("record_id"))
+        and _object(report.get("record_ids")).get("controlled_production_acceptance") == controlled.get("record_id")
+        and isinstance(controlled.get("policy_digest"), str) and _SHA64.fullmatch(controlled["policy_digest"])
+        and all(identity.get(key) == receipt.get(value) for key, value in (
+            ("release_commit", "commit"), ("release_version", "version"),
+            ("deployment_receipt_id", "promotion_request_id"),
+            ("release_session_id", "release_session_id")))
+        and _rows(controlled.get("agents"))
+        and legacy_release_replay_ok(report.get("replay_bootstrap"))
+        and live_acceptance_report_ok(report.get("live_acceptance"), receipt=receipt)
+        and channel.get("ok") is True
+        and channel.get("evidence_class") == "external_channel_receipt"
+        and _name(channel.get("record_id"))
+        and channel.get("deployment_commit") == commit
+        and channel.get("promotion_request_id") == receipt.get("promotion_request_id")
+        and channel.get("release_session_id") == receipt.get("release_session_id")
+        and stability.get("ok") is True
+        and stability.get("schema") == "controlled_operational_stability.v1"
+        and stability.get("expected_commit") == commit
+        and _integer(stability.get("sample_count"), minimum=2)
+        and type(stability.get("interval_seconds")) in (int, float)
+        and 60 <= stability["interval_seconds"] < float("inf")
+        and stability.get("minimum_interval_seconds") == 60
+        and stability.get("observation_scope") == "bounded_runtime_window"
+        and stability.get("long_term_stability_certified") is False
+        and stability.get("short_window_only") is True
+        and stability.get("blocked_reasons") == []
+    ):
+        return False
+    agents = controlled["agents"]
+    if not _unique(agents, "agent_id") or not _unique(agents, "scope_digest"):
+        return False
+    for agent in agents:
+        sources = agent.get("source_ids")
+        count = agent.get("sample_count")
+        if not (
+            isinstance(agent.get("scope_digest"), str) and _SHA64.fullmatch(agent["scope_digest"])
+            and isinstance(sources, list) and sources and all(_name(value) for value in sources)
+            and len(set(sources)) == len(sources)
+            and _integer(count, minimum=3)
+            and type(agent.get("pass_count")) is int and agent["pass_count"] == count
+            and type(agent.get("fail_count")) is int and agent["fail_count"] == 0
+            and agent.get("complete") is True and agent.get("accepted") is True
+            and not agent.get("blocked_reason")
+        ):
+            return False
+    probes = transport.get("cases")
+    endpoint = _object(transport.get("endpoint_identity_before"))
+    if not (
+        transport.get("schema") == "controlled_production_rpc_probe.v1"
+        and transport.get("ok") is True and transport.get("expected_commit") == commit
+        and transport.get("maintenance_only") is True
+        and transport.get("certifies_natural_queries") is False
+        and type(transport.get("natural_samples_created")) is int and transport["natural_samples_created"] == 0
+        and transport.get("policy_digest") == controlled["policy_digest"]
+        and transport.get("release_identity") == identity
+        and transport.get("rpc_contract_version") == EIMEMORY_RPC_CONTRACT_VERSION
+        and transport.get("endpoint_release_verified") is True
+        and endpoint == transport.get("endpoint_identity_after")
+        and endpoint.get("schema") == "controlled_rpc_release_identity.v1"
+        and endpoint.get("ok") is True and endpoint.get("expected_commit") == commit
+        and endpoint.get("version") == receipt.get("version")
+        and endpoint.get("identity_only") is True
+        and endpoint.get("retrieval_health_certified") is False
+        and isinstance(endpoint.get("package_tree_digest"), str)
+        and _SHA64.fullmatch(endpoint["package_tree_digest"])
+        and _rows(probes) and len(probes) == len(agents) and _unique(probes, "agent_id")
+        and type(transport.get("sample_count")) is int and transport["sample_count"] == len(agents)
+        and type(transport.get("pass_count")) is int and transport["pass_count"] == len(agents)
+    ):
+        return False
+    expected_agents = {row["agent_id"]: row for row in agents}
+    for probe in probes:
+        expected = expected_agents.get(probe.get("agent_id"))
+        if (expected is None or probe.get("scope_digest") != expected["scope_digest"]
+                or probe.get("source_ids") != expected["source_ids"]
+                or any(probe.get(key) is not True for key in (
+                    "passed", "collection_complete", "no_fallback", "budgets_clear", "target_present",
+                    "exact_boundary_verified", "target_version_unchanged", "target_in_main_items",
+                    "rpc_contract_verified"))
+                or any(not isinstance(probe.get(key), str) or not _SHA64.fullmatch(probe[key])
+                       for key in ("query_digest", "context_digest", "target_binding_digest", "target_version_digest"))):
+            return False
+    from eimemory.ops.controlled_stability import assess_controlled_stability
+
+    try:
+        # This validates the historical measured window deterministically.
+        # Current health was checked by the native producer, not by summary.
+        if not _name(stability.get("assessed_at")):
+            return False
+        assessed = assess_controlled_stability(
+            stability.get("samples"), expected_commit=commit,
+            minimum_interval_seconds=60, now=stability["assessed_at"],
+        )
+        if assessed.get("ok") is not True or assessed != stability:
+            return False
+        if any(_object(sample.get("health")).get("package_tree_digest") != endpoint["package_tree_digest"]
+               for sample in stability["samples"]):
+            return False
+    except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+        return False
+    return all(_object(report.get(key)).get("status") == "not_run" for key in (
+        "production_recall_gate", "production_recall_strict_state", "closure_rehearsal", "readiness",
+    ))

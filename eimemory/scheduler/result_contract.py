@@ -92,6 +92,7 @@ NIGHTLY_NESTED_OK_ALLOWLIST = (
     "promotion_watch_orphans",
     "memory_eval_ci",
     "production_recall",
+    "controlled_production_acceptance",
     "recall_quality_gate",
     "quality_gap_intake",
     "judgment_evaluation",
@@ -1081,6 +1082,7 @@ def _external_collection_diagnostics(report: object) -> dict:
 
 def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
     from .collection_diagnostics import production_collection_diagnostics
+    from .controlled_acceptance_diagnostics import controlled_acceptance_diagnostics
     from eimemory.scheduler.research_review_diagnostics import (
         research_provider_diagnostics_reported, research_review_diagnostics,
     )
@@ -1105,6 +1107,7 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
     gate = report.get("recall_quality_gate")
     gate = gate if isinstance(gate, dict) else {}
     execution_ok = _aggregate_nightly_ok(report, steps)
+    controlled = controlled_acceptance_diagnostics(report.get("controlled_production_acceptance"))
     return {
         "schema": "nightly_execution_diagnostics.v1",
         "execution_ok": execution_ok,
@@ -1112,6 +1115,10 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         "failed_steps": failures,
         "evidence_waits": list(dict.fromkeys(waits)),
         "recall_quality_accepted": _formal_recall_accepted(report.get("recall_quality"), gate),
+        "controlled_production_acceptance": controlled,
+        "production_operational_accepted": execution_ok and controlled["accepted"],
+        "production_acceptance_basis": "controlled_existing_memory"
+            if controlled["accepted"] else "natural_quality_only",
         "recall_quality_evidence": gate.get("recall_quality_evidence") or {},
         "memory_benchmark_status": (report.get("memory_eval_ci") or {}).get("memory_benchmark_status", "not_run")
             if isinstance(report.get("memory_eval_ci"), dict) else "not_run",

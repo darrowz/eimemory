@@ -107,6 +107,10 @@ def _reported_release_summary(report: object) -> dict[str, Any]:
 def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]) -> bool:
     if not isinstance(report, dict) or summary.get("ok") is not True:
         return False
+    if report.get("report_type") == "controlled_production_release_closure":
+        from eimemory.governance.release.closure_contracts import controlled_production_closure_report_ok
+
+        return controlled_production_closure_report_ok(report)
     if report.get("report_type") == "code_evolution_pre_observation":
         # The installer invokes this script with -I and system Python. Import
         # only the matching release's dependency-free structural contract.
@@ -287,6 +291,7 @@ _CONTROL_OBJECTS = frozenset({
     'bootstrap_pending_verification', 'capability_acceptance', 'replay_gate',
     'core_replay_gate', 'quality_gate', 'assessment', 'validation',
     'nightly_diagnostics', 'change_policy', 'failure_recording',
+    'controlled_production_acceptance', 'rpc_controlled_probe', 'stability',
 })
 _CODE = re.compile(r'[A-Za-z0-9_.:-]{1,180}')
 
@@ -416,7 +421,9 @@ def failure_signals(report: Any) -> dict:
 def _envelope_errors(report: Any) -> list[str]:
     if not isinstance(report, dict): return ['report_not_object']
     errors = []
-    if report.get('report_type') not in {'l5_release_closure', 'code_evolution_pre_observation'}:
+    if report.get('report_type') not in {
+        'l5_release_closure', 'code_evolution_pre_observation', 'controlled_production_release_closure',
+    }:
         errors.append('report_type_invalid')
     for key in ('ok', 'closure_complete', 'data_accumulating'):
         if type(report.get(key)) is not bool: errors.append(key+'_not_boolean')
@@ -500,6 +507,17 @@ def split_release_conclusions(
     process_failed = exit_status not in (None, 0, 1)
     commit_mismatch = bool(expected and commit and expected != commit)
     contradiction = bool(hard_errors or commit_mismatch or process_failed)
+    if report.get("report_type") == "controlled_production_release_closure":
+        from eimemory.governance.release.closure_contracts import controlled_production_closure_report_ok
+
+        accepted = bool(not contradiction and _ordinary_receipt_ok(report)
+                        and controlled_production_closure_report_ok(report))
+        return {
+            "ordinary_release_admission": "admitted" if accepted else "denied",
+            "l5_certification": "not_certified",
+            "production_quality": "controlled_accepted" if accepted else "uncertified",
+            "historical_pending_blocks_ordinary_release": False,
+        }
     evidence_ok = type(sample_count) is int and sample_count > 0
     l5_certified = bool(
         not contradiction
@@ -685,6 +703,19 @@ def summarize_release_closure(report: object, *, execution: Mapping | None = Non
         "exit_code": 0 if admitted else 1,
         **split_release_conclusions(obj, execution=execution, hard_errors=hard),
     }
+    if obj.get('report_type') == 'controlled_production_release_closure':
+        controlled = _object(obj.get('controlled_production_acceptance'))
+        stability = _object(obj.get('stability'))
+        result.update(
+            closure_scope='operational_only', acceptance_basis='controlled_existing_memory',
+            evidence_class='operator_controlled_existing_memory',
+            certifies_natural_queries=False, certifies_no_answer=False,
+            natural_certification='not_certified', natural_samples_created=obj.get('natural_samples_created'),
+            l5_certified=False, long_term_stability_certified=False,
+            controlled_production_acceptance_ok=bool(admitted and controlled.get('accepted') is True),
+            controlled_production_acceptance_record_id=str(controlled.get('record_id') or ''),
+            stability_ok=bool(admitted and stability.get('ok') is True),
+        )
     from eimemory.governance.release.closure_blockers import closure_blockers
     result['closure_blockers'] = closure_blockers(obj)
     # Keep admission diagnostics tied to validated producer contracts.

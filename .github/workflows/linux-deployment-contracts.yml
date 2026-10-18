@@ -108,6 +108,13 @@ jobs:
           tests/test_safe_dataset_loader.py
           tests/test_nightly_evidence_workflow.py
           tests/test_controlled_memory_benchmark.py
+          tests/test_controlled_memory_completion.py
+          tests/test_controlled_production_acceptance.py
+          tests/test_controlled_production_release_closure.py
+          tests/test_controlled_stability.py
+          tests/test_controlled_rpc_probe.py
+          tests/test_nightly_controlled_production_acceptance.py
+          tests/test_runtime_recall_profiles.py
           tests/test_controlled_memory_source_eligibility.py
           tests/test_deployment_evidence_recall_boundary.py
           tests/test_controlled_memory_query_validity.py

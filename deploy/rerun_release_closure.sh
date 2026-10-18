@@ -28,6 +28,7 @@ SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-$(eimemory_default_deploy_scope_agen
 SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-$(eimemory_default_deploy_scope_workspace)}"
 SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-$(eimemory_default_deploy_scope_user "$(id -un)")}"
 
+original_args=("$@")
 prior="" register="" exit_status=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -37,6 +38,35 @@ while [ "$#" -gt 0 ]; do
     *) echo "usage: $0 --prior-commit <commit> | --register <closure.json> [--exit-status N]" >&2; exit 64 ;;
   esac
 done
+
+if [ -z "$register" ] && [[ ! "$prior" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "--prior-commit <40-hex> is required to run a closure" >&2
+  exit 64
+fi
+# A root operator must not create root-owned database/capture state. Delegate
+# the whole operation before creating temporary files or invoking any Python.
+if [ "$(id -u)" -eq 0 ]; then
+  database="$EIMEMORY_ROOT/state/eimemory.sqlite"
+  if [ ! -f "$database" ] || [ -L "$database" ]; then
+    echo "a regular live SQLite database is required to resolve the service user" >&2
+    exit 2
+  fi
+  owner_uid="$(stat -c '%u' -- "$database")"
+  service_user="$(id -nu "$owner_uid")"
+  if [ -n "${SERVICE_USER:-}" ] && [ "$(id -u "$SERVICE_USER")" != "$owner_uid" ]; then
+    echo "SERVICE_USER does not own the live SQLite database" >&2
+    exit 2
+  fi
+  if [ "$owner_uid" != "0" ]; then
+    exec runuser -u "$service_user" -- env \
+      INSTALL_ROOT="$INSTALL_ROOT" REPO_DIR="$REPO_DIR" PYTHON_BIN="$PYTHON_BIN" \
+      EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
+      EIMEMORY_LOG_DIR="$EIMEMORY_LOG_DIR" EIMEMORY_HEALTH_URL="$EIMEMORY_HEALTH_URL" \
+      EIMEMORY_GOVERNANCE_ENV_FILE="$GOVERNANCE_ENV_FILE" \
+      EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
+      bash "$0" "${original_args[@]}"
+  fi
+fi
 
 RELEASE_DIR="$(readlink -f "$CURRENT_LINK")"
 COMMIT="$(basename "$RELEASE_DIR")"
@@ -64,6 +94,8 @@ else
     EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
     "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/run_with_governance_env.py" \
       --env-file "$GOVERNANCE_ENV_FILE" --optional \
+      --runtime-recall-config-dir "$EIMEMORY_CONFIG_DIR" \
+      --runtime-recall-root "$EIMEMORY_ROOT" \
       --optional-runtime-authority-env-file "$EIMEMORY_CONFIG_DIR/runtime-authority.env" -- \
       "$RELEASE_DIR/.venv/bin/eimemory" learn release-closure \
         --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \

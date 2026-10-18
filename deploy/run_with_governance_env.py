@@ -40,6 +40,27 @@ ALLOWED_KEYS = frozenset(
 )
 KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 RUNTIME_AUTHORITY_KEY = "EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE"
+RUNTIME_RECALL_KEYS = frozenset(
+    {"EIMEMORY_POSTGRES_" + suffix for suffix in (
+        "VECTOR_ENABLED", "VECTOR_DSN", "VECTOR_DIMENSION", "VECTOR_SCHEMA", "VECTOR_TABLE",
+        "CONNECT_TIMEOUT_SECONDS", "STATEMENT_TIMEOUT_MS", "POOL_SIZE", "QUEUE_BOUND",
+        "MAX_INDEX_LAG_SECONDS", "FAILURE_THRESHOLD", "COOLDOWN_SECONDS", "TOP_K_MAX",
+        "CACHE_ENTRIES", "CACHE_TTL_SECONDS", "PROJECTION_TEXT_CHARS", "SYNC_LEASE_SECONDS",
+        "PROJECTION_MEMORY_ONLY", "EVIDENCE_FRAGMENTS", "IDENTITY_REFRESH_TTL_SECONDS",
+        "MAINTENANCE_ENABLED")}
+    | {"EIMEMORY_EMBEDDINGS_" + suffix for suffix in (
+        "PROVIDER", "BASE_URL", "API_KEY", "MODEL", "DIMENSIONS", "FINGERPRINT",
+        "MAX_BATCH", "MAX_TEXT_CHARS", "MAX_REQUEST_BYTES", "MAX_RESPONSE_BYTES",
+        "TIMEOUT_SECONDS", "FAILURE_THRESHOLD", "COOLDOWN_SECONDS", "QUEUE_TIMEOUT_SECONDS")}
+    | {"EIMEMORY_RERANKER_" + suffix for suffix in (
+        "ENABLED", "PROVIDER", "BASE_URL", "API_KEY", "MODEL", "TIMEOUT_SECONDS",
+        "MAX_CANDIDATES", "MAX_TEXT_CHARS", "FAILURE_THRESHOLD", "COOLDOWN_SECONDS")}
+    | {"EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED", "EIMEMORY_CALLER_ASSISTED_RECALL_REQUIRED",
+       "EIMEMORY_RECALL_LLM_COMMAND", "EIMEMORY_RECALL_EXPECTED_MODEL",
+       "EIMEMORY_RECALL_MODEL_THINKING", "EIMEMORY_RECALL_GATEWAY_POOL",
+       "EIMEMORY_RECALL_GATEWAY_PREWARM", "EIMEMORY_RECALL_BUDGET_SECONDS",
+       "EIMEMORY_CAPTURE_ORIGINAL_QUERY", "EIMEMORY_CAPTURE_QUERY_SCOPES"}
+)
 
 
 class GovernanceEnvironmentError(RuntimeError):
@@ -134,6 +155,27 @@ def load_runtime_authority_environment(
     return environment
 
 
+def load_runtime_recall_environment(
+    config_directory: str | Path, root: str | Path, *,
+    base_environment: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Load the RPC/nightly recall profiles in their original order.
+
+    Routing and RPC credentials remain outside this allowlist. Missing optional
+    profiles have the same semantics as systemd EnvironmentFile=-; unsafe or
+    unreadable present profiles fail the gate instead of selecting SQLite.
+    """
+    config, data = Path(config_directory), Path(root)
+    if not config.is_absolute() or not data.is_absolute():
+        raise GovernanceEnvironmentError("runtime recall profile roots must be absolute")
+    environment = dict(os.environ if base_environment is None else base_environment)
+    for path in (config / "postgres.env", config / "embedding.env", config / "reranker.env",
+                 data / "state/vector-serving.env", data / "state/caller-recall.env", config / "recall.env"):
+        environment = _load_allowlisted_environment(path, base_environment=environment,
+            optional=True, allowed_keys=RUNTIME_RECALL_KEYS)
+    return environment
+
+
 def _parse_value(raw_value: str, *, line_number: int) -> str:
     if not raw_value:
         return ""
@@ -156,9 +198,13 @@ def main(argv: list[str] | None = None) -> int:
     authority_arguments = parser.add_mutually_exclusive_group()
     authority_arguments.add_argument("--runtime-authority-env-file", type=Path)
     authority_arguments.add_argument("--optional-runtime-authority-env-file", type=Path)
+    parser.add_argument("--runtime-recall-config-dir", type=Path)
+    parser.add_argument("--runtime-recall-root", type=Path)
     parser.add_argument("--check-research-review", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    if (args.runtime_recall_config_dir is None) != (args.runtime_recall_root is None):
+        parser.error("runtime recall configuration and data roots must be supplied together")
     command = list(args.command)
     if command and command[0] == "--":
         command.pop(0)
@@ -179,6 +225,9 @@ def main(argv: list[str] | None = None) -> int:
             # systemd does not inherit the deployment controller's model route.
             base_environment=service_environment if args.check_research_review else None,
         )
+        if args.runtime_recall_config_dir is not None:
+            environment = load_runtime_recall_environment(args.runtime_recall_config_dir,
+                args.runtime_recall_root, base_environment=environment)
         authority_path = args.runtime_authority_env_file or args.optional_runtime_authority_env_file
         if authority_path is not None:
             environment = load_runtime_authority_environment(

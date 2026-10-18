@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -43,6 +44,12 @@ def test_first_install_keeps_rpc_token_separate_and_runtime_authority_optional()
         assert '[ -f ' not in body and '[ -e ' not in body
 
 
+def test_root_installer_runs_closure_and_recorder_as_database_service_user():
+    body = function_body('_run_post_switch_closure')
+    assert 'chown "$SERVICE_USER:$SERVICE_GROUP" "$closure_output"' in body
+    assert body.count('_run_as_service_user env EIMEMORY_ROOT=') == 2
+
+
 @pytest.mark.skipif(os.name != 'posix' or not shutil.which('bash'), reason='Native shell invocation requires POSIX bash')
 def test_manual_rerun_supplies_custom_config_authority_file_to_actual_wrapper(tmp_path):
     commit = '7' * 40
@@ -59,6 +66,9 @@ def test_manual_rerun_supplies_custom_config_authority_file_to_actual_wrapper(tm
     (release / 'deploy' / 'record_release_closure_incident.py').write_text("print('{}')\n")
     config = tmp_path / 'configured authority'
     config.mkdir()
+    database = tmp_path / 'root' / 'state' / 'eimemory.sqlite'
+    database.parent.mkdir(parents=True)
+    database.touch()
     env = {**os.environ, 'INSTALL_ROOT': str(tmp_path), 'PYTHON_BIN': sys.executable,
            'EIMEMORY_CONFIG_DIR': str(config), 'EIMEMORY_ROOT': str(tmp_path / 'root'),
            'EIMEMORY_LOG_DIR': str(tmp_path / 'logs'), 'WIRING_CAPTURE': str(capture),
@@ -96,3 +106,46 @@ def test_optional_authority_wrapper_executes_only_for_safe_initial_install(tmp_p
     result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=15)
     assert result.returncode == (0 if state == 'missing' else 2), result.stderr
     assert marker.exists() == (state == 'missing')
+
+
+@pytest.mark.skipif(os.name != 'posix' or not hasattr(os, 'geteuid') or os.geteuid() != 0,
+                    reason='Native root-to-service-user entry requires Linux root')
+def test_root_rerun_delegates_closure_and_capture_to_actual_database_owner():
+    import pwd
+
+    try:
+        service = pwd.getpwnam('nobody')
+    except KeyError:
+        pytest.skip('An unprivileged fixture account is required')
+    with tempfile.TemporaryDirectory(prefix='eimemory-root-rerun-', dir=os.getenv('TMPDIR', '/var/tmp')) as directory:
+        root = Path(directory)
+        commit = '7' * 40
+        release = root / 'releases' / commit
+        (release / 'deploy').mkdir(parents=True)
+        (release / '.venv' / 'bin').mkdir(parents=True)
+        (release / '.venv' / 'bin' / 'python').symlink_to('/usr/bin/python3')
+        (root / 'current').symlink_to(release)
+        database = root / 'runtime' / 'state' / 'eimemory.sqlite'
+        database.parent.mkdir(parents=True)
+        database.touch()
+        (root / 'config').mkdir()
+        script = root / 'rerun_release_closure.sh'
+        script.write_text(RERUN.read_text())
+        (root / 'deploy_scope_default.sh').write_text((ROOT / 'deploy/deploy_scope_default.sh').read_text())
+        (release / 'deploy/run_with_governance_env.py').write_text(
+            'import json,os\nprint(json.dumps({"uid":os.geteuid()}))\n')
+        (release / 'deploy/record_release_closure_incident.py').write_text(
+            'import json,os,pathlib,sys\n'
+            'path=pathlib.Path(sys.argv[sys.argv.index("--path")+1])\n'
+            'print(json.dumps({"closure_uid":json.loads(path.read_text())["uid"],'
+            '"capture_uid":path.stat().st_uid,"recorder_uid":os.geteuid()}))\n')
+        for path in [*root.rglob('*'), root]:
+            os.chown(path, service.pw_uid, service.pw_gid, follow_symlinks=False)
+        env = {**os.environ, 'SERVICE_USER': service.pw_name, 'INSTALL_ROOT': str(root),
+               'EIMEMORY_ROOT': str(root / 'runtime'), 'EIMEMORY_CONFIG_DIR': str(root / 'config'),
+               'EIMEMORY_LOG_DIR': str(root / 'logs'), 'PYTHON_BIN': '/usr/bin/python3'}
+        result = subprocess.run(['bash', str(script), '--prior-commit', '6' * 40],
+                                capture_output=True, text=True, env=env, timeout=15)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout.strip()) == {
+            'closure_uid': service.pw_uid, 'capture_uid': service.pw_uid, 'recorder_uid': service.pw_uid}
