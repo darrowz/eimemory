@@ -63,6 +63,8 @@ jobs:
           tests/test_explicit_recall_capture.py
           tests/test_explicit_recall_private_capture.py
           tests/test_explicit_recall_semantic_monitor.py
+          tests/test_production_recall_baseline_lineage.py
+          tests/test_production_real_query_gate.py
           tests/test_hermes_explicit_host_context.py
           tests/test_business_closure_evaluation.py
           tests/test_capability_negative_evidence.py

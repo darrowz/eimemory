@@ -8,6 +8,7 @@ implementation behind the production_recall evaluator entry point.
 
 from __future__ import annotations
 
+from copy import deepcopy
 import logging
 
 from dataclasses import asdict
@@ -82,7 +83,6 @@ from eimemory.evaluation.real_query_schema import (  # A2: shared schema/digest 
     _MAX_QUERY_TERMS,
     _MAX_QUERY_TERM_CHARS,
     _MAX_QUERY_FEATURE_CHARS,
-    _MAX_BASELINE_CHAIN_DEPTH,
     _MAX_PRIOR_HEALTH_SNAPSHOT_BYTES,
     _RECALL_CORPUS_KINDS,
     _LOW_SIGNAL_QUERY_TOKENS,
@@ -1161,10 +1161,88 @@ def _resolve_trusted_baseline(
     dataset_digest: str,
     current_release: ReleaseIdentity,
     dataset_evidence: dict[str, Any] | None = None,
-    _depth: int = 0,
 ) -> tuple[dict[str, Any] | None, str]:
-    if _depth > _MAX_BASELINE_CHAIN_DEPTH:
-        return None, "baseline_chain_depth_exceeded"
+    """Validate the entire predecessor lineage without a release-count limit.
+
+    Load every native high-water node before evaluating bottom-up from its
+    bootstrap anchor. A visited physical attempt or release authority is a
+    cycle, never an excuse to shorten the lineage or trust a parent summary.
+    """
+    chain: list[dict[str, Any]] = []
+    seen_attempts: set[str] = set()
+    seen_releases = {(current_release.commit, current_release.receipt_id, current_release.session_id)}
+    cursor_release, cursor_id, cursor_evidence = current_release, report_id, dataset_evidence
+    while True:
+        node, reason = _load_trusted_baseline_node(
+            runtime, scope=scope, report_id=cursor_id, dataset_digest=dataset_digest,
+            current_release=cursor_release, dataset_evidence=cursor_evidence,
+        )
+        if node is None:
+            return None, f"baseline_parent_invalid:{reason}" if chain else reason
+        summary, identity = node["summary"], node["identity"]
+        authority = (identity.commit, identity.receipt_id, identity.session_id)
+        if summary["persisted_record_id"] in seen_attempts or authority in seen_releases:
+            return None, "baseline_chain_cycle"
+        seen_attempts.add(summary["persisted_record_id"])
+        seen_releases.add(authority)
+        chain.append(node)
+        if node["bootstrap"]:
+            break
+        parent = node["report"].get("baseline_identity")
+        if not isinstance(parent, dict) or not str(parent.get("persisted_record_id") or ""):
+            return None, "baseline_parent_identity_invalid"
+        cursor_release = identity
+        cursor_id = str(parent["persisted_record_id"])
+        cursor_evidence = dict(node["report"].get("secure_dataset_evidence") or {})
+
+    baseline = None
+    for node in reversed(chain):
+        report = node["report"]
+        if baseline is not None:
+            expected = {key: value for key, value in baseline.items()
+                        if key not in {"result_refs", "metrics"}}
+            if report.get("baseline_identity") != expected:
+                return None, "baseline_parent_identity_mismatch"
+        if not _independent_real_query_metrics_valid(
+            report, baseline=baseline, runtime=runtime, scope=scope,
+            allow_legacy_exact_ranking=True,
+        ):
+            return None, "baseline_metrics_invalid"
+        baseline = node["summary"]
+
+    # A concurrent failed/new attempt must still supersede an older accepted
+    # ancestor. Check every high-water pointer, not just the current report.
+    for node in chain:
+        latest = runtime.store.latest_record_by_meta_value_exact_scope(
+            kind="reflection", source="eimemory.evaluation.production_recall", status="active",
+            scope=scope, meta_key="baseline_high_water_key",
+            meta_value=_baseline_high_water_key(node["identity"].commit, dataset_digest),
+        )
+        latest_report = latest.content.get("report") if latest is not None and isinstance(latest.content, dict) else None
+        if (latest is None or latest.record_id != node["summary"]["persisted_record_id"]
+                or latest.kind != "reflection"
+                or latest.source != "eimemory.evaluation.production_recall"
+                or latest.source_id != "default" or latest.status != "active"
+                or not same_scope(latest.scope, scope)
+                or latest.meta.get("baseline_high_water_key")
+                != _baseline_high_water_key(node["identity"].commit, dataset_digest)
+                or not isinstance(latest_report, dict)
+                or not _record_payload_digest_valid(latest, latest_report)
+                or _stable_digest(latest_report) != node["report_digest"]):
+            return None, "baseline_high_water_changed"
+    return chain[0]["summary"], ""
+
+
+def _load_trusted_baseline_node(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    report_id: str,
+    dataset_digest: str,
+    current_release: ReleaseIdentity,
+    dataset_evidence: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, str]:
+    """Validate one persisted predecessor using the unchanged native contracts."""
     current_receipt = deployment_receipt_for_scope(runtime, current_release.receipt_id, scope)
     if current_receipt is None or not same_release_authority(
         verified_deployment_receipt_identity(current_receipt),
@@ -1192,15 +1270,20 @@ def _resolve_trusted_baseline(
     if (
         record.kind != "reflection"
         or record.source != "eimemory.evaluation.production_recall"
+        or record.source_id != "default"
         or record.status != "active"
         or not same_scope(record.scope, scope)
     ):
         return None, "baseline_report_untrusted"
-    report = record.content.get("report") if isinstance(record.content, dict) and isinstance(record.content.get("report"), dict) else {}
+    report = deepcopy(record.content.get("report")) if isinstance(record.content, dict) and isinstance(record.content.get("report"), dict) else {}
     if not _record_payload_digest_valid(record, report):
         return None, "baseline_report_payload_tampered"
     if str(report.get("attempt_id") or "") != record.record_id:
         return None, "baseline_physical_attempt_required"
+    if not same_scope(report.get("scope") or {}, scope):
+        return None, "baseline_report_scope_mismatch"
+    if record.meta.get("baseline_high_water_key") != high_water_key:
+        return None, "baseline_high_water_identity_invalid"
     identity = _release_from_payload(report.get("release_identity"))
     if identity is None or identity.commit != prior_commit or identity.commit == current_release.commit:
         return None, "baseline_release_not_verified_predecessor"
@@ -1256,41 +1339,10 @@ def _resolve_trusted_baseline(
     )
     if int(report.get("sample_count") or 0) != len(samples) or not sample_contract["ok"]:
         return None, "baseline_samples_missing"
-    if bootstrap_baseline:
-        if not _independent_real_query_metrics_valid(
-            report,
-            baseline=None,
-            runtime=runtime,
-            scope=scope,
-            allow_legacy_exact_ranking=True,
-        ):
-            return None, "baseline_metrics_invalid"
-    else:
-        parent_identity = report.get("baseline_identity") if isinstance(report.get("baseline_identity"), dict) else {}
-        parent_id = str(parent_identity.get("persisted_record_id") or "")
-        parent, parent_reason = _resolve_trusted_baseline(
-            runtime,
-            scope=scope,
-            report_id=parent_id,
-            dataset_digest=dataset_digest,
-            current_release=identity,
-            dataset_evidence=dict(report.get("secure_dataset_evidence") or {}),
-            _depth=_depth + 1,
-        )
-        if parent is None:
-            return None, f"baseline_parent_invalid:{parent_reason}"
-        if not _independent_real_query_metrics_valid(
-            report,
-            baseline=parent,
-            runtime=runtime,
-            scope=scope,
-            allow_legacy_exact_ranking=True,
-        ):
-            return None, "baseline_metrics_invalid"
     results = report.get("result_refs") if isinstance(report.get("result_refs"), dict) else {}
     if str(report.get("result_digest") or "") != _stable_digest(results):
         return None, "baseline_result_digest_mismatch"
-    return {
+    summary = {
         "report_id": str(report.get("report_id") or record.record_id),
         "logical_report_id": str(report.get("report_id") or record.record_id),
         "persisted_record_id": record.record_id,
@@ -1306,7 +1358,9 @@ def _resolve_trusted_baseline(
             for key, value in results.items()
         },
         "metrics": dict(report.get("metrics") or {}),
-    }, ""
+    }
+    return {"summary": summary, "report": report, "report_digest": _stable_digest(report), "identity": identity,
+            "bootstrap": bootstrap_baseline}, ""
 
 
 def _baseline_high_water_key(release_commit: str, dataset_digest: str) -> str:

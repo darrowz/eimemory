@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.133] — 2026-10-18
+
+- Validate production recall baseline ancestry without a fixed release-depth cutoff. Preserve each predecessor receipt, exact dataset/scope, physical report integrity, high-water selection, label/ranking authority and independently recomputed metrics, with explicit cycle rejection.
+- Cover lawful long ancestry and corrupted intermediate baselines so repeated releases cannot turn previously qualified samples into an artificial nightly failure.
+
 ## [1.14.132] — 2026-10-18
 
 - Capture real Hermes explicit recall invocations through the existing shared plugin, binding host session/call identity across the host's normal redaction. Preserve source selection and isolate concurrent calls; missing host identity remains explicitly uncaptured.
