@@ -66,7 +66,7 @@ def _collection_summary(collection: dict[str, Any]) -> dict[str, Any]:
 
 
 def _repair_summary(repair: dict[str, Any]) -> dict[str, Any]:
-    return {
+    summary = {
         "schema": str(repair.get("schema") or ""),
         "ok": repair.get("ok") is True,
         "scanned_count": int(repair.get("scanned_count") or 0),
@@ -76,6 +76,16 @@ def _repair_summary(repair: dict[str, Any]) -> dict[str, Any]:
         "conflict_count": int(repair.get("conflict_count") or 0),
         "receipt_id": str(repair.get("receipt_id") or ""),
     }
+    for key in ("target_case_count", "target_record_count", "non_target_record_count",
+                "discovered_accepted_case_count"):
+        if key in repair:
+            summary[key] = int(repair.get(key) or 0)
+    for key in ("non_target_reason_counts",):
+        if key in repair:
+            summary[key] = dict(repair.get(key) or {})
+    if repair.get("blocked_reason"):
+        summary["blocked_reason"] = str(repair["blocked_reason"])
+    return summary
 
 
 def _auto_review_summary(runtime: Runtime, *, scope: dict[str, Any]) -> dict[str, Any]:
@@ -340,7 +350,23 @@ def _run_scope(runtime: Runtime, args: Any, *, scope: dict[str, Any], scope_reso
     # logical scope; only the dataset/baseline bind the per-agent scope.
     prep = prep_scope or scope
     report: dict[str, Any] = {}
-    repair = repair_production_query_channel_scopes(runtime, scope=prep, complete_scan=True)
+    dataset_path = str(forced_dataset or args.dataset or "").strip()
+    dataset: dict[str, Any] | None = None
+    if dataset_path:
+        if not Path(dataset_path).is_file():
+            return {"ok": False, "status": "blocked", "reason": "dataset_path_unavailable",
+                    "path": dataset_path}, 2
+        # Secure loading must precede any repair or collection. Dataset cases
+        # select evidence inside the independently authorized prep scope; their
+        # embedded scope never grants access to another user or agent.
+        loaded, evidence = load_json_dataset_with_evidence(dataset_path)
+        if not isinstance(loaded, dict):
+            raise ValueError("production recall dataset must be an object")
+        dataset = {**loaded, "_secure_dataset_evidence": evidence}
+    target_cases = dataset.get("cases", []) if dataset is not None else None
+    repair = repair_production_query_channel_scopes(
+        runtime, scope=prep, complete_scan=True, target_cases=target_cases,
+        discover_accepted_targets=dataset is None)
     repair_summary = _repair_summary(repair)
     if repair.get("ok") is not True:
         report = {
@@ -354,18 +380,7 @@ def _run_scope(runtime: Runtime, args: Any, *, scope: dict[str, Any], scope_reso
     collection_summary = _collection_summary(collection)
     collection_summary["scope_resolution"] = scope_resolution
     auto_review_summary = _auto_review_summary(runtime, scope=prep)
-    dataset_path = str(forced_dataset or args.dataset or "").strip()
     staged_dataset: dict[str, Any] | None = None
-    if dataset_path and not Path(dataset_path).is_file():
-        report = {
-            "ok": False,
-            "status": "blocked",
-            "reason": "dataset_path_unavailable",
-            "path": dataset_path,
-            "collection": collection_summary,
-            "repair": repair_summary,
-        }
-        return report, 2
     if not dataset_path:
         accumulated = build_production_query_dataset(
             runtime,
@@ -397,10 +412,11 @@ def _run_scope(runtime: Runtime, args: Any, *, scope: dict[str, Any], scope_reso
             report["auto_review"] = auto_review_summary
             return report, _bootstrap_exit_status(report)
     if dataset_path and Path(dataset_path).is_file():
-        dataset, evidence = load_json_dataset_with_evidence(dataset_path)
-        if not isinstance(dataset, dict):
-            raise ValueError("production recall dataset must be an object")
-        dataset = {**dataset, "_secure_dataset_evidence": evidence}
+        if dataset is None:
+            loaded, evidence = load_json_dataset_with_evidence(dataset_path)
+            if not isinstance(loaded, dict):
+                raise ValueError("production recall dataset must be an object")
+            dataset = {**loaded, "_secure_dataset_evidence": evidence}
         frozen = freeze_production_recall_dataset(dataset)
         if not frozen.get("eligibility", {}).get("ok"):
             report = record_production_recall_bootstrap_pending(

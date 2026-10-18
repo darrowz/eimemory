@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.134] — 2026-10-18
+
+- Check the actual securely loaded production-evaluation graph during deployment preflight, keeping caller scope independently authorized. Honor configured agent aliases only within the same tenant, workspace and user; preserve signed payloads and reject invalid target evidence.
+- Bind persisted report attempts to evaluator identity, qualification state and exact baseline evidence. Reuse only equivalent retries and verify the actual stored bootstrap anchor before recording readiness; retain prior failures as history.
+- Add regression coverage for legacy aliases, unrelated historical pending records, target authority failures and bootstrap persistence conflicts.
+
 ## [1.14.133] — 2026-10-18
 
 - Validate production recall baseline ancestry without a fixed release-depth cutoff. Preserve each predecessor receipt, exact dataset/scope, physical report integrity, high-water selection, label/ranking authority and independently recomputed metrics, with explicit cycle rejection.

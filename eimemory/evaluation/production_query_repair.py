@@ -14,6 +14,7 @@ from eimemory.evaluation.production_query_dataset import (
     PENDING_QUERY_SCHEMA, PENDING_SOURCE,
     accepted_production_query_validation_error,
     pending_production_query_capture_validation_error,
+    _alias_equivalent_scope,
 )
 from eimemory.evaluation.real_query_schema import (
     PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER,
@@ -101,12 +102,176 @@ class _ExactAuthorityStore:
         return [_checked_exact_record(self._sqlite, record, self._scope) for record in records]
 
 
-def _preflight_production_query_graph(sqlite, *, base, bounded, scan_bound, result, persist_receipt):
+def _target_case_selection(target_cases, base):
+    """Validate selection against an independently supplied exact boundary."""
+    if not isinstance(target_cases, list) or len(target_cases) > 500:
+        raise _PreflightBlocked("repair_target_cases_invalid")
+    case_keys, captures, label_refs = set(), set(), set()
+    expected_cases = {}
+    accepted_refs = set()
+    for case in target_cases:
+        if not isinstance(case, dict):
+            raise _PreflightBlocked("repair_target_case_invalid")
+        case_id, source_id = case.get("case_id"), case.get("source_id")
+        target, _reason = _target_scope(case.get("channel"), case.get("scope"), base)
+        if (target is None or not isinstance(case_id, str) or not case_id
+                or not isinstance(source_id, str) or not source_id or source_id == "*"
+                or normalize_source_id(source_id) != source_id):
+            raise _PreflightBlocked("repair_target_case_boundary_invalid")
+        key = (case_id, source_id)
+        if key in case_keys:
+            raise _PreflightBlocked("repair_target_case_duplicate")
+        case_keys.add(key)
+        expected_cases[key] = case
+        provenance = case.get("provenance")
+        capture = provenance.get("capture_ref") if isinstance(provenance, dict) else None
+        if not isinstance(capture, str) or not capture:
+            raise _PreflightBlocked("repair_target_capture_reference_invalid")
+        captures.add((capture, source_id))
+        accepted_refs.add(("prqa_" + _stable_digest({"schema": ACCEPTED_QUERY_SCHEMA, "case": case})[:32], source_id))
+        labels = case.get("labels")
+        if not isinstance(labels, list) or not 1 <= len(labels) <= 16:
+            raise _PreflightBlocked("repair_target_labels_invalid")
+        for label in labels:
+            provenance = label.get("provenance") if isinstance(label, dict) else None
+            ref = provenance.get("evidence_ref") if isinstance(provenance, dict) else None
+            if not isinstance(ref, str) or not ref:
+                raise _PreflightBlocked("repair_target_label_reference_invalid")
+            label_refs.add((ref, source_id))
+    return case_keys, captures, label_refs, accepted_refs, expected_cases
+
+
+def _load_target_graph(sqlite, *, target_cases, base, scan_scopes):
+    """Resolve only explicit physical graph references, without history paging."""
+    _keys, _captures, label_refs, accepted_refs, _cases = _target_case_selection(target_cases, base)
+    batches = {kind: [] for kind, _report_type, _source in _REPORT_TYPES}
+
+    def fetch(ref, source_id):
+        records = [sqlite.get_by_exact_ref(ref, scope=scope, source_id=source_id)
+                   for scope in scan_scopes]
+        records = [record for record in records if record is not None and record.status == "active"]
+        if len(records) > 1:
+            raise _PreflightBlocked("repair_target_reference_ambiguous")
+        return records[0] if records else None
+
+    pending_refs = set()
+    for kind, refs in (("accepted", accepted_refs), ("label", label_refs)):
+        for ref, source_id in sorted(refs):
+            record = fetch(ref, source_id)
+            if record is None:
+                continue  # The complete selector below reports the missing edge.
+            batches[kind].append(record)
+            payload = record.content if isinstance(record.content, dict) else {}
+            pending_id = (payload.get("pending_record_id") if kind == "label"
+                          else (record.evidence[0] if record.evidence else None))
+            if isinstance(pending_id, str) and pending_id:
+                pending_refs.add((pending_id, source_id))
+    for ref, source_id in sorted(pending_refs):
+        record = fetch(ref, source_id)
+        if record is not None:
+            batches["pending"].append(record)
+    return batches
+
+
+def _discover_accepted_targets(sqlite, *, scan_scopes):
+    """Use existing accepted evidence only, inside the authorized writer view."""
+    cases = []
+    for exact_scope in scan_scopes:
+        records = sqlite.list_records_by_meta_value(
+            kinds=["evaluation_packet"], scope=exact_scope, meta_key="report_type",
+            meta_value="production_recall_accepted_case", status="active",
+            limit=501, offset=0, exact_scope=True)
+        if not isinstance(records, list):
+            raise _PreflightBlocked("accepted_target_discovery_unavailable")
+        if len(records) + len(cases) > 500:
+            raise _PreflightBlocked("accepted_target_discovery_overflow")
+        for record in records:
+            checked = _checked_exact_record(sqlite, record, exact_scope)
+            payload = checked.content if isinstance(checked.content, dict) else {}
+            case = payload.get("case")
+            if (checked.kind != "evaluation_packet" or checked.status != "active"
+                    or checked.source != ACCEPTED_SOURCE
+                    or checked.meta.get("report_type") != "production_recall_accepted_case"
+                    or payload.get("schema") != ACCEPTED_QUERY_SCHEMA
+                    or not isinstance(case, dict) or case.get("source_id") != checked.source_id):
+                raise _PreflightBlocked("accepted_target_discovery_invalid")
+            cases.append(case)
+    return cases
+
+
+def _selected_target_graph(batches, *, target_cases, base, result):
+    """Dataset identities narrow the authorized graph; they grant no scope."""
+    if target_cases is None:
+        return batches
+    case_keys, captures, label_refs, accepted_refs, expected_cases = _target_case_selection(target_cases, base)
+    selected = {kind: [] for kind, _report_type, _source in _REPORT_TYPES}
+    pending_refs, found_cases, found_labels = set(), set(), set()
+    for record in batches["accepted"]:
+        payload = record.content if isinstance(record.content, dict) else {}
+        case = payload.get("case") if isinstance(payload.get("case"), dict) else {}
+        if ((case.get("case_id"), record.source_id) in case_keys
+                or (record.record_id, record.source_id) in accepted_refs):
+            key = (case.get("case_id"), record.source_id)
+            if key not in expected_cases or case != expected_cases[key]:
+                raise _PreflightBlocked("repair_target_accepted_case_mismatch")
+            if key in found_cases:
+                raise _PreflightBlocked("repair_target_accepted_case_ambiguous")
+            found_cases.add(key)
+            selected["accepted"].append(record)
+            if not record.evidence or not isinstance(record.evidence[0], str) or not record.evidence[0]:
+                raise _PreflightBlocked("repair_target_pending_reference_invalid")
+            pending_refs.add((record.evidence[0], record.source_id))
+    if found_cases != case_keys:
+        raise _PreflightBlocked("repair_target_accepted_case_missing")
+    for record in batches["label"]:
+        if (record.record_id, record.source_id) in label_refs:
+            key = (record.record_id, record.source_id)
+            if key in found_labels:
+                raise _PreflightBlocked("repair_target_label_reference_ambiguous")
+            found_labels.add(key)
+            selected["label"].append(record)
+            payload = record.content if isinstance(record.content, dict) else {}
+            pending_id = payload.get("pending_record_id")
+            if not isinstance(pending_id, str) or not pending_id:
+                raise _PreflightBlocked("repair_target_pending_reference_invalid")
+            pending_refs.add((pending_id, record.source_id))
+    if found_labels != label_refs:
+        raise _PreflightBlocked("repair_target_label_reference_missing")
+    for record in batches["pending"]:
+        payload = record.content if isinstance(record.content, dict) else {}
+        if ((record.record_id, record.source_id) in pending_refs
+                or (payload.get("case_id"), record.source_id) in case_keys
+                or (payload.get("capture_ref"), record.source_id) in captures):
+            selected["pending"].append(record)
+    found_pending = {(record.record_id, record.source_id) for record in selected["pending"]}
+    if not pending_refs.issubset(found_pending):
+        raise _PreflightBlocked("repair_target_pending_reference_missing")
+    found_captures = {(record.content.get("capture_ref"), record.source_id)
+                      for record in selected["pending"] if isinstance(record.content, dict)}
+    if not captures.issubset(found_captures):
+        raise _PreflightBlocked("repair_target_capture_reference_missing")
+    result["target_case_count"] = len(case_keys)
+    for kind in selected:
+        count = len(selected[kind])
+        other = result["by_type"][kind].get("indexed_count", len(batches[kind])) - count
+        result["target_record_count"] += count
+        result["non_target_record_count"] += other
+        result["by_type"][kind].update(targeted=count, non_target=other)
+    if result["non_target_record_count"]:
+        result["non_target_reason_counts"]["not_referenced_by_selected_dataset"] = result["non_target_record_count"]
+    return selected
+
+
+def _preflight_production_query_graph(sqlite, *, base, bounded, scan_bound, result, persist_receipt,
+                                     target_cases=None, discover_accepted_targets=False):
     scan_scopes = []
     for candidate in [base, *(ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base)))
                               for channel in sorted(SUPPORTED_RUNTIME_CHANNELS))]:
         if candidate not in scan_scopes:
             scan_scopes.append(candidate)
+    if discover_accepted_targets:
+        target_cases = _discover_accepted_targets(sqlite, scan_scopes=scan_scopes)
+        result["discovered_accepted_case_count"] = len(target_cases)
     batches = {}
     for record_type, report_type, _source in _REPORT_TYPES:
         totals = [sqlite.count_records_by_meta_value(kinds=["evaluation_packet"],
@@ -115,15 +280,21 @@ def _preflight_production_query_graph(sqlite, *, base, bounded, scan_bound, resu
         if any(total is None for total in totals):
             raise _PreflightBlocked("indexed_record_scan_unavailable")
         total = sum(totals)
-        if total > scan_bound:
+        result["by_type"][record_type] = dict(scanned=0, repaired=0, already_correct=0,
+                                             quarantined=0, conflicts=0, indexed_count=total)
+        if target_cases is None and total > scan_bound:
             result["overflow_count"] += total - scan_bound
             _add_conflict(result, record_type, "", "indexed_record_scan_overflow")
     if result["conflict_count"]:
         raise _PreflightBlocked("indexed_record_scan_overflow")
+    if target_cases is not None:
+        batches = _load_target_graph(sqlite, target_cases=target_cases, base=base, scan_scopes=scan_scopes)
     for record_type, report_type, expected_source in _REPORT_TYPES:
+        if target_cases is not None:
+            result["by_type"][record_type]["scanned"] = len(batches[record_type])
+            result["scanned_count"] += len(batches[record_type])
+            continue
         records, seen = [], set()
-        result["by_type"][record_type] = dict(scanned=0, repaired=0, already_correct=0,
-                                             quarantined=0, conflicts=0)
         for scan_scope in scan_scopes:
             offset = 0
             while True:
@@ -135,19 +306,13 @@ def _preflight_production_query_graph(sqlite, *, base, bounded, scan_bound, resu
                 if not isinstance(page, list) or len(page) > page_limit:
                     raise _PreflightBlocked("indexed_record_scan_unavailable")
                 for record in page:
-                    if (record.kind != "evaluation_packet" or record.status != "active"
-                            or record.source != expected_source
-                            or not isinstance(record.content, dict)
-                            or not isinstance(record.meta, dict)
-                            or record.meta.get("report_type") != report_type
-                            or not same_scope(record.scope, scan_scope)):
+                    if not same_scope(record.scope, scan_scope):
                         raise _PreflightBlocked("indexed_record_boundary_invalid")
-                    exact = _checked_exact_record(sqlite, record, scan_scope)
-                    identity = _exact_identity(exact)
+                    identity = _exact_identity(record)
                     if identity in seen:
                         raise _PreflightBlocked("indexed_record_scan_duplicate")
                     seen.add(identity)
-                    records.append(exact)
+                    records.append(record)
                     if len(records) > scan_bound:
                         result["overflow_count"] = len(records) - scan_bound
                         raise _PreflightBlocked("indexed_record_scan_overflow")
@@ -158,12 +323,22 @@ def _preflight_production_query_graph(sqlite, *, base, bounded, scan_bound, resu
         result["scanned_count"] += len(records)
         result["by_type"][record_type]["scanned"] = len(records)
 
+    batches = _selected_target_graph(batches, target_cases=target_cases, base=base, result=result)
+    for record_type, report_type, expected_source in _REPORT_TYPES:
+        for record in batches[record_type]:
+            if (record.kind != "evaluation_packet" or record.status != "active"
+                    or record.source != expected_source or not isinstance(record.content, dict)
+                    or not isinstance(record.meta, dict) or record.meta.get("report_type") != report_type):
+                raise _PreflightBlocked("indexed_record_boundary_invalid")
+            _checked_exact_record(sqlite, record, record.scope)
+
     changed = []
     validators = {"pending": _validate_pending, "label": _validate_label, "accepted": _validate_accepted}
-    # Reconcile only referenced gold, at each admitted exact scope, inside the
-    # same writer transaction as graph recovery. Never scan unrelated tenants.
+    # The legacy recovery also reconciles gold status projections. Dataset-
+    # targeted recovery leaves gold untouched and requires the strict validators
+    # to accept its existing exact source/scope and status.
     ids = {str(record.content.get("record_ref")) for record in batches["label"]}
-    for scan_scope in scan_scopes:
+    for scan_scope in (scan_scopes if target_cases is None else []):
         fixed = sqlite.repair_status_projection_mismatches(
             scope=scan_scope, record_ids=sorted(ids), limit=scan_bound, commit=False)
         result["status_projection_repaired_count"] += fixed["repaired_count"]
@@ -227,6 +402,8 @@ def _preflight_production_query_graph(sqlite, *, base, bounded, scan_bound, resu
                                    "label_candidate_boundary_invalid"}
                 revoke = parent_reason if parent_reason in allowed_reasons else (reason if reason in allowed_reasons else "")
                 if revoke:
+                    if target_cases is not None:
+                        raise _PreflightBlocked(revoke)
                     sqlite.execute("ROLLBACK TO recover_query_record")
                     proposed = RecordEnvelope.from_dict(record.to_dict())
                     proposed.status = "quarantined"
@@ -277,6 +454,8 @@ def _preflight_production_query_graph(sqlite, *, base, bounded, scan_bound, resu
 def repair_production_query_channel_scopes(
     runtime: Any, *, scope: dict[str, Any] | ScopeRef | None,
     limit: int = 500, persist_receipt: bool = True, complete_scan: bool = False,
+    target_cases: list[dict[str, Any]] | None = None,
+    discover_accepted_targets: bool = False,
 ) -> dict[str, Any]:
     """Recover authorized channel evidence in one SQLite writer transaction.
 
@@ -291,12 +470,17 @@ def repair_production_query_channel_scopes(
         "quarantined_record_ids": [], "quarantine_reasons": {}, "conflicts": [],
         "status_projection_repaired_count": 0, "status_projection_repaired_record_ids": [],
         "receipt_id": "",
+        "target_case_count": 0, "target_record_count": 0, "non_target_record_count": 0,
+        "non_target_reason_counts": {},
+        "discovered_accepted_case_count": 0,
     }
     try:
         if scope is None:
             raise _PreflightBlocked("exact_base_scope_required")
         if type(limit) is not int or limit < 1 or type(complete_scan) is not bool or type(persist_receipt) is not bool:
             raise _PreflightBlocked("preflight_limit_invalid")
+        if type(discover_accepted_targets) is not bool or (discover_accepted_targets and target_cases is not None):
+            raise _PreflightBlocked("repair_target_selection_invalid")
         base = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
         if any(not isinstance(value, str) or value == "*" for value in asdict(base).values()):
             raise _PreflightBlocked("exact_base_scope_required")
@@ -306,7 +490,8 @@ def repair_production_query_channel_scopes(
         bounded = min(500, limit)
         completed = reader(lambda sqlite: _preflight_production_query_graph(
             sqlite, base=base, bounded=bounded,
-            scan_bound=10000 if complete_scan else bounded, result=result, persist_receipt=persist_receipt))
+            scan_bound=10000 if complete_scan else bounded, result=result, persist_receipt=persist_receipt,
+            target_cases=target_cases, discover_accepted_targets=discover_accepted_targets))
         if completed is not result:
             raise _PreflightBlocked("authority_snapshot_unavailable")
     except _PreflightBlocked as exc:
@@ -546,7 +731,7 @@ def _target_scope(channel_value: Any, embedded_scope: Any, base: ScopeRef) -> tu
     if channel not in SUPPORTED_RUNTIME_CHANNELS:
         return None, "repair_channel_invalid"
     target = ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base)))
-    if not isinstance(embedded_scope, dict) or not same_scope(ScopeRef.from_dict(embedded_scope), target):
+    if not isinstance(embedded_scope, dict) or not _alias_equivalent_scope(embedded_scope, target):
         return None, "embedded_scope_mismatch"
     return target, ""
 

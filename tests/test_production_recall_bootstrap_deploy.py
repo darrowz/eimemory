@@ -254,17 +254,19 @@ def test_explicit_missing_dataset_fails_closed_without_building_or_running_gate(
         args.extend(["--dataset", str(missing)])
     else:
         monkeypatch.setenv("EIMEMORY_PRODUCTION_RECALL_DATASET", str(missing))
+    def unexpected_mutation(*_args, **_kwargs):
+        pytest.fail("unavailable dataset must fail before repair or collection")
+    monkeypatch.setattr(bootstrap_deploy, "repair_production_query_channel_scopes", unexpected_mutation)
+    monkeypatch.setattr(bootstrap_deploy, "collect_pending_production_queries", unexpected_mutation)
 
     exit_code = bootstrap_deploy.main(args)
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code != 0
     assert payload == {
-        "collection": {"created": 2, "skipped": {"duplicate": 1}, "scope_resolution": UNCHANGED_SCOPE_RESOLUTION},
         "ok": False,
         "path": str(missing),
         "reason": "dataset_path_unavailable",
-        "repair": EMPTY_REPAIR_SUMMARY,
         "status": "blocked",
     }
     assert calls == {"build": [], "write": [], "gate": [], "activate": []}
@@ -295,6 +297,55 @@ def test_unspecified_dataset_keeps_accumulated_build_path(tmp_path, monkeypatch,
     assert conventional.is_file()
     assert payload["collection"] == {"created": 2, "skipped": {"duplicate": 1}, "scope_resolution": UNCHANGED_SCOPE_RESOLUTION}
     assert runtime.closed is True
+
+
+def test_explicit_dataset_secure_load_precedes_targeted_repair_and_is_reused(tmp_path, monkeypatch, capsys):
+    runtime, calls = _patch_ready_accumulated_gate(monkeypatch, tmp_path)
+    path = tmp_path / "selected.json"
+    path.write_text("{}", encoding="utf-8")
+    order = []
+    raw_cases = [{"case_id": "signed-physical-case"}]
+    evidence = {"digest": "f" * 64}
+    def load(selected):
+        assert selected == str(path)
+        order.append("secure_load")
+        return {"cases": raw_cases}, evidence
+    def repair(*_args, **kwargs):
+        order.append("targeted_repair")
+        assert kwargs["scope"] == SCOPE
+        assert kwargs["target_cases"] is raw_cases
+        return {"ok": True, "target_case_count": 1, "target_record_count": 3,
+                "non_target_record_count": 374,
+                "non_target_reason_counts": {"not_referenced_by_selected_dataset": 374}}
+    def gate(_runtime, dataset, **_kwargs):
+        assert dataset["_secure_dataset_evidence"] is evidence
+        assert dataset["cases"] is raw_cases
+        order.append("baseline")
+        return {"ok": True, "bootstrap_status": "anchor_ready"}
+    monkeypatch.setattr(bootstrap_deploy, "load_json_dataset_with_evidence", load)
+    monkeypatch.setattr(bootstrap_deploy, "repair_production_query_channel_scopes", repair)
+    monkeypatch.setattr(bootstrap_deploy, "bootstrap_production_recall_baseline", gate)
+    assert bootstrap_deploy.main(_bootstrap_args(tmp_path, dataset=str(path))) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert order == ["secure_load", "targeted_repair", "baseline"]
+    assert report["repair"]["non_target_record_count"] == 374
+    assert runtime.closed and not calls["build"]
+
+
+def test_untrusted_explicit_dataset_fails_before_any_preparation(tmp_path, monkeypatch):
+    runtime, _calls = _patch_ready_accumulated_gate(monkeypatch, tmp_path)
+    path = tmp_path / "selected.json"
+    path.write_text("{}", encoding="utf-8")
+    def untrusted(_path):
+        raise PermissionError("secure loader rejected dataset")
+    def no_write(*_args, **_kwargs):
+        pytest.fail("rejected dataset must precede repair and collection")
+    monkeypatch.setattr(bootstrap_deploy, "load_json_dataset_with_evidence", untrusted)
+    monkeypatch.setattr(bootstrap_deploy, "repair_production_query_channel_scopes", no_write)
+    monkeypatch.setattr(bootstrap_deploy, "collect_pending_production_queries", no_write)
+    with pytest.raises(PermissionError, match="secure loader rejected"):
+        bootstrap_deploy.main(_bootstrap_args(tmp_path, dataset=str(path)))
+    assert runtime.closed
 
 
 def test_accumulated_dataset_pointer_is_not_activated_before_baseline_ready(

@@ -547,41 +547,15 @@ def bootstrap_production_recall_baseline(
             persist=persist_report,
         )
 
-    latest = runtime.store.latest_record_by_meta_value_exact_scope(
-        kind="reflection",
-        source="eimemory.evaluation.production_recall",
-        status="active",
-        scope=dataset_scope,
-        meta_key="baseline_high_water_key",
-        meta_value=_baseline_high_water_key(release.commit, str(frozen["dataset_digest"])),
+    latest = _qualified_bootstrap_anchor(
+        runtime, scope=dataset_scope, release=release, candidate_commit=candidate,
+        dataset_digest=str(frozen["dataset_digest"]),
     )
     if latest is not None:
-        latest_report = (
-            latest.content.get("report")
-            if isinstance(latest.content, dict) and isinstance(latest.content.get("report"), dict)
-            else {}
-        )
-        if (
-            _record_payload_digest_valid(latest, latest_report)
-            and str(latest_report.get("attempt_id") or "") == latest.record_id
-            and latest_report.get("baseline_capture") is True
-            and latest_report.get("blocked_reason") == "pre_switch_bootstrap_anchor"
-            and str(latest_report.get("evaluator_commit") or "") == candidate
-            and _validate_persisted_real_query_report(
-                latest_report,
-                expected_release=release,
-            )
-            and _independent_real_query_metrics_valid(
-                latest_report,
-                baseline=None,
-                runtime=runtime,
-                scope=dataset_scope,
-            )
-        ):
-            return {
-                **_api_report_from_persisted(latest_report, record_id=latest.record_id),
-                "bootstrap_status": "anchor_ready",
-            }
+        return {
+            **_api_report_from_persisted(latest.content["report"], record_id=latest.record_id),
+            "bootstrap_status": "anchor_ready",
+        }
 
     report = _evaluate_real_query_candidate(
         runtime,
@@ -607,7 +581,16 @@ def bootstrap_production_recall_baseline(
         scope=dataset_scope,
         persist=persist_report,
     )
-    if anchor_ready and persisted.get("persisted_record_id"):
+    if anchor_ready and persist_report:
+        anchor = _qualified_bootstrap_anchor(
+            runtime, scope=dataset_scope, release=release, candidate_commit=candidate,
+            dataset_digest=str(frozen["dataset_digest"]),
+            expected_record_id=str(persisted.get("persisted_record_id") or ""),
+        ) if persisted.get("persisted_record_id") else None
+        if anchor is None:
+            return {**persisted, "ok": False, "bootstrap_status": "blocked",
+                    "bootstrap_blocked_reason": "bootstrap_anchor_persistence_invalid"}
+        persisted = _api_report_from_persisted(anchor.content["report"], record_id=anchor.record_id)
         state_record = _persist_bootstrap_state(
             runtime,
             scope=dataset_scope,
@@ -619,6 +602,44 @@ def bootstrap_production_recall_baseline(
         )
         persisted["bootstrap_state_record_id"] = state_record.record_id
     return {**persisted, "bootstrap_status": "anchor_ready" if anchor_ready else "blocked"}
+
+
+def _qualified_bootstrap_anchor(
+    runtime: Any, *, scope: ScopeRef, release: ReleaseIdentity, candidate_commit: str,
+    dataset_digest: str, expected_record_id: str = "",
+) -> RecordEnvelope | None:
+    """Read an actual native anchor before reporting or recording readiness."""
+    high_water_key = _baseline_high_water_key(release.commit, dataset_digest)
+    record = runtime.store.latest_record_by_meta_value_exact_scope(
+        kind="reflection", source="eimemory.evaluation.production_recall", status="active",
+        scope=scope, meta_key="baseline_high_water_key", meta_value=high_water_key,
+    )
+    if (record is None or (expected_record_id and record.record_id != expected_record_id)
+            or record.kind != "reflection" or record.source != "eimemory.evaluation.production_recall"
+            or record.source_id != "default" or record.status != "active"
+            or not same_scope(record.scope, scope)
+            or record.meta.get("baseline_high_water_key") != high_water_key):
+        return None
+    report = record.content.get("report") if isinstance(record.content, dict) else None
+    threshold_gate = report.get("threshold_gate") if isinstance(report, dict) else None
+    blocking = threshold_gate.get("blocking_metrics") if isinstance(threshold_gate, dict) else None
+    if (not isinstance(report, dict) or not _record_payload_digest_valid(record, report)
+            or report.get("attempt_id") != record.record_id
+            or not same_scope(report.get("scope") or {}, scope)
+            or report.get("dataset_digest") != dataset_digest
+            or report.get("evaluator_commit") != candidate_commit
+            or candidate_commit == release.commit
+            or report.get("baseline_capture") is not True
+            or report.get("accepted") is not False or report.get("gate_status") != "not_run"
+            or report.get("blocked_reason") != "pre_switch_bootstrap_anchor"
+            or not isinstance(threshold_gate, dict) or threshold_gate.get("ok") is not False
+            or not isinstance(blocking, dict) or set(blocking) != {"baseline"}
+            or not _validate_persisted_real_query_report(report, expected_release=release)
+            or not _independent_real_query_metrics_valid(
+                report, baseline=None, runtime=runtime, scope=scope,
+            )):
+        return None
+    return record
 
 
 def _verified_live_prior_release(
@@ -2243,10 +2264,10 @@ def _persist_eligible_high_water(
         if (
             latest is not None
             and isinstance(latest_report, dict)
-            and str(latest_report.get("report_id") or "") == str(report.get("report_id") or "")
+            and latest.source_id == "default" and same_scope(latest.scope, scope)
+            and latest_report.get("attempt_id") == latest.record_id
             and _record_payload_digest_valid(latest, latest_report)
-            and _ranking_evidence_payload(latest_report)
-            == _ranking_evidence_payload(report)
+            and _real_query_attempt_payload(latest_report) == _real_query_attempt_payload(report)
         ):
             return (
                 _api_report_from_persisted(latest_report, record_id=latest.record_id),
@@ -2259,6 +2280,7 @@ def _persist_eligible_high_water(
             {
                 "report_id": str(report.get("report_id") or ""),
                 "previous_attempt_id": previous_attempt_id,
+                "attempt_payload_digest": _stable_digest(_real_query_attempt_payload(report)),
             }
         )[:32]
         record = _real_query_report_record(
@@ -2275,7 +2297,15 @@ def _persist_eligible_high_water(
                 and isinstance(existing.content.get("report"), dict)
                 else None
             )
-            if not isinstance(existing_report, dict) or not _record_payload_digest_valid(existing, existing_report):
+            if (existing.kind != "reflection"
+                    or existing.source != "eimemory.evaluation.production_recall"
+                    or existing.source_id != "default" or existing.status != "active"
+                    or not same_scope(existing.scope, scope)
+                    or not isinstance(existing_report, dict)
+                    or not _record_payload_digest_valid(existing, existing_report)
+                    or existing_report.get("attempt_id") != attempt_id
+                    or existing_report.get("previous_attempt_id") != previous_attempt_id
+                    or _real_query_attempt_payload(existing_report) != _real_query_attempt_payload(report)):
                 raise ValueError("deterministic production recall attempt conflict")
             return (
                 _api_report_from_persisted(existing_report, record_id=existing.record_id),
@@ -2293,9 +2323,27 @@ def _persist_eligible_high_water(
     return runtime.store.mutate_records_atomically(mutation)
 
 
+def _real_query_attempt_payload(report: dict[str, Any]) -> dict[str, Any]:
+    # Adjacent retries may vary allocator peaks, timing, and generation time.
+    # Qualification, evaluator authority, and the exact baseline are events:
+    # equal rankings cannot make one event interchangeable with another.
+    fields = (
+        "report_id", "schema", "report_type", "dataset_kind", "scope",
+        "release_identity", "deployment_receipt_id", "evaluator_commit",
+        "dataset_digest", "secure_dataset_evidence", "engine_digest", "engine_identity_valid",
+        "fusion_digest", "policy_digest", "policy_schema", "result_digest", "result_refs",
+        "baseline_identity", "baseline_capture", "accepted", "ok", "gate_status", "blocked_reason",
+        "threshold_gate", "eligibility", "sample_count", "memory_measurement",
+        "cross_channel_leakage_count", "source_filter_leakage_count",
+    )
+    return {**{key: report.get(key) for key in fields},
+            "ranking_evidence": _ranking_evidence_payload(report)}
+
+
 def _ranking_evidence_payload(report: dict[str, Any]) -> dict[str, Any]:
     sample_fields = (
-        "case_id",
+        "case_id", "channel", "source_id", "query_digest", "corpus_result_capacity",
+        "cross_channel_leakage_count", "source_filter_leakage_count",
         "label_refs",
         "label_grades",
         "label_ranking_refs",
