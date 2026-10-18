@@ -12,6 +12,28 @@ from eimemory.api.runtime import Runtime
 TOKEN = "Abcdefghijklmnopqrstuvwxyz012345_-"
 
 
+def test_public_health_ttl_matches_native_fragment_expiry(monkeypatch):
+    from eimemory.adapters.eibrain import health_probe
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(health_probe, "_FRAGMENT_TTL_SECONDS", 2.25)
+    monkeypatch.setattr(health_probe, "monotonic", lambda: clock["now"])
+    probe = health_probe._FragmentProbe()
+    probe._complete({"available": False}, "available")
+    calls = []
+
+    def current_health():
+        calls.append(1)
+        return {"available": True}
+
+    clock["now"] += health_probe.health_fragment_cache_ttl_seconds() - 0.01
+    assert probe.snapshot(current_health) == ({"available": False}, "available")
+    assert calls == []
+    clock["now"] += 0.02
+    assert probe.snapshot(current_health) == ({"available": True}, "available")
+    assert calls == [1]
+
+
 def _get(server, path="/health"):
     request = urllib.request.Request(
         f"http://{server.address[0]}:{server.address[1]}{path}",

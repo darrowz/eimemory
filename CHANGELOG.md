@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.142] — 2026-10-18
+
+- Wait for the native health snapshot lifetime after successful authenticated controlled RPC probes before the first operational stability observation. Preserve strict PostgreSQL readiness and independent source checks; do not clear caches or retry a failed sample.
+
 ## [1.14.141] — 2026-10-18
 
 - Admit only explicitly listed, exact additional acceptance owners when the nightly service scope differs from the deployment's real Hermes scope. Preserve each receipt's actual scope and release authority.

@@ -412,6 +412,9 @@ def _run_controlled_operational_closure(
     report["rpc_controlled_probe"] = transport
     if transport.get("ok") is not True:
         return _blocked(report, "rpc_controlled_probe", "controlled_rpc_probe_failed")
+    # RPC identity checks can predate the successful retrieval and leave a
+    # cached retrieval-health fragment. Observe only after its native TTL.
+    _wait_for_controlled_health_refresh()
     first_sample = collect_controlled_stability_sample(
         expected_commit=release.commit, database_path=database_path,
     )
@@ -469,6 +472,15 @@ def _run_controlled_operational_closure(
     if not controlled_production_closure_report_ok(report):
         return _blocked(report, "controlled_report_contract", "controlled_production_closure_contract_invalid")
     return report
+
+
+def _wait_for_controlled_health_refresh() -> None:
+    from eimemory.adapters.eibrain.health_probe import health_fragment_cache_ttl_seconds
+    import time
+
+    deadline = time.monotonic() + health_fragment_cache_ttl_seconds() + 0.05
+    while (remaining := deadline - time.monotonic()) > 0:
+        time.sleep(min(remaining, 1.0))
 
 
 def _wait_for_controlled_window(started: float) -> None:

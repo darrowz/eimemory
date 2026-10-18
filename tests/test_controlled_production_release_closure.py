@@ -198,6 +198,7 @@ def pipeline(tmp_path, monkeypatch):
     monkeypatch.setattr(release_closure_pending, "supersede_release_closure_pending",
                         lambda **kwargs: {"ok": True})
     monkeypatch.setattr(prompt_safety_executor, "bind_prompt_safety_from_service", lambda runtime: None)
+    monkeypatch.setattr(closure, "_wait_for_controlled_health_refresh", lambda: None)
     monkeypatch.setattr(closure, "_wait_for_controlled_window", lambda started: None)
     monkeypatch.setattr(closure, "_controlled_natural_progress", lambda *args, **kwargs: {
         "certifies_natural_queries": False, "natural_samples_created": 0,
@@ -268,3 +269,64 @@ def test_source_or_policy_change_during_system_checks_cannot_reuse_earlier_pass(
     report = pipeline.run()
     assert report["ok"] is False and report["closure_complete"] is False
     assert report["blocked_reason"] == "controlled_acceptance_source_version_changed"
+
+
+def test_successful_rpc_probe_expires_health_cache_before_first_stability_sample(pipeline, monkeypatch):
+    calls = []
+    original_collect = pipeline.monitor.collect_controlled_stability_sample
+    monkeypatch.setattr(pipeline.transport, "run_controlled_rpc_probe",
+                        lambda *args, **kwargs: calls.append("probe") or rpc_probe())
+    monkeypatch.setattr(closure, "_wait_for_controlled_health_refresh",
+                        lambda: calls.append("health_cache_expired"))
+
+    def collect(**kwargs):
+        calls.append("sample")
+        return original_collect(**kwargs)
+
+    monkeypatch.setattr(pipeline.monitor, "collect_controlled_stability_sample", collect)
+    assert pipeline.run()["ok"] is True
+    assert calls == ["probe", "health_cache_expired", "sample", "sample"]
+
+
+def test_unhealthy_first_sample_after_cache_expiry_still_blocks_without_retry(pipeline, monkeypatch):
+    calls = []
+    failure = {"ok": False, "blocked_reason": "controlled_stability_health_failed"}
+    monkeypatch.setattr(closure, "_wait_for_controlled_health_refresh",
+                        lambda: calls.append("health_cache_expired"))
+    monkeypatch.setattr(pipeline.monitor, "collect_controlled_stability_sample",
+                        lambda **kwargs: calls.append("sample") or failure)
+    report = pipeline.run()
+    assert report["ok"] is False and report["closure_complete"] is False
+    assert report["stability"] == failure
+    assert calls == ["health_cache_expired", "sample"]
+
+
+def test_failed_rpc_probe_does_not_wait_or_collect_stability(pipeline, monkeypatch):
+    monkeypatch.setattr(pipeline.transport, "run_controlled_rpc_probe",
+                        lambda *args, **kwargs: {"ok": False})
+    monkeypatch.setattr(closure, "_wait_for_controlled_health_refresh",
+                        lambda: pytest.fail("A failed RPC probe must block before waiting"))
+    monkeypatch.setattr(pipeline.monitor, "collect_controlled_stability_sample",
+                        lambda **kwargs: pytest.fail("A failed RPC probe must block before sampling"))
+    report = pipeline.run()
+    assert report["ok"] is False and report["closure_complete"] is False
+    assert report["blocked_reason"] == "controlled_rpc_probe_failed"
+
+
+def test_health_refresh_wait_uses_native_ttl_and_short_monotonic_slices(monkeypatch):
+    from eimemory.adapters.eibrain import health_probe
+    import time
+
+    clock = {"now": 100.0}
+    sleeps = []
+    monkeypatch.setattr(health_probe, "_FRAGMENT_TTL_SECONDS", 2.25)
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr(time, "sleep", sleep)
+    closure._wait_for_controlled_health_refresh()
+    assert clock["now"] - 100.0 > health_probe.health_fragment_cache_ttl_seconds()
+    assert all(0 < seconds <= 1.0 for seconds in sleeps)

@@ -14,6 +14,11 @@ _FRAGMENT_WAIT_SECONDS = 0.25
 _STATE_LOCK = threading.Lock()
 
 
+def health_fragment_cache_ttl_seconds() -> float:
+    """Expose the native cache lifetime to callers scheduling fresh observations."""
+    return _FRAGMENT_TTL_SECONDS
+
+
 class _FragmentProbe:
     def __init__(self):
         self.lock = threading.Lock()
