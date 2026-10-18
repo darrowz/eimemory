@@ -43,6 +43,8 @@ jobs:
           tests/test_v1_14_87_per_agent_recall.py
           tests/test_openclaw_host_identity.py
           tests/test_hermes_handoff_outbox.py
+          tests/test_hermes_handoff_installer.py
+          tests/test_hermes_adapter.py
           tests/test_business_closure_evaluation.py
           tests/test_capability_negative_evidence.py
           tests/test_code_evolution_hypothesis_feedback.py

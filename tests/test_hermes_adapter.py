@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+import logging
+import os
 from pathlib import Path
 import re
 import threading
@@ -123,6 +125,95 @@ def test_hermes_proactive_transport_failure_does_not_fallback() -> None:
 
     assert provider.prefetch("must fail closed", session_id="failed-session") == ""
     assert [method for method, _params in client.calls] == ["adapter.proactive_prefetch"]
+
+
+@pytest.mark.parametrize("unsafe", ["state_file", "profile_permissions", "ancestor_permissions"])
+def test_hermes_untrusted_outbox_explains_blocked_sampling_and_recovers(
+    tmp_path, caplog, unsafe,
+) -> None:
+    if unsafe != "state_file" and os.name != "posix":
+        pytest.skip("POSIX ownership/mode trust boundary")
+    ancestor = tmp_path / "profiles"
+    home = ancestor / "private-agent"
+    home.mkdir(parents=True, mode=0o700)
+    unsafe_path = (home if unsafe == "profile_permissions" else ancestor)
+    if unsafe == "state_file":
+        (home / "state").write_text("private-existing-state", encoding="utf-8")
+    else:
+        unsafe_path.chmod(0o775)
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client)
+    caplog.set_level(logging.WARNING, logger="eimemory.adapters.hermes.provider_core")
+    provider.initialize("private-session", hermes_home=str(home))
+    try:
+        assert provider.prefetch("private-query") == ""
+        assert provider.prefetch("private-query-again") == ""
+        provider.queue_prefetch("private-background-query")
+        assert not [p for method, p in client.calls if method == "adapter.proactive_prefetch"]
+        explicit = json.loads(provider.handle_tool_call("eimemory_recall", {"query": "private-query"}))
+        assert explicit["ok"] and explicit["result"]["context"]
+        status = json.loads(provider.handle_tool_call("eimemory_status", {}))
+        diagnostic = status["adapter_local"]["automatic_prefetch"]
+        assert diagnostic == {
+            "blocked": True, "blocked_reason": "outbox_unavailable", "blocked_count": 3,
+        }
+        warnings = [record.message for record in caplog.records
+                    if "automatic prefetch handoff" in record.message]
+        assert len(warnings) == 1
+        assert "outbox_unavailable" in warnings[0]
+        assert "private" not in json.dumps(diagnostic) + "".join(warnings)
+    finally:
+        if unsafe == "state_file":
+            (home / "state").unlink()
+        else:
+            unsafe_path.chmod(0o700)
+    try:
+        assert provider.prefetch("private-query-after-repair")
+        status = json.loads(provider.handle_tool_call("eimemory_status", {}))
+        assert status["adapter_local"]["automatic_prefetch"] == {
+            "blocked": False, "blocked_reason": "", "blocked_count": 3,
+        }
+        warnings = [record.message for record in caplog.records
+                    if "automatic prefetch handoff" in record.message]
+        assert len(warnings) == 2 and "recovered" in warnings[-1]
+    finally:
+        provider.shutdown()
+
+
+def test_hermes_pending_delivery_explains_sampling_gate_and_preserves_ack(tmp_path) -> None:
+    class FailedAckClient(FakeClient):
+        fail_ack = True
+
+        def call_or_bypass(self, method, params):
+            if method == "adapter.proactive_ack" and self.fail_ack:
+                self.calls.append((method, params))
+                return {"ok": False, "bypassed": True, "error": "adapter_unavailable"}
+            return super().call_or_bypass(method, params)
+
+    client = FailedAckClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("delivery-session", hermes_home=str(tmp_path))
+    try:
+        assert provider.prefetch("initial-query")
+        provider.on_post_llm_call(
+            user_message="initial-query", assistant_message="Completed.",
+            injected_citations=["pm:abcdef0123456789abcd"],
+        )
+        assert provider.prefetch("blocked-query") == ""
+        status = json.loads(provider.handle_tool_call("eimemory_status", {}))
+        assert status["adapter_local"]["automatic_prefetch"] == {
+            "blocked": True, "blocked_reason": "delivery_pending", "blocked_count": 1,
+        }
+        assert provider._outbox.status()["pending_deliveries"] == 1
+        client.fail_ack = False
+        assert provider.prefetch("after-ack-recovery")
+        assert provider._outbox.status()["pending_deliveries"] == 0
+        status = json.loads(provider.handle_tool_call("eimemory_status", {}))
+        assert status["adapter_local"]["automatic_prefetch"] == {
+            "blocked": False, "blocked_reason": "", "blocked_count": 1,
+        }
+    finally:
+        provider.shutdown()
 
 
 def test_hermes_single_flight_wait_covers_two_bounded_rpc_deadlines(monkeypatch) -> None:
@@ -607,6 +698,10 @@ def test_hermes_continuous_terminal_failure_is_retained_and_blocks_new_prefetch(
 
     assert provider.prefetch("must be blocked", session_id="session-a") == ""
     assert failing.prefetch_count == 2
+    status = json.loads(provider.handle_tool_call("eimemory_status", {}))
+    assert status["adapter_local"]["automatic_prefetch"] == {
+        "blocked": True, "blocked_reason": "terminal_pending", "blocked_count": 1,
+    }
     provider.shutdown()
     assert provider.pending_terminal_retry_count == 2
 
@@ -623,6 +718,12 @@ def test_hermes_continuous_terminal_failure_is_retained_and_blocks_new_prefetch(
         "pd:hermes-turn-2",
     }
     assert provider.pending_terminal_retry_count == 0
+    assert provider.prefetch("after-terminal-recovery", session_id="session-b")
+    status = json.loads(provider.handle_tool_call("eimemory_status", {}))
+    assert status["adapter_local"]["automatic_prefetch"] == {
+        "blocked": False, "blocked_reason": "", "blocked_count": 1,
+    }
+    provider.shutdown()
 
 
 def test_concurrent_prefetch_retry_overflow_is_persisted_queryable_and_recoverable(

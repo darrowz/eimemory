@@ -1542,7 +1542,7 @@ _install_hermes_integration() {
   if discovered_gateway="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" < "$target_release/deploy/discover_python_runtime_units.sh")"; then
     while IFS= read -r unit; do
       case "$unit" in
-        hermes-gateway.service|*-gateway.service)
+        hermes-gateway.service|hermes-gateway-*.service|*-gateway.service)
           gateway_units+=("$unit") ;;
       esac
     done <<< "$discovered_gateway"
@@ -1569,6 +1569,12 @@ _install_hermes_integration() {
       --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" --render-commit "$target_commit" \
       --render-releases-root "$INSTALL_ROOT/releases" \
       --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
+    case "$unit" in
+      hermes-gateway.service|hermes-gateway-*.service)
+        _install_as_service_user 0644 \
+          "$metadata_release/deploy/systemd/hermes-handoff-permissions.conf" \
+          "$USER_SYSTEMD_DIR/$unit.d/93-eimemory-handoff.conf" ;;
+    esac
   done
   _install_as_service_user 0644 \
     "$metadata_release/deploy/systemd/hermes-gateway-eimemory.conf" \

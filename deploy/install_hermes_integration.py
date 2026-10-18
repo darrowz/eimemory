@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import tempfile
 import tomllib
@@ -15,6 +16,11 @@ PLUGIN_LAYOUT = {
     "eimemory": Path("integrations/hermes/eimemory"),
     "eimemory_hook": Path("integrations/hermes/eimemory_hook"),
 }
+
+# Match Hermes' bounded named-profile discovery without executing host code.
+# These identity markers also cover profiles that inherit their configuration.
+_PROFILE_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_PROFILE_IDENTITY_MARKERS = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db")
 
 
 def _load_release_provider(release: Path):
@@ -117,6 +123,91 @@ def _remove_release_link(destination: Path, target: Path) -> str:
     return "removed"
 
 
+def prepare_handoff_directories(home: Path) -> dict[str, Any]:
+    """Prepare owned profile directories for the private durable outbox.
+
+    Older Hermes profiles can inherit group-write from their creation umask.
+    The runtime correctly refuses such paths; fix only the installation's own
+    directories, never an outside ancestor, managed child symlink, foreign owner
+    or payload. The explicitly supplied home keeps its existing canonical-path
+    semantics, as does the runtime outbox.
+    Validate every existing target before changing any mode.
+    """
+    if os.name != "posix":
+        return {"status": "not_required", "profile_count": 0, "adjusted_count": 0,
+                "created_count": 0}
+    home = home.resolve(strict=True)
+    owner = os.geteuid()
+    for ancestor in home.parents:
+        info = ancestor.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in {0, owner}
+                or (info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX)):
+            raise RuntimeError(f"Hermes handoff ancestor is untrusted: {ancestor}")
+    directories = [(home, False), (home / "state", True)]
+    profiles = home / "profiles"
+    profile_count = 0
+    if os.path.lexists(profiles):
+        info = profiles.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner:
+            raise RuntimeError(f"Hermes handoff directory is untrusted: {profiles}")
+        directories.append((profiles, False))
+        for profile in sorted(profiles.iterdir()):
+            if (profile.name == "default" or _PROFILE_ID.fullmatch(profile.name) is None
+                    or (profiles / ".deleted" / profile.name).exists()):
+                continue
+            info = profile.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                raise RuntimeError(f"Hermes handoff directory is untrusted: {profile}")
+            if not stat.S_ISDIR(info.st_mode):
+                continue
+            markers = []
+            for name in _PROFILE_IDENTITY_MARKERS:
+                marker = profile / name
+                if os.path.lexists(marker):
+                    markers.append(marker.lstat())
+            if not any(stat.S_ISREG(marker.st_mode) or stat.S_ISLNK(marker.st_mode)
+                       for marker in markers):
+                continue
+            directories.extend(((profile, False), (profile / "state", True)))
+            profile_count += 1
+    modes = []
+    for directory, private in directories:
+        if not os.path.lexists(directory):
+            if not private:
+                raise RuntimeError(f"Hermes handoff directory is missing: {directory}")
+            modes.append((directory, None, 0o700))
+            continue
+        info = directory.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner:
+            raise RuntimeError(f"Hermes handoff directory is untrusted: {directory}")
+        modes.append((directory, info, 0o700 if private else stat.S_IMODE(info.st_mode) & ~0o022))
+    adjusted = created = 0
+    for directory, before, mode in modes:
+        if before is None:
+            directory.mkdir(mode=mode)
+            created += 1
+            continue
+        current = directory.lstat()
+        if (current.st_dev, current.st_ino, current.st_uid, current.st_mode) != (
+                before.st_dev, before.st_ino, before.st_uid, before.st_mode):
+            raise RuntimeError(f"Hermes handoff directory changed during installation: {directory}")
+        if stat.S_IMODE(current.st_mode) != mode:
+            # Open without following a replacement symlink; keep the checked
+            # directory inode pinned while tightening its permissions.
+            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                opened = os.fstat(descriptor)
+                if (opened.st_dev, opened.st_ino, opened.st_uid, opened.st_mode) != (
+                        before.st_dev, before.st_ino, before.st_uid, before.st_mode):
+                    raise RuntimeError(f"Hermes handoff directory changed during installation: {directory}")
+                os.fchmod(descriptor, mode)
+            finally:
+                os.close(descriptor)
+            adjusted += 1
+    return {"status": "ready", "profile_count": profile_count,
+            "adjusted_count": adjusted, "created_count": created}
+
+
 def install_hermes_integration(
     *,
     release_root: str | Path,
@@ -131,6 +222,7 @@ def install_hermes_integration(
     current = Path(current_root).expanduser().absolute()
     project = tomllib.loads((release / "pyproject.toml").read_text(encoding="utf-8"))
     expected_version = str(project["project"]["version"])
+    handoff = prepare_handoff_directories(home)
     links: dict[str, str] = {}
     hook_available = (release / PLUGIN_LAYOUT["eimemory_hook"] / "__init__.py").is_file()
     if not hook_available and not allow_provider_only:
@@ -191,6 +283,7 @@ def install_hermes_integration(
         "version": expected_version,
         "memory_provider": memory["provider"],
         "hook_enabled": "eimemory-hook" in enabled,
+        "handoff_directories": handoff,
         "links": links,
         "code_implementation": identity,
     }

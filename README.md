@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.130" src="https://img.shields.io/badge/version-1.14.130-blue">
+  <img alt="Package version 1.14.131" src="https://img.shields.io/badge/version-1.14.131-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -87,7 +87,7 @@ expected record, selector, grounding and thresholds, without extra retrieval
 reads or candidate injection. The supplied 1.14.72 readback verifies the trace
 on that controlled failure, without certifying its recovery or formal quality.
 
-Mainline **1.14.130** keeps capability profiles and their real observations in the same exact registry partition after a configured agent rename, retires replaced bindings only after authenticated provider health and advertisement, and normalizes per-agent recall discovery to the base workspace. Genuine approved paper-pipeline sources retain their provenance for strict applicability review. Primary and supplementary FTS scans remain bounded to verified exact partitions with the original deadlines and ranking. The configured release evaluator uses the same independently authorized exact channel scope as nightly; dataset metadata cannot authorize a caller. Standard deployment and registered reruns safely carry the private binding path from the dedicated protected `runtime-authority.env` configuration file. These repairs do not replace natural-query, source-approval or formal release evidence.
+Mainline **1.14.131** prepares owned Hermes handoff directories during installation so legacy group-writable profiles cannot silently stop automatic recall sampling. Blocked automatic prefetch now reports its reason and count while retaining the private outbox boundary and unacknowledged evidence. It keeps capability profiles and their real observations in the same exact registry partition after a configured agent rename, retires replaced bindings only after authenticated provider health and advertisement, and normalizes per-agent recall discovery to the base workspace. Genuine approved paper-pipeline sources retain their provenance for strict applicability review. Primary and supplementary FTS scans remain bounded to verified exact partitions with the original deadlines and ranking. The configured release evaluator uses the same independently authorized exact channel scope as nightly; dataset metadata cannot authorize a caller. Standard deployment and registered reruns safely carry the private binding path from the dedicated protected `runtime-authority.env` configuration file. These repairs do not replace natural-query, source-approval or formal release evidence.
 
 1.14.118 corrects knowledge-refresh snapshot comparison for visible duplicate IDs and blocks ambiguous scope, source, projection lineage or occupied compiler targets before any batch write. A unique shared canonical paper remains readable, and unrelated duplicates do not block an independent refresh. The 254 current identity conflicts contain real payload differences and remain protected; 162 historical pairs are still unknown. See [acceptance evidence and limits](docs/acceptance-status.md).
 
@@ -272,7 +272,7 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.130, mainline)
+## Current package status (1.14.131, mainline)
 
 The current source repair covers the audit's sixteen findings with native
 positive/negative, restart, transport-loss and authorization regressions. Review

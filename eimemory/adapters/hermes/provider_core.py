@@ -149,6 +149,8 @@ class HermesMemoryProviderCore:
         self._outbox: HermesOutbox | None = None
         self._outbox_home = ""
         self._handoff_error = ""
+        self._automatic_prefetch_blocked_reason = ""
+        self._automatic_prefetch_blocked_count = 0
         self._pending_proactive: OrderedDict[tuple[str, ...], dict[str, Any]] = OrderedDict()
         self._pending_terminal_retries: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._max_terminal_retries = self._max_prefetch_cache_entries * 2
@@ -403,7 +405,7 @@ class HermesMemoryProviderCore:
         normalized_query = _bounded_text(query, 8_000)
         if not self._active or not normalized_query:
             return ""
-        if not self._flush_terminal_retries():
+        if not self._prefetch_handoff_ready():
             return ""
         effective_session = str(session_id or self._session_id)
         key = self._prefetch_key(effective_session, normalized_query)
@@ -435,7 +437,7 @@ class HermesMemoryProviderCore:
         normalized_query = _bounded_text(query, 8_000)
         if not self._active or not normalized_query:
             return
-        if not self._flush_terminal_retries():
+        if not self._prefetch_handoff_ready():
             return
         effective_session = str(session_id or self._session_id)
         key = self._prefetch_key(effective_session, normalized_query)
@@ -1032,6 +1034,11 @@ class HermesMemoryProviderCore:
         if tool_name == "eimemory_status":
             status = self._safe_call("adapter.status", common)
             with self._lock:
+                automatic_prefetch = {
+                    "blocked": bool(self._automatic_prefetch_blocked_reason),
+                    "blocked_reason": self._automatic_prefetch_blocked_reason,
+                    "blocked_count": self._automatic_prefetch_blocked_count,
+                }
                 retry_evidence = {
                     "pending_count": len(self._terminal_retry_evidence),
                     "overflow_count": self._terminal_retry_overflow_count,
@@ -1052,6 +1059,7 @@ class HermesMemoryProviderCore:
                     "identity": self.identity_diagnostics(),
                     "dropped_writes": self.dropped_write_count,
                     "prefetch_cache_entries": self.prefetch_cache_size,
+                    "automatic_prefetch": automatic_prefetch,
                     "pending_terminal_retries": self.pending_terminal_retry_count,
                     "terminal_retry_evidence": retry_evidence,
                     "effect_signals": self._effects.status(),
@@ -1413,6 +1421,38 @@ class HermesMemoryProviderCore:
                     self._terminal_retry_evicted_count += 1
             if changed:
                 self._persist_terminal_retry_evidence_locked()
+
+    def _prefetch_handoff_ready(self) -> bool:
+        """Keep the delivery gate strict and make skipped automatic reads visible."""
+
+        ready = self._flush_terminal_retries()
+        reason = ""
+        if not ready:
+            # Only inspect bounded, typed local state. Queries, citations,
+            # identities and private paths never enter this diagnostic/log.
+            status = self._outbox.status() if self._outbox is not None else {}
+            if status.get("error"):
+                reason = "outbox_unavailable"
+            elif status.get("pending_deliveries"):
+                reason = "delivery_pending"
+            else:
+                with self._lock:
+                    reason = ("terminal_pending" if self._terminal_retry_evidence
+                              else "handoff_pending")
+        with self._lock:
+            previous = self._automatic_prefetch_blocked_reason
+            self._automatic_prefetch_blocked_reason = reason
+            if reason:
+                self._automatic_prefetch_blocked_count = min(
+                    1_000_000_000, self._automatic_prefetch_blocked_count + 1,
+                )
+            count = self._automatic_prefetch_blocked_count
+        if reason != previous:
+            logger.warning(
+                "Hermes automatic prefetch handoff state=%s blocked_count=%s",
+                reason or "recovered", count,
+            )
+        return ready
 
     def _flush_terminal_retries(self) -> bool:
         deliveries_complete = self._flush_deliveries()

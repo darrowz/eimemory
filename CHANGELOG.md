@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.131] — 2026-10-18
+
+- Prepare the owned Hermes root/profile handoff directories during installation: remove shared write permission from managed containers and keep state directories private. Apply a private creation mask to every managed Hermes gateway. Reject outside untrusted ancestors, managed child symlinks and foreign ownership before changing modes; preserve queued payloads.
+- Report blocked automatic prefetch with a bounded count and a stable reason, and log state changes. Keep failed handoff checks blocking and retain unacknowledged delivery/terminal evidence.
+- Cover the actual 0775 ancestor/state regression, native outbox recovery, payload preservation, unsafe path refusal, and explicit-recall availability while automatic sampling is blocked. Sampling recovery does not certify a natural-query quality gate.
+
 ## [1.14.130] — 2026-10-18
 
 - Carry the existing private release-scope binding path from a dedicated protected runtime authority environment file into standard deployment and registered closure reruns. Load only that authority path through the validated parser; RPC secrets are not imported and conflicting explicit authority remains a failure.
