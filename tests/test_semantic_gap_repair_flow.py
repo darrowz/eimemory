@@ -78,6 +78,80 @@ def test_default_nightly_path_autoreplays_once_and_native_owner_resolves_exact_p
         assert db.execute("SELECT count(*) FROM records WHERE source LIKE '%production_recall%accepted%'").fetchone()[0] == 0
 
 
+def test_native_conversation_maintenance_result_uses_its_own_contract_not_explicit_loadout(replay_case):
+    """A fixture contrast, not reconstruction of 136's unretained raw records."""
+    from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
+    from eimemory.evaluation.explicit_input_vault import load_explicit_input
+    runtime, scope, gap, old, current, calls, judges, _ = replay_case
+    before = [runtime.store.get_by_id(item.record_id).to_dict() for item in (gap, old)]
+    current.title = 'Completed turn fixture'
+    current.meta['memory_type'] = 'conversation'
+    runtime.store.rewrite(current, previous_scope=scope)
+    raw = RecallBundle(items=[current], rules=[], reflections=[], confidence=.9, next_action_hint='',
+        explanation={'retrieval_status': 'evidence_found',
+            'relevance_selector': {'collection_complete': True, 'status': 'evidence_found'},
+            'engine_diagnostics': {'source_budget_exhausted': 0, 'drops': {}}})
+    native = raw.to_compact_dict(limit=8)
+    explicit_tool = AgentRuntimeMemoryService._assemble_recall_bundle(raw, limit=8)
+    assert len(native['items']) == 1 and native['retrieval_status'] == 'evidence_found'
+    assert explicit_tool['items'] == [] and explicit_tool['retrieval_status'] == 'unavailable'
+
+    report, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert report['replay_count'] == report['provider_calls'] == len(calls) == len(judges) == 1
+    packet = runtime.store.get_by_id(findings[0]['_semantic_repair']['packet_ref'], scope=scope)
+    body = explicit._verify(packet, repair.CAPTURE_SOURCE, scope)
+    assert body['result_contract'] == repair.RESULT_CONTRACT == 'native_recall_compact.v1'
+    assert body['host_delivery_certified'] is False
+    assert body['natural_benchmark_eligible'] is body['memory_contribution_certified'] is False
+    actual = load_explicit_input(runtime, capture=packet)['result']
+    assert actual['result_contract'] == repair.RESULT_CONTRACT
+    assert actual['bundle']['items'] == [dict(native['items'][0], scope=asdict(scope))]
+    assert actual['bundle']['retrieval_status'] == body['retrieval_state']['final_output_status'] == 'evidence_found'
+    assert len(body['references']) == 1 and body['references'][0]['record_ref'] == current.record_id
+    assert len(_ingest_verified_findings(runtime, findings=findings, scope=scope)['resolved_record_ids']) == 1
+    assert before == [runtime.store.get_by_id(item.record_id).to_dict() for item in (gap, old)]
+    with runtime.store.locked() as db:
+        assert db.execute('SELECT count(*) FROM proactive_decisions').fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM records WHERE source LIKE '%production_recall%accepted%'").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('mutation', ['absent_contract', 'bad_contract', 'claimed_host_delivery', 'absent_host_claim'])
+def test_absent_or_wrong_signed_native_result_contract_is_rejected_before_judge(replay_case, mutation):
+    runtime, scope, gap, _, _, _, judges, _ = replay_case
+    result = repair.capture_semantic_gap_replay(runtime, gap_id=gap.record_id, scope=scope)
+    packet = runtime.store.get_by_id(result['packet_ref'], scope=scope)
+    body = deepcopy(packet.content)
+    body.pop('signature')
+    if mutation == 'absent_contract':
+        body.pop('result_contract')  # A 136-style packet cannot be reinterpreted.
+    elif mutation == 'bad_contract':
+        body['result_contract'] = 'explicit_service_loadout.v1'
+    elif mutation == 'claimed_host_delivery':
+        body['host_delivery_certified'] = True
+    else:
+        body.pop('host_delivery_certified')
+    packet.content = explicit._sign(body)
+    runtime.store.rewrite(packet, previous_scope=scope)
+    explicit._verify(packet, repair.CAPTURE_SOURCE, scope)
+    with pytest.raises(ValueError, match='semantic_repair_packet_invalid'):
+        repair.review_semantic_gap_replay(runtime, packet_ref=packet.record_id, scope=scope)
+    assert judges == [] and runtime.store.get_by_id(gap.record_id).status == 'active'
+
+
+def test_private_actual_result_must_also_bind_the_native_result_contract(replay_case, monkeypatch):
+    runtime, scope, gap, _, _, _, judges, _ = replay_case
+    native = repair._actual_result
+    def other_contract(*args, **kwargs):
+        actual, references = native(*args, **kwargs)
+        actual['result_contract'] = 'explicit_service_loadout.v1'
+        return actual, references
+    monkeypatch.setattr(repair, '_actual_result', other_contract)
+    report, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert set(report['reason_counts']) == {'semantic_repair_replay_input_mismatch'}
+    assert report['reason_counts']['semantic_repair_replay_input_mismatch'] >= 1
+    assert not findings and judges == [] and runtime.store.get_by_id(gap.record_id).status == 'active'
+
+
 @pytest.mark.parametrize('options', [dict(complete=False), dict(complete=None), dict(status='degraded'),
     dict(top='degraded'), dict(top=None), dict(top='no_evidence'), dict(source_budget=1), dict(recall_budget=1)])
 def test_incomplete_result_never_calls_judge_or_resolves(replay_case, options):

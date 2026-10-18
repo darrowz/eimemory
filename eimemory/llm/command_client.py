@@ -86,12 +86,23 @@ class LLMResult:
     diagnostics: dict[str, Any] | None = field(default=None, compare=False, hash=False, repr=False)
 
 
-_VERIFIER_ROUTE: ContextVar[dict | None] = ContextVar('recall_verifier_route', default=None)
+@dataclass(frozen=True, slots=True)
+class UnavailableVerifierRoute:
+    """A scoped caller is known, but its own model configuration is absent."""
+    channel: str
+
+
+class VerifierRouteUnavailable(RuntimeError):
+    def __init__(self):
+        super().__init__('caller_model_route_unavailable')
+
+
+_VERIFIER_ROUTE: ContextVar[dict | UnavailableVerifierRoute | None] = ContextVar('recall_verifier_route', default=None)
 
 
 def bind_verifier_route(route):
     """Bind the calling channel's model for this recall only."""
-    return _VERIFIER_ROUTE.set(route if isinstance(route, dict) else None)
+    return _VERIFIER_ROUTE.set(route if isinstance(route, (dict, UnavailableVerifierRoute)) else None)
 
 
 def reset_verifier_route(token):
@@ -100,6 +111,10 @@ def reset_verifier_route(token):
 
 def current_verifier_route():
     route = _VERIFIER_ROUTE.get()
+    if isinstance(route, UnavailableVerifierRoute):
+        # Both one-shot and pooled transports read this before sending work.
+        # None means no caller pin; it must not represent a missing caller pin.
+        raise VerifierRouteUnavailable()
     return route if isinstance(route, dict) else None
 
 
@@ -211,6 +226,8 @@ class CommandLLMClient:
         }
         route = current_verifier_route()
         if route:
+            if route.get('caller_route_required') is True:
+                payload['caller_route_required'] = True
             for key in ('provider', 'model', 'fallback_provider', 'fallback_model'):
                 value = str(route.get(key) or '').strip()
                 if value:

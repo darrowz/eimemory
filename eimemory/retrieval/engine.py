@@ -2934,7 +2934,8 @@ def _sanitize_candidate_identity(raw: object, *, source: CandidateSource) -> dic
 
 def _public_identity_label(value: object, *, maximum: int) -> str:
     text = str(value or "")[:maximum]
-    return text if re.fullmatch(r"[A-Za-z0-9_.:/-]{0," + str(maximum) + r"}", text) else ""
+    # Native composite sources use '+' (sqlite+postgres_vector).
+    return text if re.fullmatch(r"[A-Za-z0-9_.:/+-]{0," + str(maximum) + r"}", text) else ""
 
 
 def _sha256_identity(value: object) -> str:

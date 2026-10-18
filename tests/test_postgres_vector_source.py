@@ -177,6 +177,81 @@ def test_budget_cancellation_without_prior_query_cannot_claim_backend_health():
     assert source.health()['last_query_status'] == 'budget_exhausted'
 
 
+@pytest.mark.parametrize("failure", ["recall_budget_exhausted", "postgres_timeout", "index_not_ready"])
+def test_native_composite_source_identity_reaches_gate_only_with_valid_query(
+    tmp_path: Path, monkeypatch, failure: str,
+) -> None:
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from eimemory.evaluation import real_query_gate
+    from eimemory.models.records import RecordEnvelope
+    from eimemory.retrieval.engine import GovernedRecallEngine
+    from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
+    from eimemory.storage.runtime_store import RuntimeStore
+
+    store = RuntimeStore(tmp_path)
+    try:
+        store.append(RecordEnvelope.create(
+            kind="memory", title="postgres safety", content={"text": "authoritative record"},
+            scope=SCOPE.to_scope_ref(), source_id="alpha",
+        ))
+        sqlite_source = SQLiteCandidateSource(store)
+        repository = FakeRepository()
+        source = PostgresVectorCandidateSource(
+            sqlite_source=sqlite_source,
+            config=PostgresVectorConfig(
+                enabled=True, dsn="postgresql://unused", vector_dimension=3, failure_threshold=1,
+            ),
+            repository=repository, embedding_provider=StaticProvider(),
+        )
+        head = source._authority_head()
+        repository.state = replace(
+            repository.state,
+            authoritative_updated_at=head[0], authoritative_storage_key=head[1],
+            authority_revision=sqlite_source.authority_revision(),
+        )
+        engine = GovernedRecallEngine(store=store, candidate_source=source)
+        runtime = SimpleNamespace(memory=SimpleNamespace(recall_engine=engine))
+
+        # Exercise the real source -> engine sanitizer -> production gate path.
+        # A native composite name must survive; a cold or failed PG query must
+        # still fail all the existing backend admission checks.
+        assert source.name == "sqlite+postgres_vector"
+        assert real_query_gate._retrieval_identity(runtime, samples=[])["engine_identity_valid"] is False
+        source.search(_request())
+        identity = engine.effective_identity()
+        assert identity["candidate_source"]["name"] == source.name
+        assert identity["candidate_source"]["postgres"]["state"] == "available", identity["candidate_source"]["postgres"]
+        accepted = real_query_gate._retrieval_identity(runtime, samples=[])
+        assert accepted["engine_identity_valid"] is True
+        assert len(accepted["engine_digest"]) == 64
+
+        for unsafe_name in (
+            "sqlite+postgres vector", "sqlite+postgres_vector\nprivate",
+            "sqlite+postgres_vector?token=value", "sqlite+postgres_vector\x00",
+        ):
+            with monkeypatch.context() as patch:
+                patch.setattr(source, "name", unsafe_name)
+                assert engine.effective_identity()["candidate_source"]["name"] == ""
+                assert real_query_gate._retrieval_identity(runtime, samples=[])["engine_identity_valid"] is False
+
+        if failure == "index_not_ready":
+            repository.state = replace(repository.state, ready=False)
+        else:
+            repository.error = RuntimeError(failure)
+        source.search(replace(_request(), query="another authorized query"))
+        failed = engine.effective_identity()["candidate_source"]
+        assert failed["name"] == "sqlite+postgres_vector"
+        assert failed["postgres"]["query_valid"] is False
+        assert failed["postgres"]["state"] == "bypassed"
+        rejected = real_query_gate._retrieval_identity(runtime, samples=[])
+        assert rejected["engine_identity_valid"] is False
+        assert rejected["engine_digest"] == ""
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize('fail_search', [False, True])
 def test_source_reports_request_local_phase_times_even_on_timeout(monkeypatch, fail_search):
     clock = [10.0]

@@ -18,6 +18,7 @@ from eimemory.governance.release.evidence_contract import current_release_identi
 CAPTURE_SOURCE = 'eimemory.semantic_relevance_monitor.replay_capture'
 REVIEW_SOURCE = 'eimemory.semantic_relevance_monitor.repair_review'
 SCHEMA = 'semantic_gap_repair.v1'
+RESULT_CONTRACT = 'native_recall_compact.v1'
 
 
 def _exact(scope):
@@ -47,11 +48,15 @@ def _capture_policy_fingerprint(allowed):
 
 
 def _actual_result(runtime, bundle, scope, source_id, channel, limit):
-    from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
+    # This maintenance call invokes MemoryAPI.recall directly. Preserve its
+    # native compact output; the explicit tool's persona/loadout filter is a
+    # different surface and can discard actual native conversation evidence.
+    # Neither this result nor its independent relevance review certifies host
+    # delivery, natural sampling, or contribution to a host's final answer.
     full = [*bundle.items, *bundle.rules, *bundle.reflections]
     if any(record.scope != scope or record.source_id != source_id for record in full):
         raise ValueError('semantic_repair_result_boundary_invalid')
-    assembled = AgentRuntimeMemoryService._assemble_recall_bundle(bundle, limit=limit)
+    assembled = bundle.to_compact_dict(limit=limit, include_explanation=False)
     if assembled.get('evidence'):
         raise ValueError('semantic_repair_legacy_evidence_unverifiable')
     assembled.pop('evidence', None)
@@ -66,7 +71,8 @@ def _actual_result(runtime, bundle, scope, source_id, channel, limit):
             ref = explicit._reference(runtime, record, scope)
             item['scope'] = ref['scope']
             references[explicit._digest(ref)] = ref
-    result = dict(ok=True, channel=channel, scope=asdict(scope), bundle=assembled)
+    result = dict(ok=True, channel=channel, scope=asdict(scope),
+                  result_contract=RESULT_CONTRACT, bundle=assembled)
     return result, list(references.values())
 
 
@@ -96,10 +102,11 @@ def _replay_retrieval_state(bundle):
 
 
 def capture_semantic_gap_replay(runtime, *, gap_id, scope, attempt_id='', _allow_recall=True, _on_recall=None):
-    """Run one deliberate faithful engine rerun, retaining an attested packet.
+    """Run one faithful engine rerun and attest its native compact result.
 
     The authorized nightly collector invokes this within its shared work budget.
     No new proactive decision, natural sample, human gold, or host message exists.
+    Native maintenance results do not attest that a host received this memory.
     """
     from eimemory.evaluation.explicit_input_vault import capture_explicit_input
     exact = _exact(scope)
@@ -157,6 +164,7 @@ def capture_semantic_gap_replay(runtime, *, gap_id, scope, attempt_id='', _allow
         if commitment.get('status') != 'captured':
             raise ValueError('semantic_repair_private_result_unavailable')
         body = dict(schema=SCHEMA, report_type='semantic_gap_replay_capture', created_at=now_iso(),
+                    result_contract=RESULT_CONTRACT, host_delivery_certified=False,
                     lineage=prepared, request=request, request_digest=explicit._digest(request),
                     original_context_digest=explicit._digest(inputs['task_context']),
                     replay_context_digest=explicit._digest(context), result=explicit._private_result(result),
@@ -187,6 +195,8 @@ def _load_replay(runtime, packet_ref, scope, *, require_complete=True):
         raise ValueError('semantic_repair_packet_unavailable')
     body = explicit._verify(packet, CAPTURE_SOURCE, scope)
     if (body.get('schema') != SCHEMA or body.get('report_type') != 'semantic_gap_replay_capture'
+            or body.get('result_contract') != RESULT_CONTRACT
+            or body.get('host_delivery_certified') is not False
             or body.get('acceptance_generated') is not True
             or body.get('natural_benchmark_eligible') is not False
             or body.get('memory_contribution_certified') is not False):
@@ -207,7 +217,8 @@ def _load_replay(runtime, packet_ref, scope, *, require_complete=True):
         raise ValueError('semantic_repair_replay_input_mismatch')
     private = load_explicit_input(runtime, capture=packet)
     result = private['result']
-    if private['query'] != inputs['effective_query'] or result.get('ok') is not True:
+    if (private['query'] != inputs['effective_query'] or result.get('ok') is not True
+            or result.get('result_contract') != RESULT_CONTRACT):
         raise ValueError('semantic_repair_replay_input_mismatch')
     refs = body.get('references')
     if not isinstance(refs, list) or len(refs) > 64:

@@ -18,6 +18,17 @@ SOURCE = Path(os.environ.get('LUNA_BUDGET_TEST_SOURCE', str(
 MODEL = 'gpt-5.6-luna'
 
 
+@pytest.fixture(autouse=True)
+def isolated_bridge_route_environment(monkeypatch):
+    # Runtime tests may inherit the installed RPC's defaults into this process.
+    # Each extracted-function test declares its own request or environment route.
+    for key in ('EIMEMORY_LUNA_PROVIDER', 'EIMEMORY_RECALL_PROVIDER',
+                'EIMEMORY_LUNA_MODEL', 'EIMEMORY_RECALL_EXPECTED_MODEL',
+                'EIMEMORY_LUNA_FALLBACK_PROVIDER', 'EIMEMORY_LUNA_FALLBACK_MODEL',
+                'EIMEMORY_LUNA_REASONING_EFFORT'):
+        monkeypatch.delenv(key, raising=False)
+
+
 class Clock:
     def __init__(self):
         self.wall = 1000.0

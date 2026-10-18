@@ -10,6 +10,7 @@ Dense admission vs verification contract:
   candidates must not skip a configured verifier.
 """
 from hashlib import sha256
+from collections.abc import Mapping
 import json
 import os
 import re
@@ -19,8 +20,12 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from threading import BoundedSemaphore
 
-from eimemory.llm.command_client import llm_client_from_env, current_verifier_route
+from eimemory.llm.command_client import llm_client_from_env, current_verifier_route, UnavailableVerifierRoute
 from eimemory.llm.completion_timing import safe_timing, failure_category
+from eimemory.contracts.recall_boundary import (
+    normalize_runtime_channel,
+    runtime_channel_from_workspace,
+)
 
 POLICY = 'caller-original-evidence-verification.v4'
 # A generic yes/no interrogative is not itself negation or evidence ambiguity.
@@ -31,6 +36,7 @@ _PREPARE_SLOTS = BoundedSemaphore(2)
 
 
 def configured_client():
+    current_verifier_route()  # reject a missing scoped caller before selecting any transport
     client = llm_client_from_env('recall')
     if client and os.environ.get('EIMEMORY_RECALL_GATEWAY_POOL', '0') == '1':
         if not client.argv[-1].replace('\\','/').endswith('/eimemory/llm/openclaw_gateway.mjs'):
@@ -52,20 +58,47 @@ def route_for_channel(channel, *, agent_id=''):
     if channel_id != 'hermes':
         return None
     from pathlib import Path
+    from eimemory.identity import HONGTU_AGENT_ID, canonical_agent_id
     home = Path(os.environ.get('EIMEMORY_HERMES_HOME') or Path.home() / '.hermes')
-    path = home / 'config.yaml'
     profile = str(agent_id or '').strip()
-    if profile and profile not in {'default', 'hermes'}:
-        candidate = home / 'profiles' / profile / 'config.yaml'
-        if candidate.is_file():
-            path = candidate
+    if profile in {'', 'default', 'hermes'} or canonical_agent_id(profile) == HONGTU_AGENT_ID:
+        path = home / 'config.yaml'
+    else:
+        # An absent colleague profile must never borrow the primary model.
+        if not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', profile):
+            return None
+        path = home / 'profiles' / profile / 'config.yaml'
     return _read_channel_model(path)
+
+
+def route_for_request(channel, *, scope):
+    """Select only the caller model belonging to this exact Hermes scope.
+
+    Historical task contexts can say ``proactive`` instead of a transport.
+    Resolve that invocation from the already scoped workspace without changing
+    its context, scope or source allowlist. Explicit other transports never
+    fall back to Hermes, even when the two declarations disagree.
+    """
+    get = scope.get if isinstance(scope, Mapping) else lambda key: getattr(scope, key, None)
+    if runtime_channel_from_workspace(get('workspace_id')) != 'hermes':
+        return None
+    try:
+        declared_channel = normalize_runtime_channel(channel)
+    except ValueError:
+        declared_channel = ''
+    if declared_channel and declared_channel != 'hermes':
+        return None
+    agent_id = str(get('agent_id') or '').strip()
+    if not agent_id:
+        return UnavailableVerifierRoute(channel='hermes')
+    route = route_for_channel('hermes', agent_id=agent_id)
+    return {**route, 'caller_route_required': True} if route else UnavailableVerifierRoute(channel='hermes')
 
 
 def _read_channel_model(path):
     try:
         text = path.read_text(encoding='utf-8')
-    except OSError:
+    except (OSError, UnicodeError):
         return None
     model = _top_mapping(text, 'model')
     provider = str(model.get('provider') or '').strip()
@@ -417,6 +450,7 @@ def _verify_candidates(*, query, candidates, limit, deadline_at, stages, started
     failure_stage = 'client_setup'
     try:
         with _timed_stage(stages, 'client_setup'):
+            current_verifier_route()  # prepared clients must obey this request's caller boundary too
             client = _PREPARED.get() or configured_client()
         if client is None:
             return [], {**diagnostics, 'reason':'caller_model_unavailable'}

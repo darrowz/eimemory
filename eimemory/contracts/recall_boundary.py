@@ -12,6 +12,39 @@ import json
 SCOPE_FIELDS = ("tenant_id", "agent_id", "workspace_id", "user_id")
 ExactRef = tuple[str, str, str, str, str, str]
 
+SUPPORTED_RUNTIME_CHANNELS = frozenset({"openclaw", "codex", "hermes"})
+_CHANNEL_ALIASES = {
+    "open-claw": "openclaw",
+    "open_claw": "openclaw",
+    "codex-cli": "codex",
+    "codex_cli": "codex",
+    "hermes-agent": "hermes",
+    "hermes_agent": "hermes",
+}
+CHANNEL_SCOPE_SEPARATOR = "::channel::"
+
+
+def normalize_runtime_channel(channel: Any) -> str:
+    """Normalize an explicit transport name, rejecting unknown invocations."""
+    value = str(channel or "").strip().lower()
+    value = _CHANNEL_ALIASES.get(value, value)
+    if value not in SUPPORTED_RUNTIME_CHANNELS:
+        raise ValueError(f"unsupported runtime channel: {channel}")
+    return value
+
+
+def runtime_channel_from_workspace(workspace_id: Any) -> str:
+    """Read the canonical channel suffix without interpreting source ids.
+
+    Stored suffixes use canonical names, so invocation aliases are deliberately
+    not accepted here. This preserves the runtime adapter's scope contract.
+    """
+    workspace = str(workspace_id or "")
+    if CHANNEL_SCOPE_SEPARATOR not in workspace:
+        return ""
+    channel = workspace.rsplit(CHANNEL_SCOPE_SEPARATOR, 1)[-1].strip().lower()
+    return channel if channel in SUPPORTED_RUNTIME_CHANNELS else ""
+
 # D3: single canonical owner of recall-lane memory-type aliases.  Both
 # MemoryAPI and SqliteRecordStore import from here (or via the re-export in
 # retrieval.contracts) to prevent the two copies from drifting.

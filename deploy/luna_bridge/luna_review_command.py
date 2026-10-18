@@ -38,10 +38,16 @@ with _luna_trace.session(active=__name__ == '__main__' and not _luna_serve):
 
 
     def complete(request):
+        if 'caller_route_required' in request and type(request['caller_route_required']) is not bool:
+            raise ValueError('caller_route_required_invalid')
+        caller_route_required = request.get('caller_route_required') is True
+
         def _configured(key, env_names):
             value = request.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
+            if caller_route_required and key in {'provider', 'model', 'fallback_provider', 'fallback_model'}:
+                return ''
             import os
             for name in env_names:
                 raw = os.environ.get(name) or ''
@@ -68,6 +74,8 @@ with _luna_trace.session(active=__name__ == '__main__' and not _luna_serve):
         reasoning_effort = _configured('reasoning_effort', ('EIMEMORY_LUNA_REASONING_EFFORT',))
         if not provider or not model_name:
             raise RuntimeError('model_unavailable')
+        if caller_route_required and bool(fallback_provider) != bool(fallback_model):
+            raise ValueError('caller_model_fallback_incomplete')
         with _luna_trace.stage('bridge_client_setup_ms'):
             client, model = resolve_provider_client(provider, model=model_name)
         if client is None or model != model_name:

@@ -210,6 +210,8 @@ class BridgePoolClient:
         }
         route = current_verifier_route()
         if route:
+            if route.get('caller_route_required') is True:
+                payload['caller_route_required'] = True
             for key in ('provider', 'model', 'fallback_provider', 'fallback_model'):
                 value = str(route.get(key) or '').strip()
                 if value:

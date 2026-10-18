@@ -75,6 +75,11 @@ and digest-bound. Existing privacy guarantees for ordinary audit rows remain.
 `original-eval` can reconstruct captured engine inputs, but does not claim to
 reconstruct external OpenClaw bundle processing or replace observed host delivery.
 
+Historical semantic maintenance preserves the original engine input and
+context and signs the native compact return under an explicit output contract.
+It does not apply a different tool display filter or certify a new host delivery
+or natural business sample. Missing inputs and unavailable results stay unverified.
+
 For a managed installation, place the chosen capture opt-in and its
 `EIMEMORY_CAPTURE_QUERY_SCOPES` allowlist together in the private
 `/etc/eimemory/recall.env`. RPC and nightly both load this shared file; an

@@ -788,10 +788,10 @@ class MemoryAPI:
             task_context=context,
         )
         from eimemory.llm.command_client import bind_verifier_route, reset_verifier_route
-        from eimemory.retrieval.caller_assistance import route_for_channel
-        token = bind_verifier_route(route_for_channel(
+        from eimemory.retrieval.caller_assistance import route_for_request
+        token = bind_verifier_route(route_for_request(
             context.get("runtime_channel"),
-            agent_id=str(getattr(request.scope, "agent_id", "") or ""),
+            scope=request.scope,
         ))
         try:
             return self.recall_engine.recall(request)

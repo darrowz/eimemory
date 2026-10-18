@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.137] — 2026-10-18
+
+- Preserve the native recall output in historical semantic maintenance instead of applying an unrelated explicit-tool display filter. Bind its output contract to signed capture and review evidence.
+- Resolve proactive verifier routing from the authorized channel scope while preserving the original input context, with separate colleague profiles and fail-closed missing-profile handling.
+- Preserve legal composite candidate-source names such as `sqlite+postgres_vector` during engine identity validation, without relaxing backend availability or generation checks.
+
 ## [1.14.136] — 2026-10-18
 
 - Retry unverifiable semantic repair work when its authorized capture policy changes, while retaining signed prior audits. Keep existing replay packets and non-passing reviews deduplicated.
