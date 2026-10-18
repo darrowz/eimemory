@@ -48,7 +48,7 @@ def _run(monkeypatch, lineage_by_contract):
     monkeypatch.setattr("eimemory.adapters.hermes.code_implementation.resolve_code_implementation_provider",
                         lambda *a, **k: {"ready": True, "advertisement_fresh": True})
     monkeypatch.setattr("eimemory.storage.code_evolution_store.CodeEvolutionStore",
-                        lambda store: SimpleNamespace(list_transactions=lambda **kwargs: []))
+                        lambda store: SimpleNamespace(list_transactions_exact_scope=lambda **kwargs: []))
     monkeypatch.setattr("eimemory.governance.evidence_contract.current_release_identity", lambda _rt, s: release)
     monkeypatch.setattr("eimemory.governance.release_lineage.current_release_lineage", lineage)
     report = build_l5_effective_report(SimpleNamespace(store=object()), scope=scope, repo_root="/repo",

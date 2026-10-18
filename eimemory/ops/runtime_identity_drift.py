@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import asdict
+from datetime import datetime
 from hashlib import sha256
 import json
 import re
@@ -30,6 +32,11 @@ PYTHON_RUNTIME_UNITS = (
     "openclaw-loop-watch.service",
 )
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
+REPORT_SCHEMA = "runtime_identity_drift.v2"
+IDENTITY_SCHEMA = "runtime_identity_drift_identity.v2"
+CURRENT_SCHEMA = "runtime_identity_drift_current.v1"
+CURRENT_SOURCE = "eimemory.runtime_identity_drift.observation"
+_SOURCE = "eimemory.runtime_identity_drift"
 
 
 def detect_runtime_identity_drift(
@@ -37,6 +44,7 @@ def detect_runtime_identity_drift(
     expected_commit: str,
     unit_environments: Mapping[str, str],
     detected_at: str,
+    scope: ScopeRef | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compare effective systemd environments with one release identity."""
 
@@ -45,6 +53,9 @@ def detect_runtime_identity_drift(
         raise ValueError("expected_commit must be a full Git SHA")
     if not isinstance(unit_environments, Mapping) or not unit_environments:
         raise ValueError("unit_environments must be a non-empty mapping")
+    scope_ref = _exact_scope(scope) if scope is not None else None
+    if scope_ref is not None:
+        _observation_time(detected_at)
     mismatches: list[dict[str, str]] = []
     for unit in sorted(str(name) for name in unit_environments):
         environment = str(unit_environments.get(unit) or "")
@@ -57,6 +68,8 @@ def detect_runtime_identity_drift(
             for item in assignments
             if "=" in item and item.partition("=")[0] == "EIMEMORY_RUNTIME_COMMIT"
         ]
+        if scope_ref is not None:
+            values = [value.strip().lower() for value in values]
         if not values:
             mismatches.append(
                 {"unit": unit, "reason": "runtime_commit_missing", "observed_commit": ""}
@@ -76,12 +89,22 @@ def detect_runtime_identity_drift(
         "detected_at": str(detected_at or ""),
         "mismatches": mismatches,
     }
+    if scope_ref is not None:
+        identity = {
+            "schema": IDENTITY_SCHEMA,
+            "detector": DETECTOR_ID,
+            "expected_commit": commit,
+            "scope": asdict(scope_ref),
+            "mismatches": mismatches,
+        }
+        material.update(schema=REPORT_SCHEMA, scope=asdict(scope_ref),
+                        identity=identity, identity_digest=_digest(identity))
     incident: dict[str, Any] | None = None
     if mismatches:
-        digest = _digest(material)
+        digest = material["identity_digest"] if scope_ref is not None else _digest(material)
         units = ", ".join(item["unit"] for item in mismatches)
         incident = {
-            "incident_id": f"incident-runtime-identity-{digest[:24]}",
+            "incident_id": f"incident-runtime-identity-{'v2-' if scope_ref is not None else ''}{digest[:24]}",
             "incident_digest": digest,
             "incident_class": INCIDENT_CLASS,
             "title": "Python runtime units are not bound to the current release",
@@ -123,7 +146,7 @@ def inspect_live_runtime_identity(
 
     from eimemory.governance.evidence_contract import current_release_identity
 
-    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope))
+    scope_ref = _exact_scope(scope)
     release = current_release_identity(runtime, scope_ref)
     if release is None:
         return {"ok": False, "status": "unavailable", "reason": "current_release_identity_unavailable"}
@@ -148,47 +171,229 @@ def inspect_live_runtime_identity(
         expected_commit=release.commit,
         unit_environments=environments,
         detected_at=detected_at,
-    )
-    incident = report.get("incident")
-    if not isinstance(incident, Mapping):
-        return {**report, "incident_record_id": ""}
-    marker = f"runtime-identity-drift:{incident['incident_digest']}"
-    existing = runtime.store.list_records_by_meta_value(
-        kinds=["incident"],
         scope=scope_ref,
-        meta_key="idempotency_key",
-        meta_value=marker,
-        limit=1,
     )
-    if existing:
-        record = existing[0]
-    else:
-        record = runtime.store.append(
-            RecordEnvelope.create(
-                kind="incident",
-                title=str(incident["title"]),
-                summary=str(incident["summary"]),
-                detail="Systemd effective environment differs from the current immutable release receipt.",
-                content={**dict(incident), "detector_report": report},
-                tags=["code-evolution", "runtime-identity", "system-detected"],
-                source="eimemory.runtime_identity_drift",
-                scope=scope_ref,
-                status="active",
-                provenance={
-                    "origin": "system_detector",
-                    "detector": DETECTOR_ID,
-                    "known_before_detection": False,
-                    "prior_user_reported": False,
-                },
-                meta={
-                    "idempotency_key": marker,
-                    "incident_class": INCIDENT_CLASS,
-                    "incident_digest": incident["incident_digest"],
-                    "observation_valid": True,
-                },
-            )
+    commit = report["expected_commit"]
+    current_id = runtime_identity_current_record_id(scope_ref, commit)
+
+    def persist(sqlite: Any) -> tuple[dict[str, Any], list[RecordEnvelope], list[Any]]:
+        # Native BEGIN IMMEDIATE serializes independent watch/nightly processes.
+        # Incident first-observation bytes are immutable; only this separate
+        # current observation advances when another real system read completes.
+        previous = sqlite.get_by_id(current_id, scope=scope_ref, exact_scope=True)
+        if previous is not None:
+            physical = sqlite.list_records_by_sources_exact_scope(
+                scope=scope_ref, sources=[CURRENT_SOURCE], kinds=["reflection"],
+                record_ids=[current_id], limit=2)
+            if len(physical) != 1 or physical[0].to_dict() != previous.to_dict():
+                raise ValueError("runtime_identity_current_observation_conflict")
+            previous_report = _current_report(previous, scope_ref, commit)
+            if previous_report is None:
+                raise ValueError("runtime_identity_current_observation_conflict")
+            previous_time = _observation_time(previous_report["detected_at"])
+            observed_time = _observation_time(report["detected_at"])
+            if observed_time < previous_time:
+                if previous_report["identity"] == report["identity"]:
+                    incident = previous_report["incident"]
+                    return ({**previous_report, "incident_record_id": incident["incident_id"] if incident else "",
+                             "current_observation_record_id": current_id}, [], [])
+                return ({"ok": False, "status": "unavailable",
+                         "reason": "runtime_identity_observation_superseded"}, [], [])
+            if observed_time == previous_time:
+                if previous_report["identity"] != report["identity"]:
+                    raise ValueError("runtime_identity_same_time_observation_conflict")
+                incident = previous_report.get("incident")
+                return ({**previous_report, "incident_record_id": incident["incident_id"] if incident else "",
+                         "current_observation_record_id": current_id}, [], [])
+        changed: list[RecordEnvelope] = []
+        incident = report.get("incident")
+        if isinstance(incident, Mapping):
+            existing = sqlite.get_by_id(incident["incident_id"], scope=scope_ref, exact_scope=True)
+            if existing is not None:
+                physical = sqlite.list_records_by_sources_exact_scope(
+                    scope=scope_ref, sources=[_SOURCE], kinds=["incident"],
+                    record_ids=[incident["incident_id"]], limit=2)
+                existing_report = existing.content.get("detector_report")
+                if (len(physical) != 1 or physical[0].to_dict() != existing.to_dict()
+                        or existing.scope != scope_ref or existing.kind != "incident" or existing.source != _SOURCE
+                        or existing.source_id != "default"
+                        or not validate_runtime_identity_drift_report(existing_report, scope=scope_ref)
+                        or existing_report["identity"] != report["identity"]
+                        or any(existing.content.get(key) != value for key, value in incident.items())
+                        or existing.meta.get("incident_digest") != incident["incident_digest"]):
+                    raise ValueError("runtime_identity_incident_identity_conflict")
+                # Do not replace provenance, content, status or timestamps.
+            else:
+                record = RecordEnvelope.create(
+                    kind="incident",
+                    title=str(incident["title"]),
+                    summary=str(incident["summary"]),
+                    detail="Systemd effective environment differs from the current immutable release receipt.",
+                    content={**dict(incident), "detector_report": report},
+                    tags=["code-evolution", "runtime-identity", "system-detected"],
+                    source=_SOURCE,
+                    scope=scope_ref,
+                    status="active",
+                    provenance={
+                        "origin": "system_detector",
+                        "detector": DETECTOR_ID,
+                        "known_before_detection": False,
+                        "prior_user_reported": False,
+                    },
+                    meta={
+                        "idempotency_key": f"runtime-identity-drift:v2:{incident['incident_digest']}",
+                        "incident_class": INCIDENT_CLASS,
+                        "incident_digest": incident["incident_digest"],
+                        "observation_valid": True,
+                    },
+                )
+                record.record_id = str(incident["incident_id"])
+                sqlite.upsert(record, commit=False)
+                changed.append(record)
+        observation = RecordEnvelope.create(
+            kind="reflection", title="Current native runtime identity observation",
+            scope=scope_ref, source=CURRENT_SOURCE, status="active",
+            content={"schema": CURRENT_SCHEMA, "report": report, "report_digest": _digest(report)},
+            provenance={"origin": "system_detector", "detector": DETECTOR_ID},
+            meta={"observation_valid": True},
         )
-    return {**report, "incident_record_id": record.record_id}
+        observation.record_id = current_id
+        if previous is not None:
+            observation.time.created_at = previous.time.created_at
+        sqlite.upsert(observation, commit=False)
+        changed.append(observation)
+        return ({**report, "incident_record_id": incident["incident_id"] if incident else "",
+                 "current_observation_record_id": current_id}, changed, [])
+
+    return runtime.store.mutate_records_atomically(persist)
+
+
+def runtime_identity_current_record_id(scope: ScopeRef | Mapping[str, Any], expected_commit: str) -> str:
+    """Locate one exact-owner/release current observation, never an alias."""
+    commit = str(expected_commit or "").strip().lower()
+    if _HEX40.fullmatch(commit) is None:
+        raise ValueError("expected_commit must be a full Git SHA")
+    return "runtime-identity-current-" + _digest({
+        "schema": CURRENT_SCHEMA, "scope": asdict(_exact_scope(scope)),
+        "expected_commit": commit,
+    })
+
+
+def current_runtime_identity_incident(
+    store: Any, *, scope: ScopeRef | Mapping[str, Any], expected_commit: str,
+) -> str | None:
+    """Return current native incident digest, healthy ``''``, or unknown ``None``.
+
+    This is a lifecycle guard, not a substitute for incident provenance/policy.
+    A recovered or changed observation cannot make an old active incident eligible.
+    """
+    scope_ref = _exact_scope(scope)
+    expected_commit = str(expected_commit or "").strip().lower()
+    records = store.list_records_by_sources_exact_scope(
+        scope=scope_ref, sources=[CURRENT_SOURCE], kinds=["reflection"],
+        record_ids=[runtime_identity_current_record_id(scope_ref, expected_commit)], limit=2)
+    if len(records) != 1:
+        return None
+    report = _current_report(records[0], scope_ref, expected_commit)
+    if report is None:
+        return None
+    incident = report["incident"]
+    return str(incident["incident_digest"]) if incident else ""
+
+
+def _current_report(record: Any, scope: ScopeRef, expected_commit: str) -> dict[str, Any] | None:
+    if (record is None or record.scope != scope or record.kind != "reflection"
+            or record.source != CURRENT_SOURCE or record.source_id != "default" or record.status != "active"
+            or record.provenance.get("origin") != "system_detector"
+            or record.provenance.get("detector") != DETECTOR_ID
+            or record.meta.get("observation_valid") is not True
+            or record.content.get("schema") != CURRENT_SCHEMA):
+        return None
+    report = record.content.get("report")
+    if (not validate_runtime_identity_drift_report(report, scope=scope)
+            or report["expected_commit"] != expected_commit
+            or record.content.get("report_digest") != _digest(report)):
+        return None
+    return dict(report)
+
+
+def validate_runtime_identity_drift_report(report: Any, *, scope: ScopeRef | Mapping[str, Any]) -> bool:
+    """Validate the explicit owner-bound v2 contract without inventing v1 facts."""
+    try:
+        scope_dict = asdict(_exact_scope(scope))
+        if (not isinstance(report, Mapping) or report.get("schema") != REPORT_SCHEMA
+                or report.get("detector") != DETECTOR_ID or report.get("scope") != scope_dict
+                or not isinstance(report.get("expected_commit"), str)
+                or _HEX40.fullmatch(report["expected_commit"]) is None):
+            return False
+        _observation_time(report.get("detected_at"))
+        mismatches = report.get("mismatches")
+        if not isinstance(mismatches, list):
+            return False
+        units: list[str] = []
+        for item in mismatches:
+            if (not isinstance(item, dict) or set(item) != {"unit", "reason", "observed_commit"}
+                    or any(not isinstance(value, str) for value in item.values())
+                    or not item["unit"] or item["observed_commit"] != item["observed_commit"].strip().lower()):
+                return False
+            reason, observed = item["reason"], item["observed_commit"]
+            if reason in {"runtime_commit_missing", "runtime_commit_ambiguous"}:
+                if observed:
+                    return False
+            elif reason != "commit_mismatch" or observed == report["expected_commit"]:
+                return False
+            units.append(item["unit"])
+        if units != sorted(set(units)):
+            return False
+        identity = {"schema": IDENTITY_SCHEMA, "detector": DETECTOR_ID,
+                    "expected_commit": report["expected_commit"], "scope": scope_dict,
+                    "mismatches": mismatches}
+        if report.get("identity") != identity or report.get("identity_digest") != _digest(identity):
+            return False
+        if (report.get("origin") != "system_detector" or report.get("manual_bootstrap") is not False
+                or report.get("known_before_detection") is not False
+                or report.get("prior_user_reported") is not False
+                or report.get("observation_valid") is not True
+                or report.get("ok") is not (not mismatches)
+                or report.get("status") != ("drift_detected" if mismatches else "current")):
+            return False
+        if not mismatches:
+            return report.get("incident") is None
+        # Regenerate only a new v2 contract from its claimed observation; legacy
+        # records are never upgraded or rewritten by this validator.
+        environments = {}
+        for item in mismatches:
+            environments[item["unit"]] = (
+                "" if item["reason"] == "runtime_commit_missing" else (
+                    "EIMEMORY_RUNTIME_COMMIT=x EIMEMORY_RUNTIME_COMMIT=y"
+                    if item["reason"] == "runtime_commit_ambiguous" else
+                    "EIMEMORY_RUNTIME_COMMIT=" + shlex.quote(item["observed_commit"])))
+        expected = detect_runtime_identity_drift(expected_commit=report["expected_commit"],
+                    unit_environments=environments, detected_at=report["detected_at"], scope=scope)
+        return report.get("incident") == expected["incident"]
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _exact_scope(value: ScopeRef | Mapping[str, Any]) -> ScopeRef:
+    if isinstance(value, ScopeRef):
+        return value
+    if not isinstance(value, Mapping) or any(not isinstance(value.get(key), str)
+            for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
+        raise ValueError("runtime_identity_exact_owner_required")
+    result = ScopeRef.from_dict(dict(value))
+    if asdict(result) != dict(value):
+        raise ValueError("runtime_identity_owner_must_not_be_normalized")
+    return result
+
+
+def _observation_time(value: Any) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError("runtime_identity_observation_time_required")
+    result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if result.tzinfo is None or result.utcoffset() is None:
+        raise ValueError("runtime_identity_observation_timezone_required")
+    return result
 
 
 def _systemd_environment(unit: str) -> str | None:
@@ -233,6 +438,12 @@ __all__ = [
     "DETECTOR_ID",
     "INCIDENT_CLASS",
     "PYTHON_RUNTIME_UNITS",
+    "REPORT_SCHEMA",
+    "CURRENT_SCHEMA",
+    "CURRENT_SOURCE",
+    "validate_runtime_identity_drift_report",
+    "runtime_identity_current_record_id",
+    "current_runtime_identity_incident",
     "detect_runtime_identity_drift",
     "inspect_live_runtime_identity",
 ]

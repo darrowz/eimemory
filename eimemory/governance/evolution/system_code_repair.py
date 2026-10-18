@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from hashlib import sha256
+import json
 from pathlib import Path
+import sqlite3
 import subprocess
 from typing import Any
 
@@ -94,11 +96,56 @@ def process_system_code_incidents(
             "processed": [],
         }
 
-    ledger = CodeEvolutionStore(runtime.store)
-    records = [record for record in runtime.store.list_records(kinds=["incident"], scope=scope_ref, limit=100)
-               if record.scope == scope_ref]
-    if not records:
+    try:
+        records = runtime.store.list_records_by_sources_exact_scope(
+            kinds=["incident"], sources=list(dict.fromkeys(route[0] for route in _ROUTES.values())),
+            scope=scope_ref, limit=501)
+    except (AttributeError, TypeError, ValueError, RuntimeError, OSError, sqlite3.Error):
+        return {"ok": False, "status": "blocked", "reason": "incident_source_page_unavailable",
+                "source_page_complete": False, "repair_complete": False, "processed": []}
+    if not isinstance(records, list) or len(records) > 500:
+        return {"ok": False, "status": "blocked", "reason": "incident_source_page_incomplete",
+                "source_page_complete": False, "repair_complete": False, "processed": []}
+    sources = {route[0] for route in _ROUTES.values()}
+    if any(getattr(record, "scope", None) != scope_ref or getattr(record, "source", None) not in sources
+           or getattr(record, "kind", None) != "incident" for record in records):
+        return {"ok": False, "status": "blocked", "reason": "incident_source_page_mismatched",
+                "source_page_complete": False, "repair_complete": False, "processed": []}
+    unknown_lifecycle = []
+    for record in records:
+        if (getattr(record, "status", None) not in {"active", "resolved", "archived", "quarantined", "inactive", "superseded", "rejected"}
+                and (_trusted_incident_identity(record, repository["base_commit"]) is not None
+                     or _trusted_incident_identity(record, repository["base_commit"], diagnosis=True) is not None)):
+            unknown_lifecycle.append(record.record_id)
+    if unknown_lifecycle:
+        return {"ok": False, "status": "blocked", "reason": "current_incident_lifecycle_unverified",
+                "repair_complete": False, "pending_incident_record_ids": unknown_lifecycle, "processed": []}
+    current = [(record, incident) for record in records
+               if (incident := _trusted_incident(record, repository["base_commit"])) is not None]
+    if any(incident["incident_class"] == "deployment.runtime_commit_drift" for _, incident in current):
+        from eimemory.ops.runtime_identity_drift import current_runtime_identity_incident
+        try:
+            current_digest = current_runtime_identity_incident(
+                runtime.store, scope=scope_ref, expected_commit=repository["base_commit"])
+        except (AttributeError, TypeError, ValueError, RuntimeError, OSError, sqlite3.Error):
+            current_digest = None
+        if current_digest is None:
+            return {"ok": False, "status": "blocked", "reason": "runtime_identity_current_observation_unverified",
+                    "repair_complete": False, "processed": []}
+        current = [(record, incident) for record, incident in current
+                   if incident["incident_class"] != "deployment.runtime_commit_drift"
+                   or incident["incident_digest"] == current_digest]
+    diagnosis = [record.record_id for record in records
+                 if _trusted_incident(record, repository["base_commit"], diagnosis=True) is not None]
+    if not current:
+        if diagnosis:
+            return {"ok": False, "status": "diagnosis_required", "processed": [],
+                    "reason": "closure_diagnosis_not_completed", "repair_complete": False,
+                    "pending_incident_record_ids": diagnosis}
         return {"ok": True, "status": "idle", "processed": []}
+    # Policy is required only after exact current detector evidence exists.
+    # Historical incidents and unrelated monitor noise cannot make an
+    # otherwise healthy owner depend on a missing or consumed grant.
     policy_incident_digest, automation_policy_digest, profile_key = _automation_policy_identity()
     if not policy_incident_digest or not automation_policy_digest or not profile_key:
         return {
@@ -106,14 +153,11 @@ def process_system_code_incidents(
             "status": "blocked",
             "reason": "automation_policy_identity_unavailable",
             "repair_complete": False,
-            "pending_incident_record_ids": [record.record_id for record in records],
+            "pending_incident_record_ids": [record.record_id for record, _ in current],
             "processed": [],
         }
     eligible = []
-    for record in records:
-        incident = _trusted_incident(record, repository["base_commit"])
-        if incident is None:
-            continue
+    for record, incident in current:
         if policy_incident_digest and incident["incident_digest"] != policy_incident_digest:
             continue
         incident_class = incident["incident_class"]
@@ -122,26 +166,26 @@ def process_system_code_incidents(
             continue
         eligible.append((record, incident))
     if not eligible:
-        pending = [record.record_id for record in records
-                   if _trusted_incident(record, repository["base_commit"]) is not None]
+        pending = [record.record_id for record, _ in current]
         if pending:
             return {"ok": False, "status": "blocked", "processed": [],
                     "reason": "incident_policy_digest_mismatch", "repair_complete": False,
                     "pending_incident_record_ids": pending}
-        diagnosis = [record.record_id for record in records
-                     if isinstance(record.content, Mapping)
-                     and isinstance(record.content.get("detector_report"), Mapping)
-                     and record.content["detector_report"].get("status") == "diagnosis_required"]
-        if diagnosis:
-            return {"ok": False, "status": "diagnosis_required", "processed": [],
-                    "reason": "closure_diagnosis_not_completed", "repair_complete": False,
-                    "pending_incident_record_ids": diagnosis}
         return {"ok": True, "status": "idle", "processed": []}
     # A one-shot policy already consumed by a prior transaction cannot fund a
     # new candidate.  Stop before provider calls and verification; active
     # transactions are resumed by the separate recovery owner.
+    ledger = CodeEvolutionStore(runtime.store)
     consumption = ledger.get_policy_consumption(automation_policy_digest)
     if consumption is not None:
+        existing = _matching_consumed_transaction(
+            ledger, consumption, eligible=eligible, scope=scope_payload,
+            repository_root=str(root), base_commit=repository["base_commit"],
+            policy_digest=automation_policy_digest, profile_key=profile_key,
+        )
+        if existing is not None:
+            return {"ok": True, "status": "existing", "repair_complete": False,
+                    "processed": [existing]}
         return {
             "ok": False,
             "status": "blocked",
@@ -284,6 +328,126 @@ def process_system_code_incidents(
     }
 
 
+def _matching_consumed_transaction(
+    ledger: CodeEvolutionStore, consumption: Mapping[str, Any], *,
+    eligible: list[tuple[Any, dict[str, Any]]], scope: Mapping[str, str],
+    repository_root: str, base_commit: str, policy_digest: str, profile_key: str,
+) -> dict[str, Any] | None:
+    """Recognize an existing hand-off without authorizing another effect.
+
+    The recovery owner retains responsibility for current effects authority.
+    This read-only path must bind the original consumption to precisely the
+    current owner's still-active transaction before suppressing a new attempt.
+    """
+    from eimemory.governance.evolution.code_evolution_transaction import STATES, TERMINAL_STATES
+    from eimemory.storage.code_evolution_store import digest_json
+
+    try:
+        if not isinstance(consumption, Mapping) or consumption.get("policy_digest") != policy_digest:
+            return None
+        matches = [(record, incident) for record, incident in eligible
+                   if consumption.get("transaction_id") == _stable_id(
+                       "system-repair", incident["incident_digest"], base_commit, policy_digest)]
+        if len(matches) != 1:
+            return None
+        record, incident = matches[0]
+        transaction_id = consumption["transaction_id"]
+        transaction = ledger.get_transaction(transaction_id)
+        if not isinstance(transaction, Mapping):
+            return None
+        payload = transaction.get("payload")
+        if (not isinstance(payload, Mapping) or payload.get("scope") != dict(scope)
+                or payload.get("transaction_id") != transaction_id
+                or any(transaction.get(field) != value for field, value in scope.items())
+                or transaction.get("transaction_id") != transaction_id
+                or transaction.get("terminal") != 0
+                or transaction.get("current_state") not in set(STATES).difference(TERMINAL_STATES)
+                or transaction.get("repository_root") != repository_root
+                or transaction.get("repository_ref") not in {"master", "refs/heads/master"}
+                or transaction.get("base_commit") != base_commit
+                or transaction.get("incident_id") != incident["incident_id"]
+                or transaction.get("incident_digest") != incident["incident_digest"]
+                or transaction.get("incident_class") != incident["incident_class"]
+                or transaction.get("origin") != "system_detector"
+                or transaction.get("detector") != record.provenance.get("detector")
+                or transaction.get("profile_key") != profile_key
+                or transaction.get("policy_digest") != policy_digest):
+            return None
+        source_incident = payload.get("incident")
+        source_repository = payload.get("repository")
+        if (not isinstance(source_incident, Mapping) or not isinstance(source_repository, Mapping)
+                or any(source_incident.get(field) != incident[field]
+                       for field in ("incident_id", "incident_digest", "incident_class"))
+                or (source_repository.get("repository_root") or source_repository.get("root")) != repository_root
+                or (source_repository.get("repository_ref") or source_repository.get("ref")) != transaction["repository_ref"]
+                or source_repository.get("base_commit") != base_commit
+                or payload.get("origin") != transaction["origin"]
+                or payload.get("detector") != transaction["detector"]):
+            return None
+        stored = json.loads(consumption.get("payload_json", ""))
+        if not isinstance(stored, dict):
+            return None
+        material, policy = stored.get("authorization_material"), stored.get("authorized_policy")
+        authorization_digest = consumption.get("authorization_receipt_digest")
+        if (not isinstance(material, dict) or not isinstance(policy, dict)
+                or material.get("schema") != "code_automation_authorization.v2"
+                or material.get("transaction_id") != transaction_id
+                or material.get("policy_digest") != policy_digest
+                or material.get("incident_digest") != incident["incident_digest"]
+                or digest_json(material) != authorization_digest
+                or transaction.get("authorization_digest") != authorization_digest
+                or policy.get("ok") is not True or policy.get("policy_digest") != policy_digest
+                or payload.get("authorized_policy") != policy):
+            return None
+        for key, fields in (
+            ("provider", ("capability_id", "revision_id", "binding_id", "provider_kind", "provider_instance_id", "implementation_digest")),
+            ("advertisement", ("advertisement_id", "advertisement_digest")),
+            ("catalog", ("catalog_case_id", "catalog_snapshot_digest")),
+            ("repository", ("repository_root", "repository_remote", "repository_ref", "base_commit", "base_tree_digest")),
+        ):
+            if material.get(key) != {field: transaction.get(field) for field in fields}:
+                return None
+        if (any(material.get(field) != transaction.get(field)
+                for field in ("proposal_digest", "patch_digest", "candidate_tree_digest"))
+                or any(material.get(field) != policy.get(field) for field in ("effects", "deployment"))):
+            return None
+        # These are original proposal coordinates, unlike candidate/state/
+        # authorization outputs, which native stages update only in SQL.
+        # Inspect both persisted source layers when a v2 proposal is present;
+        # a correct consumption cannot repair a damaged proposal projection.
+        layers = [payload]
+        if payload.get("payload"):
+            if not isinstance(payload["payload"], Mapping):
+                return None
+            layers.append(payload["payload"])
+        for layer in layers:
+            provider, repository = layer.get("provider"), layer.get("repository")
+            original_incident = layer.get("incident")
+            if (not isinstance(provider, Mapping) or not isinstance(repository, Mapping)
+                    or not isinstance(original_incident, Mapping)
+                    or any(provider.get(field) != transaction.get(field) for field in material["provider"])
+                    or any(original_incident.get(field) != incident[field]
+                           for field in ("incident_id", "incident_digest", "incident_class"))
+                    or (repository.get("repository_root") or repository.get("root")) != transaction["repository_root"]
+                    or (repository.get("repository_ref") or repository.get("ref")) != transaction["repository_ref"]
+                    or any(repository.get(field) != transaction.get(field)
+                           for field in ("repository_remote", "base_commit", "base_tree_digest"))
+                    or layer.get("proposal_digest") != transaction.get("proposal_digest")
+                    or (layer.get("patch_digest") or layer.get("proposal_digest")) != transaction.get("patch_digest")):
+                return None
+            for key, fields in (("advertisement", ("advertisement_id", "advertisement_digest")),
+                                ("catalog", ("catalog_case_id", "catalog_snapshot_digest"))):
+                coordinates = layer.get(key) if layer is not payload else layer
+                if not isinstance(coordinates, Mapping) or any(
+                        coordinates.get(field) != transaction.get(field) for field in fields):
+                    return None
+        return {"incident_id": incident["incident_id"], "incident_record_id": record.record_id,
+                "transaction_id": transaction_id, "status": transaction["current_state"],
+                "idempotent": True, "recovery_required": True, "repair_complete": False}
+    except (AttributeError, KeyError, TypeError, ValueError, RuntimeError, OSError, sqlite3.Error):
+        return None
+
+
 def _record_repair_attempt(runtime: Any, scope: ScopeRef, item: Mapping[str, Any]) -> str:
     from eimemory.models.records import RecordEnvelope
     from eimemory.governance.release.closure_verdict import report_digest
@@ -333,15 +497,21 @@ def _automation_policy_identity() -> tuple[str, str, str]:
     return digest, policy_digest, profile_key
 
 
-def _trusted_incident(record: Any, base_commit: str) -> dict[str, Any] | None:
+def _trusted_incident(record: Any, base_commit: str, *, diagnosis: bool = False) -> dict[str, Any] | None:
+    if getattr(record, "status", None) != "active":
+        return None
+    return _trusted_incident_identity(record, base_commit, diagnosis=diagnosis)
+
+
+def _trusted_incident_identity(record: Any, base_commit: str, *, diagnosis: bool = False) -> dict[str, Any] | None:
+    """Validate detector identity before classifying its lifecycle state."""
     provenance = getattr(record, "provenance", {})
     meta = getattr(record, "meta", {})
     content = getattr(record, "content", {})
     if not isinstance(provenance, Mapping) or not isinstance(meta, Mapping) or not isinstance(content, Mapping):
         return None
     if (
-        getattr(record, "status", None) != "active"
-        or provenance.get("origin") != "system_detector"
+        provenance.get("origin") != "system_detector"
         or provenance.get("known_before_detection") is not False
         or provenance.get("prior_user_reported") is not False
         or meta.get("observation_valid") is not True
@@ -362,6 +532,13 @@ def _trusted_incident(record: Any, base_commit: str) -> dict[str, Any] | None:
         or str(meta.get("incident_digest") or "") != str(incident["incident_digest"] or "")
     ):
         return None
+    source, _ = _ROUTES[incident["incident_class"]]
+    if (getattr(record, "source", None) != source
+            or provenance.get("detector") != source + ".v1"):
+        return None
+    if diagnosis and (detector_report.get("schema") != "release_closure_failure.v2"
+                      or detector_report.get("status") != "diagnosis_required"):
+        return None
     if incident["incident_class"] in {"release.closure_internal_failure", "release.closure_report_failure"}:
         if detector_report.get("release_commit") != base_commit:
             return None
@@ -370,11 +547,14 @@ def _trusted_incident(record: Any, base_commit: str) -> dict[str, Any] | None:
             from dataclasses import asdict
 
             identity = detector_report.get("identity")
-            if (detector_report.get("status") != "failure_detected"
-                    or detector_report.get("repair_eligible") is not True
+            if (detector_report.get("status") != ("diagnosis_required" if diagnosis else "failure_detected")
+                    or detector_report.get("repair_eligible") is not (False if diagnosis else True)
                     or detector_report.get("detector") != "eimemory.release_closure_failure.v1"
                     or provenance.get("detector") != "eimemory.release_closure_failure.v1"
                     or not isinstance(identity, Mapping)
+                    or identity.get("schema") != "release_closure_incident_identity.v2"
+                    or identity.get("detector") != "eimemory.release_closure_failure.v1"
+                    or identity.get("status") != detector_report.get("status")
                     or identity.get("scope") != asdict(record.scope)
                     or identity.get("incident_class") != incident["incident_class"]
                     or identity.get("release_commit") != base_commit
@@ -385,7 +565,13 @@ def _trusted_incident(record: Any, base_commit: str) -> dict[str, Any] | None:
         elif incident["incident_class"] == "release.closure_report_failure":
             return None
     elif incident["incident_class"] == "deployment.runtime_commit_drift":
-        if detector_report.get("expected_commit") != base_commit:
+        from eimemory.ops.runtime_identity_drift import REPORT_SCHEMA, validate_runtime_identity_drift_report
+        if (detector_report.get("expected_commit") != base_commit
+                or detector_report.get("schema") != REPORT_SCHEMA
+                or not validate_runtime_identity_drift_report(detector_report, scope=record.scope)
+                or detector_report.get("incident") != incident
+                or detector_report.get("identity_digest") != incident["incident_digest"]
+                or getattr(record, "record_id", None) != incident["incident_id"]):
             return None
     elif incident["incident_class"] == SYSTEM_REPAIR_FAILURE_INCIDENT_CLASS:
         if (

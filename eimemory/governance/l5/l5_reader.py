@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import os
+import sqlite3
 from typing import Any
 
 from eimemory.capabilities.profile_bootstrap import DEFAULT_L5_PROFILE_KEY
@@ -606,32 +607,26 @@ def _code_evolution_evidence(
 
     transaction: dict[str, Any] = {
         "qualifying_terminal_outcome": None,
-        "manual_bootstrap": False,
+        "manual_bootstrap": None,
         "origin": "",
-        "known_before_detection": False,
-        "prior_user_reported": False,
-        "observation_valid": False,
+        "known_before_detection": None,
+        "prior_user_reported": None,
+        "observation_valid": None,
         "quarantined": False,
         "evidence_verified": False,
     }
+    ledger_complete = False
     try:
         from eimemory.storage.code_evolution_store import CodeEvolutionStore
 
         ledger = CodeEvolutionStore(runtime.store)
-        rows = ledger.list_transactions(limit=100)
-        if isinstance(runtime_scope, Mapping):
-            requested_scope = tuple(str(runtime_scope.get(field) or "") for field in ("tenant_id", "agent_id", "workspace_id", "user_id"))
-        else:
-            requested_scope = tuple(
-                str(getattr(runtime_scope, field, "") or "")
-                for field in ("tenant_id", "agent_id", "workspace_id", "user_id")
-            )
-        scoped = [
-            row for row in rows
-            if str(row.get("repository_root") or "") == str(_resolve_repo_root(repo_root))
-            and str(row.get("repository_ref") or "") in {"master", "refs/heads/master"}
-            and tuple(str(row.get(field) or "") for field in ("tenant_id", "agent_id", "workspace_id", "user_id")) == requested_scope
-        ]
+        scoped = ledger.list_transactions_exact_scope(
+            scope=evidence_scope if evidence_scope is not None else runtime_scope,
+            repository_root=str(_resolve_repo_root(repo_root)), limit=501)
+        if not isinstance(scoped, list) or len(scoped) > 500:
+            raise RuntimeError("code_evolution_source_page_incomplete")
+        ledger_complete = True
+        transaction["ledger_page_complete"] = True
         active, latest = _select_code_evolution_rows(ledger, scoped)
         if active is not None:
             transaction.update({
@@ -675,9 +670,9 @@ def _code_evolution_evidence(
                 "transaction_id": latest.get("transaction_id"),
                 "origin": latest.get("origin"),
                 "detector": latest.get("detector"),
-                "known_before_detection": bool(latest.get("known_before_detection")),
-                "prior_user_reported": bool(latest.get("prior_user_reported")),
-                "manual_bootstrap": bool(latest.get("manual_bootstrap")),
+                **{field: bool(latest[field])
+                   if type(latest.get(field)) in {bool, int} and latest[field] in (0, 1) else None
+                   for field in ("known_before_detection", "prior_user_reported", "manual_bootstrap")},
                 "qualifying_terminal_outcome": receipt.get("outcome") or latest.get("current_state", "").lower(),
                 # Qualification facts come only from the append-only terminal
                 # receipt, never from the formerly mutable transaction payload.
@@ -694,9 +689,14 @@ def _code_evolution_evidence(
                 "evidence_error": evidence_error,
             })
     except Exception as exc:
+        ledger_complete = False
         transaction["ledger_error"] = type(exc).__name__
+        transaction["ledger_page_complete"] = False
+        transaction["evidence_verified"] = False
+        transaction["evidence_error"] = ("code_evolution_source_page_incomplete"
+            if str(exc) == "code_evolution_source_page_incomplete" else "code_evolution_source_page_unavailable")
 
-    if not transaction.get("transaction_id"):
+    if ledger_complete and not transaction.get("transaction_id"):
         quality_tx = _quality_repair_transaction(
             runtime,
             runtime_scope=evidence_scope if evidence_scope is not None else runtime_scope,
@@ -821,18 +821,26 @@ def _quality_repair_transaction(
     from eimemory.governance.learning.quality_gap_intake import QUALITY_GAP_SOURCE
 
     store = getattr(runtime, "store", None)
-    list_records = getattr(store, "list_records", None)
+    list_records = getattr(store, "list_records_by_sources_exact_scope", None)
     if not callable(list_records):
-        return None
+        return {"evidence_verified": False, "quality_page_complete": False,
+                "evidence_error": "quality_repair_source_page_unavailable"}
     scope = runtime_scope if isinstance(runtime_scope, ScopeRef) else ScopeRef.from_dict(dict(runtime_scope))
     try:
-        # One sentinel detects an incomplete page. Shared reads remain valid,
-        # but only a complete bounded page can establish current owner tips.
-        records = list_records(kinds=["reflection"], scope=scope, limit=501)
-    except (TypeError, ValueError, RuntimeError):
-        return None
+        # Filter the exact report owner and producer in SQL before applying
+        # the sentinel. Registry aliases and unrelated reflections cannot
+        # provide, hide or consume the page for a quality-resolution chain.
+        records = list_records(kinds=["reflection"], sources=[QUALITY_GAP_SOURCE], scope=scope, limit=501)
+    except (TypeError, ValueError, RuntimeError, OSError, sqlite3.Error):
+        return {"evidence_verified": False, "quality_page_complete": False,
+                "evidence_error": "quality_repair_source_page_unavailable"}
     if not isinstance(records, list) or len(records) > 500:
-        return None
+        return {"evidence_verified": False, "quality_page_complete": False,
+                "evidence_error": "quality_repair_source_page_incomplete"}
+    if any(getattr(record, "scope", None) != scope or getattr(record, "source", None) != QUALITY_GAP_SOURCE
+           or getattr(record, "kind", None) != "reflection" for record in records):
+        return {"evidence_verified": False, "quality_page_complete": False,
+                "evidence_error": "quality_repair_source_page_mismatched"}
     latest = _current_quality_resolution(records, scope=scope, source=QUALITY_GAP_SOURCE)
     if latest is None:
         return None
@@ -869,6 +877,7 @@ def _quality_repair_transaction(
         "terminal_receipt_digest": receipt_digest,
         "quality_gap_id": gap_id,
         "quality_resolution_id": latest.record_id,
+        "quality_page_complete": True,
     }
 
 

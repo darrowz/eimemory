@@ -150,6 +150,7 @@ def routing_harness(monkeypatch):
 
     record = SimpleNamespace(
         record_id="incident-record-current",
+        kind="incident",
         scope=ScopeRef.from_dict(SCOPE),
         status="active",
         source="eimemory.release_closure_failure",
@@ -201,7 +202,7 @@ def routing_harness(monkeypatch):
 
     runtime = SimpleNamespace(
         store=SimpleNamespace(
-            list_records=lambda **_kwargs: [record],
+            list_records_by_sources_exact_scope=lambda **_kwargs: [record],
             append=append,
         ),
         run_autonomous_evolution=evolve,
@@ -216,7 +217,7 @@ def routing_harness(monkeypatch):
     )
     monkeypatch.setattr(
         "eimemory.governance.system_code_repair._automation_policy_identity",
-        lambda: ("d" * 64, "f" * 64, "l5.default"),
+        lambda: (record.content['incident_digest'], "f" * 64, "l5.default"),
     )
     monkeypatch.setattr(
         "eimemory.governance.system_code_repair.CodeEvolutionStore",
@@ -230,6 +231,8 @@ def routing_harness(monkeypatch):
         "eimemory.governance.code_evolution_bridge.propose_code_patch_v2",
         proposal,
     )
+    monkeypatch.setattr('eimemory.ops.runtime_identity_drift.current_runtime_identity_incident',
+                        lambda *_args, **_kwargs: record.content['incident_digest'])
     return SimpleNamespace(
         record=record,
         calls=calls,
@@ -239,11 +242,15 @@ def routing_harness(monkeypatch):
 
 
 def _select_runtime_drift_incident(record):
+    from eimemory.ops.runtime_identity_drift import detect_runtime_identity_drift
+    report=detect_runtime_identity_drift(expected_commit=COMMIT,scope=record.scope,
+        unit_environments={'fixture.service':'EIMEMORY_RUNTIME_COMMIT='+('b'*40)},
+        detected_at='2026-10-01T00:00:00+00:00')
     record.source = "eimemory.runtime_identity_drift"
     record.provenance["detector"] = "eimemory.runtime_identity_drift.v1"
-    record.content["incident_class"] = "deployment.runtime_commit_drift"
-    report = record.content["detector_report"]
-    report["expected_commit"] = report.pop("release_commit")
+    record.record_id=report['incident']['incident_id']
+    record.meta['incident_digest']=report['incident']['incident_digest']
+    record.content={**report['incident'],'detector_report':report}
 
 
 def _select_system_repair_policy_incident(record):
@@ -259,7 +266,10 @@ def test_non_active_detector_incident_never_reaches_provider(routing_harness, st
 
     report = routing_harness.run()
 
-    assert report == {"ok": True, "status": "idle", "processed": []}
+    if status in ("", None):
+        assert report["ok"] is False and report["reason"] == "current_incident_lifecycle_unverified"
+    else:
+        assert report == {"ok": True, "status": "idle", "processed": []}
     assert routing_harness.calls["proposal"] == []
     assert routing_harness.calls["evolution"] == []
 

@@ -11,6 +11,15 @@ AIGC:
 
 # Changelog
 
+## [1.14.148] — 2026-10-19
+
+- Persist and verify one current-release native L5 assessment after nightly maintenance. Keep execution, control-plane readiness and product completion distinct, preserving qualified historical business evidence independently of genuine L5 evidence waits.
+- Filter quality, incident and transaction pages by their actual source and exact owner before bounding results. Reject incomplete or corrupt evidence; retain the authorized product selector for shared provider evidence while reading repairs from the report owner.
+- Share bounded system detection, routing and recovery between nightly and watch. Bind runtime drift identity to its exact owner and fault, retain first incident provenance across concurrent observations, and exclude recovered faults through a separate current observation.
+- Bind policy issuance and native validation to an exact incident digest and the configured repository remote. Publish private policy bytes atomically, preserve old files on failure, and keep dry runs free of mutation and effect recovery.
+- Resolve trusted capability registry aliases consistently and exclude write-receipt retry flags from semantic projection identities. Retain lifecycle and physical identity checks when reading assessment archives.
+- Keep proposal-only bridge fixtures independent of host text newline conversion and Git checkout settings, preserving the native digest and file-bound rejection assertions.
+
 ## [1.14.147] — 2026-10-19
 
 - Align recall-budget contention tests with the atomic WAL-reader authority snapshot. Share the controlled clock with reader acquisition, exercise reader-lock contention and retain verified fragments, strict completeness and final deadline assertions.

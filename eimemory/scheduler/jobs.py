@@ -405,6 +405,10 @@ def run_nightly_jobs(
             if step_reports and step_reports[-1].get("step") == "storage_maintenance":
                 step_reports[-1]["ok"] = False
                 step_reports[-1]["error"] = step_reports[-1].get("error") or "pending_exports"
+        native_l5_report = _nightly_step(
+            step_reports, "native_l5_assessment",
+            lambda: _run_native_l5_assessment(runtime, scope=scope, loop_id=run_id),
+        )
         # Normalize dict defaults for report assembly.
         def _dict(value, fallback=None):
             return value if isinstance(value, dict) else (fallback or {"ok": False})
@@ -436,6 +440,7 @@ def run_nightly_jobs(
         autonomous_learning_daily_report = _dict(autonomous_learning_daily_report)
         autonomous_learning_dashboard = _dict(autonomous_learning_dashboard)
         l5_loop_report = _dict(l5_loop_report)
+        native_l5_report = _dict(native_l5_report)
         capability_v3_backfill_report = _dict(capability_v3_backfill_report)
         capability_v3_dual_write_report = _dict(capability_v3_dual_write_report)
         l5_v3_shadow_report = _dict(l5_v3_shadow_report)
@@ -509,6 +514,7 @@ def run_nightly_jobs(
             "real_effect_hypotheses": effect_hypotheses,
             "real_effect_cycle": effect_cycle,
             "l5_loop": l5_loop_report,
+            "native_l5_assessment": native_l5_report,
             "capability_v3_backfill": capability_v3_backfill_report,
             "capability_v3_dual_write": capability_v3_dual_write_report,
             "l5_v3_shadow": l5_v3_shadow_report,
@@ -649,10 +655,14 @@ def _run_code_evolution_maintenance(runtime: Runtime, *, scope: dict[str, Any]) 
     """Let the existing nightly owner report/reconcile pending transactions."""
 
     try:
-        return runtime.resume_code_evolution_transactions(
+        from eimemory.governance.evolution.system_code_maintenance import run_system_code_maintenance
+        return run_system_code_maintenance(runtime,
             scope=scope,
             owner_id="nightly:code-evolution",
             limit=100,
+            apply=True,
+            detect_and_route=(_env_bool("EIMEMORY_L5_LOOP_ENABLED", default=False)
+                              and _env_bool("EIMEMORY_L5_LOOP_APPLY", default=False)),
         )
     except Exception as exc:
         return {
@@ -2519,7 +2529,20 @@ def _run_rule_evolution(
 def _capability_v3_profile_key() -> str:
     """Return the explicitly deployed profile selector, never a built-in list."""
 
-    return str(os.environ.get("EIMEMORY_L5_V3_PROFILE") or "").strip()
+    from eimemory.governance.l5.native_assessment import effective_l5_profile
+    return effective_l5_profile()
+
+
+def _run_native_l5_assessment(runtime: Runtime, *, scope: dict, loop_id: str) -> dict[str, Any]:
+    from eimemory.governance.l5.native_assessment import run_native_l5_assessment
+    if not _env_bool("EIMEMORY_L5_LOOP_ENABLED", default=False):
+        return {"ok": True, "execution_ok": True, "enabled": False,
+                "status": "not_configured", "control_plane_ok": False,
+                "product_l5_complete": False, "archive_verified": False,
+                "reason": "native_l5_not_enabled"}
+    return run_native_l5_assessment(runtime, scope=scope, loop_id=loop_id,
+        profile_key=_capability_v3_profile_key(),
+        capability_scope=str(os.environ.get("EIMEMORY_CAPABILITY_SCOPE") or "global"))
 
 
 def _capability_v3_backfill_gap(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
@@ -2673,7 +2696,8 @@ def _run_l5_v3_shadow(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
     """Observe the dynamic model beside legacy L5 without changing readers."""
 
     profile_key = _capability_v3_profile_key()
-    if not profile_key:
+    if not _env_bool("EIMEMORY_L5_V3_SHADOW_ENABLED",
+                     default=bool(str(os.environ.get("EIMEMORY_L5_V3_PROFILE") or "").strip())):
         return {
             "ok": True,
             "report_type": "l5_v3_shadow",
@@ -2834,7 +2858,8 @@ def _run_capability_incubation(runtime: Runtime, *, scope: dict) -> dict[str, An
     """Expose and automatically activate discovered definitions with complete prerequisites."""
 
     profile_key = _capability_v3_profile_key()
-    enabled = _env_bool("EIMEMORY_CAPABILITY_INCUBATION_ENABLED", default=bool(profile_key))
+    enabled = _env_bool("EIMEMORY_CAPABILITY_INCUBATION_ENABLED",
+                       default=bool(str(os.environ.get("EIMEMORY_L5_V3_PROFILE") or "").strip()))
     if not enabled:
         return {
             "ok": True,

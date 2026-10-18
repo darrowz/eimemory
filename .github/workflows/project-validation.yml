@@ -52,6 +52,18 @@ jobs:
           tests/test_intake_persona_audit_closure.py
           tests/test_scheduled_backup.py
           tests/test_l5_fused_closure.py
+          tests/test_native_l5_assessment_maintenance.py
+          tests/test_l5_exact_evidence_pages.py
+          tests/test_system_code_maintenance.py
+          tests/test_code_policy_operator.py
+          tests/test_code_automation_policy_issue.py
+          tests/test_runtime_identity_drift.py
+          tests/test_system_code_repair.py
+          tests/test_system_code_repair_failure.py
+          tests/test_l5_v3_lineage_contract.py
+          tests/test_l5_product_completion.py
+          tests/test_l5_reader_transactions.py
+          tests/test_v1_14_92_profile_alias.py
           tests/test_independent_evidence_architecture.py
           tests/test_independent_evidence_repo_integration.py
           tests/test_recall_budget_reserve.py

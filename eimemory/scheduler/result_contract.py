@@ -79,6 +79,7 @@ NIGHTLY_NESTED_OK_ALLOWLIST = (
     "real_effect_hypotheses",
     "real_effect_cycle",
     "l5_loop",
+    "native_l5_assessment",
     "capability_v3_backfill",
     "capability_v3_dual_write",
     "l5_v3_shadow",
@@ -234,6 +235,21 @@ def _non_actionable_step_wait(name: str, result: dict) -> bool:
         return _quality_wait_is_non_actionable(result)
     if name == "l5_loop":
         return _l5_awaiting_evidence_is_non_actionable(result)
+    if name == "native_l5_assessment":
+        return (
+            result.get("schema") == "native_l5_assessment_maintenance.v1"
+            and result.get("ok") is False and result.get("execution_ok") is True
+            and result.get("product_l5_complete") is False
+            and result.get("evidence_failed") is False
+            and type(result.get("control_plane_ok")) is bool
+            and result.get("status") == "incomplete" and result.get("awaiting_evidence") is True
+            and result.get("archive_verified") is True
+            and isinstance(result.get("record_id"), str) and bool(result["record_id"])
+            and isinstance(result.get("envelope_digest"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", result["envelope_digest"]) is not None
+            and all(isinstance(result.get(key), str) and bool(result[key]) for key in
+                ("release_commit", "deployment_receipt_id", "release_session_id"))
+        )
     if name == "dynamic_capability_evolution":
         return _dynamic_evolution_awaiting_hypothesis_is_non_actionable(result)
     if name == "memory_eval_ci":
@@ -1114,7 +1130,11 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
     natural_agents = _per_agent_diagnostics(report.get("recall_quality_per_agent"))
     all_waits = list(dict.fromkeys(waits))
     natural_waits = [name for name in all_waits if name in {"production_recall", "recall_quality_gate"}]
-    business_waits = [name for name in all_waits if not historical_accepted or name not in natural_waits]
+    l5_waits = [name for name in all_waits if name == "native_l5_assessment"]
+    business_waits = [name for name in all_waits if name not in l5_waits
+                      and (not historical_accepted or name not in natural_waits)]
+    native_l5 = report.get("native_l5_assessment")
+    native_l5 = native_l5 if isinstance(native_l5, dict) else {}
     historical_evidence = {
         "evaluation_contract": "historical_business_qualification.v1",
         "formal_business_evidence": True,
@@ -1130,6 +1150,11 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         "failed_steps": failures,
         "evidence_waits": business_waits,
         "natural_evidence_waits": natural_waits,
+        "l5_evidence_waits": l5_waits,
+        "native_l5_assessment": {
+            key: native_l5.get(key) for key in ("execution_ok", "control_plane_ok",
+                "product_l5_complete", "status", "archive_verified", "record_id", "envelope_digest")
+        } if native_l5 else {},
         "recall_quality_accepted": natural_accepted or historical_accepted,
         "recall_quality_acceptance_basis": "historical_business_memory_controlled" if historical_accepted
             else "natural_production_queries" if natural_accepted else "not_accepted",

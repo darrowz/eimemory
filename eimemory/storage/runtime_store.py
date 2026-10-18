@@ -1785,6 +1785,30 @@ class RuntimeStore:
                 source_ids=source_ids,
             )
 
+    def list_records_by_sources_exact_scope(
+        self,
+        *,
+        scope: ScopeRef | dict,
+        sources: list[str] | tuple[str, ...],
+        kinds: list[str] | tuple[str, ...],
+        limit: int = 501,
+        offset: int = 0,
+        record_ids: list[str] | tuple[str, ...] | None = None,
+    ) -> list[RecordEnvelope]:
+        """Bounded typed evidence read with no shared-owner fallback."""
+        if not isinstance(scope, (ScopeRef, dict)):
+            raise ValueError("exact_scope_requires_scope")
+        if isinstance(scope, dict) and any(not isinstance(scope.get(key), str)
+                for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
+            raise ValueError("typed_record_page_exact_owner_required")
+        scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        if isinstance(scope, dict) and any(scope[key] != getattr(scope_ref, key)
+                for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
+            raise ValueError("typed_record_page_owner_must_not_be_normalized")
+        with self.borrow_reader() as slot:
+            return slot.store.list_records_by_sources_exact_scope(
+                scope=scope_ref, sources=sources, kinds=kinds, limit=limit, offset=offset, record_ids=record_ids)
+
     def record_payload_fingerprint(
         self,
         *,

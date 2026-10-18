@@ -50,9 +50,10 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
     # Exercise this contract with a bounded source in a genuine clean repo.
     source = tmp_path / path
     source.parent.mkdir(parents=True)
-    source.write_text("VALUE = 1\n" + ("# bounded-source\n" * 4000 if oversized else ""))
+    source.write_bytes(("VALUE = 1\n" + ("# bounded-source\n" * 4000 if oversized else "")).encode("utf-8"))
     content = source.read_bytes()
-    for args in (("init", "--quiet"), ("remote", "add", "origin", "https://example.com/eimemory.git"),
+    for args in (("init", "--quiet"), ("config", "core.autocrlf", "false"),
+                 ("remote", "add", "origin", "https://example.com/eimemory.git"),
                  ("add", "."), ("-c", "user.name=Test", "-c", "user.email=test@example.com",
                                  "commit", "--quiet", "-m", "Bounded fixture")):
         subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)

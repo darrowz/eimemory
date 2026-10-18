@@ -65,7 +65,7 @@ def test_current_policy_state_is_not_incident() -> None:
     assert current["status"] == "non_actionable"
 
 
-def test_idle_policy_bound_to_older_release_is_detected() -> None:
+def test_idle_router_does_not_turn_an_unused_old_policy_into_a_system_incident() -> None:
     report = detect_system_code_repair_failure(
         {"ok": True, "status": "idle", "processed": []},
         policy=_policy(),
@@ -73,9 +73,30 @@ def test_idle_policy_bound_to_older_release_is_detected() -> None:
         detected_at="2026-09-02T15:00:00Z",
     )
 
-    assert report["status"] == "failure_detected"
-    assert report["blocked_reason"] == "automation_policy_release_binding_stale"
+    assert report["ok"] is True and report["status"] == "non_actionable"
+    assert report["incident"] is None and report["blocked_reason"] == ""
     assert report["policy_transaction_id"] == ""
+
+
+def test_healthy_repeated_native_recording_preserves_existing_incidents_without_appending(tmp_path, monkeypatch) -> None:
+    from eimemory.storage.runtime_store import RuntimeStore
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+    store = RuntimeStore(tmp_path / "runtime")
+    scope = ScopeRef.from_dict(SCOPE)
+    old = store.append(RecordEnvelope.create(kind="incident", title="original observation", scope=scope))
+    monkeypatch.setattr("eimemory.ops.system_code_repair_failure.current_release_identity",
+                        lambda *_args, **_kwargs: SimpleNamespace(commit=CURRENT))
+    monkeypatch.setattr("eimemory.ops.system_code_repair_failure.load_code_automation_policy", lambda **_kwargs: _policy())
+    runtime = SimpleNamespace(store=store)
+    try:
+        for observed in ("2026-10-19T00:00:00Z", "2026-10-19T00:05:00Z"):
+            result = record_system_code_repair_failure(runtime, scope=SCOPE,
+                repair_report={"ok": True, "status": "idle", "processed": []}, detected_at=observed)
+            assert result["status"] == "non_actionable" and result["incident_record_id"] == ""
+        rows = store.list_records(kinds=["incident"], scope=scope, limit=10)
+        assert len(rows) == 1 and rows[0].to_dict() == old.to_dict()
+    finally:
+        store.close()
 
 
 def test_recording_is_idempotent_and_preserves_detector_provenance(tmp_path, monkeypatch) -> None:

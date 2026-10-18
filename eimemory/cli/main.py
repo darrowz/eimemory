@@ -780,6 +780,10 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_code_evolution_policy_issue.add_argument("--repo-root", default="")
     learn_code_evolution_policy_issue.add_argument("--incident-class", required=True)
     learn_code_evolution_policy_issue.add_argument("--detector-id", required=True)
+    learn_code_evolution_policy_issue.add_argument(
+        "--incident-digest", default=None,
+        help="Exact native incident SHA-256; required by system incident routing.",
+    )
     learn_code_evolution_policy_issue.add_argument("--test-plan-id", default="")
     learn_code_evolution_policy_issue.add_argument(
         "--effects",
@@ -796,6 +800,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Write policy only when set; never auto-writes /etc without this flag.",
     )
     learn_code_evolution_policy_issue.add_argument("--json", action="store_true", default=True)
+    learn_code_evolution_policy_validate = learn_sub.add_parser("code-evolution-policy-validate")
+    learn_code_evolution_policy_validate.add_argument("--path", default="")
+    learn_code_evolution_policy_validate.add_argument("--incident-digest", default=None)
+    learn_code_evolution_policy_validate.add_argument("--json", action="store_true", default=True)
     learn_capability_acceptance = learn_sub.add_parser("capability-acceptance")
     learn_capability_acceptance.add_argument("--profile", default="")
     learn_capability_acceptance.add_argument("--capability-scope", default="global")
@@ -1879,75 +1887,29 @@ def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         return 0 if report.get("ok") else 1
     if parsed.learn_command == "watch":
         from eimemory.governance.world_watchers import collect_world_signals, default_watches
-        from eimemory.governance.system_code_repair import process_system_code_incidents
+        from eimemory.governance.evolution.system_code_maintenance import run_system_code_maintenance
 
         report = collect_world_signals(
-            runtime,
-            scope=scope,
-            watches=default_watches(),
-            dry_run=not bool(parsed.apply),
-            profile_key=_cli_profile_key(parsed.profile),
-            capability_scope=str(parsed.capability_scope),
-            at_time=str(parsed.at_time),
+            runtime, scope=scope, watches=default_watches(),
+            dry_run=not bool(parsed.apply), profile_key=_cli_profile_key(parsed.profile),
+            capability_scope=str(parsed.capability_scope), at_time=str(parsed.at_time),
             legacy_compatibility=bool(parsed.legacy_compatibility),
         )
-        if bool(parsed.apply):
-            try:
-                repair_report = process_system_code_incidents(
-                    runtime,
-                    scope=scope,
-                    max_items=1,
-                )
-            except Exception as exc:
-                repair_report = {
-                    "ok": False,
-                    "status": "blocked",
-                    "reason": f"system_code_repair_error:{type(exc).__name__}",
-                    "processed": [],
-                }
-            try:
-                from eimemory.ops.system_code_repair_failure import (
-                    record_system_code_repair_failure,
-                )
-
-                repair_failure_report = record_system_code_repair_failure(
-                    runtime,
-                    scope=scope,
-                    repair_report=repair_report,
-                )
-            except Exception as exc:
-                repair_failure_report = {
-                    "ok": False,
-                    "status": "blocked",
-                    "reason": f"system_code_repair_failure_detector_error:{type(exc).__name__}",
-                    "incident_record_id": "",
-                }
-        else:
-            repair_report = {
-                "ok": True,
-                "status": "skipped",
-                "reason": "apply_disabled",
-                "processed": [],
-            }
-            repair_failure_report = {
-                "ok": True,
-                "status": "skipped",
-                "reason": "apply_disabled",
-                "incident_record_id": "",
-            }
-        transaction_report = runtime.resume_code_evolution_transactions(
-            scope=scope,
-            owner_id="learn-watch:code-evolution",
-            limit=100,
+        maintenance = run_system_code_maintenance(
+            runtime, scope=scope, owner_id="learn-watch:code-evolution",
+            limit=100, apply=bool(parsed.apply),
         )
         report = {
             **report,
-            "system_code_repair": repair_report,
-            "system_code_repair_failure": repair_failure_report,
-            "code_evolution": transaction_report,
+            "ok": report.get("ok") is True and maintenance.get("execution_ok") is True,
+            "system_code_maintenance": maintenance,
+            "runtime_identity": maintenance["runtime_identity"],
+            "system_code_repair": maintenance["system_code_repair"],
+            "system_code_repair_failure": maintenance["system_code_repair_failure"],
+            "code_evolution": maintenance["code_evolution"],
         }
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0
+        return 0 if report.get("ok") is True else 1
     if parsed.learn_command == "think":
         persist = bool(parsed.persist) and not bool(parsed.dry_run)
         report = runtime.generate_learning_thoughts(
@@ -2435,21 +2397,9 @@ def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0 if report.get("ok") else 1
     if parsed.learn_command == "code-evolution-policy-issue":
-        from eimemory.governance.code_automation_policy_issue import issue_code_automation_policy
-
-        report = issue_code_automation_policy(
-            repo_root=str(parsed.repo_root or "") or None,
-            incident_class=str(parsed.incident_class),
-            detector_id=str(parsed.detector_id),
-            test_plan_id=str(parsed.test_plan_id or ""),
-            effects_mode=str(parsed.effects),
-            policy_id=str(parsed.policy_id or ""),
-            profile_key=str(parsed.profile_key or "l5.default"),
-            max_transactions=max(1, int(parsed.max_transactions)),
-            install_path=str(parsed.install_path or "") or None,
-        )
-        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
-        return 0 if report.get("ok") else 1
+        return _code_policy_operator(parsed)
+    if parsed.learn_command == "code-evolution-policy-validate":
+        return _code_policy_operator(parsed)
     if parsed.learn_command in {"capability-acceptance", "capability-replay"}:
         from eimemory.cli.capability_selection import run_selected_capability
 
@@ -2583,7 +2533,7 @@ def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("ok") else 1
-    print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|l5-v3|l5-v3-shadow|l5-v3-reconcile|capability-v3-backfill|capability-v3-backfill-status|capability-v3-dual-write|capability-profile-bootstrap|capability-seed-manifest|capability-evolution-plan|capability-evolution-evidence|capability-evolution|code-evolution-status|code-evolution-auto-authorization-revoke|code-evolution-policy-issue|closure-rehearsal|live-acceptance|release-closure|release-closure-reconcile|deployment-receipt|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
+    print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|l5-v3|l5-v3-shadow|l5-v3-reconcile|capability-v3-backfill|capability-v3-backfill-status|capability-v3-dual-write|capability-profile-bootstrap|capability-seed-manifest|capability-evolution-plan|capability-evolution-evidence|capability-evolution|code-evolution-status|code-evolution-auto-authorization-revoke|code-evolution-policy-issue|code-evolution-policy-validate|closure-rehearsal|live-acceptance|release-closure|release-closure-reconcile|deployment-receipt|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
     return 0
 
 
@@ -3874,6 +3824,31 @@ def _cmd_reflect(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
     print(json.dumps({"usage": "eimemory reflect check|log|read|stats"}))
     return 0
 
+def _code_policy_operator(parsed: object) -> int:
+    """Policy tools use native authority without constructing a Runtime/store."""
+    from eimemory.governance.code_automation_policy_issue import (
+        inspect_code_automation_policy, issue_code_automation_policy,
+    )
+    try:
+        if parsed.learn_command == "code-evolution-policy-validate":
+            report = inspect_code_automation_policy(
+                path=str(parsed.path or "") or None, incident_digest=parsed.incident_digest)
+        else:
+            report = issue_code_automation_policy(
+                repo_root=str(parsed.repo_root or "") or None,
+                incident_class=str(parsed.incident_class), detector_id=str(parsed.detector_id),
+                incident_digest=parsed.incident_digest, test_plan_id=str(parsed.test_plan_id or ""),
+                effects_mode=str(parsed.effects), policy_id=str(parsed.policy_id or ""),
+                profile_key=str(parsed.profile_key or "l5.default"),
+                max_transactions=int(parsed.max_transactions),
+                install_path=str(parsed.install_path or "") or None,
+            )
+    except (OSError, ValueError, RuntimeError) as exc:
+        return _print_error("code_policy_operator_failed", exc)
+    print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    return 0 if report.get("ok") is True else 1
+
+
 def _ops_before_settings(parsed: object) -> int | None:
     """Owner refresh runs before settings so a legacy config root cannot redirect it."""
     if getattr(parsed, "command", None) != "ops":
@@ -3975,6 +3950,9 @@ def main(argv: list[str] | None = None) -> int:
         return codex_mcp_main(args_list[1:])
     parser = _build_parser()
     parsed = parser.parse_args(args_list)
+    if (parsed.command == "learn" and parsed.learn_command in
+            {"code-evolution-policy-issue", "code-evolution-policy-validate"}):
+        return _code_policy_operator(parsed)
     if parsed.command == "identity" and parsed.identity_command in {"authority-init", "authorize", "decision-revoke",
                                                                   "authority-seal", "authority-unseal"}:
         from eimemory.identity_authority import initialize, authorize, revoke, seal

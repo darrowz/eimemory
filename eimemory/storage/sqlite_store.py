@@ -6247,6 +6247,76 @@ class SqliteRecordStore:
             if (record := self._record_from_storage_row(row, hydrate=True)) is not None
         ]
 
+    def list_records_by_sources_exact_scope(
+        self,
+        *,
+        scope: ScopeRef,
+        sources: list[str] | tuple[str, ...],
+        kinds: list[str] | tuple[str, ...],
+        limit: int = 501,
+        offset: int = 0,
+        record_ids: list[str] | tuple[str, ...] | None = None,
+    ) -> list[RecordEnvelope]:
+        """Read a typed owner page; unrelated records cannot consume its limit.
+
+        No lifecycle filter is applied: consumers need revoked, malformed or
+        reopened evidence to establish the current tip. A missing payload or
+        conflicting physical projection invalidates the whole page.
+        """
+        self.assert_connection_lock_held()
+        if not isinstance(scope, ScopeRef):
+            raise ValueError("exact_scope_requires_scope")
+        for name, values, width in (("sources", sources, 256), ("kinds", kinds, 64)):
+            if (not isinstance(values, (list, tuple)) or not 1 <= len(values) <= 16
+                    or any(not isinstance(value, str) or not value or len(value) > width
+                           or "\x00" in value for value in values)):
+                raise ValueError("typed_record_page_invalid_" + name)
+        if type(limit) is not int or not 1 <= limit <= 501 or type(offset) is not int or offset < 0:
+            raise ValueError("typed_record_page_invalid_bounds")
+        if record_ids is not None:
+            if not isinstance(record_ids, (list, tuple)) or not 1 <= len(record_ids) <= 64:
+                raise ValueError("typed_record_page_invalid_record_ids")
+            for record_id in record_ids:
+                validate_record_id(record_id)
+        owner = {key: getattr(scope, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")}
+        source_values, kind_values = tuple(dict.fromkeys(sources)), tuple(dict.fromkeys(kinds))
+        exact_ids = () if record_ids is None else tuple(dict.fromkeys(record_ids))
+        identity_filter = "" if not exact_ids else "AND record_id IN (" + ",".join("?" for _ in exact_ids) + ") "
+        rows = self.conn.execute(
+            "WITH selected AS (SELECT storage_key,updated_at,record_id FROM records "
+            "WHERE tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? "
+            "AND source IN (" + ",".join("?" for _ in source_values) + ") "
+            "AND kind IN (" + ",".join("?" for _ in kind_values) + ") "
+            + identity_filter +
+            "ORDER BY updated_at DESC,record_id DESC,storage_key DESC LIMIT ? OFFSET ?) "
+            "SELECT records.storage_key,records.record_id,records.kind,records.status,records.source,"
+            "records.tenant_id,records.agent_id,records.workspace_id,records.user_id,records.source_id,"
+            "records.payload_json,records.payload_pointer_json,records.payload_digest "
+            "FROM selected JOIN records USING(storage_key) "
+            "ORDER BY selected.updated_at DESC,selected.record_id DESC,selected.storage_key DESC",
+            (*owner.values(), *source_values, *kind_values, *exact_ids, limit, offset),
+        ).fetchall()
+        records = []
+        for row in rows:
+            projection = self._payload_dict_from_json(row["payload_json"])
+            digest = row["payload_digest"]
+            # Do not let legacy hydration defaults manufacture an active
+            # lifecycle or an owner for a damaged control-evidence envelope.
+            if (not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)
+                    or not isinstance(projection, dict) or projection.get("scope") != owner
+                    or any(not isinstance(projection.get(key), str) or not projection[key]
+                           or projection[key] != row[key] for key in ("record_id", "kind", "status", "source"))):
+                raise RuntimeError("typed_record_page_unavailable_or_mismatched")
+            record = self._record_from_storage_row(
+                row, hydrate=True, preserve_unknown_occurred_at=True, preserve_unknown_times=True)
+            if (record is None or record.scope != scope
+                    or record.source not in source_values or record.kind not in kind_values
+                    or any(getattr(record, key) != row[key] for key in ("record_id", "source", "kind", "status", "source_id"))
+                    or self._storage_key(record) != row["storage_key"]):
+                raise RuntimeError("typed_record_page_unavailable_or_mismatched")
+            records.append(record)
+        return records
+
     def record_payload_fingerprint(
         self,
         *,

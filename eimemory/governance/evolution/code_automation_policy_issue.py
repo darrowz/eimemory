@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 import json
 import os
+import re
 import subprocess
+import tempfile
 
 from eimemory.governance.evolution.code_automation_policy import (
     CODE_AUTOMATION_POLICY_DEFAULT_PATH,
@@ -88,6 +90,10 @@ def issue_code_automation_policy(
         return {"ok": False, "reason": "effects_mode_invalid", "policy": {}}
     if isinstance(max_transactions, bool) or not isinstance(max_transactions, int) or not (1 <= max_transactions <= 8):
         return {"ok": False, "reason": "policy_max_transactions_invalid", "policy": {}}
+    if incident_digest is not None and (
+        not isinstance(incident_digest, str) or re.fullmatch(r"[0-9a-f]{64}", incident_digest) is None
+    ):
+        return {"ok": False, "reason": "incident_digest_invalid", "policy": {}}
 
     root = Path(repo_root or _default_repo_root()).expanduser().resolve()
     if not (root / ".git").exists() and not (root / ".git").is_file():
@@ -126,13 +132,6 @@ def issue_code_automation_policy(
         files = expected
 
     try:
-        base_commit = _git(root, "rev-parse", "HEAD")
-        branch = _git(root, "symbolic-ref", "--short", "HEAD")
-        remote_url = _git(root, "remote", "get-url", "origin")
-    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
-        return {"ok": False, "reason": f"git_identity_unavailable:{type(exc).__name__}", "policy": {}}
-
-    try:
         from eimemory.config.trusted import trusted_remote, trusted_repository_root
 
         repository_root = str(trusted_repository_root())
@@ -140,6 +139,15 @@ def issue_code_automation_policy(
     except Exception:
         repository_root = str(root)
         remote_name = "origin"
+
+    try:
+        if _git(root, "status", "--porcelain"):
+            return {"ok": False, "reason": "repository_not_clean", "policy": {}}
+        base_commit = _git(root, "rev-parse", "HEAD")
+        branch = _git(root, "symbolic-ref", "--short", "HEAD")
+        remote_url = _git(root, "remote", "get-url", remote_name)
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+        return {"ok": False, "reason": f"git_identity_unavailable:{type(exc).__name__}", "policy": {}}
 
     installer = root / "deploy" / "install_immutable_release.sh"
     if not installer.is_file():
@@ -212,13 +220,12 @@ def issue_code_automation_policy(
     written_path = ""
     if install_path is not None:
         destination = Path(install_path)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(policy, indent=2, sort_keys=False) + "\n"
-        destination.write_text(payload, encoding="utf-8")
         try:
-            os.chmod(destination, 0o600)
-        except OSError:
-            pass
+            error = _install_policy_atomically(destination, policy)
+        except OSError as exc:
+            error = f"policy_install_error:{type(exc).__name__}"
+        if error:
+            return {"ok": False, "reason": error, "policy": {}, "written_path": ""}
         written_path = str(destination)
 
     return {
@@ -230,7 +237,61 @@ def issue_code_automation_policy(
         "observation_seconds": int(DEFAULT_OBSERVATION_SECONDS),
         "revision_id": provider.REVISION_ID,
         "binding_id": provider.BINDING_ID,
+        "system_route_policy_bound": incident_digest is not None,
     }
+
+
+def _install_policy_atomically(destination: Path, policy: Mapping[str, Any]) -> str:
+    """Publish complete private bytes without following or truncating a link."""
+    from eimemory.governance.evolution.code_automation_policy import _v2_no_symlink
+    error = _v2_no_symlink(destination, missing_ok=True)
+    if error:
+        return error
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    error = _v2_no_symlink(destination, missing_ok=True)
+    if error:
+        return error
+    descriptor, name = tempfile.mkstemp(prefix=".code-automation-policy-", suffix=".tmp", dir=destination.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(json.dumps(policy, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        error = _v2_no_symlink(destination, missing_ok=True)
+        if error:
+            return error
+        os.replace(temporary, destination)
+        return ""
+    finally:
+        # Only the fresh same-directory temporary file belongs to this call.
+        temporary.unlink(missing_ok=True)
+
+
+def inspect_code_automation_policy(
+    *, path: str | Path | None = None, incident_digest: str | None = None,
+) -> dict[str, Any]:
+    """Use the same secure native loader as effects; never open a runtime DB.
+
+    This validates policy authority and an optional exact digest comparison.
+    The router still verifies the original current incident and owner itself.
+    """
+    from eimemory.governance.evolution.code_automation_policy import load_code_automation_policy
+    if incident_digest is not None and (
+        not isinstance(incident_digest, str) or re.fullmatch(r"[0-9a-f]{64}", incident_digest) is None
+    ):
+        return {"ok": False, "status": "blocked", "reason": "incident_digest_invalid", "read_only": True}
+    destination = path or os.environ.get(CODE_AUTOMATION_POLICY_PATH_ENV) or CODE_AUTOMATION_POLICY_DEFAULT_PATH
+    report = load_code_automation_policy(path=destination)
+    incident = report.get("incident") if isinstance(report.get("incident"), Mapping) else {}
+    actual = incident.get("incident_digest")
+    bound = isinstance(actual, str) and re.fullmatch(r"[0-9a-f]{64}", actual) is not None
+    valid = report.get("ok") is True
+    if valid and incident_digest is not None and actual != incident_digest:
+        report = {**report, "ok": False, "status": "blocked", "reason": "incident_digest_mismatch"}
+    return {**report, "read_only": True, "native_policy_valid": valid,
+            "system_route_policy_bound": valid and bound,
+            "current_incident_verified": False}
 
 
 def maybe_auto_issue_next_policy(
@@ -283,5 +344,6 @@ __all__ = [
     "AUTO_ISSUE_ENV",
     "EffectsMode",
     "issue_code_automation_policy",
+    "inspect_code_automation_policy",
     "maybe_auto_issue_next_policy",
 ]

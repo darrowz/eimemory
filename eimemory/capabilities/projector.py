@@ -292,7 +292,12 @@ class CapabilityStateProjector:
                 "input_watermark": global_watermark,
                 "algorithm_revision": algorithm_revision.strip(),
                 "incremental_targets": sorted(target_ids) if affected else [],
-                "snapshots": public_snapshots,
+                # Whether a write inserted or replayed the same immutable
+                # snapshot is execution metadata, not a new evidence input.
+                # Keep it public for diagnostics without changing semantic
+                # projection/assessment identity on an identical replay.
+                "snapshots": [{key: value for key, value in snapshot.items() if key != "idempotent"}
+                              for snapshot in public_snapshots],
                 "blocked": public_blocked,
             }
         )

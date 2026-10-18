@@ -16,7 +16,6 @@ from eimemory.adapters.runtime.channel import (
     runtime_channel_from_scope,
 )
 from eimemory.identity import (
-    _CANONICAL_HONGTU_USER_ALIASES,
     canonical_hongtu_user_id,
     default_operator_user_id,
     refresh_identity_from_env,
@@ -60,15 +59,19 @@ def _operator_user_ids(user_id: str) -> tuple[str, ...]:
     if not text:
         return ()
     refresh_identity_from_env()
+    # Refresh replaces the identity map. Read the current object, rather than
+    # a dict captured when this module was imported, so revocation is immediate.
+    from eimemory import identity
+    alias_map = identity._CANONICAL_HONGTU_USER_ALIASES
     canonical = canonical_hongtu_user_id(text)
     known = text.casefold() in {
         alias.casefold()
-        for aliases in _CANONICAL_HONGTU_USER_ALIASES.values()
+        for aliases in alias_map.values()
         for alias in aliases
     }
     if canonical == text and not known and text != default_operator_user_id():
         return (text,)
-    aliases = _CANONICAL_HONGTU_USER_ALIASES.get(canonical) or (canonical,)
+    aliases = alias_map.get(canonical) or (canonical,)
     ordered: list[str] = []
     for item in (canonical, *aliases, text):
         if item and item not in ordered:

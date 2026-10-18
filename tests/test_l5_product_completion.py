@@ -23,7 +23,7 @@ def test_active_ledger_projection_preserves_real_provenance(monkeypatch, provena
                   profile_key="l5.default", base_commit="a" * 40,
                   candidate_commit="b" * 40, deployed_commit="b" * 40)
     monkeypatch.setattr("eimemory.storage.code_evolution_store.CodeEvolutionStore",
-        lambda store: SimpleNamespace(list_transactions=lambda **kwargs: [active]))
+        lambda store: SimpleNamespace(list_transactions_exact_scope=lambda **kwargs: [active]))
     monkeypatch.setattr("eimemory.adapters.hermes.code_implementation.resolve_code_implementation_provider",
         lambda *args, **kwargs: {})
     runtime = SimpleNamespace(store=object(), code_evolution_current_lineage={"ok": True, "compatible": True})
@@ -273,7 +273,7 @@ def test_terminal_transaction_rejects_missing_historical_advertisement() -> None
 
 
 @pytest.mark.parametrize("separate_runtime_scope", [False, True])
-def test_report_release_scope_is_separate_from_provider_and_transaction_scope(
+def test_report_scope_owns_transactions_and_release_while_provider_keeps_selector(
     monkeypatch, separate_runtime_scope: bool,
 ) -> None:
     from eimemory.governance.evidence_contract import ReleaseIdentity
@@ -315,8 +315,13 @@ def test_report_release_scope_is_separate_from_provider_and_transaction_scope(
         rows.insert(0, transaction(evidence_scope, "report-scope-transaction"))
     monkeypatch.setattr("eimemory.governance.l5_assessment_v3.build_l5_assessment_v3", assess)
     monkeypatch.setattr("eimemory.adapters.hermes.code_implementation.resolve_code_implementation_provider", provider)
+    def exact_rows(**kwargs):
+        requested = kwargs["scope"]
+        assert requested == evidence_scope and kwargs["repository_root"] == "/repo" and kwargs["limit"] == 501
+        return [row for row in rows if all(row[field] == getattr(requested, field)
+            for field in ("tenant_id", "agent_id", "workspace_id", "user_id"))]
     monkeypatch.setattr("eimemory.storage.code_evolution_store.CodeEvolutionStore",
-                        lambda store: SimpleNamespace(list_transactions=lambda **kwargs: rows))
+                        lambda store: SimpleNamespace(list_transactions_exact_scope=exact_rows))
     monkeypatch.setattr("eimemory.governance.evidence_contract.current_release_identity", current_identity)
     monkeypatch.setattr("eimemory.governance.release_lineage.current_release_lineage", lineage)
 
@@ -328,7 +333,8 @@ def test_report_release_scope_is_separate_from_provider_and_transaction_scope(
     assert seen["lineage_scope"] == evidence_scope
     assert seen["assessment_scope"] == runtime_scope
     assert seen["provider_scope"] == runtime_scope
-    assert report["transaction_evidence"]["transaction_id"] == "runtime-transaction"
+    assert report["transaction_evidence"]["transaction_id"] == (
+        "report-scope-transaction" if separate_runtime_scope else "runtime-transaction")
     assert report["current_lineage"]["reason"] == "current_gate_evidence_missing"
     assert report["current_lineage"]["compatible"] is False
     assert report["product_l5_complete"] is False

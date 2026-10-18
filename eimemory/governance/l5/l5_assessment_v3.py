@@ -46,9 +46,12 @@ def build_l5_assessment_v3(
     assessment_at_time = at_time or now_iso()
     projector = CapabilityStateProjector(runtime.store)
     try:
+        from eimemory.capabilities.service import CapabilityService, _registry_scope
+        registry_scope = exact_runtime_scope(_registry_scope(
+            CapabilityService(runtime.store), runtime_scope, capability_scope))
         projection = projector.project(
             profile_key,
-            runtime_scope=runtime_scope,
+            runtime_scope=registry_scope,
             capability_scope=capability_scope,
             at_time=assessment_at_time,
             max_candidates=max_candidates,
@@ -86,10 +89,10 @@ def build_l5_assessment_v3(
         }
     projection_dict = projection.to_dict()
     snapshots = list(projection.snapshots)
-    adapter_axis = _adapter_readiness(runtime.store, runtime_scope, capability_scope, at_time=assessment_at_time)
-    deployment_axis = _deployment_assurance(runtime, runtime_scope, capability_scope)
+    adapter_axis = _adapter_readiness(runtime.store, registry_scope, capability_scope, at_time=assessment_at_time)
+    deployment_axis = _deployment_assurance(runtime, registry_scope, capability_scope)
     loop_axis = _loop_maturity(
-        runtime.store, runtime_scope, capability_scope, projection_dict, at_time=assessment_at_time
+        runtime.store, registry_scope, capability_scope, projection_dict, at_time=assessment_at_time
     )
     capability_axis, gaps = _capability_readiness(projection_dict)
     if not snapshots:
@@ -143,7 +146,7 @@ def build_l5_assessment_v3(
         stored = runtime.store.mutate_capabilities_atomically(
             lambda repository: repository.register_assessment(
                 assessment,
-                scope=runtime_scope,
+                scope=registry_scope,
                 request_key=f"l5-assessment:{assessment.assessment_id}",
             )
         )

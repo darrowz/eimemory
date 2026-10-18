@@ -44,13 +44,8 @@ def detect_system_code_repair_failure(
         and repair_report.get("reason") == "automation_policy_already_consumed"
         and policy_transaction_id
     )
-    stale_idle = bool(
-        repair_report.get("ok") is True
-        and repair_report.get("status") == "idle"
-        and not repair_report.get("processed")
-    )
     actionable = bool(
-        (consumed_block or stale_idle)
+        consumed_block
         and policy.get("ok") is True
         and policy.get("status") == "enabled"
         and _COMMIT_RE.fullmatch(current_commit)
@@ -59,8 +54,6 @@ def detect_system_code_repair_failure(
         and _DIGEST_RE.fullmatch(policy_digest)
     )
     blocked_reason = str(repair_report.get("reason") or "").strip()
-    if stale_idle:
-        blocked_reason = "automation_policy_release_binding_stale"
     observation = {
         "schema": "system_code_repair_failure.v1",
         "detector": DETECTOR_ID,
