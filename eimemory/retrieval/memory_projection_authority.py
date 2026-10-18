@@ -14,6 +14,11 @@ class MemoryProjectionAuthority:
 
         def _bootstrap(sqlite):
             in_transaction = sqlite.in_transaction
+            # The readiness fence reads this exact global active-memory head.
+            # A kind/status index still scans and sorts the entire projection;
+            # this covering keyset lets cold probes stop at the first row.
+            sqlite.execute('CREATE INDEX IF NOT EXISTS idx_records_active_memory_vector_cursor '
+                         "ON records(kind,status,updated_at DESC,storage_key DESC) WHERE kind='memory' AND status='active'")
             sqlite.execute('CREATE TABLE IF NOT EXISTS memory_vector_revision ('
                          'singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL)')
             sqlite.execute('INSERT OR IGNORE INTO memory_vector_revision VALUES(1,0)')

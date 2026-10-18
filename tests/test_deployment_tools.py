@@ -932,7 +932,7 @@ def test_immutable_installer_enforces_and_inspects_openclaw_bridge_compatibility
     assert ensure < switch < metadata < restart
 
 
-def test_immutable_installer_records_release_identity_after_technical_commit() -> None:
+def test_immutable_installer_records_identity_before_maintenance_and_preserves_strict_commit() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     receipt_body = script.split("_record_deployment_receipt() {", 1)[1].split("\n}", 1)[0]
 
@@ -1005,14 +1005,12 @@ def test_deployment_receipt_uses_current_trusted_code_and_already_current_is_che
 def test_installer_records_lineage_after_receipt_without_rolling_back_runtime() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     lineage_body = script.split("_record_release_lineage() {", 1)[1].split("\n}", 1)[0]
-    main_receipt = script.rindex("_record_deployment_receipt")
-    main_lineage = script.rindex("_record_release_lineage")
+    validation = script.split("_run_post_deploy_validation() {", 1)[1].split("\n}", 1)[0]
 
     assert '"$RELEASE_DIR/deploy/record_release_lineage.py"' in lineage_body
     assert '--current-commit "$COMMIT"' in lineage_body
     assert "EIMEMORY_RUNTIME_COMMIT=\"$COMMIT\"" in lineage_body
-    assert main_receipt < main_lineage < script.rindex("_run_post_switch_closure")
-    validation = script.split("_run_post_deploy_validation() {", 1)[1].split("\n}", 1)[0]
+    assert validation.index("_record_deployment_receipt") < validation.index("_record_release_lineage") < validation.index("_run_post_switch_closure")
     assert "warning: post-deploy release lineage is pending retry" in validation
 
 
@@ -3372,9 +3370,8 @@ def test_immutable_installer_applies_managed_learning_runtime_policy() -> None:
                  'eimemory-audit-verify.timer', 'eimemory-timer-monitor.timer'):
         assert unit in managed_timers
     assert '_user_systemctl enable "$unit"' in helper
-    assert '[ "${STORAGE_WRITERS_STOPPED:-0}" != "1" ]' in helper
-    assert '[ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]' in helper
-    assert '_start_learning_runtime_timers || return $?' in helper
+    assert '_start_learning_runtime_timers' not in helper
+    assert '_user_systemctl start' not in helper
     assert "_user_systemctl enable --now eimemory-l5-observation-gate.timer" not in helper
     timer_monitor = Path("deploy/systemd/eimemory-timer-monitor.service").read_text(
         encoding="utf-8"

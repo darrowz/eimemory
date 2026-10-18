@@ -95,7 +95,7 @@ class SQLiteCandidateSource:
         reader and transaction; never retain that reader across PostgreSQL IO.
         """
         filters = {'_recall_collection_deadline_monotonic': deadline_at}
-        with self.store.borrow_reader(deadline=deadline_at or None) as slot:
+        with self.store.borrow_reader(deadline=deadline_at or None, wait_for_reader=bool(deadline_at)) as slot:
             sqlite = slot.store
             with recall_read_scope(self.store, filters, sqlite=sqlite, lock=slot.lock, lock_held=True):
                 started = not sqlite.in_transaction

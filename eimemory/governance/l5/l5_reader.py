@@ -719,7 +719,12 @@ def _code_evolution_evidence(
             # independently selected exact runtime scope above.
             release_scope = evidence_scope if evidence_scope is not None else runtime_scope
             scope_ref = release_scope if isinstance(release_scope, ScopeRef) else ScopeRef.from_dict(dict(release_scope))
-            from eimemory.governance.release.evidence_contract import release_owner_scope
+            from eimemory.governance.release.evidence_contract import (
+                deployment_receipt_for_scope,
+                release_owner_scope,
+                same_release_authority,
+                verified_deployment_receipt_identity,
+            )
 
             current_release = current_release_identity(runtime, scope_ref)
             if current_release is None:
@@ -730,6 +735,16 @@ def _code_evolution_evidence(
                 }
             else:
                 identity_scope = release_owner_scope(runtime, scope_ref, current_release)
+                if callable(getattr(getattr(runtime, "store", None), "get_by_id", None)):
+                    # The current service receipt may belong to its deployment
+                    # operator rather than to a capability alias of the report
+                    # owner. Resolve that original receipt through the service
+                    # integrity contract before selecting its lineage scope.
+                    # This grants no access to the owner's business memories.
+                    receipt = deployment_receipt_for_scope(runtime, current_release.receipt_id, scope_ref)
+                    actual = verified_deployment_receipt_identity(receipt)
+                    if actual is not None and same_release_authority(actual, current_release):
+                        identity_scope = receipt.scope
                 lineage = current_release_lineage(
                     runtime,
                     scope=identity_scope,

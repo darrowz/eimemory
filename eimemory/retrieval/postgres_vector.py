@@ -1972,6 +1972,7 @@ class PostgresVectorCandidateSource:
         release_lock = True
         late_worker = None
         executor = None
+        pending = None
         allowed = False
         try:
             with self._cache_lock:
@@ -2026,6 +2027,12 @@ class PostgresVectorCandidateSource:
         finally:
             if executor is not None:
                 executor.shutdown(wait=False, cancel_futures=True)
+            # The deadline can expire while submit() starts the worker, before
+            # result(timeout=...) is even entered. Every outstanding worker
+            # retains single flight, including failures in timeout calculation.
+            if pending is not None and not pending.done():
+                late_worker = pending
+                release_lock = False
             if late_worker is not None:
                 # Attach only after publishing the timeout outcome: even an
                 # already-completed worker must not release single flight

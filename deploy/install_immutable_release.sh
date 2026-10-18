@@ -1319,11 +1319,9 @@ _install_learning_runtime_policy() {
   for unit in "${LEARNING_TIMER_UNITS[@]}"; do
     _user_systemctl enable "$unit" || return $?
   done
-  # Persist timer intent without escaping storage quiescence or strict commit.
-  if [ "${STORAGE_WRITERS_STOPPED:-0}" != "1" ] && \
-     [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]; then
-    _start_learning_runtime_timers || return $?
-  fi
+  # Metadata installation only persists intent, including on first installs
+  # without an existing database/quiescence marker. The normal and recovery
+  # paths start managed timers after their current release authority is ready.
 }
 
 _start_learning_runtime_timers() {
@@ -2119,6 +2117,44 @@ _prepare_release_receipt_source() {
     --commit "$COMMIT" || return $?
 }
 
+_verify_current_deployment_receipt() {
+  local receipt_id="$1"
+  # Re-read in a separate process after the receipt writer has committed, using
+  # the same native authority reader as watch/nightly. Never trust an exit-zero
+  # recorder or a remembered receipt id as proof that the authority is visible.
+  env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
+    EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
+    EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
+    "$RELEASE_DIR/.venv/bin/python" -I -B - "$COMMIT" "$receipt_id" \
+      "$EIMEMORY_DEPLOY_SCOPE_AGENT" "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
+      "$EIMEMORY_DEPLOY_SCOPE_USER" <<'PY'
+import json
+import sys
+from types import SimpleNamespace
+
+from eimemory.config.loader import load_settings
+from eimemory.governance.release.evidence_contract import current_release_identity
+from eimemory.models.records import ScopeRef
+from eimemory.storage.runtime_store import RuntimeStore
+from eimemory.version import __version__
+
+commit, receipt_id, agent, workspace, user = sys.argv[1:]
+settings = load_settings()
+store = RuntimeStore(settings.root)
+try:
+    identity = current_release_identity(SimpleNamespace(store=store), ScopeRef.from_dict({
+        'agent_id': agent, 'workspace_id': workspace, 'user_id': user,
+    }))
+    if (identity is None or identity.commit != commit or identity.version != __version__
+            or identity.receipt_id != receipt_id):
+        raise SystemExit('current_deployment_receipt_unavailable')
+    print(json.dumps({'current_deployment_receipt_verified': True,
+                      'commit': identity.commit, 'receipt_id': identity.receipt_id}))
+finally:
+    store.close()
+PY
+}
+
 _record_deployment_receipt() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return 0
@@ -2151,7 +2187,7 @@ _record_deployment_receipt() {
       [ -n "$receipt_digest" ] && args+=(--verification-receipt-digest "$receipt_digest")
     done
   fi
-  # The RPC may still be warming up right after the storage-writer restart
+  # The RPC may still be warming up right after the core-service restart
   # (health ready/identity fields not yet populated). Retry only those
   # transient health verdicts, bounded; every identity check stays intact and
   # any other verdict is returned immediately.
@@ -2166,23 +2202,22 @@ _record_deployment_receipt() {
     printf '%s\n' "$receipt_output"
     if [ "$receipt_rc" -eq 0 ]; then
       local receipt_id
-      receipt_id="$(printf '%s' "$receipt_output" | /usr/bin/env python3 -I -c 'import json,sys
+      receipt_id="$(printf '%s' "$receipt_output" | /usr/bin/env python3 -I -c 'import json,re,sys
 try:
     d=json.loads(sys.stdin.read())
 except Exception:
     d={}
-def find(o):
-    if isinstance(o, dict):
-        for k in ("promotion_request_id", "receipt_id", "deployment_receipt_id"):
-            if isinstance(o.get(k), str) and o[k].startswith("rec_"):
-                return o[k]
-        for v in o.values():
-            r = find(v)
-            if r:
-                return r
-    return ""
-print(find(d))' 2>/dev/null || true)"
-      echo "deployment_receipt_id=${receipt_id:-unknown} commit=$COMMIT"
+rid=d.get("promotion_request_id") if isinstance(d,dict) else None
+if (not isinstance(d,dict) or d.get("ok") is not True
+        or d.get("report_type") != "deployment_receipt" or d.get("commit") != sys.argv[1]
+        or not isinstance(rid,str) or re.fullmatch(r"rec_[A-Za-z0-9_-]+",rid) is None):
+    raise SystemExit(1)
+print(rid)' "$COMMIT" 2>/dev/null)" || {
+        echo "deployment_receipt=failed recorder_contract_invalid" >&2
+        return 2
+      }
+      _verify_current_deployment_receipt "$receipt_id" || return $?
+      echo "deployment_receipt_id=$receipt_id commit=$COMMIT"
       return 0
     fi
     case "$receipt_output" in
@@ -3147,6 +3182,11 @@ _start_code_implementation_owner "$RELEASE_DIR"
 _verify_release_health "$RELEASE_DIR" "$COMMIT"
 _source_checkpoint "$RELEASE_DIR" health_verified
 _maybe_fail_stage health
+# Persistent watch timers can dispatch immediately. Publish and re-read the
+# current immutable receipt before restoring background writers or the receipt
+# watcher. Failure is still inside the original rollback-protected transaction.
+_record_deployment_receipt
+_maybe_fail_stage receipt
 # No core restarts or watcher pauses may follow background writer restoration.
 _resume_release_closure_reconcile
 if [ "$STORAGE_WRITERS_STOPPED" = "1" ] && \

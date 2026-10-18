@@ -210,6 +210,44 @@ def test_new_real_failure_during_probe_cannot_be_erased_by_older_success():
     assert source.health()['last_error'] == 'postgres_timeout' and source._backend_query_identity is None
 
 
+def test_deadline_expiring_after_submit_keeps_the_running_probe_single_flight(monkeypatch):
+    from eimemory.retrieval import postgres_vector as native
+    source, authority, provider, repository = setup_source(identity_refresh_ttl_seconds=0)
+    entered = threading.Event(); release = threading.Event(); submitted = threading.Event()
+    real_executor = native.ThreadPoolExecutor
+    real_remaining = native._remaining_timeout
+    def blocked():
+        entered.set(); assert release.wait(2)
+    repository.on_search = blocked
+    class Executor(real_executor):
+        def submit(self, *args, **kwargs):
+            pending = super().submit(*args, **kwargs)
+            assert entered.wait(1)
+            submitted.set()
+            return pending
+    def deadline_after_submit(deadline, maximum):
+        if threading.current_thread() is threading.main_thread() and submitted.is_set():
+            submitted.clear()
+            raise RuntimeError('recall_budget_exhausted')
+        return real_remaining(deadline, maximum)
+    monkeypatch.setattr(native, 'ThreadPoolExecutor', Executor)
+    monkeypatch.setattr(native, '_remaining_timeout', deadline_after_submit)
+    try:
+        report = source.readiness(force=True, timeout_seconds=.2)
+        assert report['ready'] is False and report['error'] == 'recall_budget_exhausted'
+        assert source.readiness(force=True)['error'] == 'readiness_probe_in_progress'
+        assert len(repository.searches) == 1 and provider.calls == 0
+    finally:
+        release.set()
+        assert source._readiness_lock.acquire(timeout=1)
+        source._readiness_lock.release()
+    assert source._readiness_cached['ready'] is False
+    assert source._last_query_valid is False and source._backend_query_identity is None
+    repository.on_search = None
+    monkeypatch.setattr(native, 'ThreadPoolExecutor', real_executor)
+    assert source.readiness(force=True)['ready'] is True
+
+
 def test_missing_atomic_authority_hook_and_unavailable_provider_fail_closed():
     source, authority, provider, repository = setup_source()
     authority.authority_snapshot = None
@@ -316,3 +354,34 @@ def test_memory_only_atomic_pair_ignores_audit_writes_and_deadline_bounds_lock_a
         with pytest.raises(RecallReadDeadlineExceeded):
             source.authority_snapshot(deadline_at=time.monotonic()-.001)
     finally: store.close()
+
+
+def test_memory_head_has_a_covering_keyset_without_sorting_the_projection(tmp_path):
+    from eimemory.storage.runtime_store import RuntimeStore
+    from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+    store = RuntimeStore(tmp_path)
+    try:
+        source = SQLiteCandidateSource(store, projection_memory_only=True)
+        for index in range(12):
+            item = RecordEnvelope.create(kind='memory', title=f'Historical source {index}',
+                scope=ScopeRef(), content={'text': f'Existing business fact {index}.'})
+            item.time.updated_at = '2026-10-18T00:00:00.000000Z'
+            store.append(item)
+        query = "SELECT updated_at,storage_key FROM records WHERE kind='memory' AND status='active' ORDER BY updated_at DESC,storage_key DESC LIMIT 1"
+        def inspect(sqlite):
+            plan = ' '.join(str(row[3]) for row in sqlite.execute('EXPLAIN QUERY PLAN '+query))
+            assert 'idx_records_active_memory_vector_cursor' in plan
+            assert 'TEMP B-TREE' not in plan
+            steps = [0]
+            sqlite.conn.set_progress_handler(lambda: steps.__setitem__(0,steps[0]+1) or 0, 1)
+            try:head = tuple(sqlite.execute(query).fetchone())
+            finally:sqlite.conn.set_progress_handler(None,0)
+            assert steps[0] < 100
+            return head
+        expected = store.read_consistent(inspect)
+        assert source.authority_snapshot()[0] == expected
+        before = source.authority_snapshot()
+        store.append(RecordEnvelope.create(kind='evaluation_packet', title='Independent operational observation', scope=ScopeRef()))
+        assert source.authority_snapshot() == before
+    finally:store.close()

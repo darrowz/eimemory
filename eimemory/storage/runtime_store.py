@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from hashlib import sha256
 import re
-from threading import Lock, RLock
+from threading import Condition, Lock, RLock
 from types import BuiltinFunctionType, FunctionType, MethodType
 from time import perf_counter
 import tempfile
@@ -156,6 +156,7 @@ class RuntimeStore:
         self._lock = RLock()
         self._readers: list[_ReadSlot] = []
         self._reader_pool_lock = Lock()
+        self._reader_pool_condition = Condition(self._reader_pool_lock)
         self._last_capability_export_status: dict[str, object] = {
             "ok": True,
             "pending": 0,
@@ -469,12 +470,19 @@ class RuntimeStore:
                     reader.conn.execute("PRAGMA query_only=ON")
                 except Exception:
                     pass
-                self._readers.append(_ReadSlot(reader, lock))
+                with self._reader_pool_lock:
+                    self._readers.append(_ReadSlot(reader, lock))
+                    available = getattr(self, "_reader_pool_condition", None)
+                    if available is not None:
+                        available.notify()
 
     def _close_readers(self) -> None:
         with self._reader_pool_lock:
             slots = list(self._readers)
             self._readers.clear()
+            available = getattr(self, "_reader_pool_condition", None)
+            if available is not None:
+                available.notify_all()
         for slot in slots:
             try:
                 slot.store.close()
@@ -493,12 +501,15 @@ class RuntimeStore:
         return any(isinstance(value, patched) for value in vars(self.sqlite).values())
 
     @contextmanager
-    def borrow_reader(self, *, deadline: float | None = None):
+    def borrow_reader(self, *, deadline: float | None = None, wait_for_reader: bool = False):
         """Checkout a WAL reader so a recall does not take the write lock.
 
         The calling thread's open write transaction keeps using the writer
         connection, so uncommitted rows stay visible. A writer whose methods
         were replaced on the instance also stays on that connection.
+        With a deadline, ``wait_for_reader`` waits for a returning WAL slot
+        instead of falling back to a busy writer. Ordinary borrows and an
+        explicitly disabled pool retain their existing writer fallback.
         """
 
         if self._write_lock_owned() or self._writer_read_patched():
@@ -511,11 +522,23 @@ class RuntimeStore:
         self._ensure_readers(deadline=deadline)
         chosen: _ReadSlot | None = None
         with _reader_lock_scope(self._reader_pool_lock, deadline):
-            for slot in self._readers:
-                if not slot.in_use:
-                    slot.in_use = True
-                    chosen = slot
+            while True:
+                for slot in self._readers:
+                    if not slot.in_use:
+                        slot.in_use = True
+                        chosen = slot
+                        break
+                if chosen is not None or not wait_for_reader or deadline is None or not self._readers:
                     break
+                from .recall_deadline import RecallReadDeadlineExceeded
+                remaining = deadline - perf_counter()
+                if remaining <= 0:
+                    raise RecallReadDeadlineExceeded("recall_budget_exhausted")
+                available = getattr(self, "_reader_pool_condition", None)
+                if available is None:
+                    available = self._reader_pool_condition = Condition(self._reader_pool_lock)
+                if not available.wait(timeout=remaining):
+                    raise RecallReadDeadlineExceeded("recall_budget_exhausted")
         if chosen is None:
             with _reader_lock_scope(self._lock, deadline):
                 yield _ReadSlot(self.sqlite, self._lock)
@@ -526,6 +549,9 @@ class RuntimeStore:
         finally:
             with self._reader_pool_lock:
                 chosen.in_use = False
+                available = getattr(self, "_reader_pool_condition", None)
+                if available is not None:
+                    available.notify()
 
     def _require_own_transaction(self, operation: str) -> None:
         """Reject nested commit-owning APIs before they can affect caller work.

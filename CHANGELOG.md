@@ -11,6 +11,14 @@ AIGC:
 
 # Changelog
 
+## [1.14.149] — 2026-10-19
+
+- Persist and re-read the exact native deployment receipt before restoring maintenance writers and timers. Keep first-install metadata registration free of early dispatch, preserving strict deployment and rollback gates.
+- Index the active-memory authority head in exact keyset order, so readiness fences avoid scanning and sorting the memory projection within the original health budget.
+- Wait for a returning WAL reader within the existing authority deadline instead of becoming stuck behind an unrelated writer; preserve transaction-owned and explicitly disabled-pool behavior.
+- Retain readiness single flight when a deadline expires immediately after submitting a worker. Late work cannot publish a health proof or start overlapping probes.
+- Resolve a service-verified deployment receipt in its original owner scope before validating L5 release lineage. Report-owned quality and repair evidence retains its exact owner boundary.
+
 ## [1.14.148] — 2026-10-19
 
 - Persist and verify one current-release native L5 assessment after nightly maintenance. Keep execution, control-plane readiness and product completion distinct, preserving qualified historical business evidence independently of genuine L5 evidence waits.

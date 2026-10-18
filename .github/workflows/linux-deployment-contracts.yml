@@ -76,6 +76,9 @@ jobs:
           tests/test_task_recall_repair.py
           tests/test_postgres_vector_source.py
           tests/test_postgres_readiness_recovery.py
+          tests/test_readiness_reader_pool_wait.py
+          tests/test_l5_service_receipt_lineage.py
+          tests/test_installer_receipt_before_maintenance.py
           tests/test_llm_command_client.py
           tests/test_caller_assistance.py
           tests/test_luna_fallback_deadline.py
