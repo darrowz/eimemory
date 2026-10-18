@@ -38,6 +38,14 @@ def _lineage(runtime, gap_id, scope, *, require_current=False):
     return prepared, inputs, decision, context
 
 
+def _capture_policy_fingerprint(allowed):
+    """Bind negative audits to the exact, independently configured policy."""
+    scopes = sorted({json.dumps(entry, sort_keys=True, separators=(',', ':'))
+                     for entry in (allowed or [])})
+    return explicit._digest(dict(enabled=os.environ.get('EIMEMORY_CAPTURE_ORIGINAL_QUERY') == '1',
+                                 scopes_configured=allowed is not None, scopes=scopes))
+
+
 def _actual_result(runtime, bundle, scope, source_id, channel, limit):
     from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
     full = [*bundle.items, *bundle.rules, *bundle.reflections]
@@ -90,7 +98,7 @@ def _replay_retrieval_state(bundle):
 def capture_semantic_gap_replay(runtime, *, gap_id, scope, attempt_id='', _allow_recall=True, _on_recall=None):
     """Run one deliberate faithful engine rerun, retaining an attested packet.
 
-    An operator invokes this separately; nightly only reviews existing packets.
+    The authorized nightly collector invokes this within its shared work budget.
     No new proactive decision, natural sample, human gold, or host message exists.
     """
     from eimemory.evaluation.explicit_input_vault import capture_explicit_input
@@ -330,8 +338,9 @@ def verified_repair_finding(runtime, *, review_ref, scope):
     return finding
 
 
-def _audit_unverifiable(runtime, *, scope, reason, gap=None, packet=None):
+def _audit_unverifiable(runtime, *, scope, reason, policy_fingerprint, gap=None, packet=None):
     body = dict(schema=SCHEMA, status='unverifiable', reason=reason,
+                capture_policy_fingerprint=policy_fingerprint,
                 release_identity=_current(runtime, scope),
                 gap_ref=gap.record_id if gap is not None else '',
                 gap_digest=explicit._digest(gap.to_dict()) if gap is not None else '',
@@ -343,6 +352,7 @@ def _audit_unverifiable(runtime, *, scope, reason, gap=None, packet=None):
     record.meta['semantic_repair_gap_ref'] = body['gap_ref']
     record.meta['semantic_repair_packet_ref'] = body['packet_ref']
     record.meta['semantic_repair_release_digest'] = explicit._digest(body['release_identity'])
+    record.meta['semantic_repair_capture_policy_fingerprint'] = policy_fingerprint
     explicit._insert_once(runtime, record)
 
 
@@ -402,14 +412,16 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
         report['reason_counts'][reason] = report['reason_counts'].get(reason, 0) + 1
         if gap is not None or packet is not None:
             try:
-                _audit_unverifiable(runtime, gap=gap, packet=packet, scope=exact, reason=reason)
+                _audit_unverifiable(runtime, gap=gap, packet=packet, scope=exact, reason=reason,
+                                    policy_fingerprint=policy_fingerprint)
             except (ValueError, KeyError, TypeError):
                 pass  # unavailable attestation never turns unknown into pass
 
     # Independent configured capture policy supplies authority, never records.
     from eimemory.evaluation.query_input_vault import configured_capture_scopes
-    allowed = configured_capture_scopes() or []
-    if not any(all(entry[k] == v for k, v in asdict(exact).items()) for entry in allowed):
+    allowed = configured_capture_scopes()
+    policy_fingerprint = _capture_policy_fingerprint(allowed)
+    if not any(all(entry[k] == v for k, v in asdict(exact).items()) for entry in (allowed or [])):
         report['status'] = 'scope_not_authorized'
         return report, findings
     owner_params = (QUALITY_GAP_SOURCE, exact.tenant_id, exact.agent_id, exact.workspace_id, exact.user_id)
@@ -422,12 +434,15 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
         rows = db.execute(_incident_cte() + """
             SELECT incident.record_id FROM current_incidents incident
             WHERE NOT EXISTS (SELECT 1 FROM records coverage
-                WHERE coverage.source IN (?,?) AND coverage.tenant_id=? AND coverage.agent_id=?
+                WHERE (coverage.source=? OR (coverage.source=?
+                    AND json_extract(coverage.meta_json,'$.semantic_repair_capture_policy_fingerprint')=?))
+                  AND coverage.tenant_id=? AND coverage.agent_id=?
                   AND coverage.workspace_id=? AND coverage.user_id=?
                   AND json_extract(coverage.meta_json,'$.semantic_repair_gap_ref')=incident.record_id
                   AND json_extract(coverage.meta_json,'$.semantic_repair_release_digest')=?)
             ORDER BY incident.updated_at ASC,incident.record_id ASC LIMIT 33""",
             (*owner_params, CAPTURE_SOURCE, 'eimemory.semantic_relevance_monitor.repair_audit',
+             policy_fingerprint,
              exact.tenant_id, exact.agent_id, exact.workspace_id, exact.user_id, release_digest)).fetchall()
     if len(rows) > 32:
         report['deferred_count'] += len(rows) - 32
@@ -455,11 +470,14 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
                   WHERE completed.tenant_id=packet.tenant_id AND completed.agent_id=packet.agent_id
                     AND completed.workspace_id=packet.workspace_id AND completed.user_id=packet.user_id
                     AND json_extract(completed.meta_json,'$.semantic_repair_packet_ref')=packet.record_id
-                    AND (completed.source=? OR (completed.source=?
+                    AND ((completed.source=?
+                        AND json_extract(completed.meta_json,'$.semantic_repair_capture_policy_fingerprint')=?)
+                      OR (completed.source=?
                         AND json_extract(completed.meta_json,'$.semantic_repair_verdict') IN ('unknown','off_topic','mixed'))))
             ORDER BY packet.updated_at ASC,packet.record_id ASC LIMIT 64""",
             (*owner_params, CAPTURE_SOURCE, exact.tenant_id, exact.agent_id, exact.workspace_id, exact.user_id,
-             release_digest, 'eimemory.semantic_relevance_monitor.repair_audit', REVIEW_SOURCE)).fetchall()
+             release_digest, 'eimemory.semantic_relevance_monitor.repair_audit', policy_fingerprint,
+             REVIEW_SOURCE)).fetchall()
     packets = [runtime.store.get_by_exact_ref(row['record_id'], scope=exact, source_id='default') for row in packet_rows]
     for packet in packets:
         if packet is None or packet.scope != exact or packet.source != CAPTURE_SOURCE:

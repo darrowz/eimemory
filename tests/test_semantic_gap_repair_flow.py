@@ -95,11 +95,156 @@ def test_failed_or_unknown_real_review_is_retained_and_not_rejudged_each_nightly
     count = []
     monkeypatch.setattr(semantic, '_evaluate', lambda *args: count.append(True) or verdict(label))
     first, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    # A changed capture policy cannot turn a genuine negative review into a
+    # request for another model judgment or maintenance recall.
+    monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '0')
     second, repeated = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
     assert not findings and not repeated
     assert first['provider_calls'] == 1 and second['provider_calls'] == 0
     assert len(count) == len(calls) == 1
     assert runtime.store.get_by_id(gap.record_id).status == 'active'
+
+
+def _audits(runtime, scope):
+    return [record for record in runtime.store.list_records(kinds=['evaluation_packet'], scope=scope, limit=100)
+            if record.source == 'eimemory.semantic_relevance_monitor.repair_audit']
+
+
+@pytest.mark.parametrize('disabled', [None, '0', 'true'])
+def test_same_release_capture_policy_recovery_resolves_once_without_rewriting_old_audit(
+        replay_case, monkeypatch, disabled):
+    from eimemory.evaluation.query_input_vault import configured_capture_scopes
+    runtime, scope, gap, _, _, calls, judges, _ = replay_case
+    if disabled is None:
+        monkeypatch.delenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY')
+    else:
+        monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', disabled)
+    fingerprint = repair._capture_policy_fingerprint(configured_capture_scopes())
+    first, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert not findings and first['reason_counts'] == {'semantic_repair_capture_unavailable': 1}
+    old_audit = _audits(runtime, scope)[0]
+    before = old_audit.to_dict()
+    signed = explicit._verify(old_audit, old_audit.source, scope)
+    assert signed['capture_policy_fingerprint'] == fingerprint
+    assert old_audit.meta['semantic_repair_capture_policy_fingerprint'] == fingerprint
+    assert 'PRIVATE' not in json.dumps(signed)
+    assert len(fingerprint) == 64 and set(fingerprint) <= set('0123456789abcdef')
+    second, repeated = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert not repeated and second['unverifiable_count'] == 0
+    assert calls == judges == []
+
+    monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '1')
+    recovered, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert recovered['replay_count'] == recovered['provider_calls'] == len(calls) == len(judges) == 1
+    assert len(_ingest_verified_findings(runtime, findings=findings, scope=scope)['resolved_record_ids']) == 1
+    assert before == runtime.store.get_by_id(old_audit.record_id, scope=scope).to_dict()
+    again, repeated = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert not repeated and again['replay_count'] == again['provider_calls'] == 0
+    assert len(calls) == len(judges) == 1
+
+
+def test_legacy_audit_without_policy_fingerprint_allows_one_retry_and_is_preserved(replay_case):
+    runtime, scope, gap, _, _, calls, judges, _ = replay_case
+    body = dict(schema=repair.SCHEMA, status='unverifiable', reason='semantic_repair_capture_unavailable',
+        release_identity=repair._current(runtime, scope), gap_ref=gap.record_id,
+        gap_digest=explicit._digest(gap.to_dict()), packet_ref='', packet_digest='',
+        natural_benchmark_eligible=False, passing_resolution_created=False)
+    legacy = explicit._record('eimemory.semantic_relevance_monitor.repair_audit', 'srpa_legacy135', scope, body)
+    legacy.meta.update(semantic_repair_gap_ref=gap.record_id, semantic_repair_packet_ref='',
+        semantic_repair_release_digest=explicit._digest(body['release_identity']))
+    runtime.store.append(legacy)
+    before = runtime.store.get_by_id(legacy.record_id, scope=scope).to_dict()
+    report, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert report['replay_count'] == report['provider_calls'] == len(calls) == len(judges) == 1
+    assert len(_ingest_verified_findings(runtime, findings=findings, scope=scope)['resolved_record_ids']) == 1
+    assert before == runtime.store.get_by_id(legacy.record_id, scope=scope).to_dict()
+    again, repeated = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert not repeated and again['replay_count'] == again['provider_calls'] == 0
+
+
+def test_scope_order_and_duplicate_entries_do_not_invalidate_negative_policy_cache(replay_case, monkeypatch):
+    from eimemory.evaluation.query_input_vault import configured_capture_scopes
+    runtime, scope, _, _, _, calls, judges, _ = replay_case
+    monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '0')
+    allowed = configured_capture_scopes()
+    first_fingerprint = repair._capture_policy_fingerprint(allowed)
+    repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    monkeypatch.setenv('EIMEMORY_CAPTURE_QUERY_SCOPES', json.dumps([*reversed(allowed), allowed[0]]))
+    assert repair._capture_policy_fingerprint(configured_capture_scopes()) == first_fingerprint
+    report, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert not findings and report['unverifiable_count'] == 0
+    assert len(_audits(runtime, scope)) == 1 and calls == judges == []
+
+
+@pytest.mark.parametrize('policy', ['[]', 'foreign', 'malformed'])
+def test_changed_invalid_or_foreign_scope_policy_never_creates_traffic(replay_case, monkeypatch, policy):
+    runtime, scope, gap, _, _, calls, judges, _ = replay_case
+    monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '0')
+    repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '1')
+    configured = json.dumps([dict(asdict(scope), user_id='foreign', channel='hermes', source_id='hermes')])
+    monkeypatch.setenv('EIMEMORY_CAPTURE_QUERY_SCOPES', configured if policy == 'foreign' else policy)
+    if policy == 'malformed':
+        with pytest.raises(ValueError, match='scope_policy_invalid'):
+            repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    else:
+        report, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+        assert report['status'] == 'scope_not_authorized' and findings == []
+    assert calls == judges == [] and runtime.store.get_by_id(gap.record_id).status == 'active'
+
+
+def test_packet_failure_audit_retries_after_policy_recovery_without_recalling(replay_case, monkeypatch):
+    runtime, scope, gap, _, _, calls, judges, _ = replay_case
+    packet = repair.capture_semantic_gap_replay(runtime, gap_id=gap.record_id, scope=scope)
+    native = repair._load_replay
+    def unavailable(*args, **kwargs):
+        raise ValueError('semantic_repair_evidence_invalid')
+    monkeypatch.setattr(repair, '_load_replay', unavailable)
+    first, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert not findings and first['unverifiable_count'] == 1
+    audit = _audits(runtime, scope)[0]
+    assert audit.content['packet_ref'] == packet['packet_ref']
+    before = audit.to_dict()
+    monkeypatch.setattr(repair, '_load_replay', native)
+    second, repeated = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert not repeated and second['provider_calls'] == 0 and judges == []
+    monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '0')
+    recovered, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert recovered['replay_count'] == 0 and recovered['provider_calls'] == len(judges) == 1
+    assert len(calls) == 1
+    assert len(_ingest_verified_findings(runtime, findings=findings, scope=scope)['resolved_record_ids']) == 1
+    assert before == runtime.store.get_by_id(audit.record_id, scope=scope).to_dict()
+
+
+def test_audit_uses_selection_policy_snapshot_during_configuration_change(replay_case, monkeypatch):
+    from eimemory.evaluation.query_input_vault import configured_capture_scopes
+    runtime, scope, _, _, _, calls, judges, _ = replay_case
+    monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '0')
+    previous = repair._capture_policy_fingerprint(configured_capture_scopes())
+    native = repair.capture_semantic_gap_replay
+    def changed(*args, **kwargs):
+        monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '1')
+        raise ValueError('semantic_repair_capture_unavailable')
+    monkeypatch.setattr(repair, 'capture_semantic_gap_replay', changed)
+    repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert _audits(runtime, scope)[0].content['capture_policy_fingerprint'] == previous
+    assert previous != repair._capture_policy_fingerprint(configured_capture_scopes())
+    monkeypatch.setattr(repair, 'capture_semantic_gap_replay', native)
+    recovered, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert recovered['replay_count'] == recovered['provider_calls'] == len(calls) == len(judges) == len(findings) == 1
+
+
+def test_capture_policy_recovery_keeps_replay_and_judge_within_shared_budget(replay_case, monkeypatch):
+    runtime, scope, _, _, _, calls, judges, _ = replay_case
+    monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '0')
+    repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '1')
+    first, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=1)
+    assert not findings and first['replay_count'] == 1 and first['provider_calls'] == 0
+    assert first['deferred_count'] == 1
+    second, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=1)
+    assert second['replay_count'] == 0 and second['provider_calls'] == 1
+    assert len(findings) == len(calls) == len(judges) == 1
 
 
 def test_missing_old_decision_audits_without_model_replay_or_passing_resolution(incident):

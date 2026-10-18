@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.136] — 2026-10-18
+
+- Retry unverifiable semantic repair work when its authorized capture policy changes, while retaining signed prior audits. Keep existing replay packets and non-passing reviews deduplicated.
+- Document the shared recall capture configuration required by RPC and nightly; preserve explicit opt-in and the exact scope allowlist.
+- Load the same optional node serving profiles in nightly as RPC, so controlled evaluation and faithful maintenance replay follow the online selector policy.
+
 ## [1.14.135] — 2026-10-18
 
 - Manage the existing Hermes standalone Feishu profile context protection through standard installation and verification. Preserve other host edits, recognize compatible upstream behavior, and reject unknown drift before deployment.

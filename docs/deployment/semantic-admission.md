@@ -75,6 +75,21 @@ and digest-bound. Existing privacy guarantees for ordinary audit rows remain.
 `original-eval` can reconstruct captured engine inputs, but does not claim to
 reconstruct external OpenClaw bundle processing or replace observed host delivery.
 
+For a managed installation, place the chosen capture opt-in and its
+`EIMEMORY_CAPTURE_QUERY_SCOPES` allowlist together in the private
+`/etc/eimemory/recall.env`. RPC and nightly both load this shared file; an
+RPC-only inline setting does not enable nightly maintenance capture. Preserve
+an explicit disable and existing scope boundaries when moving configuration.
+The managed nightly unit also reads the optional PostgreSQL, embedding and
+reranker configuration used by RPC, followed by the node serving profiles
+`/var/lib/eimemory/state/vector-serving.env` and `caller-recall.env`, before
+the shared recall settings, in the same order as RPC. Keep these private files
+owned by the service user without group or other write access. Put an explicitly
+chosen `EIMEMORY_RECALL_BUDGET_SECONDS` in shared `recall.env` when both surfaces
+must use that budget; no per-service override is inferred or enabled by default.
+A changed capture policy permits previously unverifiable maintenance work to
+retry; signed replay packets and non-passing reviews remain deduplicated.
+
 ## Fixed quality gate
 
 Run `python -m eimemory.evaluation.semantic_recall --root ROOT --dataset PRIVATE_JSON

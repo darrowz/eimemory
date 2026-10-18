@@ -16,6 +16,12 @@ TimeoutStartSec=7200
 WorkingDirectory=/opt/eimemory/current
 Environment=EIMEMORY_ROOT=/var/lib/eimemory
 Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
+# Follow the existing node backend and serving profiles, as the online RPC does.
+EnvironmentFile=-/etc/eimemory/postgres.env
+EnvironmentFile=-/etc/eimemory/embedding.env
+EnvironmentFile=-/etc/eimemory/reranker.env
+EnvironmentFile=-/var/lib/eimemory/state/vector-serving.env
+EnvironmentFile=-/var/lib/eimemory/state/caller-recall.env
 Environment=EIMEMORY_AUTONOMOUS_LEARNING_ENABLED=1
 Environment=EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1
 Environment=EIMEMORY_AUTONOMOUS_LEARNING_DRY_RUN=0
