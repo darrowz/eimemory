@@ -150,6 +150,10 @@ jobs:
           tests/test_test_rule_quarantine.py
           tests/test_learning_loop_terminal_contracts.py
           tests/test_semantic_relevance_monitor.py
+          tests/test_explicit_recall_capture.py
+          tests/test_explicit_recall_private_capture.py
+          tests/test_explicit_recall_semantic_monitor.py
+          tests/test_hermes_explicit_host_context.py
           tests/test_recall_companion.py
           tests/test_production_query_dataset.py
           tests/test_observed_channel_contract.py

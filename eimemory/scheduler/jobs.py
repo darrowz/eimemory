@@ -1017,7 +1017,8 @@ def _run_semantic_relevance_monitor(runtime: Runtime, *, scope: dict) -> dict[st
     try:
         from eimemory.evaluation.semantic_relevance_monitor import monitor_channel_deliveries
 
-        report, findings = monitor_channel_deliveries(runtime, scope=scope, include_capture_scopes=True)
+        report, findings = monitor_channel_deliveries(
+            runtime, scope=scope, include_capture_scopes=True, include_explicit=True)
         from eimemory.governance.quality_gap_intake import _ingest_verified_findings
 
         # The monitor has revalidated authorization and delivery, including for

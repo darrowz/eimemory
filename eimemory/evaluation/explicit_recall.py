@@ -22,6 +22,7 @@ from eimemory.identity import hongtu_query_scopes, hongtu_query_scopes_with_alia
 from eimemory.models.records import CompactRecallBudgetExceeded, RecordEnvelope, ScopeRef, compact_record as _compact_record, validate_compact_payload_budget
 from eimemory.storage.jsonl import payload_digest
 from eimemory.recall.loadout import render_loadout
+from eimemory.models.source_partitions import normalize_source_ids
 
 CAPTURE_SOURCE = "eimemory.production_recall.explicit_capture"
 INTENT_SOURCE = "eimemory.production_recall.explicit_intent"
@@ -96,32 +97,97 @@ def _reference(runtime: Any, record: RecordEnvelope, scope: ScopeRef) -> dict:
     authoritative = runtime.store.get_by_exact_ref(record.record_id, scope=record.scope, source_id=record.source_id)
     if authoritative is None or authoritative.status != "active" or authoritative.source != record.source:
         raise ValueError("explicit result authority missing")
+    if payload_digest(authoritative.to_dict()) != payload_digest(record.to_dict()):
+        raise ValueError("explicit delivered payload mismatch")
     return {"record_ref": authoritative.record_id, "scope": asdict(authoritative.scope), "source": authoritative.source,
             "source_id": authoritative.source_id, "record_digest": payload_digest(authoritative.to_dict())}
 
 
-def observe_explicit_recall(service: Any, *, channel: str, scope: dict, query: str, task_type: str, limit: int, explicit_request: dict) -> dict:
+def _explicit_sources(task_context: dict | None) -> list[str] | None:
+    if not task_context:
+        return None
+    if not isinstance(task_context, dict) or set(task_context) != {'source_ids'}:
+        raise ValueError('explicit recall does not accept task_context overrides')
+    values = task_context['source_ids']
+    if not isinstance(values, list) or not values:
+        raise ValueError('explicit source_ids must be a nonempty allowlist')
+    return sorted(normalize_source_ids(values))
+
+
+def _private_result(result: dict) -> dict:
+    """Keep delivered memory and bounded diagnostics, never query-derived hints."""
+    safe = {key: deepcopy(result[key]) for key in
+            ('ok', 'adapter_contract_version', 'channel', 'scope', 'error', 'reason') if key in result}
+    if isinstance(result.get('bundle'), dict):
+        safe['bundle'] = {key: deepcopy(result['bundle'][key]) for key in
+                          ('schema_version', 'items', 'persona', 'rules', 'reflections',
+                           'evidence', 'retrieval_status', 'recall_diagnostics', 'task_evidence_scope')
+                          if key in result['bundle']}
+        # The caller already checked this against render_loadout. That renderer
+        # only emits returned memory, never the original query or runtime hints.
+        safe['context'] = result.get('context', '')
+    return safe
+
+
+def _retrieval_state(bundle: Any) -> dict:
+    explanation = getattr(bundle, 'explanation', {}) or {}
+    selector = explanation.get('relevance_selector') or {}
+    engine = explanation.get('engine_diagnostics') or {}
+    complete = selector.get('collection_complete')
+    return {'collection_complete': complete if type(complete) is bool else None,
+            'status': selector.get('status') if selector.get('status') in
+                {'evidence_found', 'no_evidence', 'unavailable', 'ambiguous', 'degraded'} else 'unknown',
+            'source_budget_exhausted': max(0, int(engine.get('source_budget_exhausted') or 0)),
+            'recall_budget_exhausted': max(0, int((engine.get('drops') or {}).get('recall_budget_exhausted') or 0))}
+
+
+def observe_explicit_recall(service: Any, *, channel: str, scope: dict, query: str, task_type: str,
+                            limit: int, explicit_request: dict, task_context: dict | None = None) -> dict:
     request = dict(explicit_request)
-    if set(request) != {"session_id", "request_id", "acceptance_generated"} or not isinstance(request["acceptance_generated"], bool):
+    fields = {"session_id", "request_id", "acceptance_generated"}
+    private = request.get('capture_mode') == 'private'
+    if (set(request) != fields | ({'capture_mode'} if private else set())
+            or not isinstance(request["acceptance_generated"], bool)):
         raise ValueError("explicit request identity invalid")
     for key in ("session_id", "request_id"):
         if not isinstance(request[key], str) or not request[key].strip() or len(request[key]) > 256:
             raise ValueError("explicit request identity invalid")
     runtime = service.runtime
     exact = ScopeRef.from_dict(resolve_channel_scope(channel, scope))
-    request.update(query=query, task_type=task_type, limit=limit, channel=channel, scope=asdict(exact))
+    sources = _explicit_sources(task_context)
+    request.update(limit=limit, channel=channel, scope=asdict(exact))
+    request.update({'query_digest': sha256(query.encode()).hexdigest(),
+                    'task_type_digest': sha256(task_type.encode()).hexdigest()}
+                   if private else {'query': query, 'task_type': task_type})
+    if sources is not None:
+        request['source_ids'] = sources
     identity = {key: request[key] for key in ("session_id", "request_id", "channel", "scope")}
     intent_id, capture_id = "prei_" + _digest(identity)[:32], "prec_" + _digest(identity)[:32]
-    intent, inserted = _insert_once(runtime, _record(INTENT_SOURCE, intent_id, exact, {"schema": SCHEMA, "request": request, "created_at": now_iso()}))
+    try:
+        intent, inserted = _insert_once(runtime, _record(INTENT_SOURCE, intent_id, exact, {"schema": SCHEMA, "request": request, "created_at": now_iso()}))
+    except Exception:
+        if not private:
+            raise
+        result, _ = service._prefetch_result(channel=channel, scope=scope, query=query,
+            task_type=task_type, limit=limit, task_context={'source_ids': sources} if sources is not None else None)
+        return {**_private_result(result), 'explicit_capture': {
+            'status': 'not_captured', 'reason': 'explicit_capture_unavailable'}}
     _verify(intent, INTENT_SOURCE, exact)
     if intent.content["request"] != request:
         raise ValueError("explicit request identity conflict")
     if not inserted:
-        capture = load_explicit_capture(runtime, capture_id, scope=exact)
-        return _public_result(capture)
+        prior = runtime.store.get_by_exact_ref(capture_id, scope=exact, source_id='default')
+        if prior is not None:
+            capture = load_explicit_capture(runtime, capture_id, scope=exact)
+            return _public_result(capture, **({'runtime': runtime} if private else {}))
+        # A process may have stopped after intent persistence but before recall.
+        # Resume that exact request, never replace an existing signed capture.
     references = []
+    bundle = None
     try:
-        result, bundle = service._prefetch_result(channel=channel, scope=scope, query=query, task_type=task_type, limit=limit)
+        result, bundle = service._prefetch_result(channel=channel, scope=scope, query=query,
+                                                task_type=task_type, limit=limit,
+                                                task_context={'source_ids': sources} if sources is not None else None)
         bounded_limit = max(1, min(50, service._positive_limit(limit, 8)))
         assembled = service._assemble_recall_bundle(bundle, limit=bounded_limit)
         expected_result = {"ok": True, "adapter_contract_version": RUNTIME_ADAPTER_CONTRACT_VERSION,
@@ -129,6 +195,10 @@ def observe_explicit_recall(service: Any, *, channel: str, scope: dict, query: s
                            "context": render_loadout(assembled, max_chars=service.max_context_chars)}
         if result != expected_result:
             raise ValueError("explicit result rendering mismatch")
+        # Legacy cascade summaries contain no physical scope/source_id. They
+        # cannot establish read authority or become attested tool evidence.
+        # Selected items and their verified parent excerpts remain unchanged.
+        result['bundle'].pop('evidence', None)
         delivered = [*result["bundle"].get("items", []), *result["bundle"].get("persona", []), *result["bundle"].get("rules", []), *result["bundle"].get("reflections", [])]
         full = [*bundle.items, *bundle.rules, *bundle.reflections]
         seen = set()
@@ -142,13 +212,8 @@ def observe_explicit_recall(service: Any, *, channel: str, scope: dict, query: s
             if len(matches) != 1:
                 raise ValueError("explicit delivered reference ambiguous")
             reference = _reference(runtime, matches[0], exact)
-            authoritative = runtime.store.get_by_exact_ref(reference["record_ref"], scope=ScopeRef.from_dict(reference["scope"]), source_id=reference["source_id"])
-            expected_item = _compact_record(authoritative)
-            if item != expected_item and item != {**expected_item, "scope": reference["scope"]}:
-                # Check the returned bytes before attesting them, not merely
-                # the ID. Existing payload verification alone cannot catch a
-                # substituted provider summary bearing a genuine record ID.
-                raise ValueError("explicit delivered payload mismatch")
+            if sources is not None and reference['source_id'] not in sources:
+                raise ValueError('explicit delivered source mismatch')
             key = _digest(reference)
             if key not in seen:
                 references.append(reference)
@@ -165,17 +230,39 @@ def observe_explicit_recall(service: Any, *, channel: str, scope: dict, query: s
             result["reason"] = exc.reason
         references = []
         error = exc.code if isinstance(exc, CompactRecallBudgetExceeded) else type(exc).__name__
-    release = service._proactive_release(channel, asdict(exact))
-    release_reference = _release_reference(runtime, release, channel=channel, scope=exact)
-    capture = _record(CAPTURE_SOURCE, capture_id, exact, {
+    try:
+        release = service._proactive_release(channel, asdict(exact))
+        release_reference = _release_reference(runtime, release, channel=channel, scope=exact)
+    except Exception:
+        if not private:
+            raise
+        return {**_private_result(result), 'explicit_capture': {
+            'status': 'not_captured', 'reason': 'explicit_capture_release_unavailable'}}
+    private_fields = {}
+    if private:
+        from eimemory.evaluation.explicit_input_vault import capture_explicit_input
+        result = _private_result(result)
+        private_fields = {'actual_result_digest': _digest(result),
+                          'capture_input': capture_explicit_input(runtime, capture_id=capture_id,
+                              scope=exact, request=request, query=query, result=result)}
+    capture_body = {
         "schema": SCHEMA, "intent_ref": intent_id, "request": request, "request_digest": _digest(request),
         "invocation_kind": "explicit", "acceptance_generated": request["acceptance_generated"],
         "created_at": now_iso(), "release_identity": release, "release_reference": release_reference,
         "authorization": {"contract": "retrieval.default_alias_shared_visibility.v1", "request_scope": asdict(exact)},
         "result": result, "result_digest": _digest(result), "references": references, "error": error,
-    })
-    capture, _ = _insert_once(runtime, capture)
-    return _public_result(load_explicit_capture(runtime, capture.record_id, scope=exact))
+        "retrieval_state": _retrieval_state(bundle), **private_fields,
+    }
+    try:
+        capture = _record(CAPTURE_SOURCE, capture_id, exact, capture_body)
+        capture, _ = _insert_once(runtime, capture)
+        return _public_result(load_explicit_capture(runtime, capture.record_id, scope=exact),
+                              **({'runtime': runtime} if private else {}))
+    except Exception:
+        if not private:
+            raise
+        return {**result, 'explicit_capture': {
+            'status': 'not_captured', 'reason': 'explicit_capture_unavailable'}}
 
 
 def _release_reference(runtime: Any, release: dict, *, channel: str, scope: ScopeRef) -> dict:
@@ -191,9 +278,20 @@ def _release_reference(runtime: Any, release: dict, *, channel: str, scope: Scop
     raise ValueError("explicit capture release receipt invalid")
 
 
-def _public_result(capture: RecordEnvelope) -> dict:
-    return {**deepcopy(capture.content["result"]), "capture": {"record_id": capture.record_id, "invocation_kind": "explicit",
-            "acceptance_generated": capture.content["acceptance_generated"], "result_digest": capture.content["result_digest"]}}
+def _public_result(capture: RecordEnvelope, *, runtime: Any = None) -> dict:
+    result = deepcopy(capture.content['result'])
+    private = capture.content['request'].get('capture_mode') == 'private'
+    input_status = (capture.content.get('capture_input') or {}).get('status')
+    if private and input_status == 'captured':
+        from eimemory.evaluation.explicit_input_vault import load_explicit_input
+        try:
+            result = load_explicit_input(runtime, capture=capture)['result']
+        except ValueError:
+            input_status = 'input_unavailable'
+    return {**result, "capture": {"record_id": capture.record_id, "invocation_kind": "explicit",
+            "acceptance_generated": capture.content["acceptance_generated"],
+            "result_digest": capture.content.get('actual_result_digest', capture.content["result_digest"]),
+            **({'input_status': input_status} if private else {})}}
 
 
 def load_explicit_capture(runtime: Any, record_id: str, *, scope: dict | ScopeRef) -> RecordEnvelope:
@@ -210,10 +308,22 @@ def load_explicit_capture(runtime: Any, record_id: str, *, scope: dict | ScopeRe
     if body["release_reference"] != _release_reference(runtime, body["release_identity"], channel=body["request"]["channel"], scope=exact):
         raise ValueError("explicit capture release receipt changed")
     for ref in body["references"]:
+        if body['request'].get('source_ids') is not None and ref['source_id'] not in body['request']['source_ids']:
+            raise ValueError('explicit capture source boundary mismatch')
         actual = runtime.store.get_by_exact_ref(ref["record_ref"], scope=ScopeRef.from_dict(ref["scope"]), source_id=ref["source_id"])
         if actual is None or _reference(runtime, actual, exact) != ref:
             raise ValueError("explicit capture record changed or unauthorized")
     return record
+
+
+def load_explicit_capture_review_input(runtime: Any, record_id: str, *, scope: dict | ScopeRef) -> dict:
+    """Recover original bytes only after signed request/result/authority validation."""
+    capture = load_explicit_capture(runtime, record_id, scope=scope)
+    if capture.content['request'].get('capture_mode') == 'private':
+        from eimemory.evaluation.explicit_input_vault import load_explicit_input
+        return load_explicit_input(runtime, capture=capture)
+    return {'query': capture.content['request']['query'], 'result': deepcopy(capture.content['result']),
+            'input_digest': capture.content['request_digest']}
 
 
 def collect_explicit_queries(runtime: Any, *, scope: dict | ScopeRef, limit: int = 500) -> dict:

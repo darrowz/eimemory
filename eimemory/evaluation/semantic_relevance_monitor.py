@@ -2,12 +2,24 @@
 from dataclasses import asdict
 from hashlib import sha256
 import json
+import re
 
 from eimemory.models.records import RecordEnvelope
 
 VERSION = 'semantic-relevance.v1'
 MAX_NEW = 8
 SOURCE = 'eimemory.semantic_relevance_monitor'
+EXPLICIT_REVIEW_SOURCE = 'eimemory.production_recall.explicit_semantic_review'
+EXPLICIT_REVIEW_VERSION = 'explicit-relevance.v1'
+EXPLICIT_REVIEW_REASONS = (
+    'evaluated', 'source_not_authorized', 'source_boundary_invalid', 'capture_invalid',
+    'capture_input_unavailable', 'maintenance_capture', 'release_unbound',
+    'release_receipt_unavailable', 'retrieval_incomplete', 'retrieval_completeness_unknown',
+    'recall_failed', 'empty_result', 'result_too_large', 'query_unavailable',
+    'result_identity_invalid', 'review_attestation_unavailable',
+    'review_receipt_invalid',
+    'tool_free_transport_unavailable', 'completion_unavailable', 'malformed_verdict',
+)
 # Recall decision surfaces judged with the same prompt, verifier and caching.
 # memory.recall is the explicit recall tool; research.task is Hermes' automatic
 # per-turn proactive recall. Both deliver retrieved memory for one user query.
@@ -310,7 +322,207 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
     return dict(counts, status='observation_only', automatic_promotion=False), findings
 
 
-def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_capture_scopes=False):
+def _explicit_counts():
+    return dict(version=EXPLICIT_REVIEW_VERSION, status='observation_only', invocation_kind='explicit',
+                new_count=0, reused_count=0, deferred_count=0, excluded_count=0, provider_calls=0,
+                verdict_counts=dict(relevant=0, mixed=0, off_topic=0, unknown=0, excluded=0),
+                reason_counts={}, review_results=[], review_results_truncated=False,
+                natural_benchmark_eligible=False,
+                memory_contribution_certified=False, automatic_promotion=False)
+
+
+def _explicit_result_items(body, result, scope, channel):
+    """Select only the actual, signed result; never re-create historical text."""
+    if result.get('scope') != asdict(scope) or result.get('channel') != channel:
+        raise ValueError('result_identity_invalid')
+    bundle = result.get('bundle')
+    if not isinstance(bundle, dict):
+        raise ValueError('result_identity_invalid')
+    references = body.get('references')
+    if not isinstance(references, list):
+        raise ValueError('result_identity_invalid')
+    keys = {_digest([ref.get('record_ref'), ref.get('scope'), ref.get('source_id')])
+            for ref in references if isinstance(ref, dict)}
+    items, seen = [], set()
+    for section in ('items', 'persona', 'rules', 'reflections'):
+        values = bundle.get(section, [])
+        if not isinstance(values, list):
+            raise ValueError('result_identity_invalid')
+        for item in values:
+            if not isinstance(item, dict):
+                raise ValueError('result_identity_invalid')
+            key = _digest([item.get('record_id'), item.get('scope'), item.get('source_id')])
+            if key not in keys:
+                raise ValueError('result_identity_invalid')
+            identity = _digest(item)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            title = item.get('title', '')
+            text = item.get('evidence_excerpt') or item.get('summary', '')
+            if not isinstance(title, str) or not isinstance(text, str):
+                raise ValueError('result_identity_invalid')
+            items.append(dict(title=title, text=text))
+    if len(items) > 32 or len(json.dumps(items, ensure_ascii=False).encode()) > 65536:
+        raise ValueError('result_too_large')
+    return items
+
+
+def monitor_explicit_recalls(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
+    """Independently judge attested explicit results, without creating recall gold.
+
+    A server result proves what the tool returned. It does not prove the host
+    consumed that result or that a memory caused the final answer's usefulness.
+    """
+    from eimemory.adapters.runtime.channel import runtime_channel_from_scope
+    from eimemory.evaluation import explicit_recall as explicit
+    from eimemory.governance.evidence_contract import (
+        deployment_receipt_for_scope, verified_deployment_receipt_identity, release_identity_payload,
+    )
+    from eimemory.models.records import ScopeRef
+
+    scope = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    channel = runtime_channel_from_scope(scope) or 'openclaw'
+    counts = _explicit_counts()
+    lister = getattr(runtime.store, 'list_records_by_meta_value', None)
+    if not callable(lister):
+        return dict(counts, status='unavailable')
+    captures = lister(kinds=['evaluation_packet'], scope=scope, status='active',
+                      meta_key='report_type', meta_value='explicit_capture', limit=500) or []
+
+    def conclude(capture_id, verdict, reason, receipt_id=None):
+        counts['verdict_counts'][verdict] += 1
+        counts['reason_counts'][reason] = counts['reason_counts'].get(reason, 0) + 1
+        counts['excluded_count'] += int(verdict == 'excluded')
+        if len(counts['review_results']) < 20:
+            counts['review_results'].append(dict(capture_record_id=capture_id,
+                                                 review_receipt_id=receipt_id,
+                                                 verdict=verdict, reason=reason))
+        else:
+            counts['review_results_truncated'] = True
+
+    for candidate in captures:
+        if candidate.source != explicit.CAPTURE_SOURCE or candidate.scope != scope:
+            continue
+        summary = candidate.content if isinstance(candidate.content, dict) else {}
+        request = summary.get('request') if isinstance(summary.get('request'), dict) else {}
+        sources = request.get('source_ids')
+        # Additional scopes are authorized by operator configuration, never by
+        # captured records. Gate before loading private text or cached reviews.
+        if source_ids is not None and (
+                not isinstance(sources, list) or not sources
+                or any(not isinstance(source, str) or source not in source_ids for source in sources)):
+            conclude(candidate.record_id, 'excluded', 'source_not_authorized')
+            continue
+        try:
+            capture = explicit.load_explicit_capture(runtime, candidate.record_id, scope=scope)
+        except (ValueError, KeyError, TypeError):
+            conclude(candidate.record_id, 'excluded', 'capture_invalid')
+            continue
+        body = capture.content
+        if body.get('acceptance_generated') is not False:
+            conclude(capture.record_id, 'excluded', 'maintenance_capture')
+            continue
+        release = body.get('release_identity') or {}
+        if not isinstance(release, dict) or not release.get('deployment_receipt_id'):
+            conclude(capture.record_id, 'excluded', 'release_unbound')
+            continue
+        receipt = deployment_receipt_for_scope(runtime, release['deployment_receipt_id'], scope)
+        identity = verified_deployment_receipt_identity(receipt)
+        if identity is None or release_identity_payload(identity) != release:
+            conclude(capture.record_id, 'excluded', 'release_receipt_unavailable')
+            continue
+        if body.get('request', {}).get('capture_mode') == 'private' and (
+                not isinstance(body.get('capture_input'), dict)
+                or body['capture_input'].get('status') != 'captured'):
+            conclude(capture.record_id, 'unknown', 'capture_input_unavailable')
+            continue
+        state = body.get('retrieval_state')
+        state = state if isinstance(state, dict) else {}
+        if (state.get('collection_complete') is False or state.get('status') in {'degraded', 'unavailable'}
+                or state.get('source_budget_exhausted') or state.get('recall_budget_exhausted')):
+            conclude(capture.record_id, 'excluded', 'retrieval_incomplete')
+            continue
+        if state.get('collection_complete') is not True:
+            conclude(capture.record_id, 'unknown', 'retrieval_completeness_unknown')
+            continue
+        if state.get('status') not in {'evidence_found', 'no_evidence'}:
+            conclude(capture.record_id, 'unknown', 'retrieval_completeness_unknown')
+            continue
+        try:
+            inputs = explicit.load_explicit_capture_review_input(runtime, capture.record_id, scope=scope)
+            query, result = inputs.get('query'), inputs.get('result')
+            if re.fullmatch(r'[0-9a-f]{64}', str(inputs.get('input_digest') or '')) is None:
+                raise ValueError('capture_input_unavailable')
+            if not isinstance(query, str) or not query.strip() or len(query.encode()) > 16384:
+                raise ValueError('query_unavailable')
+            if not isinstance(result, dict) or result.get('ok') is not True:
+                raise ValueError('recall_failed')
+            items = _explicit_result_items(body, result, scope, channel)
+            if not items:
+                raise ValueError('empty_result')
+        except (ValueError, KeyError, TypeError) as exc:
+            reason = str(exc) if str(exc) in EXPLICIT_REVIEW_REASONS else 'capture_input_unavailable'
+            conclude(capture.record_id, 'unknown' if reason in {
+                'query_unavailable', 'capture_input_unavailable'} else 'excluded', reason)
+            continue
+        observation = dict(version=EXPLICIT_REVIEW_VERSION, invocation_kind='explicit',
+                           capture_ref=capture.record_id, capture_digest=_digest(body),
+                           input_digest=str(inputs.get('input_digest') or ''),
+                           result_digest=_digest(result), query_digest=_digest(query),
+                           reference_digest=_digest(body.get('references')), release_digest=_digest(release),
+                           retrieval_state=state, natural_benchmark_eligible=False,
+                           memory_contribution_certified=False)
+        evaluation_identity = _digest(observation)
+        cached = None
+        invalid_review = False
+        for record in lister(kinds=['evaluation_packet'], scope=scope, status='active',
+                             meta_key='explicit_semantic_identity', meta_value=evaluation_identity, limit=32) or []:
+            if record.source != EXPLICIT_REVIEW_SOURCE:
+                continue
+            try:
+                report = explicit._verify(record, EXPLICIT_REVIEW_SOURCE, scope)
+            except (ValueError, KeyError, TypeError):
+                invalid_review = True
+                continue
+            if (report.get('evaluation_identity') != evaluation_identity
+                    or any(report.get(key) != value for key, value in observation.items())):
+                invalid_review = True
+                continue
+            if report.get('reason') != 'evaluated':
+                continue  # Transport/malformed responses can be retried.
+            parsed = _parse_result(json.dumps({key: report.get(key) for key in (
+                'relevance', 'off_topic', 'duplicates', 'unanswered')}), len(items))
+            if parsed.get('reason') == 'evaluated' and parsed.get('verdict') == report.get('verdict'):
+                cached = record
+                break
+        if cached is not None:
+            counts['reused_count'] += 1
+            conclude(capture.record_id, cached.content['verdict'], 'evaluated', cached.record_id)
+            continue
+        if invalid_review:
+            conclude(capture.record_id, 'excluded', 'review_receipt_invalid')
+            continue
+        if counts['provider_calls'] >= max(0, min(MAX_NEW, int(max_new))):
+            counts['deferred_count'] += 1
+            continue
+        if explicit._receipt_key_set() is None:
+            conclude(capture.record_id, 'excluded', 'review_attestation_unavailable')
+            continue
+        counts['provider_calls'] += 1
+        counts['new_count'] += 1
+        result = _evaluate(query, items)
+        report = dict(observation, evaluation_identity=evaluation_identity, **result)
+        record = explicit._record(EXPLICIT_REVIEW_SOURCE, 'pres_' + _digest(report)[:32], scope, report)
+        record.meta['explicit_semantic_identity'] = evaluation_identity
+        stored, _ = explicit._insert_once(runtime, record)
+        explicit._verify(stored, EXPLICIT_REVIEW_SOURCE, scope)
+        conclude(capture.record_id, result['verdict'], result['reason'], stored.record_id)
+    return counts
+
+
+def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_capture_scopes=False,
+                               include_explicit=False):
     """Observe base channels plus explicitly capture-authorized tenant scopes.
 
     Only the trusted nightly entry opts into capture discovery (at most 100
@@ -349,11 +561,27 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
                  verdict_counts=dict(unknown=0, relevant=0, mixed=0, off_topic=0), by_surface={}, by_channel={},
                  skip_reason_counts={}, not_applicable_counts={})
     findings = []
+    explicit_total = dict(_explicit_counts(), by_agent={}) if include_explicit else None
     status = 'unavailable'
     for channel, exact, sources in targets.values():
         options = {} if sources is None else {'source_ids': sources}
         report, channel_findings = monitor_deliveries(runtime, scope=exact, max_new=max_new, **options)
         findings.extend(channel_findings)
+        if explicit_total is not None:
+            explicit_report = monitor_explicit_recalls(
+                runtime, scope=exact, max_new=max(0, max_new - explicit_total['provider_calls']), **options)
+            agent = explicit_total['by_agent'].setdefault(exact.agent_id, _explicit_counts())
+            for target in (explicit_total, agent):
+                for key in ('new_count', 'reused_count', 'deferred_count', 'excluded_count', 'provider_calls'):
+                    target[key] += explicit_report[key]
+                for key in ('verdict_counts', 'reason_counts'):
+                    for label, count in explicit_report[key].items():
+                        target[key][label] = target[key].get(label, 0) + count
+                room = 20 - len(target['review_results'])
+                target['review_results'].extend(explicit_report['review_results'][:room])
+                target['review_results_truncated'] |= (
+                    explicit_report['review_results_truncated']
+                    or len(explicit_report['review_results']) > room)
         if report.get('status') == 'unavailable':
             continue
         status = report.get('status') or status
@@ -371,5 +599,6 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
         if observed:
             total['by_channel'][channel] = total['by_channel'].get(channel, 0) + observed
     if status == 'unavailable':
-        return dict(total, status='unavailable'), findings
-    return dict(total, status='observation_only', automatic_promotion=False), findings
+        return dict(total, status='unavailable', **({'explicit': explicit_total} if include_explicit else {})), findings
+    return dict(total, status='observation_only', automatic_promotion=False,
+                **({'explicit': explicit_total} if include_explicit else {})), findings

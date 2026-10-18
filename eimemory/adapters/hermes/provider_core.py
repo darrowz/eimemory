@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections import OrderedDict, deque
+from contextlib import contextmanager
+from contextvars import ContextVar
 from hashlib import sha256
 import json
 import logging
@@ -32,6 +34,56 @@ MIN_HOST_FALLBACK_SECONDS = 3.0
 MAX_PREFETCH_SINGLE_FLIGHT_WAIT_SECONDS = 2 * MAX_ADAPTER_TIMEOUT_SECONDS + 1.0
 logger = logging.getLogger(__name__)
 _PROACTIVE_CITATION = re.compile(r"(?<![A-Za-z0-9])pm:[0-9a-f]{20}(?![A-Za-z0-9])")
+_EXPLICIT_TOOL_CONTEXT: ContextVar[tuple[Any, ...] | None] = ContextVar(
+    "eimemory_hermes_explicit_tool_context", default=None,
+)
+
+
+def _explicit_tool_args_digest(args: Any) -> str:
+    if not isinstance(args, dict):
+        return ""
+    try:
+        encoded = json.dumps(args, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":"), allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError, RecursionError):
+        return ""
+    return sha256(encoded).hexdigest()
+
+
+@contextmanager
+def hermes_explicit_tool_context(*, provider: Any, tool_name: str, args: Any,
+                                 session_id: Any, tool_call_id: Any):
+    """Bind only a synchronous host middleware invocation, never tool arguments.
+
+    Context-local state keeps concurrent and nested invocations separate. An
+    invalid inner invocation shadows any outer binding until it returns.
+    Only a digest of the tool arguments is retained, never their private text.
+    """
+    binding = None
+    digest = _explicit_tool_args_digest(args)
+    if (provider is not None and tool_name == "eimemory_recall" and digest
+            and all(isinstance(value, str) and value.strip() and len(value) <= 256
+                    for value in (session_id, tool_call_id))
+            and session_id == getattr(provider, "_session_id", None)):
+        binding = (id(provider), session_id, tool_call_id, tool_name, digest)
+    token = _EXPLICIT_TOOL_CONTEXT.set(binding)
+    try:
+        yield
+    finally:
+        _EXPLICIT_TOOL_CONTEXT.reset(token)
+
+
+def _explicit_request_from_host(provider: Any, tool_name: str, args: dict) -> tuple[dict | None, str]:
+    binding = _EXPLICIT_TOOL_CONTEXT.get()
+    if binding is None:
+        return None, "hermes_explicit_host_context_missing"
+    owner, session_id, tool_call_id, bound_name, digest = binding
+    if owner != id(provider) or session_id != provider._session_id:
+        return None, "hermes_explicit_host_session_mismatch"
+    if tool_name != bound_name or not digest or digest != _explicit_tool_args_digest(args):
+        return None, "hermes_explicit_host_invocation_mismatch"
+    return {"session_id": session_id, "request_id": tool_call_id,
+            "acceptance_generated": False, "capture_mode": "private"}, ""
 
 
 def _adapter_timeout_seconds_from_env() -> float:
@@ -966,6 +1018,7 @@ class HermesMemoryProviderCore:
             from eimemory.recall.task_queries import task_recall_mode
             query = _required_text(args, "query")
             task_mode = task_recall_mode(query)
+            explicit_request, capture_reason = _explicit_request_from_host(self, tool_name, args)
             response = self._safe_call_with(
                 self._explicit_recall_client or self._client,
                 "adapter.prefetch",
@@ -975,8 +1028,11 @@ class HermesMemoryProviderCore:
                     "task_context": {"source_ids": _source_ids_from_env("default")},
                     "task_type": str(args.get("task_type") or (f"task.{task_mode}" if task_mode else "research.task")),
                     "limit": max(1, min(50, int(args.get("limit", 8)))),
+                    **({"explicit_request": explicit_request} if explicit_request is not None else {}),
                 },
             )
+            if capture_reason:
+                response = {**response, "explicit_capture": {"status": "not_captured", "reason": capture_reason}}
             if getattr(self, "_expected_scope", None) is not None and response.get("ok") is True:
                 from eimemory.adapters.runtime.channel import resolve_channel_scope
                 result = response.get("result")

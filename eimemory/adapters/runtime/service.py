@@ -106,10 +106,9 @@ class AgentRuntimeMemoryService:
     ) -> dict[str, Any]:
         if explicit_request is not None:
             from eimemory.evaluation.explicit_recall import observe_explicit_recall
-            if task_context:
-                raise ValueError("explicit recall does not accept task_context overrides")
             return observe_explicit_recall(self, channel=normalize_runtime_channel(channel), scope=scope,
-                                           query=query, task_type=task_type, limit=limit, explicit_request=explicit_request)
+                                           query=query, task_type=task_type, limit=limit,
+                                           explicit_request=explicit_request, task_context=task_context)
         try:
             result, _bundle = self._prefetch_result(channel=channel, scope=scope, query=query,
                                                    task_type=task_type, limit=limit, task_context=task_context)

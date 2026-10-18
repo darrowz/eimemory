@@ -990,6 +990,46 @@ def _semantic_monitor_diagnostics(report: object) -> dict:
         "not_applicable_counts": bounded(report.get("not_applicable_counts"), ("empty_delivery",)),
         "by_surface": bounded(report.get("by_surface"), ("memory.recall", "research.task")),
         "by_channel": bounded(report.get("by_channel"), ("openclaw", "codex", "hermes")),
+        **({"explicit": _explicit_monitor_diagnostics(report["explicit"])} if "explicit" in report else {}),
+    }
+
+
+def _explicit_monitor_diagnostics(value: object) -> dict:
+    """Explicit result relevance counts, without queries, results or causal claims."""
+    if not isinstance(value, dict) or not value:
+        return {"status": "not_run"}
+    from eimemory.evaluation.semantic_relevance_monitor import EXPLICIT_REVIEW_REASONS
+    verdicts = ("relevant", "mixed", "off_topic", "unknown", "excluded")
+    def count(value):
+        return value if type(value) is int and 0 <= value <= 1_000_000 else 0
+    def summary(report):
+        values = report.get("verdict_counts") if isinstance(report.get("verdict_counts"), dict) else {}
+        return {
+            **{key: count(report.get(key)) for key in (
+                "new_count", "reused_count", "deferred_count", "excluded_count", "provider_calls")},
+            "verdict_counts": {key: count(values.get(key)) for key in verdicts},
+            "reason_counts": _diagnostic_reason_counts(report.get("reason_counts"),
+                                                       frozenset(EXPLICIT_REVIEW_REASONS)),
+        }
+    agents = value.get("by_agent") if isinstance(value.get("by_agent"), dict) else {}
+    results = value.get("review_results") if isinstance(value.get("review_results"), list) else []
+    return {
+        "status": value.get("status") if isinstance(value.get("status"), str)
+            and value["status"] in {"observation_only", "unavailable"} else "unknown",
+        "invocation_kind": "explicit",
+        "natural_benchmark_eligible": False,
+        "memory_contribution_certified": False,
+        **summary(value),
+        "by_agent": {agent: summary(report) for agent, report in list(agents.items())[:100]
+                     if isinstance(agent, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", agent)
+                     and isinstance(report, dict)},
+        "review_results": [{
+            "capture_record_id": _diagnostic_ref(item.get("capture_record_id"), r"prec_[0-9a-f]{32}"),
+            "review_receipt_id": _diagnostic_ref(item.get("review_receipt_id"), r"pres_[0-9a-f]{32}"),
+            "verdict": _diagnostic_code(item.get("verdict"), frozenset(verdicts)),
+            "reason": _diagnostic_code(item.get("reason"), frozenset(EXPLICIT_REVIEW_REASONS)),
+        } for item in results[:20] if isinstance(item, dict)],
+        "review_results_truncated": value.get("review_results_truncated") is True or len(results) > 20,
     }
 
 
@@ -1060,6 +1100,9 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         "memory_benchmark": _memory_benchmark_diagnostics(report.get("memory_eval_ci")),
         "capability_hypothesis_producer": _hypothesis_producer_diagnostics(report.get("capability_hypothesis_producer")),
         "recall_semantic_relevance": _semantic_monitor_diagnostics(report.get("semantic_relevance_monitor")),
+        "explicit_recall_review": _explicit_monitor_diagnostics(
+            (report.get("semantic_relevance_monitor") or {}).get("explicit")
+            if isinstance(report.get("semantic_relevance_monitor"), dict) else None),
         "production_recall_smoke": _production_recall_smoke_diagnostics(report.get("production_recall")),
         "recall_quality_per_agent": _per_agent_diagnostics(report.get("recall_quality_per_agent")),
         "release_acceptance": "not_evaluated_by_scheduler",

@@ -28,6 +28,7 @@ _ensure_release_on_path()
 from eimemory.adapters.hermes.provider_core import (
     current_turn_injected_citations,
     hermes_client_from_env,
+    hermes_explicit_tool_context,
     host_message_text,
 )
 from eimemory.adapters.hermes.host_context import hermes_producer_token
@@ -41,6 +42,20 @@ from eimemory.adapters.hermes.channel_delivery import (
     register_external_delivery_capture,
 )
 from eimemory.adapters.runtime.receipt_handoff import ReceiptIdHandoff
+
+
+def _explicit_provider_args(args: Any) -> Any:
+    """Match the host's memory-provider egress without bypassing its redaction."""
+    try:
+        from agent.memory_manager import _redact_for_provider
+    except ImportError:
+        # Supported older hosts dispatch the unchanged arguments.
+        return args
+    try:
+        return _redact_for_provider(args)
+    except Exception:
+        # Retrieval may continue, but uncertain arguments cannot be attested.
+        return None
 
 
 def register_code_implementation_task(ctx: Any) -> Any | None:
@@ -211,7 +226,15 @@ def register(ctx) -> None:
                          tool_call_id=str(kwargs.get("tool_call_id") or kwargs.get("tool_correlation_id") or kwargs.get("task_id") or ""),
                          result=result)
         try:
-            result = next_call(args)
+            session = kwargs.get("session_id")
+            provider = get_hermes_provider(session) if isinstance(session, str) else None
+            with hermes_explicit_tool_context(
+                provider=provider, tool_name=tool_name,
+                args=_explicit_provider_args(args) if tool_name == "eimemory_recall" else args,
+                session_id=session,
+                tool_call_id=kwargs.get("tool_call_id") or kwargs.get("tool_correlation_id"),
+            ):
+                result = next_call(args)
         except Exception:
             observe({"ok": False})
             raise

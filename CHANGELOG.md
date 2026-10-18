@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.132] — 2026-10-18
+
+- Capture real Hermes explicit recall invocations through the existing shared plugin, binding host session/call identity across the host's normal redaction. Preserve source selection and isolate concurrent calls; missing host identity remains explicitly uncaptured.
+- Keep original queries in the existing opt-in exact-scope/source policy using a bounded private cache. Sign request/result digests and physical references, omit unbound auxiliary evidence, and preserve successful reads when optional capture fails. Never recreate historical signatures.
+- Review signed explicit results independently during nightly, checking release, original input, physical authority and retrieval completeness before evaluating relevance. Expose per-agent relevant, mixed, off-topic, unknown and excluded counts with signed cached reviews; keep natural gold, answer contribution and formal quality acceptance separate.
+
 ## [1.14.131] — 2026-10-18
 
 - Prepare the owned Hermes root/profile handoff directories during installation: remove shared write permission from managed containers and keep state directories private. Apply a private creation mask to every managed Hermes gateway. Reject outside untrusted ancestors, managed child symlinks and foreign ownership before changing modes; preserve queued payloads.
