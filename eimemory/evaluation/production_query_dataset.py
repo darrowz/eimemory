@@ -12,6 +12,7 @@ import re
 import stat
 import tempfile
 from typing import Any
+from eimemory.subject_projection_consumption import projection_is_current
 
 from eimemory.adapters.runtime.channel import (
     SUPPORTED_RUNTIME_CHANNELS, resolve_channel_scope, runtime_channel_from_scope,
@@ -495,7 +496,9 @@ def accept_pending_production_query(
         if not ref or ref in seen or isinstance(grade, bool) or not isinstance(grade, int) or not 1 <= grade <= 3:
             raise ValueError("operator label invalid")
         record = runtime.store.get_by_id(ref, scope=exact_scope)
-        if record is None or record.status != "active" or record.source_id != source_id or not _alias_equivalent_scope(record.scope, exact_scope):
+        if (record is None or record.status != "active" or record.source_id != source_id
+                or not _alias_equivalent_scope(record.scope, exact_scope)
+                or not projection_is_current(runtime.store, record)):
             raise ValueError("operator label boundary mismatch")
         seen.add(ref)
         evidence_id = "prle_" + _stable_digest(
@@ -700,7 +703,9 @@ def accept_auto_reviewed_production_query(
                 or isinstance(grade, bool) or not isinstance(grade, int) or not 2 <= grade <= 3):
             raise ValueError("auto_review label invalid")
         record = runtime.store.get_by_id(ref, scope=exact_scope)
-        if record is None or record.status != "active" or record.source_id != source_id or not _alias_equivalent_scope(record.scope, exact_scope):
+        if (record is None or record.status != "active" or record.source_id != source_id
+                or not _alias_equivalent_scope(record.scope, exact_scope)
+                or not projection_is_current(runtime.store, record)):
             raise ValueError("auto_review label boundary mismatch")
         seen.add(ref)
         evidence_id = "prle_" + _stable_digest(
@@ -1084,7 +1089,8 @@ def accepted_production_query_validation_error(
             return "accepted_label_invalid"
         candidate = runtime.store.get_by_id(record_ref, scope=exact_scope)
         evidence = runtime.store.get_by_id(evidence_ref, scope=exact_scope)
-        if candidate is None or candidate.status != "active" or candidate.source_id != source_id:
+        if (candidate is None or candidate.status != "active" or candidate.source_id != source_id
+                or not projection_is_current(runtime.store, candidate)):
             return "accepted_candidate_boundary_invalid"
         if evidence is None:
             return "accepted_label_evidence_missing"

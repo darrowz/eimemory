@@ -269,12 +269,23 @@ def filter_current_records(store, records, *, scope, references=None, deadline_a
     if not records and not reference_ids:
         return records, 0
     requested = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    with optional_authority(blocking=False) as authority:
+    from eimemory.subject_projection_consumption import (
+        delivered_projection_reference_ids, projection_read_fence,
+    )
+    projection_refs = delivered_projection_reference_ids(references)
+    with optional_authority(blocking=False) as authority, projection_read_fence(
+            records, reference_ids=projection_refs) as projection_valid:
         def read(sqlite):
             resolver = DecisionResolver(sqlite, authority)
             if reference_ids and not resolver.references_valid(reference_ids, requested):
                 return [], max(1, len(records))
-            kept = [record for record in records if resolver.visible(record, requested)]
+            for record_id in projection_refs:
+                referenced = sqlite.get_by_exact_ref(record_id, scope=requested, source_id='hermes')
+                if (referenced is None or referenced.source != 'eimemory.subject_projection'
+                        or not projection_valid(sqlite, referenced)):
+                    return [], max(1, len(records))
+            kept = [record for record in records if resolver.visible(record, requested)
+                    and projection_valid(sqlite, record)]
             return kept, len(records) - len(kept)
 
         try:

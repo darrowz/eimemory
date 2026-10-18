@@ -288,9 +288,11 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
     for ref in refs:
         record = runtime.store.get_by_id(ref, scope=exact_scope)
         item = items.get(ref)
+        from eimemory.subject_projection_consumption import projection_is_current
         if (record is None or item is None or record.status != "active"
                 or record.source_id != str(payload.get("source_id") or "")
-                or not same_scope(record.scope, exact_scope)):
+                or not same_scope(record.scope, exact_scope)
+                or not projection_is_current(runtime.store, record)):
             reasons.append("candidate_unavailable")
             continue
         current_digest = record_digest(record)

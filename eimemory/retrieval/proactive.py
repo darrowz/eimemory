@@ -1760,6 +1760,7 @@ class ProactiveRecallService:
         """
 
         from eimemory.contracts.recall_boundary import authority_digest, exact_ref
+        from eimemory.subject_projection_consumption import projection_is_current
 
         current: list[RecordEnvelope] = []
         for candidate in records[:8]:
@@ -1771,7 +1772,8 @@ class ProactiveRecallService:
             if (record is not None and self._authorized(
                     record, exact_scope=exact_scope, source_ids=source_ids)
                     and exact_ref(candidate) == exact_ref(record)
-                    and authority_digest(candidate) == authority_digest(record)):
+                    and authority_digest(candidate) == authority_digest(record)
+                    and projection_is_current(self.runtime.store, record)):
                 current.append(record)
         return tuple(current)
 

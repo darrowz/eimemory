@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.139] — 2026-10-18
+
+- Add root-authorized, record/version-bound Hermes subject projections with exact original host-turn and user evidence. Preserve legacy records and signed quality history; recheck grants and source versions during retrieval, cached delivery and sample acceptance.
+- Let an enabled explicit verifier select predefined complete original windows, avoiding rewritten quotes and invented record numbers. Keep strict legacy response validation, source authority, bounded windows and post-completion version checks. Default local selection remains unchanged.
+
 ## [1.14.138] — 2026-10-18
 
 - Preserve bounded answer-bearing spans from authoritative completed conversation records in native compact recall, with exact parent and quote bindings. Keep independently selected evidence and caller proofs authoritative.

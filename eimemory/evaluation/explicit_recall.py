@@ -99,6 +99,9 @@ def _reference(runtime: Any, record: RecordEnvelope, scope: ScopeRef) -> dict:
         raise ValueError("explicit result authority missing")
     if payload_digest(authoritative.to_dict()) != payload_digest(record.to_dict()):
         raise ValueError("explicit delivered payload mismatch")
+    from eimemory.subject_projection_consumption import projection_is_current
+    if not projection_is_current(runtime.store, authoritative):
+        raise ValueError("explicit subject projection authority unavailable")
     return {"record_ref": authoritative.record_id, "scope": asdict(authoritative.scope), "source": authoritative.source,
             "source_id": authoritative.source_id, "record_digest": payload_digest(authoritative.to_dict())}
 

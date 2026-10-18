@@ -1,6 +1,6 @@
 [project]
 name = "eimemory"
-version = "1.14.138"
+version = "1.14.139"
 description = "Local-first memory and evidence-gated learning for long-running AI agents."
 readme = "README.md"
 license = "MIT"
@@ -15,6 +15,7 @@ postgres = ["psycopg[binary]>=3.1,<4"]
 [project.scripts]
 eimemory = "eimemory.cli.main:main"
 eimemory-qmd = "eimemory.adapters.openclaw.qmd_compat:main"
+eimemory-subject-projection = "eimemory.subject_projection_cli:main"
 
 [project.entry-points."eimemory.capability_catalog.bootstrap.v1"]
 hongtu = "eimemory.evaluation.hongtu_catalog:install"

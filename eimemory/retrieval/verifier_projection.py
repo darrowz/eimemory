@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+import re
 
 from .evidence_fragments import evidence_fragments, search_terms
 
@@ -15,6 +16,7 @@ POLICY = "verifier-parent-windows.v1"
 MAX_PARENT_CHARS = 16_000
 MAX_WINDOW_CHARS = 768
 MAX_WINDOWS = 2
+_COMPLETE_BOUNDARY = re.compile(r'[。！？!?；;](?:[”’"\'])?|\r?\n|\.(?=\s|$)')
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,37 @@ def locate_visible_quote(quote: str, windows: tuple[EvidenceWindow, ...]) -> tup
             start = window.start + offset
             return start, start + len(quote)
     return None
+
+
+def complete_evidence_windows(query: str, text: str) -> tuple[EvidenceWindow, ...]:
+    """Offer IDs only for complete contiguous sentences/lines already visible.
+
+    Legacy verbatim-quote consumers keep their original windows. An ID cannot
+    turn a clipped prefix into a complete assertion: align inward, never extend
+    visibility or concatenate fragments. A single overlong unbroken assertion
+    has no complete ID window and remains unavailable on this contract.
+    """
+    windows = project_evidence_windows(query, text)
+    body = text[:MAX_PARENT_CHARS]
+    boundaries = {0, *(match.end() for match in _COMPLETE_BOUNDARY.finditer(body))}
+    if len(text) <= MAX_PARENT_CHARS:
+        boundaries.add(len(body))
+    ordered = sorted(boundaries)
+    result = []
+    seen = set()
+    for window in windows:
+        inside = [offset for offset in ordered if window.start <= offset <= window.end]
+        if len(inside) < 2:
+            continue
+        start, end = inside[0], inside[-1]
+        while start < end and body[start].isspace():
+            start += 1
+        while end > start and body[end - 1].isspace():
+            end -= 1
+        if start < end and (start, end) not in seen:
+            seen.add((start, end))
+            result.append(EvidenceWindow(start, body[start:end]))
+    return tuple(result)
 
 
 def projection_summary(parents, projections) -> dict[str, int]:
