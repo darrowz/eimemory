@@ -562,6 +562,8 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
                  skip_reason_counts={}, not_applicable_counts={})
     findings = []
     explicit_total = dict(_explicit_counts(), by_agent={}) if include_explicit else None
+    repair_total = dict(reviewed_count=0, provider_calls=0, replay_count=0, unresolved_count=0,
+                        unverifiable_count=0, deferred_count=0, by_agent={}) if include_explicit else None
     status = 'unavailable'
     for channel, exact, sources in targets.values():
         options = {} if sources is None else {'source_ids': sources}
@@ -582,6 +584,15 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
                 target['review_results_truncated'] |= (
                     explicit_report['review_results_truncated']
                     or len(explicit_report['review_results']) > room)
+        if repair_total is not None:
+            from eimemory.evaluation.semantic_gap_repair import collect_semantic_gap_repair_findings
+            repair, repair_findings = collect_semantic_gap_repair_findings(
+                runtime, scope=exact, max_new=max(0, max_new - repair_total['provider_calls'] - repair_total['replay_count']
+                    - explicit_total['provider_calls'] - total['provider_calls'] - report.get('provider_calls', 0)))
+            findings.extend(repair_findings)
+            repair_total['by_agent'][exact.agent_id] = repair
+            for key in ('reviewed_count', 'provider_calls', 'replay_count', 'unresolved_count', 'unverifiable_count', 'deferred_count'):
+                repair_total[key] += repair[key]
         if report.get('status') == 'unavailable':
             continue
         status = report.get('status') or status
@@ -599,6 +610,195 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
         if observed:
             total['by_channel'][channel] = total['by_channel'].get(channel, 0) + observed
     if status == 'unavailable':
-        return dict(total, status='unavailable', **({'explicit': explicit_total} if include_explicit else {})), findings
+        return dict(total, status='unavailable', **({'explicit': explicit_total, 'semantic_gap_repair': repair_total} if include_explicit else {})), findings
     return dict(total, status='observation_only', automatic_promotion=False,
-                **({'explicit': explicit_total} if include_explicit else {})), findings
+                **({'explicit': explicit_total, 'semantic_gap_repair': repair_total} if include_explicit else {})), findings
+
+
+def _semantic_gap_replay_input(runtime, *, gap_id, scope, require_current=True):
+    """Read one historical incident without rewriting its original authority.
+
+    Private inputs remain internal. This prepares a supplemental maintenance
+    rerun; it does not call retrieval/a model or certify a passing repair.
+    """
+    from eimemory.models.records import ScopeRef
+    from eimemory.identity import canonical_agent_id
+    from eimemory.adapters.runtime.channel import runtime_channel_from_scope
+    from eimemory.evaluation.query_input_vault import configured_capture_scopes, load_query_input
+    from eimemory.governance.learning.quality_gap_intake import QUALITY_GAP_SOURCE, _latest_gap, _quality_finding
+    from eimemory.governance.release.evidence_contract import (
+        current_release_identity, deployment_receipt_for_scope,
+        verified_deployment_receipt_identity, release_identity_payload,
+    )
+    from eimemory.retrieval.proactive import ProactiveRecallService
+
+    exact = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    if canonical_agent_id(exact.agent_id) != exact.agent_id:
+        raise ValueError('semantic_repair_canonical_owner_required')
+
+    def canonical_owner(value):
+        value = dict(value)
+        value['agent_id'] = canonical_agent_id(value.get('agent_id', ''))
+        return value
+
+    gap = runtime.store.get_by_id(gap_id, scope=exact)
+    if (gap is None or gap.scope != exact or gap.kind != 'reflection'
+            or gap.source != QUALITY_GAP_SOURCE or gap.status != 'active'):
+        raise ValueError('semantic_repair_gap_unavailable')
+    content = gap.content
+    source = content.get('source_report') or {}
+    old_ref = str(source.get('record_id') or '')
+    old = runtime.store.get_by_id(old_ref, scope=exact)
+    if (old is None or old.scope != exact or old.source != SOURCE
+            or old.kind != 'evaluation_packet' or old.status != 'active'
+            or old.meta.get('report_type') != VERSION):
+        raise ValueError('semantic_repair_observation_unavailable')
+    body = old.content
+    original_scope = body.get('scope')
+    if not isinstance(original_scope, dict) or canonical_owner(original_scope) != asdict(exact):
+        raise ValueError('semantic_repair_owner_mismatch')
+    channel = str(body.get('channel') or '')
+    surface = str(body.get('decision_surface') or '')
+    provenance = source.get('observation') or {}
+    source_id = str(provenance.get('source_id') or '')
+    if (channel != runtime_channel_from_scope(exact) or surface not in ELIGIBLE_TASK_TYPES
+            or not source_id or source_id == '*' or gap.source_id != source_id
+            or provenance.get('scope') != original_scope
+            or provenance.get('report_digest') != _digest(body)):
+        raise ValueError('semantic_repair_source_boundary_invalid')
+    policy = configured_capture_scopes() or []
+    if not any({k: entry[k] for k in asdict(exact)} == asdict(exact)
+               and entry['channel'] == channel and entry['source_id'] == source_id for entry in policy):
+        raise ValueError('semantic_repair_scope_not_authorized')
+    expected = _quality_finding(str(source.get('name') or ''), {
+        'target_capability': 'memory.recall', 'report_type': VERSION,
+        'record_id': old.record_id, 'sample_count': 1,
+        'quality_gate': {'ok': False, 'blocked_reason': 'confirmed_semantic_off_topic',
+                         'blocking_metrics': {'semantic_off_topic': {'actual': 1, 'threshold': 0, 'operator': '=='}}},
+    })
+    if (not expected or not str(source.get('name') or '').startswith('recall_semantic:')
+            or content.get('semantic_key') != expected['semantic_key']
+            or gap.meta.get('semantic_key') != expected['semantic_key']
+            or source.get('digest') != expected['report_digest']
+            or gap.meta.get('report_digest') != expected['report_digest']
+            or body.get('verdict') != 'off_topic'):
+        raise ValueError('semantic_repair_gap_identity_invalid')
+    latest = _latest_gap(runtime, scope=exact, semantic_key=expected['semantic_key'])
+    if require_current and (latest is None or latest.record_id != gap.record_id):
+        raise ValueError('semantic_repair_parent_not_current')
+    release = body.get('release_identity') or {}
+    incident = dict(scope=original_scope, source_id=source_id,
+                    query_digest=body.get('query_digest'), release_identity=release)
+    if surface != LEGACY_SURFACE:
+        incident['decision_surface'] = surface
+    if (source.get('name') != 'recall_semantic:' + _digest(incident)
+            or any(provenance.get(key) != value for key, value in incident.items())
+            or provenance.get('version') != VERSION
+            or provenance.get('evidence_kind') != 'semantic_off_topic'
+            or content.get('target_capability') != 'memory.recall'
+            or gap.meta.get('target_capability') != 'memory.recall'):
+        raise ValueError('semantic_repair_incident_lineage_invalid')
+    receipt = deployment_receipt_for_scope(runtime, release.get('deployment_receipt_id', ''), exact)
+    identity = verified_deployment_receipt_identity(receipt)
+    if identity is None or release_identity_payload(identity) != release:
+        raise ValueError('semantic_repair_historical_release_invalid')
+    current = current_release_identity(runtime, exact)
+    if current is None or not current.complete:
+        raise ValueError('semantic_repair_current_release_unavailable')
+    with runtime.store.locked() as db:
+        rows = db.execute(
+            'SELECT decision_id FROM proactive_decisions WHERE query_digest=? AND channel=? '
+            'AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? '
+            "AND json_array_length(source_ids_json)=1 AND json_extract(source_ids_json,'$[0]')=? LIMIT 33",
+            (body.get('query_digest', ''), channel, *(original_scope[k] for k in
+             ('tenant_id', 'agent_id', 'workspace_id', 'user_id')), source_id)).fetchall()
+        if len(rows) > 32:
+            raise ValueError('semantic_repair_decision_lookup_incomplete')
+        matches = [row['decision_id'] for row in rows if _digest(row['decision_id']) == body.get('decision_digest')]
+        if len(matches) != 1:
+            raise ValueError('semantic_repair_decision_unavailable')
+        decision = db.load_proactive_decision(matches[0])
+    if (decision is None or decision['scope'] != original_scope
+            or canonical_owner(decision['scope']) != asdict(exact)
+            or decision['channel'] != channel or decision['source_ids'] != [source_id]
+            or decision['task_type'] != surface or not decision['release_bound']
+            or decision['release_identity'] != release or decision['control_cohort']
+            or decision['acceptance_generated'] is not False):
+        raise ValueError('semantic_repair_original_decision_invalid')
+    delivered = [item for item in decision['items'] if item['ever_injected']]
+    if not 1 <= len(delivered) <= 32 or any(item['source_id'] != source_id for item in delivered):
+        raise ValueError('semantic_repair_original_delivery_unavailable')
+    observation = dict(version=VERSION, scope=original_scope, release_digest=_digest(release),
+                       query_digest=decision['query_digest'], source_digests=[_digest(source_id)],
+                       decision_digest=_digest(decision['decision_id']),
+                       record_digests=[_digest(item['record_id']) for item in delivered],
+                       decision_surface=surface, channel=channel, release_identity=release)
+    observation['evaluation_identity'] = _digest(dict(version=VERSION,
+        decision_id=decision['decision_id'], scope=original_scope, source_ids=[source_id],
+        query_digest=decision['query_digest'], release_identity=release,
+        delivered=[(item['record_id'], item.get('source_id'), item.get('render_digest')) for item in delivered]))
+    if _cached_report(old, exact, observation, len(delivered)) is None:
+        raise ValueError('semantic_repair_observation_invalid')
+    inputs = load_query_input(runtime, decision_id=decision['decision_id'], scope=original_scope,
+                              channel=channel, source_id=source_id)
+    _semantic_gap_context(inputs, decision)
+    service = object.__new__(ProactiveRecallService)
+    service.runtime = runtime
+    # Only the configured agent rename is mapped, in memory. The historic
+    # decision, observation, private vault and render digest remain untouched.
+    mapped = dict(decision, scope=asdict(exact), items=delivered)
+    hydrated = service._rehydrate_persisted_items(mapped, cache_key='')
+    if len(hydrated) != len(delivered):
+        raise ValueError('semantic_repair_original_render_unverifiable')
+    report = dict(schema='semantic_gap_replay_preparation.v1', status='ready',
+                  gap_id=gap.record_id, observation_ref=old.record_id,
+                  observation_digest=_digest(body), original_decision_ref=decision['decision_id'],
+                  original_query_digest=decision['query_digest'], input_digest=inputs['input_digest'],
+                  original_release_identity=release, current_release_identity=release_identity_payload(current),
+                  source_id=source_id, channel=channel, decision_surface=surface,
+                  original_render_refs=[dict(record_ref=item['record_id'], source_id=item['source_id'],
+                                             render_digest=item['render_digest']) for item in delivered],
+                  canonical_agent_alias_only=original_scope != asdict(exact),
+                  evaluation_role='supplemental_engine_rerun', natural_benchmark_eligible=False,
+                  memory_contribution_certified=False, passing_resolution_created=False)
+    return report, inputs, decision
+
+
+def prepare_semantic_gap_replay(runtime, *, gap_id, scope):
+    """Return redacted readiness only; never run recall, a judge, or a write.
+
+    Missing historical authority remains unverifiable, never a passing repair.
+    A caller must separately retain and verify a current signed replay result
+    before asking the existing governance owner to append a resolution.
+    """
+    try:
+        report, _private_input, _decision = _semantic_gap_replay_input(runtime, gap_id=gap_id, scope=scope)
+        return report
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        reason = str(exc) if isinstance(exc, ValueError) and str(exc).startswith('semantic_repair_') else 'semantic_repair_evidence_unverifiable'
+        return dict(schema='semantic_gap_replay_preparation.v1', status='unverifiable',
+                    gap_id=gap_id, reason=reason, natural_benchmark_eligible=False,
+                    memory_contribution_certified=False, passing_resolution_created=False)
+
+
+def _semantic_gap_context(inputs, decision):
+    """Require the saved restricted engine context; never synthesize a match."""
+    from copy import deepcopy
+    allowed = {'source_ids', 'runtime_channel', 'exact_scope_only', 'task_type',
+               'recall_profile', 'scope_strategy', 'recall_mode', 'candidate_limit',
+               'intent', 'target_source_id'}
+    context = inputs.get('task_context')
+    if (inputs.get('external_bundle') is not False
+            or inputs.get('identity_schema') != 'proactive-query-identity.v2'
+            or not isinstance(context, dict) or set(context) - allowed
+            or context.get('source_ids') != decision['source_ids']
+            or context.get('task_type') != decision['task_type']
+            or context.get('exact_scope_only') is not True
+            or context.get('scope_strategy') not in (None, 'exact')
+            or context.get('runtime_channel') not in {'proactive', decision['channel']}
+            or ('target_source_id' in context and context['target_source_id'] != decision['source_ids'][0])
+            or type(inputs.get('limit')) is not int or not 1 <= inputs['limit'] <= 50
+            or any(not isinstance(inputs.get(k), str) or not inputs[k].strip()
+                   or len(inputs[k].encode()) > 16384 for k in ('query', 'effective_query'))):
+        raise ValueError('semantic_repair_original_context_unverifiable')
+    return deepcopy(context)

@@ -990,8 +990,32 @@ def _semantic_monitor_diagnostics(report: object) -> dict:
         "not_applicable_counts": bounded(report.get("not_applicable_counts"), ("empty_delivery",)),
         "by_surface": bounded(report.get("by_surface"), ("memory.recall", "research.task")),
         "by_channel": bounded(report.get("by_channel"), ("openclaw", "codex", "hermes")),
+        **{key: count(report.get(key)) for key in (
+            "off_topic_finding_count", "repair_passing_finding_count", "quality_gap_created_count",
+            "quality_gap_deduplicated_count", "quality_gap_resolved_count", "quality_gap_ignored_count")},
+        "quality_gap_resolved_record_ids": [value for value in (
+            _diagnostic_ref(value, r"ref_[0-9a-f]{12}") for value in (
+                report.get("quality_gap_resolved_record_ids")
+                if isinstance(report.get("quality_gap_resolved_record_ids"), list) else [])[:20]) if value],
         **({"explicit": _explicit_monitor_diagnostics(report["explicit"])} if "explicit" in report else {}),
+        **({"semantic_gap_repair": _semantic_repair_diagnostics(report["semantic_gap_repair"])}
+           if "semantic_gap_repair" in report else {}),
     }
+
+
+def _semantic_repair_diagnostics(value: object) -> dict:
+    """Expose repair work and native resolutions without private replay data."""
+    value = value if isinstance(value, dict) else {}
+    keys = ("reviewed_count", "provider_calls", "replay_count", "unresolved_count",
+            "unverifiable_count", "deferred_count")
+    def summary(report: dict) -> dict:
+        return {key: _diagnostic_count(report.get(key)) or 0 for key in keys}
+    agents = value.get("by_agent") if isinstance(value.get("by_agent"), dict) else {}
+    return {**summary(value), "natural_benchmark_eligible": False,
+            "memory_contribution_certified": False,
+            "by_agent": {agent: summary(report) for agent, report in list(agents.items())[:100]
+                         if isinstance(agent, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", agent)
+                         and isinstance(report, dict)}}
 
 
 def _explicit_monitor_diagnostics(value: object) -> dict:

@@ -102,6 +102,9 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "scripts/openclaw_loop.py",
         "eimemory/adapters/eibrain/rpc.py",
         "deploy/ensure_hermes_sync_snapshot.py",
+        "deploy/ensure_hermes_profile_boundary.py",
+        "deploy/install_managed_systemd_dropin.py",
+        "deploy/systemd/hermes-profile-boundary.conf",
         "integrations/hermes/host/memory_sync_snapshot.py",
         "deploy/install_hermes_integration.py",
         "deploy/openclaw",
@@ -151,6 +154,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "deploy/deployment_attempt_result.py",
         "deploy/run_with_governance_env.py",
         "deploy/ensure_hermes_sync_snapshot.py",
+        "deploy/ensure_hermes_profile_boundary.py",
         "integrations/hermes/host/memory_sync_snapshot.py",
         "deploy/bootstrap_production_recall.py",
         "deploy/capture_prior_health",
@@ -520,6 +524,7 @@ _PRODUCTION_SURFACE_PATHS: dict[str, tuple[str, ...]] = {
         "integrations/hermes/eimemory/release_path.py",
         "integrations/hermes/host-patches/memory-sync-snapshot.json",
         "integrations/hermes/host-patches/memory-sync-snapshot.patch",
+        "integrations/hermes/host-patches/standalone-feishu-profile-boundary.patch",
     ),
     "storage.integrity": (
         "eimemory/core/clock.py",
@@ -562,6 +567,7 @@ _PRODUCTION_SURFACE_PATHS: dict[str, tuple[str, ...]] = {
         "integrations/hermes/eimemory/release_path.py",
         "integrations/hermes/host-patches/memory-sync-snapshot.json",
         "integrations/hermes/host-patches/memory-sync-snapshot.patch",
+        "integrations/hermes/host-patches/standalone-feishu-profile-boundary.patch",
     ),
     "code.evolution": (
         "eimemory/adapters/create_safety_gate.py",

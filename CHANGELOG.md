@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.135] — 2026-10-18
+
+- Manage the existing Hermes standalone Feishu profile context protection through standard installation and verification. Preserve other host edits, recognize compatible upstream behavior, and reject unknown drift before deployment.
+- Link verified current semantic repair evidence to its exact historical failure through native quality-gap ingestion. Preserve prior observations and require original input, authorized scope/source, actual complete results and independent relevance evidence; missing evidence remains unverified.
+- Keep maintenance replays outside natural business samples and formal recall acceptance.
+
 ## [1.14.134] — 2026-10-18
 
 - Check the actual securely loaded production-evaluation graph during deployment preflight, keeping caller scope independently authorized. Honor configured agent aliases only within the same tenant, workspace and user; preserve signed payloads and reject invalid target evidence.

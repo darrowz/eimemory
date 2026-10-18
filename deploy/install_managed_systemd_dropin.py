@@ -41,6 +41,9 @@ def install_managed_dropin(
     render_storage_transaction_python: str = "",
     render_storage_transaction_helper: str = "",
     render_storage_transaction_marker: str = "",
+    render_hermes_boundary_python: str = "",
+    render_hermes_boundary_helper: str = "",
+    render_hermes_boundary_host_root: str = "",
     retire_targets: Iterable[Path] = (),
 ) -> None:
     source = Path(source)
@@ -77,6 +80,28 @@ def install_managed_dropin(
         token = b"@EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE@"
         if token not in payload:
             raise ManagedDropinError("managed source is missing the evidence receipt env file token")
+        payload = payload.replace(token, os.fsencode(rendered_path))
+
+    boundary_tokens = (
+        (b"@EIMEMORY_HERMES_BOUNDARY_PYTHON@", render_hermes_boundary_python, "Hermes boundary Python"),
+        (b"@EIMEMORY_HERMES_BOUNDARY_HELPER@", render_hermes_boundary_helper, "Hermes boundary helper"),
+        (b"@EIMEMORY_HERMES_BOUNDARY_HOST_ROOT@", render_hermes_boundary_host_root, "Hermes boundary host root"),
+    )
+    if any(value for _token, value, _label in boundary_tokens) and not all(
+            value for _token, value, _label in boundary_tokens):
+        raise ManagedDropinError("all Hermes boundary guard paths must be rendered together")
+    for token, value, label in boundary_tokens:
+        if not value:
+            if token in payload:
+                raise ManagedDropinError(f"managed source requires {label}")
+            continue
+        rendered_path = Path(value)
+        safe_path_pattern = r"[A-Za-z0-9_./:-]+" if os.name == "posix" else r"[A-Za-z0-9_./:\\-]+"
+        if (not rendered_path.is_absolute() or ".." in rendered_path.parts
+                or re.fullmatch(safe_path_pattern, str(rendered_path)) is None):
+            raise ManagedDropinError(f"{label} must be an absolute systemd-safe path")
+        if token not in payload:
+            raise ManagedDropinError(f"managed source is missing the {label} token")
         payload = payload.replace(token, os.fsencode(rendered_path))
     release_token = b"@EIMEMORY_RELEASES_ROOT@"
     if release_token in payload or render_releases_root:
@@ -397,6 +422,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--render-storage-transaction-python", default="")
     parser.add_argument("--render-storage-transaction-helper", default="")
     parser.add_argument("--render-storage-transaction-marker", default="")
+    parser.add_argument("--render-hermes-boundary-python", default="")
+    parser.add_argument("--render-hermes-boundary-helper", default="")
+    parser.add_argument("--render-hermes-boundary-host-root", default="")
     parser.add_argument("--retire-target", action="append", default=[], type=Path)
     args = parser.parse_args(argv)
     try:
@@ -411,6 +439,9 @@ def main(argv: list[str] | None = None) -> int:
             render_storage_transaction_python=args.render_storage_transaction_python,
             render_storage_transaction_helper=args.render_storage_transaction_helper,
             render_storage_transaction_marker=args.render_storage_transaction_marker,
+            render_hermes_boundary_python=args.render_hermes_boundary_python,
+            render_hermes_boundary_helper=args.render_hermes_boundary_helper,
+            render_hermes_boundary_host_root=args.render_hermes_boundary_host_root,
             retire_targets=args.retire_target,
         )
     except (ManagedDropinError, OSError) as exc:

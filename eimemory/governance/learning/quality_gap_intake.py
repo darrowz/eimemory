@@ -101,6 +101,14 @@ def _ingest_verified_findings(runtime: Any, *, findings: list[dict[str, Any]], s
     created, deduplicated, resolved, ignored = [], [], [], []
     for finding in findings:
         report_name = finding["report_name"]
+        if "_semantic_repair" in finding:
+            try:
+                result = _persist_verified_semantic_repair(runtime, finding=finding)
+            except (ValueError, KeyError, TypeError):
+                ignored.append(str(report_name))
+                continue
+            (resolved if result["created"] else deduplicated).append(result["record_id"])
+            continue
         # Only local detectors supply observation provenance. External report
         # JSON is normalized by _quality_finding and cannot set this scope.
         owner = finding.get("observation", {}).get("scope")
@@ -438,3 +446,76 @@ def _bounded_int(value: Any, *, minimum: int, maximum: int) -> int:
 def _digest(value: Any) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _persist_verified_semantic_repair(runtime: Any, *, finding: dict[str, Any]) -> dict[str, Any]:
+    """Append one exact-parent repair atomically; never trust a passing JSON flag."""
+    from eimemory.evaluation.semantic_gap_repair import verified_repair_finding
+
+    supplied = finding["_semantic_repair"]
+    scope = ScopeRef.from_dict(finding["observation"]["scope"])
+    review_ref = str(supplied.get("review_ref") or "")
+    expected_parent = str(supplied.get("expected_gap_id") or "")
+    resolution_id = "ref_" + sha256(("semantic-repair:" + expected_parent + ":" + review_ref).encode()).hexdigest()[:12]
+
+    def mutation(sqlite):
+        # The writer lock covers revalidation, parent selection, deterministic
+        # dedupe and append. Another failure cannot interleave and be cleared.
+        fresh = verified_repair_finding(runtime, review_ref=review_ref, scope=scope)
+        proof = fresh["_semantic_repair"]
+        if fresh != finding or proof["expected_gap_id"] != expected_parent:
+            raise ValueError("semantic_repair_finding_changed")
+        existing = sqlite.get_by_exact_ref(resolution_id, scope=scope, source_id="default")
+        if existing is not None:
+            content, meta = existing.content, existing.meta
+            resolution = content.get('resolution') or {}
+            report = {'record_id': review_ref, 'type': 'semantic_gap_repair.v1',
+                      'digest': proof['review_digest'], 'sample_count': 1}
+            release = _current_release_stamp(runtime, scope)
+            current = _latest_gap(runtime, scope=scope, semantic_key=fresh['semantic_key'])
+            if (existing.kind != 'reflection' or existing.source != QUALITY_GAP_SOURCE
+                    or existing.status != 'resolved' or existing.scope != scope
+                    or existing.source_id != 'default' or current is None or current.record_id != existing.record_id
+                    or set(content) != {'schema', 'semantic_key', 'target_capability', 'resolves_gap_id',
+                                        'resolution', 'repair_evidence', 'source_report'}
+                    or content.get('schema') != QUALITY_GAP_SCHEMA
+                    or content.get('semantic_key') != fresh['semantic_key']
+                    or content.get('target_capability') != fresh['capability']
+                    or content.get('resolves_gap_id') != expected_parent
+                    or content.get('repair_evidence') != proof or content.get('source_report') != report
+                    or resolution.get('status') != 'passed'
+                    or resolution.get('report_digest') != fresh['report_digest']
+                    or not resolution.get('observed_at') or resolution.get('observed_at') != meta.get('resolved_at')
+                    or meta.get('schema') != QUALITY_GAP_SCHEMA
+                    or meta.get('report_type') != 'quality_gap_resolution'
+                    or meta.get('semantic_key') != fresh['semantic_key']
+                    or meta.get('target_capability') != fresh['capability']
+                    or meta.get('capability') != fresh['capability'] or meta.get('is_failure') is not False
+                    or meta.get('resolves_gap_id') != expected_parent
+                    or meta.get('report_digest') != fresh['report_digest']
+                    or meta.get('release_commit') != release.get('release_commit')
+                    or meta.get('deployment_receipt_id') != release.get('deployment_receipt_id')
+                    or existing.evidence != [review_ref, proof['packet_ref']]
+                    or json.loads(existing.detail) != content):
+                raise ValueError("semantic_repair_resolution_identity_conflict")
+            return {"created": False, "record_id": existing.record_id}, [], []
+        parent = _latest_gap(runtime, scope=scope, semantic_key=fresh["semantic_key"])
+        if parent is None or parent.record_id != expected_parent or parent.status != "active":
+            raise ValueError("semantic_repair_parent_not_current")
+        release = _current_release_stamp(runtime, scope)
+        if not release.get("release_commit") or not release.get("deployment_receipt_id"):
+            raise ValueError("semantic_repair_current_release_unavailable")
+        record = _resolution_record(fresh, scope=scope, resolves=parent, release=release)
+        record.record_id = resolution_id
+        record.content["repair_evidence"] = dict(proof)
+        record.content["source_report"] = {"record_id": review_ref, "type": "semantic_gap_repair.v1",
+                                          "digest": proof["review_digest"], "sample_count": 1}
+        record.evidence = [review_ref, proof["packet_ref"]]
+        # Both signed records carry the full old observation/input/render and
+        # current result/release lineage; no raw query enters the resolution.
+        record.detail = json.dumps(record.content, ensure_ascii=False, sort_keys=True)
+        record.meta["semantic_repair_review_ref"] = review_ref
+        sqlite.upsert(record, commit=False)
+        return {"created": True, "record_id": record.record_id}, [record], []
+
+    return runtime.store.mutate_records_atomically(mutation)

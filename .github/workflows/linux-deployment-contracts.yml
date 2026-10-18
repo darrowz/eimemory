@@ -65,6 +65,13 @@ jobs:
           tests/test_explicit_recall_semantic_monitor.py
           tests/test_production_recall_baseline_lineage.py
           tests/test_production_recall_report_persistence.py
+          tests/test_hermes_profile_boundary_installer.py
+          tests/test_semantic_gap_repair.py
+          tests/test_semantic_gap_repair_flow.py
+          tests/test_semantic_gap_replay_context.py
+          tests/test_semantic_repair_reporting.py
+          tests/test_quality_gap_intake.py
+          tests/test_semantic_relevance_monitor.py
           tests/test_production_query_repair.py
           tests/test_production_query_repair_targets.py
           tests/test_production_query_repair_channel_counts.py

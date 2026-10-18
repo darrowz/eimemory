@@ -1505,6 +1505,11 @@ _install_hermes_integration() {
   _run_as_service_user "$HERMES_PYTHON" -I -B \
     "$REPO_DIR/deploy/ensure_hermes_sync_snapshot.py" \
     --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent" --apply || return 2
+  # The shared host ingress must retain each standalone Feishu profile before
+  # admission/session setup, including the four independently launched gateways.
+  _run_as_service_user "$HERMES_PYTHON" -I -B \
+    "$REPO_DIR/deploy/ensure_hermes_profile_boundary.py" \
+    --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent" --apply || return 2
   local helper_args=(
     --release-root "$target_release" --hermes-home "$HERMES_HOME_DIR"
   )
@@ -1573,7 +1578,17 @@ _install_hermes_integration() {
       hermes-gateway.service|hermes-gateway-*.service)
         _install_as_service_user 0644 \
           "$metadata_release/deploy/systemd/hermes-handoff-permissions.conf" \
-          "$USER_SYSTEMD_DIR/$unit.d/93-eimemory-handoff.conf" ;;
+          "$USER_SYSTEMD_DIR/$unit.d/93-eimemory-handoff.conf"
+        # The controller outlives the target application release on rollback.
+        # It also reapplies a recognized seam after an independent Hermes
+        # upgrade, before this gateway can admit a real conversation.
+        "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/install_managed_systemd_dropin.py" \
+          --source "$REPO_DIR/deploy/systemd/hermes-profile-boundary.conf" \
+          --target "$USER_SYSTEMD_DIR/$unit.d/94-eimemory-hermes-profile-boundary.conf" \
+          --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" \
+          --render-hermes-boundary-python "$HERMES_PYTHON" \
+          --render-hermes-boundary-helper "$REPO_DIR/deploy/ensure_hermes_profile_boundary.py" \
+          --render-hermes-boundary-host-root "$HERMES_HOME_DIR/hermes-agent" ;;
     esac
   done
   _install_as_service_user 0644 \
@@ -1955,6 +1970,9 @@ _verify_hermes_integration() {
     echo "hermes_closed_loop=skipped hermes_not_installed"
     return
   fi
+  _run_as_service_user "$HERMES_PYTHON" -I -B \
+    "$REPO_DIR/deploy/ensure_hermes_profile_boundary.py" \
+    --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent" --check || return 2
   local rpc_token rpc_url adapter_timeout hermes_runtime_env
   local -a hermes_runtime_values=()
   rpc_token="$("$PYTHON_BIN" -I -B -c \

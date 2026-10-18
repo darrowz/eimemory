@@ -1025,9 +1025,14 @@ def _run_semantic_relevance_monitor(runtime: Runtime, *, scope: dict) -> dict[st
         # cached observations. Persist in detector-owned scopes, never operator.
         intake = _ingest_verified_findings(runtime, findings=findings, scope=ScopeRef.from_dict(scope))
         return _json_safe({**report, "ok": True, "report_type": "semantic_relevance_monitor",
-                           "off_topic_finding_count": len(findings),
+                           "off_topic_finding_count": sum(finding.get("gate_ok") is False for finding in findings),
+                           "repair_passing_finding_count": sum(
+                               finding.get("gate_ok") is True and "_semantic_repair" in finding for finding in findings),
                            "quality_gap_created_count": len(intake["created_record_ids"]),
-                           "quality_gap_deduplicated_count": len(intake["deduplicated_record_ids"])})
+                           "quality_gap_deduplicated_count": len(intake["deduplicated_record_ids"]),
+                           "quality_gap_resolved_count": len(intake["resolved_record_ids"]),
+                           "quality_gap_resolved_record_ids": intake["resolved_record_ids"][:20],
+                           "quality_gap_ignored_count": len(intake["ignored_reports"])})
     except Exception as exc:
         return {
             "ok": False,

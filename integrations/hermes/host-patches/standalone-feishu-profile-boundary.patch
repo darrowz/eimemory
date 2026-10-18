@@ -1,0 +1,24 @@
+--- a/gateway/run_inbound.py
++++ b/gateway/run_inbound.py
+@@ -6,6 +6,21 @@
+     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
+         """Handle an incoming message from any platform: auth → command check → running-agent
+         interrupt → get/create session → build context → run agent → return response."""
++        # A standalone Feishu gateway belongs to its launch profile.  A contextvar inherited
++        # from another profile must never redirect admission, session persistence or the agent.
++        if (getattr(getattr(event, "source", None), "platform", None) == Platform.FEISHU
++                and not getattr(getattr(self, "config", None), "multiplex_profiles", False)):
++            from hermes_constants import (
++                get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override,
++            )
++            token = set_hermes_home_override(get_process_hermes_home())
++            try:
++                return await self._handle_message_in_profile(event)
++            finally:
++                reset_hermes_home_override(token)
++        return await self._handle_message_in_profile(event)
++
++    async def _handle_message_in_profile(self, event: MessageEvent) -> Optional[str]:
+         from gateway.run import _AGENT_PENDING_SENTINEL
+         _admitted = await self._hm_admit_event(event)
+         if _admitted is None:
