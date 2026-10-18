@@ -8,6 +8,7 @@ import pytest
 
 from eimemory.adapters.eibrain.rpc_server import _candidate_source_health, build_health_payload
 from eimemory.ops import controlled_stability as probe
+from eimemory.version import __version__
 from eimemory.retrieval.readiness_contract import readiness_ok, sanitize_readiness
 from test_controlled_stability import COMMIT, health_payload, readiness, samples, seal
 
@@ -126,7 +127,7 @@ def test_each_sample_requires_current_native_pg_and_vector_proof_same_generation
     if change == 'old_timestamp':
         last['health']['postgres_readiness']['observed_at'] = (datetime.fromisoformat(last['observed_at'])-timedelta(seconds=31)).isoformat()
     seal(last)
-    result = probe.assess_controlled_stability(observations, expected_commit=COMMIT, expected_version='1.14.146')
+    result = probe.assess_controlled_stability(observations, expected_commit=COMMIT, expected_version=__version__)
     assert not result['ok'] and 'sample_current_postgres_readiness_unverified' in result['blocked_reasons']
 
 
@@ -148,8 +149,8 @@ def test_saved_current_proof_rechecks_at_its_sample_time_not_todays_wall_clock()
         sample['health']['postgres_readiness']['observed_at'] = sample['observed_at']; seal(sample)
     assessment = datetime.fromisoformat(observations[-1]['observed_at'])+timedelta(seconds=1)
     first = probe.assess_controlled_stability(observations, expected_commit=COMMIT,
-        expected_version='1.14.146', now=assessment)
+        expected_version=__version__, now=assessment)
     assert first['ok']
     assert first == probe.assess_controlled_stability(observations, expected_commit=COMMIT,
-        expected_version='1.14.146', now=first['assessed_at'])
+        expected_version=__version__, now=first['assessed_at'])
     assert not readiness_ok(observations[-1]['health']['postgres_readiness'])

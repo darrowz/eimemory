@@ -96,7 +96,7 @@ def test_verified_fragments_survive_later_scope_budget(tmp_path, monkeypatch, qu
     for module in ('eimemory.retrieval.engine', 'eimemory.retrieval.lightweight_admission',
                    'eimemory.retrieval.caller_assistance', 'eimemory.retrieval.independent_evidence',
                    'eimemory.retrieval.authority_gate', 'eimemory.retrieval.verification_budget',
-                   'eimemory.storage.sqlite_store'):
+                   'eimemory.storage.runtime_store', 'eimemory.storage.sqlite_store'):
         monkeypatch.setattr(module + '.perf_counter', lambda: clock[0])
     monkeypatch.setattr('eimemory.retrieval.postgres_vector.monotonic', lambda: clock[0])
     monkeypatch.setattr('eimemory.storage.recall_deadline.monotonic', lambda: clock[0])
@@ -441,7 +441,10 @@ def test_authority_reads_after_remote_io_respect_deadline(tmp_path, read_number)
         store.append(RecordEnvelope.create(kind='memory', title='populated scope', scope=scope))
         acquired, release = threading.Event(), threading.Event()
         def hold_lock():
-            with store._lock:
+            # The atomic authority pair uses a pooled WAL reader. Contend on
+            # the reader it actually borrows, rather than the independent
+            # writer lock that an initialized pool intentionally bypasses.
+            with store._readers[0].lock:
                 acquired.set()
                 release.wait(1)
         thread = threading.Thread(target=hold_lock)
@@ -459,6 +462,32 @@ def test_authority_reads_after_remote_io_respect_deadline(tmp_path, read_number)
             assert batch.diagnostic_dict()['postgres']['error_code'] == 'recall_budget_exhausted'
             assert source.repository.reads == read_number
             assert source.health()['circuit'] == 'closed'
+        finally:
+            release.set()
+            thread.join(2)
+
+
+def test_atomic_authority_snapshot_does_not_wait_for_writer_lock(tmp_path):
+    import threading
+    from time import monotonic
+    scope = ScopeRef(agent_id='agent', workspace_id='workspace', user_id='owner')
+    with closing(RuntimeStore(tmp_path)) as store:
+        store.append(RecordEnvelope.create(kind='memory', title='populated scope', scope=scope))
+        source = SQLiteCandidateSource(store)
+        expected = source.authority_snapshot()
+        assert store._readers, 'exercise an initialized native WAL reader'
+        acquired, release = threading.Event(), threading.Event()
+        def hold_writer():
+            with store._lock:
+                acquired.set()
+                release.wait(1)
+        thread = threading.Thread(target=hold_writer)
+        thread.start()
+        assert acquired.wait(1)
+        try:
+            started = monotonic()
+            assert source.authority_snapshot(deadline_at=started + .1) == expected
+            assert monotonic() - started < .5
         finally:
             release.set()
             thread.join(2)

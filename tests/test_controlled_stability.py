@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from eimemory.ops import controlled_stability as probe
+from eimemory.version import __version__
 
 
 COMMIT = "b" * 40
@@ -39,7 +40,7 @@ def samples():
             "collector_origin": "native_readonly_host_probe", "read_only": True,
             "natural_certified": False, "ok": True, "blocked_reasons": [],
             "health": {"ok": True, "identity_ok": True, "postgres_fresh": True, "migration_complete": True,
-                "package_tree_digest": "f" * 64, "version": "1.14.146",
+                "package_tree_digest": "f" * 64, "version": __version__,
                 "postgres_health_model": "native_readonly_vector_query.v1",
                 "postgres_readiness": readiness((now + timedelta(seconds=offset)).isoformat())},
             "postgres_snapshot": {"ok": True, "measurement_origin": "native_readonly_repository_snapshot",

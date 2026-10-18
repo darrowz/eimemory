@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.147] — 2026-10-19
+
+- Align recall-budget contention tests with the atomic WAL-reader authority snapshot. Share the controlled clock with reader acquisition, exercise reader-lock contention and retain verified fragments, strict completeness and final deadline assertions.
+- Verify that a held writer lock does not block an initialized authority reader. Keep the production authority snapshot and health recovery contracts unchanged.
+
+- Bind ordinary stability test samples to the current package while preserving explicit historical replay and version-downgrade rejection cases.
+
 ## [1.14.146] — 2026-10-18
 
 - Verify current PostgreSQL readiness with a bounded read-only vector query and consistent authority snapshots. Preserve last business-query diagnostics and reject real lag, timeouts, fingerprint drift and incomplete observations.
