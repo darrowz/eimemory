@@ -67,6 +67,7 @@ def env(tmp_path,monkeypatch):
     request=NS(query=QUERY,scope=NS(**SCOPE),source_ids=('fixture',),task_context_dict=lambda:{})
     monkeypatch.setenv('EIMEMORY_INDEPENDENT_EVIDENCE_MODE','enforce')
     monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED','1')
+    monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_REQUIRED','0')
     monkeypatch.setenv('EIMEMORY_RECALL_EXPECTED_MODEL','gpt-5.6-luna')
     monkeypatch.delenv('EIMEMORY_RECALL_ATTRIBUTE_PRECHECK',raising=False)
     monkeypatch.setenv('EIMEMORY_RECALL_GATEWAY_POOL','0')
@@ -76,8 +77,16 @@ def env(tmp_path,monkeypatch):
         return NS(text='{"selected":[]}',model_id='gpt-5.6-luna',diagnostics={})
     client=NS(timeout_seconds=90,complete=complete)
     monkeypatch.setattr(assist,'configured_client',lambda:client)
+    # These are catalog/authority function tests, not a wall-clock benchmark.
+    # A busy CI worker can legitimately exceed the production 50ms local cap
+    # and fall back to the model. Control only this fixture's catalog clock;
+    # explicit expiry tests still advance it and exercise the real deadline.
+    clock=NS(value=perf_counter())
+    monotonic=lambda:clock.value
+    monkeypatch.setattr(route,'perf_counter',monotonic)
+    monkeypatch.setattr(cat,'time',NS(perf_counter=monotonic,time=time))
     yield NS(root=tmp_path,conn=conn,pair=pair,packet=packet,spec=spec,approve=approve,
-             request=request,calls=calls,client=client)
+             request=request,calls=calls,client=client,clock=clock)
     conn.close()
 
 
@@ -260,7 +269,7 @@ def test_context_resets_on_error_and_nested_scope(env):
 
 def test_elapsed_request_is_not_fast_no_evidence(env,monkeypatch):
     monkeypatch.setenv('EIMEMORY_RECALL_ATTRIBUTE_PRECHECK','1')
-    selected,report=run(env,query='访问口令是什么',deadline=perf_counter()-1)
+    selected,report=run(env,query='访问口令是什么',deadline=env.clock.value-1)
     assert not selected and report['status']=='unavailable' and not env.calls
 
 
@@ -419,6 +428,29 @@ def test_local_support_does_not_require_a_new_model_or_command(env,monkeypatch):
     monkeypatch.setattr(assist,'configured_client',lambda:pytest.fail('local support must not start model'))
     selected,_=run(env)
     assert selected
+
+
+def test_local_support_does_not_read_model_configuration_identity(env,monkeypatch):
+    env.approve()
+    monkeypatch.setattr(assist,'identity',lambda:pytest.fail('local support has no model configuration dependency'))
+    selected,report=run(env)
+    assert selected and report['calls']==0 and not env.calls
+
+
+def test_local_catalog_exceeding_original_cap_still_falls_back_after_authority_reads(env,monkeypatch):
+    env.approve()
+    original=cat.lookup
+    reads=[]
+    def elapsed_lookup(conn,scope,slot):
+        result=original(conn,scope,slot)
+        reads.append(result)
+        env.clock.value+=route.LOCAL_CAP_SECONDS*.6
+        return result
+    monkeypatch.setattr(cat,'lookup',elapsed_lookup)
+    selected,report=run(env)
+    assert len(reads)==2, 'the fixture clock must preserve both native authority reads'
+    assert not selected and len(env.calls)==1
+    assert report['local_evidence']['reason']=='local_budget_exhausted'
 
 
 def test_same_shadow_result_is_not_a_quality_label(env,monkeypatch):

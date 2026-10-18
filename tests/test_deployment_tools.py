@@ -2556,6 +2556,7 @@ def test_installer_reports_business_closure_outcome_without_unqualified_completi
     installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     function_name = "_run_post_switch_closure"
     function_source = installer.split(f"{function_name}() {{", 1)[1].split("\n}", 1)[0]
+    service_user_source = installer.split("_run_as_service_user() {", 1)[1].split("\n}", 1)[0]
     release_dir = tmp_path / "release"
     (release_dir / "deploy").mkdir(parents=True)
     (release_dir / ".venv" / "bin").mkdir(parents=True)
@@ -2595,6 +2596,8 @@ def test_installer_reports_business_closure_outcome_without_unqualified_completi
     eimemory_bin.chmod(0o755)
     harness = f"""
 set -u
+_run_as_service_user() {{{service_user_source}
+}}
 {function_name}() {{{function_source}
 }}
 _release_closure_requested() {{ [ "$REQUEST_CLOSURE" = "1" ]; }}
@@ -2606,6 +2609,8 @@ PREVIOUS_COMMIT={'b' * 40}
 RELEASE_DIR={_bash_path(release_dir)}
 CURRENT_LINK={_bash_path(tmp_path / 'current')}
 PYTHON_BIN={_bash_path(fake_python)}
+SERVICE_USER="$(id -un)"
+SERVICE_GROUP="$(id -g)"
 EIMEMORY_ROOT={_bash_path(tmp_path / 'runtime')}
 EIMEMORY_CONFIG_DIR={_bash_path(tmp_path / 'config')}
 EIMEMORY_LOG_DIR={_bash_path(tmp_path / 'logs')}
@@ -2646,8 +2651,10 @@ _run_post_switch_closure
 echo "observation=$BUSINESS_CLOSURE_OUTCOME"
 """
 
+    harness_path = tmp_path / "closure-harness.sh"
+    harness_path.write_text(harness, encoding="utf-8", newline="\n")
     result = subprocess.run(
-        [_bash_binary(), "-c", harness],
+        [_bash_binary(), _bash_path(harness_path)],
         cwd=Path.cwd(),
         env={**os.environ, "SUMMARY_JSON": "{}", "SUMMARY_STATUS": "0"},
         capture_output=True,

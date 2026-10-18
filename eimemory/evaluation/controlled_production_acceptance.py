@@ -84,10 +84,31 @@ def _read_policy(path):
 def _validate_policy(value, owner):
     fields = {'schema', 'mode', 'request_digest', 'owner_scope', 'agents', 'stable_before',
               'minimum_cases_per_scope', 'max_cases_per_scope', 'freshness_seconds', 'engine_contract_digest'}
-    if (not isinstance(value, dict) or set(value) != fields
+    if (not isinstance(value, dict) or not fields.issubset(value)
+            or set(value) - fields - {'additional_owner_scopes'}
             or value.get('schema') != POLICY_SCHEMA or value.get('mode') != MODE
             or re.fullmatch('[0-9a-f]{64}', str(value.get('request_digest', ''))) is None
-            or value.get('request_digest') == '0' * 64 or _scope(value.get('owner_scope')) != owner):
+            or value.get('request_digest') == '0' * 64):
+        _error('policy_invalid')
+    primary_owner = _scope(value['owner_scope'])
+    authorized_owners = [primary_owner]
+    if 'additional_owner_scopes' in value:
+        additional = value['additional_owner_scopes']
+        if not isinstance(additional, list) or not 1 <= len(additional) <= 4:
+            _error('policy_owner_scopes_invalid')
+        for entry in additional:
+            if not isinstance(entry, dict):
+                _error('policy_owner_scopes_invalid')
+            exact_owner = _scope(entry)
+            if (exact_owner.tenant_id != primary_owner.tenant_id
+                    or exact_owner.agent_id != primary_owner.agent_id
+                    or any(any(mark in text for mark in '?[]') for text in entry.values())
+                    or exact_owner in authorized_owners):
+                _error('policy_owner_scopes_invalid')
+            authorized_owners.append(exact_owner)
+    # An evaluation-agent scope is not caller authority. Only the protected
+    # primary owner or an explicitly listed exact owner may issue a receipt.
+    if _scope(owner) not in authorized_owners:
         _error('policy_invalid')
     if re.fullmatch('[0-9a-f]{64}', str(value.get('engine_contract_digest', ''))) is None:
         _error('policy_engine_contract_invalid')
@@ -207,7 +228,8 @@ def _validate_versions(sqlite, agents):
     for agent in agents:
         for sample in agent['samples']:
             pairs = [(sample['source_binding'], sample['source_version']),
-                     *zip(sample['returned'], sample['returned_versions'])]
+                     *zip(sample['returned'], sample['returned_versions']),
+                     *[(item['binding'], item['version']) for item in sample.get('cascade_evidence', [])]]
             for binding, expected in pairs:
                 scope = _scope(binding['scope'])
                 ref = (*[getattr(scope, k) for k in ('tenant_id', 'agent_id', 'workspace_id', 'user_id')],
@@ -220,7 +242,7 @@ def _validate_versions(sqlite, agents):
                     _error('source_version_changed')
 
 
-def _physical(runtime, binding, scope, sources, cutoff, *, require_old=True):
+def _physical(runtime, binding, scope, sources, cutoff, *, require_old=True, episode=False):
     if (not isinstance(binding, dict) or binding.get('scope') != asdict(scope)
             or binding.get('source_id') not in sources):
         _error('source_boundary_invalid')
@@ -230,7 +252,20 @@ def _physical(runtime, binding, scope, sources, cutoff, *, require_old=True):
         record, version = runtime.store.read_consistent(lambda sqlite: _repair_snapshot(sqlite, ref))
     except (_RepairSkipped, ValueError, RuntimeError):
         _error('source_version_unavailable')
-    if (benchmark._eligible_reason(record, scope, sources)
+    reason = benchmark._eligible_reason(record, scope, sources)
+    if episode:
+        from eimemory.recall import is_episode_evidence_record, is_inactive_or_superseded_record, is_outcome_pollution_record
+        from eimemory.metadata import business_metadata
+        from eimemory.contracts.recall_boundary import default_recall_blocked_lane
+        metadata = business_metadata(record.meta)
+        quality = metadata.get('quality')
+        lane = default_recall_blocked_lane(metadata, record.content, record.provenance)
+        reason = (record.kind not in {'memory', 'raw_chunk'} or not is_episode_evidence_record(record)
+            or record.status != 'active' or is_inactive_or_superseded_record(record)
+            or is_outcome_pollution_record(record) or lane not in {'', 'task_context', 'raw'}
+            or (isinstance(quality, dict) and quality.get('capture_decision') == 'reject')
+            or benchmark.MemoryAPI._is_temporally_stale_memory(record))
+    if (reason
             or (require_old and benchmark._stable_source_reason(record, _instant(cutoff)))
             or benchmark._binding(record) != binding):
         _error('source_version_changed')
@@ -238,6 +273,48 @@ def _physical(runtime, binding, scope, sources, cutoff, *, require_old=True):
     if not projection_is_current(runtime.store, record):
         _error('source_authority_unavailable')
     return list(version)
+
+
+def _parent_links(record):
+    """The native cascade producer's exact, authoritative derivation edges."""
+    linked = {str(link.target_id).strip() for link in record.links
+              if link.relation in {'derived_from', 'extracted_from', 'evidence'}}
+    linked.update(str(ref).strip() for ref in record.evidence
+                  if str(ref).strip().startswith(('mem_', 'rec_')))
+    return linked
+
+
+def _cascade_evidence(runtime, compact, scope, sources, cutoff, primary, *, raw=None):
+    """Bind native legacy summaries to exact linked physical episode parents.
+
+    A summary's ID alone grants no authority. It must be the native complete
+    summary of exactly one allowed source in this scope and a derivation edge
+    of an actually selected item. No title/text becomes a fact or natural label.
+    """
+    summaries = compact.get('evidence', [])
+    if not isinstance(summaries, list) or len(summaries) > 2:
+        _error('cascade_evidence_invalid')
+    if raw is not None and (not isinstance(raw, list) or len(raw) > 2 or summaries != raw):
+        _error('cascade_evidence_projection_changed')
+    linked = set().union(*(_parent_links(record) for record in primary)) if primary else set()
+    evidence, seen = [], set()
+    for summary in summaries:
+        ref = summary.get('record_id') if isinstance(summary, dict) else None
+        if not isinstance(ref, str) or not ref or ref in seen or ref not in linked:
+            _error('cascade_evidence_parent_invalid')
+        matches = [record for source in sources if (record := runtime.store.get_by_exact_ref(
+            ref, scope=scope, source_id=source)) is not None]
+        if len(matches) != 1:
+            _error('cascade_evidence_authority_unavailable')
+        parent = matches[0]
+        expected = runtime.memory._selected_record_summaries([parent])[0]
+        if summary != expected:
+            _error('cascade_evidence_summary_changed')
+        binding = benchmark._binding(parent)
+        version = _physical(runtime, binding, scope, sources, cutoff, require_old=False, episode=True)
+        evidence.append(dict(binding=binding, version=version, summary_digest=digest(summary)))
+        seen.add(ref)
+    return evidence
 
 
 def _complete(bundle):
@@ -275,48 +352,70 @@ def _evaluate_agent(runtime, entry, policy, cutoff):
     if len(cases) < policy['minimum_cases_per_scope']:
         _error('insufficient_existing_records')
     before = {case['case_id']: _physical(runtime, case['source_binding'], scope, sources, cutoff) for case in cases}
-    observations = []
+    observation = {}
 
     def recall(**kwargs):
-        bundle = runtime.memory.recall(**kwargs)
-        state, complete = _complete(bundle)
-        returned = [*bundle.items, *bundle.rules, *bundle.reflections]
-        if any(record.scope != scope or record.source_id not in sources for record in returned):
-            _error('returned_boundary_invalid')
-        bindings = [benchmark._binding(record) for record in returned]
-        # The target must predate the authorized cutoff. Additional live
-        # results may be newer, but retain identical scope/source/version gates.
-        versions = [_physical(runtime, binding, scope, sources, cutoff, require_old=False) for binding in bindings]
-        compact = bundle.to_compact_dict(limit=5, include_explanation=False)
-        if (compact.get('retrieval_status') != 'evidence_found' or compact.get('evidence')
-                or len(canonical(compact).encode()) > 16384):
-            _error('compact_result_invalid')
-        compact_refs = [[item.get('record_id'), item.get('source_id')] for item in compact.get('items', [])]
-        observations.append(dict(state=state, complete=complete, returned=bindings,
-                                 returned_versions=versions, compact_refs=compact_refs))
-        return bundle
+        observation['call_count'] += 1
+        try:
+            bundle = runtime.memory.recall(**kwargs)
+            state, complete = _complete(bundle)
+            observation.update(state=state, complete=complete)
+            returned = [*bundle.items, *bundle.rules, *bundle.reflections]
+            if any(record.scope != scope or record.source_id not in sources for record in returned):
+                _error('returned_boundary_invalid')
+            bindings = [benchmark._binding(record) for record in returned]
+            # Only targets must predate cutoff; live results remain version-bound.
+            versions = [_physical(runtime, binding, scope, sources, cutoff, require_old=False) for binding in bindings]
+            compact = bundle.to_compact_dict(limit=5, include_explanation=False)
+            if compact.get('retrieval_status') != 'evidence_found' or len(canonical(compact).encode()) > 16384:
+                _error('compact_result_invalid')
+            for section in ('items', 'rules', 'reflections'):
+                rows = compact.get(section, [])
+                allowed = {(record.record_id, record.source_id) for record in getattr(bundle, section)}
+                if (not isinstance(rows, list) or any(not isinstance(item, dict)
+                        or (item.get('record_id'), item.get('source_id')) not in allowed
+                        or ('scope' in item and item['scope'] != asdict(scope)) for item in rows)):
+                    _error('compact_result_boundary_invalid')
+            raw = bundle.explanation.get('cascade_evidence', [])
+            cascade = _cascade_evidence(runtime, compact, scope, sources, cutoff, bundle.items[:5], raw=raw)
+            compact_refs = [[item.get('record_id'), item.get('source_id')] for item in compact.get('items', [])]
+            observation.update(returned=bindings, returned_versions=versions, compact_refs=compact_refs,
+                               cascade_evidence=cascade, compact_digest=digest(compact))
+            return bundle
+        except Exception as exc:
+            code = str(exc)
+            observation.update(complete=False, failure_reason=code if
+                re.fullmatch(r'controlled_acceptance_[a-z_]+', code) else 'controlled_acceptance_native_recall_failed')
+            raise
 
     proxy = SimpleNamespace(store=runtime.store,
         memory=SimpleNamespace(recall=recall, recall_engine=runtime.memory.recall_engine))
-    report = benchmark.run_controlled_memory_benchmark(proxy, dataset, scope=scope, source_ids=sources)
-    samples = report.get('samples', [])
-    if len(observations) != len(cases) or len(samples) != len(cases):
-        _error('native_execution_incomplete')
     evidence = []
-    for case, sample, observation in zip(cases, samples, observations):
+    for case in cases:
+        # A failed native callback is still this case's failed observation.
+        # Never lose alignment or erase all cases behind a length assertion.
+        observation = dict(state={}, complete=False, returned=[], returned_versions=[], compact_refs=[],
+                           cascade_evidence=[], compact_digest='', call_count=0, failure_reason='')
+        sample = benchmark._run_case(proxy, case, scope, sources)
         binding = case['source_binding']
         version = _physical(runtime, binding, scope, sources, cutoff)
         if version != before[case['case_id']]:
             _error('source_version_changed')
         hit = [binding['record_id'], binding['source_id']] in observation['compact_refs']
-        passed = sample.get('passed') is True and sample.get('evaluable') is True and observation['complete'] and hit
+        passed = (sample.get('passed') is True and sample.get('evaluable') is True
+                  and observation['complete'] and observation['call_count'] == 1 and hit)
+        if not passed and not observation['failure_reason']:
+            code = sample.get('failure_reason', '')
+            observation['failure_reason'] = ('controlled_acceptance_' + code if
+                isinstance(code, str) and re.fullmatch('[a-z_]+', code) else 'controlled_acceptance_case_failed')
         evidence.append(dict(case_id=case['case_id'], source_binding=binding, source_version=version,
             query_digest=digest(case['query']), context_digest=digest(case['task_context']),
             passed=passed, expected_rank=sample.get('expected_rank'), **observation))
-    accepted = report.get('controlled_benchmark_passed_threshold') is True and all(s['passed'] for s in evidence)
+    accepted = all(s['passed'] for s in evidence)
+    reason = next((sample['failure_reason'] for sample in evidence if not sample['passed']), '')
     return dict(scope=asdict(scope), source_ids=list(sources), sample_count=len(evidence),
         pass_count=sum(s['passed'] for s in evidence), accepted=accepted,
-        blocked_reason='' if accepted else 'controlled_acceptance_case_failed', samples=evidence)
+        blocked_reason=reason, samples=evidence)
 
 
 def _public(body, *, persisted=False):
@@ -481,6 +580,9 @@ def verify_controlled_production_acceptance(runtime, *, scope, release=None, rec
                         or sample.get('query_digest') != digest(case['query'])
                         or sample.get('context_digest') != digest(case['task_context'])
                         or sample.get('passed') is not True or sample.get('complete') is not True
+                        or type(sample.get('call_count')) is not int or sample['call_count'] != 1
+                        or sample.get('failure_reason') != ''
+                        or re.fullmatch('[0-9a-f]{64}', str(sample.get('compact_digest', ''))) is None
                         or list(record_ref) not in sample.get('compact_refs', [])):
                     _error('case_evidence_invalid')
                 state = sample['state']
@@ -494,9 +596,31 @@ def verify_controlled_production_acceptance(runtime, *, scope, release=None, rec
                 returned, versions = sample['returned'], sample['returned_versions']
                 if not isinstance(returned, list) or len(returned) != len(versions) or not returned:
                     _error('returned_evidence_invalid')
+                if any(ref not in [[binding['record_id'], binding['source_id']] for binding in returned]
+                       for ref in sample['compact_refs']):
+                    _error('compact_result_boundary_invalid')
                 for ref, expected in zip(returned, versions):
                     if _physical(runtime, ref, exact, sources, body['stable_before'], require_old=False) != expected:
                         _error('source_version_changed')
+                cascade = sample.get('cascade_evidence')
+                if not isinstance(cascade, list) or len(cascade) > 2:
+                    _error('cascade_evidence_invalid')
+                primary = [runtime.store.get_by_exact_ref(ref['record_id'], scope=exact, source_id=ref['source_id'])
+                           for ref in returned if [ref['record_id'], ref['source_id']] in sample['compact_refs']]
+                summaries = []
+                for item in cascade:
+                    binding = item['binding']
+                    if (_physical(runtime, binding, exact, sources, body['stable_before'], require_old=False,
+                                  episode=True) != item.get('version')):
+                        _error('source_version_changed')
+                    parent = runtime.store.get_by_exact_ref(binding['record_id'], scope=exact, source_id=binding['source_id'])
+                    summary = runtime.memory._selected_record_summaries([parent])[0]
+                    if item.get('summary_digest') != digest(summary):
+                        _error('cascade_evidence_summary_changed')
+                    summaries.append(summary)
+                if _cascade_evidence(runtime, {'evidence': summaries}, exact, sources,
+                        body['stable_before'], primary) != cascade:
+                    _error('cascade_evidence_parent_invalid')
         if body.get('accepted') is not True or body.get('blocked_reason') != '':
             _error('report_not_accepted')
         def final_snapshot(sqlite):

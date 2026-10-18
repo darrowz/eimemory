@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.141] — 2026-10-18
+
+- Admit only explicitly listed, exact additional acceptance owners when the nightly service scope differs from the deployment's real Hermes scope. Preserve each receipt's actual scope and release authority.
+- Validate native compact supporting-evidence lineage instead of rejecting every nonempty evidence lane. Preserve per-case failures without collapsing valid colleague recall into an incomplete execution count.
+
 ## [1.14.140] — 2026-10-18
 
 - Add explicit operator-authorized production operation acceptance from existing-memory controls. Bind each colleague's native, seedless results to the protected policy, live retrieval configuration, deployment receipt, signatures and exact source versions. Preserve natural sampling, labels and certification separately.

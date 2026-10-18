@@ -291,6 +291,117 @@ def test_postgres_cold_to_warm_state_and_watermark_do_not_change_configuration_c
     assert not verified(setup, record_id=result['record_id'])['accepted']
 
 
+def two_owner_policy(setup):
+    # The deployment caller uses its actual channel owner; nightly uses its
+    # independently configured logical owner. Neither identity is rewritten.
+    primary = SCOPES[0]
+    nightly = ScopeRef(agent_id=primary.agent_id, workspace_id='embodied', user_id='darrow')
+    setup.policy['owner_scope'] = asdict(primary)
+    setup.policy['additional_owner_scopes'] = [asdict(nightly)]
+    return primary, nightly
+
+
+def test_one_protected_policy_creates_and_verifies_separate_native_receipts_for_both_owners(setup):
+    primary, nightly = two_owner_policy(setup)
+    policy_digest = cpa.digest(setup.policy)
+    count_before = setup.runtime.store.count_records(kinds=['memory'])
+    reports = {}
+    for owner in (primary, nightly):
+        result = cpa.run_controlled_production_acceptance(setup.runtime, scope=asdict(owner))
+        assert result['accepted'] and result['policy_digest'] == policy_digest, result
+        record = setup.runtime.store.get_by_exact_ref(result['record_id'], scope=owner, source_id='default')
+        assert record is not None and record.scope == owner and record.content['scope'] == asdict(owner)
+        assert cpa.verify(record.content, cpa.SCHEMA), 'native signature must bind the actual caller body'
+        assert record.content['policy_digest'] == policy_digest
+        reports[owner.workspace_id] = result
+    assert len(setup.calls) == 24
+    assert setup.runtime.store.count_records(kinds=['memory']) == count_before
+    assert setup.runtime.store.count_records(kinds=['evaluation_packet']) == 2
+    for owner, foreign in ((primary, nightly), (nightly, primary)):
+        own = reports[owner.workspace_id]
+        result = cpa.verify_controlled_production_acceptance(setup.runtime,
+            scope=asdict(owner), record_id=own['record_id'])
+        assert result['accepted'] and result['record_id'] == own['record_id']
+        assert not cpa.verify_controlled_production_acceptance(setup.runtime, scope=asdict(owner),
+            record_id=reports[foreign.workspace_id]['record_id'])['accepted']
+    assert len(setup.calls) == 24, 'native verification must not recall again or fan out owners'
+    assert setup.policy['owner_scope'] == asdict(primary)
+    assert setup.policy['additional_owner_scopes'] == [asdict(nightly)]
+
+
+@pytest.mark.parametrize('defect', ['empty', 'too_many', 'not_list', 'not_object', 'partial',
+    'extra_field', 'wildcard', 'question_wildcard', 'bracket_wildcard', 'whitespace', 'duplicate', 'duplicate_primary', 'foreign_tenant', 'foreign_agent'])
+def test_additional_owner_allowlist_is_complete_bounded_and_unambiguous_before_recall(setup, defect):
+    primary, nightly = two_owner_policy(setup)
+    entries = setup.policy['additional_owner_scopes']
+    if defect == 'empty': setup.policy['additional_owner_scopes'] = []
+    if defect == 'too_many': setup.policy['additional_owner_scopes'] = [
+        {**asdict(nightly), 'user_id': 'owner-' + str(i)} for i in range(5)]
+    if defect == 'not_list': setup.policy['additional_owner_scopes'] = asdict(nightly)
+    if defect == 'not_object': entries[0] = 'owner'
+    if defect == 'partial': entries[0].pop('user_id')
+    if defect == 'extra_field': entries[0]['channel'] = 'hermes'
+    if defect == 'wildcard': entries[0]['workspace_id'] = '*'
+    if defect == 'question_wildcard': entries[0]['workspace_id'] = 'embodie?'
+    if defect == 'bracket_wildcard': entries[0]['workspace_id'] = 'embodied[12]'
+    if defect == 'whitespace': entries[0]['user_id'] += ' '
+    if defect == 'duplicate': entries.append(deepcopy(entries[0]))
+    if defect == 'duplicate_primary': entries[0] = asdict(primary)
+    if defect == 'foreign_tenant': entries[0]['tenant_id'] = 'other-tenant'
+    if defect == 'foreign_agent': entries[0]['agent_id'] = 'hongtai'
+    with pytest.raises(cpa.ControlledAcceptanceError):
+        cpa.run_controlled_production_acceptance(setup.runtime, scope=asdict(primary))
+    assert not setup.calls and setup.runtime.store.count_records(kinds=['evaluation_packet']) == 0
+
+
+@pytest.mark.parametrize('change', ['tenant', 'agent', 'workspace', 'user', 'nested_channel', 'evaluation_agent', 'partial'])
+def test_unlisted_owner_cannot_infer_authority_from_alias_or_evaluation_agent_scope(setup, change):
+    primary, nightly = two_owner_policy(setup)
+    caller = asdict(nightly)
+    if change == 'tenant': caller['tenant_id'] = 'other-tenant'
+    if change == 'agent': caller['agent_id'] = 'other-agent'
+    if change == 'workspace': caller['workspace_id'] = 'other-workspace'
+    if change == 'user': caller['user_id'] = 'another-user'
+    if change == 'nested_channel': caller = {**asdict(primary), 'workspace_id': primary.workspace_id + '::channel::hermes'}
+    if change == 'evaluation_agent': caller = asdict(SCOPES[1])
+    if change == 'partial': caller.pop('user_id')
+    with pytest.raises(cpa.ControlledAcceptanceError):
+        cpa.run_controlled_production_acceptance(setup.runtime, scope=caller)
+    assert not setup.calls
+
+
+def test_legacy_policy_stays_byte_equivalent_and_does_not_authorize_extra_owner(setup):
+    normalized = cpa._validate_policy(setup.policy, OWNER)
+    assert cpa.canonical(normalized) == cpa.canonical(setup.policy)
+    assert 'additional_owner_scopes' not in normalized
+    channel = SCOPES[0]
+    with pytest.raises(cpa.ControlledAcceptanceError):
+        cpa.load_controlled_policy(setup.runtime, channel)
+    assert not setup.calls
+
+
+def test_four_distinct_additional_owners_are_allowed_but_primary_is_retained(setup):
+    primary, nightly = two_owner_policy(setup)
+    setup.policy['additional_owner_scopes'] = [{**asdict(nightly), 'user_id': 'owner-' + str(i)} for i in range(4)]
+    for caller in [asdict(primary), *setup.policy['additional_owner_scopes']]:
+        assert cpa._validate_policy(setup.policy, ScopeRef.from_dict(caller)) == setup.policy
+    assert setup.policy['owner_scope'] == asdict(primary) and not setup.calls
+
+
+def test_removing_additional_owner_revokes_its_receipt_without_reassigning_or_rewriting_it(setup):
+    primary, nightly = two_owner_policy(setup)
+    result = cpa.run_controlled_production_acceptance(setup.runtime, scope=asdict(nightly))
+    assert result['accepted']
+    prior = setup.runtime.store.get_by_exact_ref(result['record_id'], scope=nightly, source_id='default').to_dict()
+    setup.policy.pop('additional_owner_scopes')
+    assert not cpa.verify_controlled_production_acceptance(setup.runtime,
+        scope=asdict(nightly), record_id=result['record_id'])['accepted']
+    with pytest.raises(cpa.ControlledAcceptanceError):
+        cpa.run_controlled_production_acceptance(setup.runtime, scope=asdict(nightly))
+    assert setup.runtime.store.get_by_exact_ref(result['record_id'], scope=nightly, source_id='default').to_dict() == prior
+    assert cpa.load_controlled_policy(setup.runtime, primary)['owner_scope'] == asdict(primary)
+
+
 @pytest.mark.skipif(os.name != 'posix' or not hasattr(os, 'geteuid') or os.geteuid() != 0,
                     reason='native root-owned policy requires Linux root')
 @pytest.mark.parametrize('damage', ['valid', 'writable', 'symlink', 'foreign_owner', 'parent_writable', 'parent_symlink'])
