@@ -555,7 +555,7 @@ def controlled_production_closure_report_ok(report: Any) -> bool:
             return False
         assessed = assess_controlled_stability(
             stability.get("samples"), expected_commit=commit,
-            minimum_interval_seconds=60, now=stability["assessed_at"],
+            expected_version=receipt.get("version"), minimum_interval_seconds=60, now=stability["assessed_at"],
         )
         if assessed.get("ok") is not True or assessed != stability:
             return False

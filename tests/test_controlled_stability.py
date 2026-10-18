@@ -21,6 +21,14 @@ def seal(sample):
     return sample
 
 
+def readiness(stamp=None, **overrides):
+    from eimemory.retrieval.readiness_contract import FLAGS, SCHEMA, ORIGIN
+    return {**dict.fromkeys(FLAGS, True), "schema": SCHEMA, "measurement_origin": ORIGIN,
+        "circuit": "closed", "last_error": "", "error": "", "lag_seconds": 0.0,
+        "watermark": "watermark-current", "authority_revision": "123",
+        "observed_at": stamp or datetime.now(timezone.utc).isoformat(), **overrides}
+
+
 def samples():
     now = datetime.now(timezone.utc)
     result = []
@@ -31,9 +39,12 @@ def samples():
             "collector_origin": "native_readonly_host_probe", "read_only": True,
             "natural_certified": False, "ok": True, "blocked_reasons": [],
             "health": {"ok": True, "identity_ok": True, "postgres_fresh": True, "migration_complete": True,
-                "package_tree_digest": "f" * 64},
+                "package_tree_digest": "f" * 64, "version": "1.14.146",
+                "postgres_health_model": "native_readonly_vector_query.v1",
+                "postgres_readiness": readiness((now + timedelta(seconds=offset)).isoformat())},
             "postgres_snapshot": {"ok": True, "measurement_origin": "native_readonly_repository_snapshot",
-                "ready": True, "authority_unchanged": True, "fingerprints_match": True, "revision_matches": True},
+                "ready": True, "authority_unchanged": True, "fingerprints_match": True, "revision_matches": True,
+                "watermark": "watermark-current", "authority_revision": "123"},
             "database": {"ok": True, "read_smoke_ok": True, "owner_read_write_access": True,
                 "same_database_inode": True, "write_probe_performed": False, "ownership": [{"ok": True}],
                 "integrity_basis": "verified_backup_snapshot", "current_full_integrity_scan_performed": False,
@@ -122,6 +133,7 @@ def test_report_structural_recheck_is_deterministic_at_original_assessment_time(
     assessed = datetime.now(timezone.utc) - timedelta(hours=1)
     for sample in value:
         sample["observed_at"] = (datetime.fromisoformat(sample["observed_at"]) - timedelta(hours=1)).isoformat()
+        sample["health"]["postgres_readiness"]["observed_at"] = sample["observed_at"]
         seal(sample)
     first = probe.assess_controlled_stability(value, expected_commit=COMMIT, now=assessed)
     assert first["ok"]
@@ -526,6 +538,8 @@ def test_cold_endpoint_can_prove_identity_but_full_health_remains_strict(monkeyp
     assert identity["retrieval_health_certified"] is False
     assert probe._health(COMMIT)["ok"] is False
     value["retrieval"]["candidate_source"].update(available=True, query_valid=True)
+    assert probe._health(COMMIT)["ok"] is False
+    value["retrieval"]["candidate_source"]["current_readiness"] = readiness()
     assert probe._health(COMMIT)["ok"] is True
 
 

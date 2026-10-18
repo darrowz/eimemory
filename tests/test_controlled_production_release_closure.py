@@ -43,8 +43,9 @@ def stability():
     observations = stability_samples()
     for sample in observations:
         sample["expected_commit"] = receipt()["commit"]
+        sample["health"]["version"] = receipt()["version"]
         seal_stability_sample(sample)
-    return assess_stability(observations, expected_commit=receipt()["commit"])
+    return assess_stability(observations, expected_commit=receipt()["commit"], expected_version=receipt()["version"])
 
 
 def rpc_probe():

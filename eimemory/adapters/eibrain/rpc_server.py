@@ -549,7 +549,7 @@ def _candidate_source_health(runtime: Runtime) -> dict[str, object] | None:
         lag_value = None if lag is None else max(0.0, min(10_000_000.0, float(lag)))
     except (TypeError, ValueError, OverflowError):
         lag_value = None
-    return {
+    result = {
         "enabled": raw.get("enabled") is True,
         "configured": raw.get("configured") is True,
         "available": raw.get("available") is True,
@@ -565,6 +565,19 @@ def _candidate_source_health(runtime: Runtime) -> dict[str, object] | None:
         "watermark": watermark,
         "last_error": last_error,
     }
+    # The enclosing bounded fragment owns its single worker. The native method
+    # has its own deadline and single flight; it never runs a model or recall.
+    readiness_fn = getattr(source, "readiness", None)
+    if callable(readiness_fn):
+        from eimemory.retrieval.readiness_contract import readiness_ok, sanitize_readiness
+        try:
+            measured = readiness_fn(timeout_seconds=0.20)
+        except Exception:
+            measured = None
+        result["current_readiness"] = sanitize_readiness(measured)
+        if not readiness_ok(result["current_readiness"]):
+            result["current_readiness"]["ready"] = False
+    return result
 
 
 def build_health_payload(

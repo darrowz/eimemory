@@ -28,9 +28,10 @@ class _FragmentProbe:
         self.value = None
         self.status = "unavailable"
 
-    def snapshot(self, builder):
+    def snapshot(self, builder, *, max_age_seconds=None):
+        lifetime = _FRAGMENT_TTL_SECONDS if max_age_seconds is None else max_age_seconds
         with self.lock:
-            if self.completed_at is not None and monotonic() - self.completed_at < _FRAGMENT_TTL_SECONDS:
+            if self.completed_at is not None and monotonic() - self.completed_at < lifetime:
                 return self.value, self.status
             launch = not self.running
             if launch:
@@ -82,4 +83,8 @@ def bounded_health_fragment(runtime, name, builder):
         if probe is None:
             probe = _FragmentProbe()
             probes[name] = probe
-    return probe.snapshot(builder)
+    # Candidate readiness has its own generation-aware, authority-fenced TTL.
+    # A second five-second cache would hide a newly known real query failure.
+    # Keep this fragment's worker/single flight/wait bound, but never reuse its
+    # completed candidate payload. Storage migration snapshots retain the TTL.
+    return probe.snapshot(builder, max_age_seconds=0 if name == "candidate_health" else None)

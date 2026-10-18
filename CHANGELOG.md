@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.146] — 2026-10-18
+
+- Verify current PostgreSQL readiness with a bounded read-only vector query and consistent authority snapshots. Preserve last business-query diagnostics and reject real lag, timeouts, fingerprint drift and incomplete observations.
+- Recover current health after normal index catch-up without reusing a revoked query proof. Keep complete authenticated RPC controls and independent native PostgreSQL stability checks.
+- Return a failed registered closure rerun when the recorded business admission is denied.
+- Classify an unfinished embedding wait that exhausts its caller deadline as a budget cancellation; preserve completed backend timeouts as backend failure evidence.
+
 ## [1.14.145] — 2026-10-18
 
 - Count verified historical business memories as qualified business samples under explicit protected operator purpose and exact source/version grants. Preserve native origin and derivation evidence, signed current-release receipts, complete recall and all runtime gates.

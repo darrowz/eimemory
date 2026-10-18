@@ -466,7 +466,8 @@ def _run_controlled_operational_closure(
         expected_commit=release.commit, database_path=database_path,
     )
     stability = assess_controlled_stability(
-        [first_sample, last_sample], expected_commit=release.commit, minimum_interval_seconds=60,
+        [first_sample, last_sample], expected_commit=release.commit, expected_version=release.version,
+        minimum_interval_seconds=60,
     )
     report["stability"] = stability
     if stability.get("ok") is not True:

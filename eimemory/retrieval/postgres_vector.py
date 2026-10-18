@@ -1483,6 +1483,11 @@ class PostgresVectorCandidateSource:
         self._identity_refresh_lock = Lock()
         self._cache: OrderedDict[tuple[Any, ...], tuple[float, tuple[dict[str, Any], ...]]] = OrderedDict()
         self._cache_lock = Lock()
+        self._readiness_lock = Lock()
+        self._readiness_cached: dict[str, object] | None = None
+        self._readiness_authority_identity: tuple[tuple[str, str], str] | None = None
+        self._readiness_checked_at: float | None = None
+        self._readiness_generation = 0
 
     def search(self, request: CandidateRequest) -> CandidateBatch:
         from .diagnostics import SourceTrace
@@ -1621,8 +1626,20 @@ class PostgresVectorCandidateSource:
                             worker_owns_gate = True
                             pending.add_done_callback(lambda _: self._embedding_gate.release())
                             local_batch()
-                            vectors = trace.call('embedding_wait', lambda: pending.result(
-                                timeout=_remaining_timeout(deadline_at, 120.0) if deadline_at else None))
+                            def wait_embedding():
+                                try:
+                                    return pending.result(timeout=_remaining_timeout(deadline_at, 120.0) if deadline_at else None)
+                                except TimeoutError:
+                                    # A timed Future wait is the caller's budget,
+                                    # even on platforms whose wait returns just
+                                    # before the sampled monotonic cutoff.  An
+                                    # already-failed embedding retains its real
+                                    # backend timeout rather than borrowing this
+                                    # request's cancellation provenance.
+                                    if deadline_at and (not pending.done() or pending.exception(timeout=0) is None):
+                                        raise _CandidateFailure('recall_budget_exhausted', origin=_FailureOrigin.BUDGET) from None
+                                    raise
+                            vectors = trace.call('embedding_wait', wait_embedding)
                         finally:
                             executor.shutdown(wait=not deadline_at, cancel_futures=True)
                     else:
@@ -1712,6 +1729,11 @@ class PostgresVectorCandidateSource:
             return self._batch(local_batch(), request=request, state="bypassed", error_code=code)
 
     def _record_query_failure(self, code: str, *, origin: _FailureOrigin | None = None) -> None:
+        if code != 'recall_budget_exhausted':
+            with self._cache_lock:
+                self._readiness_cached = None
+                self._readiness_authority_identity = None
+                self._readiness_generation += 1
         self._last_error = code
         self._last_query_valid = False
         self._last_query_index_identity = None
@@ -1734,6 +1756,9 @@ class PostgresVectorCandidateSource:
             # failure evidence. All of these still revoke query validity.
             "embedding_dimension_mismatch", "embedding_response_invalid",
             "postgres_row_invalid", "authority_cursor_unavailable", "authority_revision_unavailable",
+            # A legitimate sync boundary revokes this query's authority proof;
+            # it does not establish a PostgreSQL transport/backend failure.
+            "authority_revision_changed", "index_watermark_changed",
         }:
             self._backend_query_identity = None
             self._circuit.cancel()
@@ -1854,7 +1879,9 @@ class PostgresVectorCandidateSource:
                 self._last_error = ""
                 self._index_verified = True
                 self._identity_refreshed_at = self._clock()
-                self._circuit.success()
+                # Metadata success is not a backend query.  Only a real query
+                # may erase earlier backend failures or close a half-open probe.
+                self._circuit.cancel()
                 return True
             except Exception as exc:
                 code = _error_code(exc, prefix="postgres")
@@ -1867,6 +1894,192 @@ class PostgresVectorCandidateSource:
                 return False
         finally:
             self._identity_refresh_lock.release()
+
+    def readiness(self, *, force: bool = False, timeout_seconds: float | None = None) -> dict[str, object]:
+        """Measure current readiness independently of the last caller's proof.
+
+        This probe performs an actual bounded vector SELECT in a fixed private
+        partition, discards its rows, and fences PostgreSQL against one SQLite
+        head/revision pair before and after.  It never embeds, hydrates records,
+        creates traffic, or resurrects ``query_valid``/backend query identity.
+        A late PG worker can only release its single-flight slot.
+        """
+        provider = sanitized_embedding_health(self.embedding_provider)
+        result: dict[str, object] = {
+            'schema': 'postgres_candidate_readiness.v1',
+            'measurement_origin': 'native_readonly_vector_query',
+            'ready': False, 'enabled': self.config.enabled,
+            'configured': bool(self.config.configured and self.embedding_provider is not None
+                               and provider.get('configured') is True),
+            'embedding_available': provider.get('available') is True,
+            'index_verified': False, 'backend_query_verified': False,
+            'authority_unchanged': False, 'fingerprints_match': False,
+            'revision_matches': False, 'lag_seconds': None, 'watermark': '',
+            'authority_revision': '', 'circuit': self._circuit.state(),
+            'last_error': '', 'error': '', 'observed_at': datetime.now(timezone.utc).isoformat(),
+        }
+        def failed(code):
+            result.update(ready=False, last_error=code, error=code, circuit=self._circuit.state())
+            return dict(result)
+        if self._startup_error:
+            return failed(self._startup_error)
+        if not self.config.enabled:
+            return failed('disabled')
+        if not result['configured']:
+            return failed('not_configured')
+        if not result['embedding_available']:
+            return failed('embedding_unavailable')
+        maximum = min(2.0, self.config.connect_timeout_seconds + self.config.statement_timeout_ms / 1000)
+        try:
+            timeout = maximum if timeout_seconds is None else min(maximum, max(0.0, float(timeout_seconds)))
+        except (TypeError, ValueError, OverflowError):
+            return failed('recall_budget_exhausted')
+        if not isfinite(timeout) or timeout <= 0:
+            return failed('recall_budget_exhausted')
+        deadline = monotonic() + timeout
+        from .contracts import ExactScope
+        request = CandidateRequest(query='eimemory readiness',
+            scope=ExactScope('eimemory-readiness-private-v1', 'eimemory-readiness-private-v1',
+                             'eimemory-readiness-private-v1', 'eimemory-readiness-private-v1'),
+            kinds=('memory',), source_ids=('eimemory-readiness-private-v1',), limit=1, budget=1,
+            recall_filters=(('_recall_collection_deadline_monotonic', deadline),))
+        now = self._clock()
+        with self._cache_lock:
+            cached = self._readiness_cached
+            checked_at = self._readiness_checked_at
+            cached_authority = self._readiness_authority_identity
+            cached_generation = self._readiness_generation
+        if (not force and cached is not None and checked_at is not None
+                and now - checked_at < self.config.identity_refresh_ttl_seconds
+                and self._circuit.state() != 'open'):
+            if cached.get('ready') is not True:
+                return dict(cached)
+            try:
+                current_authority = _local_candidate_call(self._readiness_authority_snapshot, request)
+            except Exception as exc:
+                return failed(_error_code(exc, prefix='postgres'))
+            with self._cache_lock:
+                if (cached is self._readiness_cached and cached_generation == self._readiness_generation
+                        and current_authority == cached_authority and self._circuit.state() != 'open'):
+                    # Keep the actual probe timestamp: this is a fenced TTL
+                    # reuse, not a new backend query or fresh measurement.
+                    return dict(cached)
+                if cached is self._readiness_cached:
+                    self._readiness_cached = None
+                    self._readiness_authority_identity = None
+        if not self._readiness_lock.acquire(blocking=False):
+            return failed('readiness_probe_in_progress')
+        release_lock = True
+        late_worker = None
+        executor = None
+        allowed = False
+        try:
+            with self._cache_lock:
+                generation = self._readiness_generation
+            if not self._circuit.allow():
+                return failed('circuit_open')
+            allowed = True
+            before = _local_candidate_call(self._readiness_authority_snapshot, request)
+            expected = _local_candidate_call(embedding_provider_fingerprint, self.embedding_provider, self.config)
+            executor = ThreadPoolExecutor(max_workers=1)
+            pending = executor.submit(self._readiness_backend, request, before, expected)
+            try:
+                state, lag = pending.result(timeout=_remaining_timeout(deadline, maximum))
+            except TimeoutError:
+                # Do not release single flight while an uncooperative driver
+                # still runs.  Its completion cannot publish any health proof.
+                if not pending.done():
+                    release_lock = False
+                    late_worker = pending
+                raise _CandidateFailure('postgres_timeout', origin=_FailureOrigin.BACKEND) from None
+            after = _local_candidate_call(self._readiness_authority_snapshot, request)
+            _remaining_timeout(deadline, maximum)
+            if after != before:
+                raise _CandidateFailure('authority_revision_changed', origin=_FailureOrigin.LOCAL)
+            with self._cache_lock:
+                if generation != self._readiness_generation:
+                    raise _CandidateFailure('authority_revision_changed', origin=_FailureOrigin.LOCAL)
+                self._circuit.success()
+                result.update(ready=True, index_verified=True, backend_query_verified=True,
+                    authority_unchanged=True, fingerprints_match=True, revision_matches=True,
+                    lag_seconds=_public_lag_seconds(lag), watermark=state.watermark,
+                    authority_revision=state.authority_revision, circuit=self._circuit.state(),
+                    observed_at=datetime.now(timezone.utc).isoformat())
+                self._readiness_cached = dict(result)
+                self._readiness_authority_identity = before
+                self._readiness_checked_at = self._clock()
+            return dict(result)
+        except Exception as exc:
+            code = _error_code(exc, prefix='postgres')
+            origin = _failure_origin(exc, code=code)
+            if allowed:
+                if origin is _FailureOrigin.BACKEND:
+                    self._circuit.failure()
+                else:
+                    self._circuit.cancel()
+            failed(code)
+            with self._cache_lock:
+                self._readiness_cached = dict(result)
+                self._readiness_authority_identity = None
+                self._readiness_checked_at = self._clock()
+            return dict(result)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
+            if late_worker is not None:
+                # Attach only after publishing the timeout outcome: even an
+                # already-completed worker must not release single flight
+                # before this caller has finished updating the cached failure.
+                late_worker.add_done_callback(lambda _: self._readiness_lock.release())
+            elif release_lock:
+                self._readiness_lock.release()
+
+    def _readiness_authority_snapshot(self, request):
+        snapshot = getattr(self.sqlite_source, 'authority_snapshot', None)
+        if not callable(snapshot):
+            raise RuntimeError('authority_cursor_unavailable')
+        value = snapshot(deadline_at=_collection_deadline(request))
+        if (not isinstance(value, tuple) or len(value) != 2
+                or not isinstance(value[0], tuple) or len(value[0]) != 2
+                or not isinstance(value[1], str) or not value[1].isdigit()):
+            raise RuntimeError('authority_revision_unavailable')
+        return ((_canonical_timestamp(value[0][0]), str(value[0][1] or '')[:512]), value[1])
+
+    def _readiness_backend(self, request, authority, expected):
+        """PG-only worker: no SQLite, embedding, cache or shared proof mutation."""
+        deadline = _collection_deadline(request)
+        state = self.repository.read_index_state(deadline_at=deadline)
+        if not isinstance(state, IndexState):
+            raise _CandidateFailure('postgres_response_invalid', origin=_FailureOrigin.BACKEND)
+        if not state.ready or not state.watermark:
+            raise _CandidateFailure('index_not_ready', origin=_FailureOrigin.LOCAL)
+        if state.embedding_fingerprint != expected:
+            raise _CandidateFailure('embedding_fingerprint_mismatch', origin=_FailureOrigin.LOCAL)
+        if (state.projection_digest_schema != PROJECTION_DIGEST_SCHEMA
+                or state.projection_fingerprint != projection_fingerprint(self.config)):
+            raise _CandidateFailure('projection_fingerprint_mismatch', origin=_FailureOrigin.LOCAL)
+        if state.authority_revision != authority[1]:
+            raise _CandidateFailure('authority_revision_changed', origin=_FailureOrigin.LOCAL)
+        lag = candidate_index_lag_seconds(state, authority_cursor=authority[0], authority_revision=authority[1])
+        if not isfinite(lag) or lag > self.config.max_index_lag_seconds:
+            raise _CandidateFailure('index_lag_exceeded', origin=_FailureOrigin.LOCAL)
+        _remaining_timeout(deadline, self.config.connect_timeout_seconds)
+        rows = self.repository.search(request, (1.0,) + (0.0,) * (self.config.vector_dimension - 1),
+                                      top_k=1, watermark=state.watermark)
+        if not isinstance(rows, list) or len(rows) > 1 or any(not isinstance(row, Mapping) for row in rows):
+            raise _CandidateFailure('postgres_response_invalid', origin=_FailureOrigin.BACKEND)
+        # The private partition's rows never leave this worker or get hydrated.
+        del rows
+        _remaining_timeout(deadline, self.config.connect_timeout_seconds)
+        after = self.repository.read_index_state(deadline_at=deadline)
+        if not isinstance(after, IndexState):
+            raise _CandidateFailure('postgres_response_invalid', origin=_FailureOrigin.BACKEND)
+        if (not after.ready
+                or any(getattr(after, key) != getattr(state, key) for key in (
+                    'watermark', 'authority_revision', 'embedding_fingerprint', 'projection_digest_schema',
+                    'projection_fingerprint', 'authoritative_updated_at', 'authoritative_storage_key'))):
+            raise _CandidateFailure('index_watermark_changed', origin=_FailureOrigin.LOCAL)
+        return after, lag
 
     def effective_identity(self) -> dict[str, object]:
         sqlite_identity_fn = getattr(self.sqlite_source, "effective_identity", None)
@@ -2118,10 +2331,7 @@ class PostgresVectorCandidateSource:
         from .sqlite_source import SQLiteCandidateSource
 
         if isinstance(self.sqlite_source, SQLiteCandidateSource):
-            # Fence the local reads together, but never retain the store lock
-            # across PostgreSQL or embedding IO.
-            with recall_read_scope(self.sqlite_source.store, request.recall_filter_dict()):
-                return self._authority_head(), self._authority_revision()
+            return self._readiness_authority_snapshot(request)
         return self._authority_head(), self._authority_revision()
 
     def _authority_head(self) -> tuple[str, str] | None:

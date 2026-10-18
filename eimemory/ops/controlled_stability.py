@@ -108,6 +108,7 @@ try:
             revision_matches=state.authority_revision==after[0],
             lag_seconds=lag if math.isfinite(lag) else None,
             maximum_lag_seconds=config.max_index_lag_seconds,
+            watermark=state.watermark, authority_revision=state.authority_revision,
             error='' if ok else 'projection_not_current')
     finally:
         conn.close()
@@ -234,25 +235,40 @@ def collect_controlled_endpoint_identity(*, expected_commit: str) -> dict[str, A
 
 
 def _health(expected_commit: str) -> dict[str, Any]:
+    from eimemory.retrieval.readiness_contract import readiness_ok, sanitize_readiness
     value = _authenticated_health_payload()
     identity = _endpoint_identity(value, expected_commit)
     store = value.get("store", {})
     checks = value.get("checks", {})
     candidate = value.get("retrieval", {}).get("candidate_source", {})
-    lag = candidate.get("lag_seconds")
-    pg_ok = (all(candidate.get(key) is True for key in
-                 ("enabled", "configured", "available", "index_verified", "query_valid"))
-        and candidate.get("circuit") == "closed" and candidate.get("last_error") == ""
-        and type(lag) in (int, float) and math.isfinite(lag) and 0 <= lag <= 60)
+    current = sanitize_readiness(candidate.get("current_readiness"))
+    lag = current.get("lag_seconds")
+    pg_ok = (candidate.get("enabled") is True and candidate.get("configured") is True
+             and readiness_ok(current))
     return {"ok": value.get("ok") is True and identity["ok"] and pg_ok and checks.get("ready") is True
                     and store.get("migration_complete") is True,
             "identity_ok": identity["ok"], "version": identity["version"],
             "package_tree_digest": identity["package_tree_digest"], "postgres_fresh": pg_ok,
             "postgres_lag_seconds": lag if type(lag) in (int, float) and math.isfinite(lag) else None,
-            "postgres_error": candidate.get("last_error") if candidate.get("last_error") in
+            "postgres_error": current.get("last_error") if current.get("last_error") in
                 {"", "authority_revision_changed", "index_lag_exceeded", "index_not_ready",
                  "candidate_health_unavailable", "postgres_unavailable", "circuit_open"} else "unavailable",
-            "migration_complete": store.get("migration_complete") is True}
+            "migration_complete": store.get("migration_complete") is True,
+            "postgres_health_model": "native_readonly_vector_query.v1", "postgres_readiness": current,
+            "last_query_valid": candidate.get("query_valid") is True,
+            "last_query_error": candidate.get("last_error") if candidate.get("last_error") in
+                {"", "authority_revision_changed", "index_lag_exceeded", "index_not_ready",
+                 "candidate_health_unavailable", "postgres_unavailable", "circuit_open"} else "unavailable"}
+
+
+def _current_pg_agrees(health, snapshot, *, at=None):
+    from eimemory.retrieval.readiness_contract import readiness_ok
+
+    current = health.get("postgres_readiness")
+    return bool(health.get("postgres_health_model") == "native_readonly_vector_query.v1"
+        and readiness_ok(current, at=at) and snapshot.get("ok") is True
+        and current.get("watermark") == snapshot.get("watermark")
+        and current.get("authority_revision") == snapshot.get("authority_revision"))
 
 
 def _process_status(state: dict[str, str], expected_commit: str) -> dict[str, Any]:
@@ -531,6 +547,8 @@ def collect_controlled_stability_sample(*, expected_commit: str, database_path: 
                 result["postgres_snapshot"] = {"ok": False, "error_type": type(exc).__name__}
             if result["postgres_snapshot"].get("ok") is not True:
                 result["blocked_reasons"].append("native_postgres_not_current")
+            if not _current_pg_agrees(result.get("health", {}), result["postgres_snapshot"]):
+                result["blocked_reasons"].append("postgres_readiness_identity_mismatch")
             units = []
             for state in states:
                 unit = state["Id"]
@@ -565,6 +583,7 @@ def collect_controlled_stability_sample(*, expected_commit: str, database_path: 
 
 def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commit: str,
                                 minimum_interval_seconds: int = 60,
+                                expected_version: str | None = None,
                                 now: datetime | str | None = None) -> dict[str, Any]:
     """Assess a current window, or reproduce a signed report at its assessed_at.
 
@@ -572,6 +591,12 @@ def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commi
     that a historical observation describes the current running release.
     """
     commit = _commit(expected_commit)
+    if expected_version is None:
+        from eimemory.version import __version__
+        expected_version = __version__
+    trusted_version = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", expected_version)
+    if trusted_version is None:
+        raise ValueError("expected_release_version_required")
     assessed = datetime.now(timezone.utc) if now is None else (
         datetime.fromisoformat(now.replace("Z", "+00:00")) if isinstance(now, str) else now)
     if not isinstance(assessed, datetime) or assessed.tzinfo is None:
@@ -602,6 +627,15 @@ def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commi
                         or any(native_pg.get(k) is not True for k in ("ready", "authority_unchanged", "fingerprints_match", "revision_matches"))):
                     reasons.append("native_postgres_unverified")
                 health, database, journal, capture = (sample.get(k, {}) for k in ("health", "database", "journal", "capture"))
+                # Old saved releases retain their historical structural model.
+                # Every current collector always emits the new model and proof.
+                legacy = (tuple(map(int, trusted_version.groups())) < (1, 14, 146)
+                          and health.get("version") == expected_version
+                          and "postgres_health_model" not in health and "postgres_readiness" not in health)
+                if health.get("version") != expected_version:
+                    reasons.append("sample_release_version_mismatch")
+                if not legacy and not _current_pg_agrees(health, native_pg, at=sample.get("observed_at")):
+                    reasons.append("sample_current_postgres_readiness_unverified")
                 if any(health.get(k) is not True for k in ("identity_ok", "postgres_fresh", "migration_complete")):
                     reasons.append("sample_health_unverified")
                 if (any(database.get(k) is not True for k in ("read_smoke_ok", "owner_read_write_access", "same_database_inode"))

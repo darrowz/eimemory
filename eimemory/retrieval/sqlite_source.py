@@ -87,6 +87,35 @@ class SQLiteCandidateSource:
 
         return str(self.store.read_consistent(_read))
 
+    def authority_snapshot(self, *, deadline_at: float = 0.0) -> tuple[tuple[str, str], str]:
+        """Read the projection head and revision in one bounded SQLite snapshot.
+
+        Taking a Python lock around two independent pooled-reader transactions
+        does not make them one observation.  Keep both SELECTs on the same WAL
+        reader and transaction; never retain that reader across PostgreSQL IO.
+        """
+        filters = {'_recall_collection_deadline_monotonic': deadline_at}
+        with self.store.borrow_reader(deadline=deadline_at or None) as slot:
+            sqlite = slot.store
+            with recall_read_scope(self.store, filters, sqlite=sqlite, lock=slot.lock, lock_held=True):
+                started = not sqlite.in_transaction
+                if started:
+                    sqlite.execute('BEGIN')
+                try:
+                    memory_only = self._memory_authority is not None
+                    condition = " WHERE kind='memory' AND status='active'" if memory_only else ''
+                    row = sqlite.execute('SELECT updated_at,storage_key FROM records' + condition
+                        + ' ORDER BY updated_at DESC,storage_key DESC LIMIT 1').fetchone()
+                    table = 'memory_vector_revision' if memory_only else 'vector_sync_revision'
+                    revision = sqlite.execute('SELECT revision FROM ' + table + ' WHERE singleton=1').fetchone()
+                    if revision is None:
+                        raise RuntimeError('authority_revision_unavailable')
+                    head = ('', '') if row is None else (str(row['updated_at'] or '')[:64], str(row['storage_key'] or '')[:512])
+                    return head, str(int(revision['revision']))
+                finally:
+                    if started and sqlite.in_transaction:
+                        sqlite.rollback()
+
     def effective_identity(self) -> dict[str, object]:
         """Return the bounded identity of the authoritative retrieval source."""
         payload: dict[str, object] = {

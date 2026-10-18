@@ -3,7 +3,8 @@
 # the capture is recorded exactly like the installer's own closure: the raw
 # output goes through record_release_closure_incident.py into
 # $EIMEMORY_LOG_DIR/release-closure-captures with an attempt id, instead of
-# being an orphaned JSON file.
+# being an orphaned JSON file. The manual command succeeds only when the saved
+# closure is admitted; successful incident recording alone is not acceptance.
 #
 #   rerun_release_closure.sh --prior-commit <40-hex>            # run + register
 #   rerun_release_closure.sh --register <closure.json> [--exit-status N]
@@ -112,4 +113,5 @@ env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
   --evidence-dir "$EIMEMORY_LOG_DIR/release-closure-captures" \
   --expected-commit "$COMMIT" --attempt-id "$ATTEMPT_ID" \
   --closure-exit-status "$closure_status" \
-  --scope-agent "$SCOPE_AGENT" --scope-workspace "$SCOPE_WORKSPACE" --scope-user "$SCOPE_USER"
+  --scope-agent "$SCOPE_AGENT" --scope-workspace "$SCOPE_WORKSPACE" --scope-user "$SCOPE_USER" \
+  --enforce-gate
