@@ -458,7 +458,7 @@ def verify_and_record_deployment(
 
     rollback_commands = [] if bootstrap else [
         ["bash", str(repo / "deploy" / "install_immutable_release.sh"), rollback_commit],
-        ["systemctl", "--user", "restart", "eimemory-rpc.service"],
+        ["python3", "-I", "-B", str(repo / "deploy" / "runtime_manager_control.py"), "transition", "rollback"],
         ["curl", "-fsS", normalized_health_url],
     ]
     rollback_command = (

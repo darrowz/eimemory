@@ -1151,31 +1151,12 @@ def check_rpc_user_systemd_owner() -> dict[str, Any]:
     if os.name == "nt":
         return {"ok": True, "skipped": True, "reason": "systemctl_unavailable_on_windows"}
 
-    system_owner_active = _systemctl_output(["is-active", "eimemory-rpc.service"])
-    system_owner_enabled = _systemctl_output(["is-enabled", "eimemory-rpc.service"])
-    system_owner_fragment = _systemctl_output(["show", "eimemory-rpc.service", "-p", "FragmentPath", "--value"])
-    user_owner_active = _user_systemctl_output(["is-active", "eimemory-rpc.service"])
-    user_owner_enabled = _user_systemctl_output(["is-enabled", "eimemory-rpc.service"])
-    reasons: list[str] = []
-    if system_owner_active == "active":
-        reasons.append("system_rpc_service_active")
-    if system_owner_enabled == "enabled":
-        reasons.append("system_rpc_service_enabled")
-    if system_owner_fragment:
-        reasons.append("system_rpc_service_unit_present")
-    if user_owner_active != "active":
-        reasons.append("user_rpc_service_not_active")
-    if user_owner_enabled != "enabled":
-        reasons.append("user_rpc_service_not_enabled")
-    return {
-        "ok": not reasons,
-        "reason": ",".join(reasons),
-        "system_owner_active": system_owner_active or "unknown",
-        "system_owner_enabled": system_owner_enabled or "unknown",
-        "system_owner_fragment": system_owner_fragment,
-        "user_owner_active": user_owner_active or "unknown",
-        "user_owner_enabled": user_owner_enabled or "unknown",
-    }
+    from eimemory.core.runtime_manager import request
+    try:
+        report = request("single_rpc_owner")
+        return {"ok": report.get("single_owner") is True, "manager": "system", "reason": ""}
+    except (OSError, ValueError, RuntimeError) as exc:
+        return {"ok": False, "reason": "registered_rpc_owner_unverified", "error_type": type(exc).__name__}
 
 
 def check_openclaw_loopback_proxy_user_service() -> dict[str, Any]:

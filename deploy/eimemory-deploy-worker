@@ -85,7 +85,7 @@ fi
 set -e
 
 current="$(basename "$(readlink -f /opt/eimemory/current 2>/dev/null || true)")"
-service="$(systemctl --user is-active eimemory-rpc.service 2>/dev/null || true)"
+service="$(/usr/bin/python3 -I -B "$REPO/deploy/runtime_manager_control.py" systemctl is-active eimemory-rpc.service)"
 # urllib collector: exits only 0/1/2. Never use curl redirect (exit 23 write/pipe).
 # Isolated interpreter still needs the repo on PYTHONPATH to import eimemory.
 set +e

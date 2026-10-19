@@ -16,6 +16,14 @@ from eimemory.ops.timer_monitor import (
 SCOPE = {"agent_id": "ops", "workspace_id": "honxin", "user_id": "darrow"}
 
 
+@pytest.fixture(autouse=True)
+def _registered_fixture_managers(monkeypatch):
+    from eimemory.contracts.runtime_manager import USER_COMPAT_UNITS
+    from eimemory.core import runtime_manager
+    # Explicit test registry, never infer a manager from the runner's health.
+    monkeypatch.setattr(runtime_manager,"manager_for",lambda unit:"user" if unit in USER_COMPAT_UNITS else "system")
+
+
 def _healthy_or_absent(args, installed=()):
     unit = args[args.index("show") + 1]
     if unit.startswith("openclaw-") and unit not in installed:
@@ -75,7 +83,9 @@ def test_optional_unitsets_are_adapter_independent(tmp_path, monkeypatch):
         runtime.close()
 
 
-def test_optional_adapter_system_namespace_is_discovered(tmp_path):
+def test_optional_adapter_uses_its_declared_namespace_without_fallback(tmp_path, monkeypatch):
+    from eimemory.core import runtime_manager
+    monkeypatch.setattr(runtime_manager,"manager_for",lambda unit:"system")
     def runner(args):
         if "--user" in args:
             return _healthy_or_absent(args)
@@ -118,7 +128,9 @@ def test_explicit_optional_units_are_required_even_if_uninstalled(tmp_path):
 @pytest.mark.parametrize("broken_scope", ["user", "system", "both"])
 def test_optional_adapter_query_errors_are_not_treated_as_absence(tmp_path, broken_scope):
     runtime = Runtime.create(root=tmp_path)
+    calls = []
     def runner(args):
+        calls.append(args)
         unit = args[args.index("show") + 1]
         namespace = "user" if "--user" in args else "system"
         if unit.startswith("openclaw-") and broken_scope in {namespace, "both"}:
@@ -126,8 +138,15 @@ def test_optional_adapter_query_errors_are_not_treated_as_absence(tmp_path, brok
         return _healthy_or_absent(args)
     try:
         report = check_user_systemd_timers(runtime, runner=runner, persist=False)
-        assert report["ok"] is False
-        assert any(row["unit"].startswith("openclaw-") and row.get("error") for row in report["units"])
+        if broken_scope == "system":
+            # This adapter is explicitly registered with the user manager.
+            # An unrelated shadow namespace is never queried or used as proof.
+            assert report["ok"] is True
+            assert report["optional_adapters"]["openclaw"]["status"] == "absent"
+            assert all("--user" in args for args in calls if args[args.index("show") + 1].startswith("openclaw-"))
+        else:
+            assert report["ok"] is False
+            assert any(row["unit"].startswith("openclaw-") and row.get("error") for row in report["units"])
     finally:
         runtime.close()
 

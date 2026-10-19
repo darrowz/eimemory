@@ -184,6 +184,11 @@ _install_as_service_user() {
 # Prove user-manager sandbox support BEFORE changing the current link or
 # stopping existing services. Do not discover an unsupported kernel on rollback.
 _preflight_release_readonly() {
+  if _runtime_manager_enabled; then
+    _runtime_manager_control probe || return $?
+    echo "release_readonly_preflight=passed manager=system"
+    return 0
+  fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then return 0; fi
   if ! command -v systemd-run >/dev/null 2>&1; then
     echo "release_readonly_preflight=failed systemd_run_missing" >&2
@@ -229,6 +234,11 @@ _clean_existing_release_and_validate_source() {
 }
 
 _retire_system_rpc_unit() {
+  if _runtime_manager_enabled; then
+    # PID1 is the registered owner. Retiring it would destroy the new owner.
+    _runtime_manager_control inventory >/dev/null || return $?
+    return 0
+  fi
   if ! command -v systemctl >/dev/null 2>&1; then
     if [ -e "$SYSTEM_RPC_UNIT_PATH" ] || [ -L "$SYSTEM_RPC_UNIT_PATH" ]; then
       echo "legacy_system_rpc=state_failed systemd_unavailable" >&2
@@ -410,17 +420,22 @@ _preflight_openclaw_adapter() {
   echo "openclaw_adapter_preflight=verified"
 }
 
+# All reads use the root-reviewed declaration. Lifecycle changes require the
+# independent registered deployment job; there is no --user/system fallback.
+_runtime_manager_control() {
+  _run_as_service_user "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/runtime_manager_control.py" "$@"
+}
+
+_runtime_manager_enabled() {
+  [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ]
+}
+
+_runtime_manager_phase() {
+  _runtime_manager_control transition "$1"
+}
+
 _user_systemctl() {
-  if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
-    local service_uid
-    service_uid="$(id -u "$SERVICE_USER")"
-    _run_as_service_user env \
-      XDG_RUNTIME_DIR="/run/user/$service_uid" \
-      DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$service_uid/bus" \
-      systemctl --user "$@"
-  else
-    systemctl --user "$@"
-  fi
+  _runtime_manager_control systemctl "$@"
 }
 
 
@@ -497,6 +512,13 @@ _storage_unit_is_active() {
 }
 
 _stop_storage_writers() {
+  if _runtime_manager_enabled; then
+    _capture_storage_writers || return $?
+    STORAGE_WRITERS_STOPPED=1
+    _runtime_manager_phase quiesce || return $?
+    echo "storage_writer_stop=complete captured=${#ACTIVE_STORAGE_WRITER_UNITS[@]} manager=system"
+    return 0
+  fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     echo "storage_writer_stop=failed systemd_unavailable" >&2
     return 2
@@ -576,6 +598,13 @@ _capture_storage_writers() {
 }
 
 _restart_storage_writers() {
+  if _runtime_manager_enabled; then
+    [ "$STORAGE_WRITERS_STOPPED" = "1" ] || return 0
+    _runtime_manager_phase resume || return $?
+    STORAGE_WRITERS_STOPPED=0
+    echo "storage_writer_restart=complete restored=${#ACTIVE_STORAGE_WRITER_UNITS[@]} manager=system"
+    return 0
+  fi
   if [ "$STORAGE_WRITERS_STOPPED" != "1" ]; then
     return 0
   fi
@@ -807,6 +836,13 @@ _release_candidate_validation_lock() {
 }
 
 _install_storage_release_guards() {
+  if _runtime_manager_enabled; then
+    _install_storage_release_transaction_helper || return $?
+    # The root-reviewed PID1 template has the same fixed storage ExecCondition.
+    _runtime_manager_control inventory >/dev/null || return $?
+    echo "storage_release_guard=registered manager=system"
+    return 0
+  fi
   _install_storage_release_transaction_helper
   if ! command -v systemctl >/dev/null 2>&1; then
     return
@@ -1243,6 +1279,10 @@ _inspect_openclaw_plugin_runtime() {
 }
 
 _install_learning_runtime_policy() {
+  if _runtime_manager_enabled; then
+    _runtime_manager_control inventory >/dev/null || return $?
+    return 0
+  fi
   local target_release="${1:-$RELEASE_DIR}"
   _user_systemctl disable --now eimemory-l5-observation-gate.timer >/dev/null 2>&1 || true
   _user_systemctl stop eimemory-l5-observation-gate.service >/dev/null 2>&1 || true
@@ -1327,6 +1367,10 @@ _install_learning_runtime_policy() {
 }
 
 _start_learning_runtime_timers() {
+  if _runtime_manager_enabled; then
+    # The exact captured set is restored together by the bridge after commit.
+    return 0
+  fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then return 0; fi
   local unit
   for unit in "${LEARNING_TIMER_UNITS[@]}"; do
@@ -1335,6 +1379,10 @@ _start_learning_runtime_timers() {
 }
 
 _install_code_implementation_owner_policy() {
+  if _runtime_manager_enabled; then
+    _runtime_manager_control inventory >/dev/null || return $?
+    return 0
+  fi
   local target_release="${1:-$RELEASE_DIR}"
   local service_source="$target_release/deploy/systemd/eimemory-code-implementation-refresh.service"
   local timer_source="$target_release/deploy/systemd/eimemory-code-implementation-refresh.timer"
@@ -1382,6 +1430,10 @@ _install_code_implementation_owner_policy() {
 }
 
 _start_code_implementation_owner() {
+  if _runtime_manager_enabled; then
+    # A background provider refresh is a writer, not a pre-commit exception.
+    return 0
+  fi
   local target_release="${1:-$RELEASE_DIR}"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return 0
@@ -1413,6 +1465,13 @@ _start_code_implementation_owner() {
 }
 
 _install_current_runtime_metadata() {
+  if _runtime_manager_enabled; then
+    # Root renders only its reviewed templates; the candidate cannot supply a
+    # privileged service, drop-in, command, path or environment to the bridge.
+    _runtime_manager_phase publish || return $?
+    _install_hermes_integration "$@" || return $?
+    return 0
+  fi
   local target_release="${1:-$RELEASE_DIR}"
   local target_commit="${2:-$COMMIT}"
   local metadata_release="${3:-$target_release}"
@@ -1600,6 +1659,10 @@ _install_hermes_integration() {
 }
 
 _refresh_current_runtime_metadata() {
+  if _runtime_manager_enabled; then
+    _runtime_manager_phase rollback || return $?
+    return 0
+  fi
   _install_current_runtime_metadata "$@"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return 0
@@ -1658,6 +1721,10 @@ _select_baseline_prior_commit() {
 }
 
 _pause_release_closure_reconcile() {
+  if _runtime_manager_enabled; then
+    # The path is included in quiesce. Never expose naked stop/reset operations.
+    return 0
+  fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return 0
   fi
@@ -1668,6 +1735,10 @@ _pause_release_closure_reconcile() {
 }
 
 _resume_release_closure_reconcile() {
+  if _runtime_manager_enabled; then
+    _runtime_manager_phase resume_watchers || return $?
+    return 0
+  fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return 0
   fi
@@ -1684,6 +1755,18 @@ _resume_release_closure_reconcile() {
 }
 
 _restart_current_services() {
+  if _runtime_manager_enabled; then
+    local managed_current
+    managed_current="$(realpath -e -- "$CURRENT_LINK")" || return $?
+    if [ "${managed_current##*/}" = "$COMMIT" ]; then
+      _runtime_manager_phase activate || return $?
+    else
+      _runtime_manager_phase rollback || return $?
+    fi
+    _verify_release_health "$managed_current" "${managed_current##*/}" || return $?
+    _runtime_manager_control single-owner >/dev/null || return $?
+    return 0
+  fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return 0
   fi
@@ -1715,6 +1798,9 @@ _restart_current_services() {
 }
 
 _start_managed_runtime_timers() {
+  if _runtime_manager_enabled; then
+    return 0
+  fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return 0
   fi
@@ -1744,6 +1830,11 @@ _wait_openclaw_gateway_ready() {
 }
 
 _restart_gateway_unit() {
+  if _runtime_manager_enabled; then
+    # Core gateways are restored during activate/rollback as one fixed phase.
+    _runtime_manager_control systemctl is-active --quiet "$1"
+    return $?
+  fi
   # Stop-confirmed restart of one Hermes gateway unit (main or profile).
   local unit="$1" pid_file="$2" suffix="${3:-}"
   # Hermes currently reports a successful websocket close as exit status 1
@@ -1817,6 +1908,12 @@ if value.isdigit() and int(value) > 0:
 }
 
 _restart_hermes_gateway() {
+  if _runtime_manager_enabled; then
+    if _hermes_is_installed; then
+      _runtime_manager_control systemctl is-active --quiet hermes-gateway.service || return $?
+    fi
+    return 0
+  fi
   if ! _hermes_is_installed || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || \
      ! command -v systemctl >/dev/null 2>&1; then
     return 0
@@ -2047,6 +2144,13 @@ print(f"{timeout:g}")
 }
 
 _install_candidate_runtime_metadata() {
+  if _runtime_manager_enabled; then
+    _refresh_openclaw_gateway_metadata "$RELEASE_DIR" "$COMMIT" || return $?
+    _install_current_runtime_metadata "$RELEASE_DIR" "$COMMIT" "$REPO_DIR" || return $?
+    _install_openclaw_loop_compat_script "$RELEASE_DIR" || return $?
+    _refresh_openclaw_plugin_registry || return $?
+    return 0
+  fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
     _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
     # Migrate away from polling. The dedicated receipt signal changes only
@@ -3233,7 +3337,7 @@ if [ "${EIMEMORY_RELEASE_ROTATION:-1}" = "1" ] && [ -f "$RELEASE_DIR/deploy/rota
 fi
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && \
    [ -f "$RELEASE_DIR/deploy/systemd/eimemory-vector-sync.timer" ]; then
-  _user_systemctl start eimemory-vector-sync.timer
+  if ! _runtime_manager_enabled; then _user_systemctl start eimemory-vector-sync.timer; fi
 fi
 trap - EXIT
 if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ] && \

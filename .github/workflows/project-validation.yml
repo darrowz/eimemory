@@ -62,6 +62,7 @@ jobs:
           tests/test_code_policy_operator.py
           tests/test_code_automation_policy_issue.py
           tests/test_runtime_identity_drift.py
+          tests/test_runtime_manager.py
           tests/test_system_code_repair.py
           tests/test_system_code_repair_failure.py
           tests/test_l5_v3_lineage_contract.py

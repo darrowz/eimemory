@@ -140,7 +140,7 @@ _INHERITED_COMMAND_KEYS = ("EIMEMORY_RECALL_LLM_COMMAND",)
 
 
 def _systemctl_user_show(*properties: str) -> str:
-    """``systemctl --user show`` for the RPC unit ("" when unavailable).
+    """Declared-manager ``systemctl show`` for the RPC unit ("" when unavailable).
 
     A deploy/closure process may lack ``XDG_RUNTIME_DIR``; the user manager's
     socket is still at ``/run/user/<uid>``, exactly as the installer uses it.
@@ -152,7 +152,12 @@ def _systemctl_user_show(*properties: str) -> str:
         if not runtime_dir or not os.path.isdir(runtime_dir):
             return ""
         env["XDG_RUNTIME_DIR"] = runtime_dir
-    argv = ["systemctl", "--user", "show", _RPC_UNIT]
+    from eimemory.core.runtime_manager import manager_for
+    try:
+        declared_manager = manager_for(_RPC_UNIT)
+    except (OSError, ValueError, RuntimeError):
+        return ""
+    argv = ["systemctl", *(["--user"] if declared_manager == "user" else []), "show", _RPC_UNIT]
     for name in properties:
         argv.extend(["-p", name])
     argv.append("--value")
@@ -163,7 +168,6 @@ def _systemctl_user_show(*properties: str) -> str:
     if completed.returncode != 0:
         return ""
     return completed.stdout or ""
-
 
 def _environment_file_paths(raw: str) -> list[str]:
     paths: list[str] = []

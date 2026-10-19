@@ -167,25 +167,21 @@ def _default_units(*, include_legacy_learning_timers: bool = False) -> list[str]
 
 
 def _collect_unit_states(units: list[str], *, runner: Callable[[list[str]], str] | None = None) -> list[dict[str, Any]]:
-    call = runner or _run_systemctl
+    from eimemory.core.runtime_manager import manager_for, unit_state
     states: list[dict[str, Any]] = []
+    properties = ("LoadState", "ActiveState", "SubState", "UnitFileState", "LastTriggerUSec", "NextElapseUSecRealtime", "Result")
     for unit in units:
-        errors: list[str] = []
-        state: dict[str, Any] = {}
-        for user in (True, False):
-            try:
-                candidate = _parse_systemctl_show(unit, _show_unit(call, unit, user=user))
-                if not candidate.get("load_state") or not candidate.get("active_state"):
-                    raise ValueError("systemctl response missing unit state")
-                state = candidate
-                if state["load_state"] != "not-found":
-                    break
-            except Exception as exc:
-                errors.append(f"{'user' if user else 'system'}={exc}")
-        # A functioning fallback may prove a unit exists, but not prove absence
-        # in a namespace whose query failed.
-        if errors and (not state or state.get("load_state") in {"", "not-found"}):
-            state = {"unit": unit, "load_state": "unknown", "active_state": "unknown", "error": "; ".join(errors)}
+        try:
+            if runner is None:
+                data = unit_state(unit, properties)
+                raw = "\n".join(key + "=" + value for key, value in data.items())
+            else:
+                raw = _show_unit(runner, unit, user=manager_for(unit) == "user")
+            state = _parse_systemctl_show(unit, raw)
+            if not state.get("load_state") or not state.get("active_state"):
+                raise ValueError("systemctl response missing unit state")
+        except Exception as exc:
+            state = {"unit": unit, "load_state": "unknown", "active_state": "unknown", "error": type(exc).__name__}
         states.append(state)
     return states
 

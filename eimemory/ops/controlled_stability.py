@@ -140,11 +140,9 @@ def _run(args: list[str]) -> str:
 
 
 def _unit_states() -> list[dict[str, str]]:
-    raw = _run(["systemctl", "--user", "show", *UNITS, "--property=" + _PROPERTIES])
-    states = []
-    for block in raw.strip().split("\n\n"):
-        values = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
-        states.append({key: values.get(key, "") for key in _PROPERTIES.split(",")})
+    from eimemory.core.runtime_manager import unit_state
+    properties = tuple(_PROPERTIES.split(","))
+    states = [unit_state(unit, properties) for unit in UNITS]
     if len(states) != len(UNITS) or {s["Id"] for s in states} != set(UNITS):
         raise ValueError("unit_inventory_incomplete")
     return states
@@ -488,30 +486,8 @@ def _journal_output(args: list[str]) -> str:
 
 
 def _journal() -> dict[str, Any]:
-    pattern = "|".join("(?:" + value + ")" for _name, value in _JOURNAL_ERROR_PATTERNS)
-    end = datetime.now(timezone.utc).timestamp()
-    args = ["journalctl", "--user", "--quiet", f"--since=@{end - 600:.6f}", f"--until=@{end:.6f}", "--no-pager", "--all",
-            "--output=json", "--lines=2001", "--grep=" + pattern, "--case-sensitive=no"]
-    for unit in RUNTIME_UNITS + JOB_UNITS:
-        args += ["--unit=" + unit]
-    lines = _journal_output(args).splitlines()
-    if len(lines) > 2000:
-        raise ValueError("journal_window_truncated")
-    counters = {name: 0 for name, _pattern in _JOURNAL_ERROR_PATTERNS}
-    for line in lines:
-        entry = strict_json_loads(line, max_bytes=262144)
-        if not isinstance(entry, dict) or not isinstance(entry.get("MESSAGE"), str):
-            raise ValueError("journal_message_contract_invalid")
-        matched = {name: bool(re.search(pattern, entry["MESSAGE"], re.IGNORECASE))
-                   for name, pattern in _JOURNAL_ERROR_PATTERNS}
-        if not any(matched.values()):
-            raise ValueError("journal_filter_contract_invalid")
-        for name, found in matched.items():
-            counters[name] += int(found)
-    return {"ok": not any(counters.values()), "window_seconds": 600,
-            "observation_scope": "allowlisted_user_unit_journal", "entries_observed": len(lines),
-            "entry_selection": "native_error_pattern_matches",
-            "native_database_counters_available": False, "observed_error_counts": counters}
+    from eimemory.core.runtime_manager import request
+    return request("error_window")["report"]
 
 
 def collect_controlled_stability_sample(*, expected_commit: str, database_path: str | Path) -> dict[str, Any]:

@@ -485,7 +485,6 @@ def _timer_owner_status(*, runner: Callable[[list[str]], str] | None) -> dict[st
 def _unit_status(unit: str, *, call: Callable[[list[str]], str]) -> dict[str, str]:
     args = [
         "systemctl",
-        "--user",
         "show",
         unit,
         "--property=LoadState,ActiveState,SubState,UnitFileState,LastTriggerUSec,NextElapseUSecRealtime,Result",
@@ -518,7 +517,11 @@ def _unit_status(unit: str, *, call: Callable[[list[str]], str]) -> dict[str, st
 
 
 def _run_systemctl(args: list[str]) -> str:
-    return subprocess.run(args, check=True, text=True, capture_output=True).stdout
+    from eimemory.core.runtime_manager import unit_state
+    unit = args[2]
+    properties = next(item.partition("=")[2] for item in args if item.startswith("--property="))
+    values = unit_state(unit, tuple(properties.split(",")))
+    return "\n".join(key + "=" + value for key, value in values.items())
 
 
 def _inspection_unavailable(

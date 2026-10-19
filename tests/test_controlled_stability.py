@@ -219,6 +219,22 @@ def test_unsafe_sidecar_rejected(tmp_path):
         probe._database(path)
 
 
+@pytest.fixture(autouse=True)
+def _registered_manager_journal_boundary(monkeypatch):
+    import importlib.util
+    from eimemory.contracts import runtime_manager as contract
+    source=Path(__file__).resolve().parents[1]/"deploy/runtime_manager_bridge.py"
+    spec=importlib.util.spec_from_file_location("tested_root_manager_bridge",source)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    bridge=module.Bridge(contract)
+    registry={"runtime_uid":1001,"units":{unit:{"installed":True,"manager":"user" if unit.startswith("hermes-") else "system"}
+        for unit in probe.RUNTIME_UNITS+probe.JOB_UNITS}}
+    # The existing callback fixtures exercise the same native reader contract.
+    # Root's concrete reader is separately exercised by runtime-manager tests.
+    bridge.journal_output=lambda args:probe._journal_output(args)
+    monkeypatch.setattr(probe,"_journal",lambda:bridge.error_window(registry))
+
+
 def test_journal_exports_only_counts_not_messages(monkeypatch):
     monkeypatch.setattr(probe, "_journal_output", lambda args: '\n'.join(json.dumps({"MESSAGE": value}) for value in
         ["secretbusiness sqlite3.OperationalError: database is locked", "Failed with result oom-kill", "segfault"]))
@@ -259,7 +275,8 @@ def test_journal_native_filter_and_classifier_share_patterns_and_keep_old_errors
     assert "private" not in json.dumps(report)
     assert len(commands) == 2
     for args in commands:
-        assert all("--unit=" + unit in args for unit in probe.RUNTIME_UNITS + probe.JOB_UNITS)
+        assert all(("_SYSTEMD_USER_UNIT=" if unit.startswith("hermes-") else "_SYSTEMD_UNIT=") + unit in args for unit in probe.RUNTIME_UNITS + probe.JOB_UNITS)
+        assert "--user" not in args and "+" in args and "_UID=1001" in args
         assert "--quiet" in args and "--all" in args
     bounds = [[arg for arg in args if arg.startswith(("--since=", "--until="))] for args in commands]
     assert bounds[0] == bounds[1]

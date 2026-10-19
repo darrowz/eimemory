@@ -404,36 +404,11 @@ def _observation_time(value: Any) -> datetime:
 
 
 def _systemd_environment(unit: str) -> str | None:
-    completed = subprocess.run(
-        [
-            "systemctl",
-            "--user",
-            "show",
-            unit,
-            "--property=LoadState",
-            "--property=Environment",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if completed.returncode != 0:
+    from eimemory.core.runtime_manager import runtime_commit
+    try:
+        return "EIMEMORY_RUNTIME_COMMIT=" + runtime_commit(unit)
+    except (OSError, ValueError, RuntimeError):
         return None
-    properties: dict[str, str] = {}
-    environments: list[str] = []
-    for line in completed.stdout.splitlines():
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        if key == "Environment":
-            if value.strip():
-                environments.append(value.strip())
-            continue
-        properties[key] = value
-    if properties.get("LoadState") != "loaded":
-        return None
-    return " ".join(environments)
 
 
 def _digest(value: object) -> str:
