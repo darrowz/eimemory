@@ -16,7 +16,7 @@ from eimemory.governance.release.closure_contracts import (
     legacy_release_replay_ok, live_acceptance_report_ok,
 )
 
-def _reported_release_summary(report: object) -> dict[str, Any]:
+def _authoritative_report_summary(report: object) -> dict[str, Any]:
     if not isinstance(report, dict):
         raise ValueError("release closure report must be an object")
     deployment = report.get("deployment") if isinstance(report.get("deployment"), dict) else {}
@@ -103,6 +103,13 @@ def _reported_release_summary(report: object) -> dict[str, Any]:
         "readiness_stage": str(readiness.get("current_stage") or readiness.get("status") or ""),
         "readiness_score": readiness.get("readiness_score"),
     }
+
+def _reported_release_summary(report: object) -> dict[str, Any]:
+    """Compatibility wrapper around the separately repairable projection."""
+    from eimemory.governance.release.closure_report_summary import reported_release_summary
+    # Untrusted projection code never receives the authoritative input object.
+    return reported_release_summary(json.loads(json.dumps(report,allow_nan=False)))
+
 
 def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]) -> bool:
     if not isinstance(report, dict) or summary.get("ok") is not True:
@@ -595,7 +602,16 @@ def summarize_release_closure(report: object, *, execution: Mapping | None = Non
         signals = {'hard_errors': [_signal('$', 'report_not_finite_json')], 'waits': [], 'diagnosis': []}
         errors.append('report_not_finite_json')
     try:
-        raw = _reported_release_summary(obj)
+        raw = _authoritative_report_summary(obj)
+        try:
+            projected = _reported_release_summary(obj)
+            if type(projected) is not dict or report_digest(projected) != report_digest(raw):
+                errors.append('release_summary_projection_invalid')
+        except Exception:
+            # A repairable renderer has no authority to hide its own exception.
+            errors.append('release_summary_projection_invalid')
+        # All authority reads the independently computed projection. The leaf
+        # cannot suppress failures, fabricate completion, or change first codes.
         success_contract = _release_closure_summary_contract_ok(obj, raw)
         waiting_contract = channel_wait_report_ok(obj)
     except (ValueError, TypeError, KeyError, AttributeError, OverflowError, RecursionError):

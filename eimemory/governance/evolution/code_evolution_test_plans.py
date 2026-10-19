@@ -200,7 +200,7 @@ INCIDENT_ROUTING_REPAIR_TEST_PLAN = ProtectedTestPlan(
 # write set; no deployment entrypoints, tests, policies or receipt gates.
 RELEASE_REPORT_FAILURE_TEST_PLAN = ProtectedTestPlan(
     plan_id=RELEASE_REPORT_FAILURE_TEST_PLAN_ID,
-    allowed_files=("eimemory/governance/release/closure_verdict.py",),
+    allowed_files=("eimemory/governance/release/closure_report_summary.py",),
     phases=(
         ("focused", ("tests/test_closure_pipeline_contract.py",)),
         ("regression", (

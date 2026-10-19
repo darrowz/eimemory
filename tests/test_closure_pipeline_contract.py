@@ -136,3 +136,54 @@ def test_arbitrary_error_text_is_not_copied_into_diagnostic_signals():
     r=blocked();r['error']='token=private-do-not-log'
     signals=failure_signals(r)
     assert 'private-do-not-log' not in json.dumps(signals)
+
+
+def test_actual_summary_leaf_fault_can_be_repaired_without_changing_authority(monkeypatch):
+    """Actual private source transformation; this creates no production proof."""
+    from pathlib import Path
+    from eimemory.governance.release import closure_report_summary as leaf
+    from eimemory.governance.evolution.code_evolution_test_plans import path_allowed_for_incident
+    from eimemory.governance.evolution.code_evolution_path_policy import path_denied_by_self
+    original=Path(leaf.__file__).read_text(encoding='utf8')
+    correct='"readiness_stage": str(readiness.get("current_stage") or readiness.get("status") or ""),'
+    defect='"readiness_stage": "incorrect_fixture_projection",'
+    assert correct in original
+    broken=original.replace(correct,defect,1)
+    namespace={};exec(compile(broken,'isolated-broken-summary-leaf.py','exec'),namespace)
+    monkeypatch.setattr(leaf,'reported_release_summary',namespace['reported_release_summary'])
+    report=complete_report();unchanged=deepcopy(report)
+    failed=summarize_release_closure(report)
+    assert failed['exit_code']==1 and not failed['closure_certified']
+    assert 'release_summary_projection_invalid' in failed['contract_violations']
+    incident=detect_release_closure_failure(report,detected_at='fixture-only')
+    assert incident['repair_eligible'] and incident['incident']['incident_class']=='release.closure_report_failure'
+    target='eimemory/governance/release/closure_report_summary.py'
+    assert path_allowed_for_incident(incident['incident']['incident_class'],target)
+    assert not path_denied_by_self(target) and path_denied_by_self('eimemory/governance/release/closure_verdict.py')
+    repaired=broken.replace(defect,correct,1);assert repaired==original
+    namespace={};exec(compile(repaired,'isolated-repaired-summary-leaf.py','exec'),namespace)
+    monkeypatch.setattr(leaf,'reported_release_summary',namespace['reported_release_summary'])
+    accepted=summarize_release_closure(report)
+    assert accepted['admission_ok'] and accepted['closure_certified'] and report==unchanged
+    # A legal leaf repair does not repair or waive missing physical contracts.
+    bad=deepcopy(report);bad['live_acceptance']['cases'].pop()
+    assert not summarize_release_closure(bad)['closure_certified']
+    monkeypatch.setattr(leaf,'reported_release_summary',lambda _report:namespace['reported_release_summary'](report))
+    refused=summarize_release_closure(bad)
+    assert not refused['admission_ok'] and 'claimed_success_contract_invalid' in refused['contract_violations']
+    forged=summarize_release_closure(blocked('storage_failed'))
+    assert not forged['admission_ok'] and 'release_summary_projection_invalid' in forged['contract_violations']
+
+
+@pytest.mark.parametrize('failure',[RuntimeError,OSError,ImportError,TypeError])
+def test_editable_leaf_exception_and_input_mutation_cannot_rewrite_native_authority(monkeypatch,failure):
+    from eimemory.governance.release import closure_report_summary as leaf
+    report=complete_report();original=deepcopy(report)
+    def failed(value):
+        value.clear()
+        raise failure('private-leaf-details-must-not-escape')
+    monkeypatch.setattr(leaf,'reported_release_summary',failed)
+    result=summarize_release_closure(report)
+    assert report==original and not result['ok'] and not result['admission_ok']
+    assert 'release_summary_projection_invalid' in result['contract_violations']
+    assert 'private-leaf-details' not in json.dumps(result)

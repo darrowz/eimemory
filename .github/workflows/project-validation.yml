@@ -138,6 +138,8 @@ jobs:
           tests/test_controlled_production_native_evaluation.py
           tests/test_controlled_production_release_closure.py
           tests/test_closure_capture_pipeline.py
+          tests/test_closure_pipeline_contract.py
+          tests/test_closure_repair_routing.py
           tests/test_rerun_release_closure_script.py
           tests/test_controlled_stability.py
           tests/test_controlled_rpc_probe.py

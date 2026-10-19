@@ -3,6 +3,7 @@ from copy import deepcopy
 import importlib
 import json
 import sqlite3
+import sys
 from types import SimpleNamespace
 import pytest
 
@@ -23,6 +24,12 @@ class Store(SQLiteFixtureStore):
             records=[RecordEnvelope.from_dict(json.loads(row[0])) for row in c.execute('SELECT payload FROM records')]
         # Deliberately return shared scopes; the router must filter exactly.
         return [r for r in records if r.kind in kinds][:limit]
+    def list_records_by_sources_exact_scope(self,*,kinds,sources,scope,limit,record_ids=None):
+        # Match the native typed-source API before applying the bounded limit.
+        with sqlite3.connect(self.path) as connection:
+            records=[RecordEnvelope.from_dict(json.loads(row[0])) for row in connection.execute('SELECT payload FROM records')]
+        return [record for record in records if record.scope==scope and record.kind in kinds
+            and record.source in sources and (record_ids is None or record.record_id in record_ids)][:limit]
 
 @pytest.fixture
 def setup_router(tmp_path,monkeypatch):
@@ -53,15 +60,18 @@ def setup_router(tmp_path,monkeypatch):
 
 
 def test_report_fault_has_separate_narrow_plan():
-    assert RELEASE_REPORT_FAILURE_TEST_PLAN.allowed_files==('eimemory/governance/release/closure_verdict.py',)
+    assert RELEASE_REPORT_FAILURE_TEST_PLAN.allowed_files==('eimemory/governance/release/closure_report_summary.py',)
     assert not RELEASE_REPORT_FAILURE_TEST_PLAN.allowed_path_globs
+    from eimemory.governance.evolution.code_evolution_path_policy import path_denied_by_self
+    assert not path_denied_by_self(RELEASE_REPORT_FAILURE_TEST_PLAN.allowed_files[0])
+    assert path_denied_by_self('eimemory/governance/release/closure_verdict.py')
     assert RELEASE_REPORT_FAILURE_TEST_PLAN.full_suite_required is True
     assert allowed_files_for_incident('release.closure_report_failure')==RELEASE_REPORT_FAILURE_TEST_PLAN.allowed_files
     assert RELEASE_CLOSURE_FAILURE_TEST_PLAN.allowed_files==('eimemory/governance/release/release_closure_gate_evidence.py',)
     assert not allowed_files_for_incident('release.closure_report_failure',test_plan_id=RELEASE_CLOSURE_FAILURE_TEST_PLAN.plan_id)
-    argv=RELEASE_REPORT_FAILURE_TEST_PLAN.argv('focused',candidate_python='/opt/venv/bin/python')
-    assert protected_test_plan_command_error([argv],plan_id=RELEASE_REPORT_FAILURE_TEST_PLAN_ID,candidate_python='/opt/venv/bin/python')==''
-    assert protected_test_plan_command_error([argv+['-k','nothing']],plan_id=RELEASE_REPORT_FAILURE_TEST_PLAN_ID,candidate_python='/opt/venv/bin/python')
+    argv=RELEASE_REPORT_FAILURE_TEST_PLAN.argv('focused',candidate_python=sys.executable)
+    assert protected_test_plan_command_error([argv],plan_id=RELEASE_REPORT_FAILURE_TEST_PLAN_ID,candidate_python=sys.executable)==''
+    assert protected_test_plan_command_error([argv+['-k','nothing']],plan_id=RELEASE_REPORT_FAILURE_TEST_PLAN_ID,candidate_python=sys.executable)
 
 
 def test_successful_handoff_is_linked_not_complete(setup_router):
