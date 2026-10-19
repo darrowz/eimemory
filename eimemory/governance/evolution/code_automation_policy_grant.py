@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import stat
+import subprocess
 import tempfile
 import uuid
 
@@ -25,6 +26,28 @@ from eimemory.governance.evolution.code_evolution_test_plans import protected_te
 from eimemory.governance.release.closure_verdict import report_digest
 
 SUPPORTED_CLASSES = ('deployment.runtime_commit_drift', 'release.closure_internal_failure', 'release.closure_report_failure')
+
+
+def _runtime_git(root: Path, account: Any, *arguments: str) -> str:
+    """Root never executes repository-controlled Git configuration itself."""
+    allowed = arguments in {('status', '--porcelain', '--untracked-files=no'),
+                           ('rev-parse', 'HEAD'), ('symbolic-ref', '--short', 'HEAD')}
+    if (not allowed and not (len(arguments) == 3 and arguments[:2] == ('remote', 'get-url')
+            and arguments[2] and not arguments[2].startswith('-')
+            and not any(ord(char) < 32 for char in arguments[2]))):
+        raise ValueError('standing_grant_git_read_operation_forbidden')
+    if os.name != 'posix' or os.geteuid() != 0 or account.pw_uid == 0:
+        raise ValueError('standing_grant_git_runtime_account_required')
+    argv = ['/usr/sbin/runuser', '-u', account.pw_name, '--', '/usr/bin/env', '-i',
+            'PATH=/usr/bin:/bin', 'HOME='+account.pw_dir, 'GIT_CONFIG_GLOBAL=/dev/null',
+            'GIT_CONFIG_NOSYSTEM=1', 'GIT_TERMINAL_PROMPT=0', 'GIT_OPTIONAL_LOCKS=0',
+            '/usr/bin/git', '--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', str(root), *arguments]
+    try:
+        result = subprocess.run(argv, cwd='/', env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin'},
+                                capture_output=True, text=True, timeout=10, check=True)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise ValueError('standing_grant_runtime_git_read_failed') from exc
+    return result.stdout.strip()
 
 
 def prepare_standing_grant(runtime: Any, *, scope: ScopeRef | Mapping[str, Any], profile_key: str,
@@ -45,7 +68,9 @@ def prepare_standing_grant(runtime: Any, *, scope: ScopeRef | Mapping[str, Any],
     release = current_release_identity(runtime, exact)
     if identity.get('ok') is not True or release is None or not release.complete or release.commit != identity['base_commit']:
         raise ValueError('standing_grant_current_repository_release_unverified')
-    resolved = CapabilityProfiles(runtime.store).resolve(profile_key, runtime_scope=exact, capability_scope='global')
+    from eimemory.governance.evolution.code_evolution_provider_authority import select_provider_authority
+    authority = select_provider_authority(runtime, owner_scope=exact, profile_key=profile_key)
+    resolved = CapabilityProfiles(runtime.store).resolve(profile_key, runtime_scope=authority['provider_scope'], capability_scope='global')
     if not any(item.get('capability_id') == 'code.implementation' for item in resolved.get('requirements', ())):
         raise ValueError('standing_grant_code_implementation_profile_required')
     profile = resolved['profile']
@@ -57,7 +82,7 @@ def prepare_standing_grant(runtime: Any, *, scope: ScopeRef | Mapping[str, Any],
         'scope': asdict(exact), 'repository': {'root': str(root), 'remote': remote,
             'branch': _git(root, 'symbolic-ref', '--short', 'HEAD'),
             'remote_url_digest': remote_url_digest(_git(root, 'remote', 'get-url', remote))},
-        'profile_key': profile['profile_key'], 'profile_digest': profile['profile_digest'],
+        'profile_key': profile['profile_key'], 'profile_digest': profile['profile_digest'], 'capability_authority': authority,
         'routes': {kind: {'source': owner._ROUTES[kind][0], 'detector_id': owner._ROUTES[kind][0]+'.v1',
             'test_plan_id': owner._ROUTES[kind][1], 'test_plan_digest': protected_test_plan_digest(owner._ROUTES[kind][1])}
             for kind in incident_classes}, 'effects': dict(_EFFECTS_BY_MODE['full']), 'max_transactions': 1}
@@ -87,8 +112,18 @@ def install_prepared_standing_grant(prepared: Mapping[str, Any], *, expected_gra
         raise ValueError('standing_grant_runtime_account_mismatch')
     exact = ScopeRef.from_dict(grant['scope'])
     root = Path(grant['repository']['root'])
-    owner._validate_grant(grant, exact, root, datetime.now(timezone.utc))
-    if _repository_identity(root).get('base_commit') != prepared.get('repository_commit'):
+    repository_info = root.lstat()
+    git_info = (root / '.git').lstat()
+    if (_v2_no_symlink(root / '.standing-grant-path-check', missing_ok=True)
+            or not stat.S_ISDIR(repository_info.st_mode) or repository_info.st_uid != account.pw_uid
+            or not (stat.S_ISDIR(git_info.st_mode) or stat.S_ISREG(git_info.st_mode) and git_info.st_nlink == 1)
+            or git_info.st_uid != account.pw_uid):
+        raise ValueError('standing_grant_repository_runtime_account_mismatch')
+    git_read = lambda repository, *args: _runtime_git(repository, account, *args)
+    owner._validate_grant(grant, exact, root, datetime.now(timezone.utc), git_runner=git_read)
+    if git_read(root, 'status', '--porcelain', '--untracked-files=no'):
+        raise ValueError('standing_grant_repository_worktree_not_clean')
+    if git_read(root, 'rev-parse', 'HEAD').lower() != prepared.get('repository_commit'):
         raise ValueError('standing_grant_repository_changed_after_review')
     destination = owner.standing_grant_path(exact)
     if _v2_no_symlink(destination, missing_ok=True):

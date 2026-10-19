@@ -104,8 +104,8 @@ def _grant(scope: ScopeRef, root: Path, now: datetime) -> dict:
     return _validate_grant(grant, scope, root, now)
 
 
-def _validate_grant(grant: dict, scope: ScopeRef, root: Path, now: datetime) -> dict:
-    if (set(grant) != _FIELDS or grant.get('schema') != 'code_automation_standing_grant.v1'
+def _validate_grant(grant: dict, scope: ScopeRef, root: Path, now: datetime, *, git_runner: Any = None) -> dict:
+    if (set(grant) not in (_FIELDS, _FIELDS | {'capability_authority'}) or grant.get('schema') != 'code_automation_standing_grant.v1'
             or grant.get('enabled') is not True or not isinstance(grant.get('grant_id'), str)
             or not 1 <= len(grant['grant_id']) <= 200 or grant.get('scope') != asdict(scope)
             or not isinstance(grant.get('profile_key'), str) or not grant['profile_key']
@@ -115,6 +115,12 @@ def _validate_grant(grant: dict, scope: ScopeRef, root: Path, now: datetime) -> 
             or grant.get('effects') != _EFFECTS_BY_MODE['full']
             or any(type(v) is not bool for v in grant.get('effects', {}).values())):
         raise ValueError('standing_grant_contract_invalid')
+    if 'capability_authority' in grant:
+        from eimemory.governance.evolution.code_evolution_provider_authority import validate_provider_authority_snapshot
+        authority = validate_provider_authority_snapshot(grant['capability_authority'], owner_scope=scope,
+                                                         profile_key=grant['profile_key'])
+        if authority['profile_digest'] != grant['profile_digest']:
+            raise ValueError('standing_grant_capability_profile_digest_mismatch')
     start = _time(grant['not_before'])
     end = _time(grant['expires_at']) if grant['expires_at'] is not None else None
     if not start <= now or end is not None and not now < end:
@@ -126,10 +132,11 @@ def _validate_grant(grant: dict, scope: ScopeRef, root: Path, now: datetime) -> 
             or os.path.lexists(switch)):
         raise ValueError('standing_grant_revoked_or_killed')
     from eimemory.config.trusted import trusted_repository_root, trusted_remote, trusted_branch_allowed
+    git_read = git_runner or _git
     remote = trusted_remote()
-    branch = _git(root, 'symbolic-ref', '--short', 'HEAD')
+    branch = git_read(root, 'symbolic-ref', '--short', 'HEAD')
     actual = {'root': str(root), 'remote': remote, 'branch': branch,
-              'remote_url_digest': remote_url_digest(_git(root, 'remote', 'get-url', remote))}
+              'remote_url_digest': remote_url_digest(git_read(root, 'remote', 'get-url', remote))}
     if (root != Path(trusted_repository_root()).resolve() or not trusted_branch_allowed(branch)
             or grant.get('repository') != actual):
         raise ValueError('standing_grant_repository_mismatch')
@@ -148,7 +155,13 @@ def _validate_grant(grant: dict, scope: ScopeRef, root: Path, now: datetime) -> 
 
 def _verify_profile(runtime: Any, scope: ScopeRef, grant: dict) -> None:
     from eimemory.capabilities.profiles import CapabilityProfiles
-    resolved = CapabilityProfiles(runtime.store).resolve(grant['profile_key'], runtime_scope=scope, capability_scope='global')
+    selector = scope
+    if 'capability_authority' in grant:
+        from eimemory.governance.evolution.code_evolution_provider_authority import verify_provider_authority
+        authority = verify_provider_authority(runtime, grant['capability_authority'], owner_scope=scope,
+                                               profile_key=grant['profile_key'])
+        selector = ScopeRef.from_dict(authority['provider_scope'])
+    resolved = CapabilityProfiles(runtime.store).resolve(grant['profile_key'], runtime_scope=selector, capability_scope='global')
     if resolved.get('profile', {}).get('profile_digest') != grant['profile_digest']:
         raise ValueError('standing_grant_profile_digest_mismatch')
 
@@ -222,8 +235,15 @@ def ensure_native_incident_policy(runtime: Any, *, scope: ScopeRef | Mapping[str
         source = _source_fence(runtime, selected, scope_ref, record, incident)
         _verify_profile(runtime, scope_ref, grant)
         from eimemory.adapters.hermes.code_implementation import resolve_code_implementation_provider
-        provider = resolve_code_implementation_provider(runtime, runtime_scope=asdict(scope_ref), capability_scope='global',
-                    checked_at=now.isoformat(), probe=True)
+        if 'capability_authority' in grant:
+            from eimemory.governance.evolution.code_evolution_provider_authority import resolve_provider_authority
+            provider = resolve_provider_authority(runtime, owner_scope=scope_ref, checked_at=now.isoformat(),
+                                                 probe=True, snapshot=grant['capability_authority'])
+        else:
+            # Existing authority remains exact-owner even when a new root
+            # provider delegation is installed later.
+            provider = resolve_code_implementation_provider(runtime, runtime_scope=asdict(scope_ref), capability_scope='global',
+                        checked_at=now.isoformat(), probe=True)
         if (provider.get('ok') is not True or provider.get('provider_ready') is not True
                 or provider.get('advertisement_fresh') is not True or provider.get('health', {}).get('ok') is not True):
             raise ValueError('native_provider_unavailable')
@@ -249,6 +269,96 @@ def _intent_key(scope: ScopeRef, release: Any, incident: dict) -> str:
                           'incident_digest': incident['incident_digest']})
 
 
+def _prior_owner_scope(intent: dict) -> ScopeRef:
+    raw = intent.get('scope')
+    _scope_key(raw)
+    exact = ScopeRef.from_dict(raw)
+    if asdict(exact) != raw:
+        raise ValueError('prior_policy_owner_unverified')
+    return exact
+
+
+def _verify_prior_unconsumed_retired(runtime: Any, root: Path, intent: dict, policy: dict) -> None:
+    """A different new caller cannot retire the old owner's live authority."""
+    from eimemory.governance.evolution.code_automation_policy_incidents import _trusted_incident_identity
+    from eimemory.governance.release.evidence_contract import current_release_identity
+    previous_scope = _prior_owner_scope(intent)
+    record = runtime.store.get_by_id(intent.get('incident_record_id', ''))
+    incident = _trusted_incident_identity(record, policy.get('repository', {}).get('base_commit', '')) if record else None
+    if (not record or record.scope != previous_scope or not incident
+            or incident['incident_digest'] != intent.get('incident_digest')
+            or incident['incident_digest'] != policy.get('incident', {}).get('incident_digest')
+            or incident['incident_class'] != policy.get('incident', {}).get('class')):
+        raise ValueError('prior_policy_source_unverified')
+    release = current_release_identity(runtime, previous_scope)
+    if release is None or not release.complete:
+        raise ValueError('prior_policy_currentness_unverified')
+    previous = _selection(runtime, previous_scope, root)
+    if previous.get('ok') is not True or previous.get('status') not in {'idle', 'current'}:
+        raise ValueError('prior_policy_currentness_unverified')
+    matches = [(r, i) for r, i in previous.get('current', []) if i['incident_digest'] == incident['incident_digest']]
+    if matches:
+        try:
+            same_source = len(matches) == 1 and _source_fence(runtime, previous, previous_scope, *matches[0]) == intent.get('source')
+        except (ValueError, OSError) as exc:
+            raise ValueError('prior_policy_currentness_unverified') from exc
+        if not same_source:
+            raise ValueError('prior_policy_currentness_unverified')
+        raise ValueError('prior_policy_incident_still_current')
+    if incident['incident_class'].startswith('release.closure_'):
+        from eimemory.governance.evolution.code_automation_policy_capture import _current_snapshot
+        _, capture, result, actual = _current_snapshot(runtime, scope=previous_scope, release=release)
+        if (capture['capture_id'] == intent.get('source', {}).get('capture_id')
+                or result.get('incident_record_id') == intent.get('incident_record_id')
+                or actual['disposition'] in {'failure_detected', 'diagnosis_required'} and not any(
+                    r.record_id == result.get('incident_record_id') for r, _ in previous.get('current', []))):
+            raise ValueError('prior_policy_currentness_unverified')
+    elif incident['incident_class'] == 'deployment.runtime_commit_drift':
+        from eimemory.ops.runtime_identity_drift import current_runtime_identity_incident
+        current = current_runtime_identity_incident(runtime.store, scope=previous_scope, expected_commit=release.commit)
+        if current is None or current == incident['incident_digest']:
+            raise ValueError('prior_policy_currentness_unverified')
+    else:
+        raise ValueError('prior_policy_currentness_unverified')
+
+
+def _verify_policy_replacement(runtime: Any, ledger: Any, root: Path, state: Path,
+                               destination: Path, policy: dict | None, digest: str) -> None:
+    if ledger.repository_blocker(str(root)):
+        raise ValueError('repository_transaction_active')
+    if policy is None:
+        return
+    binding_path = state / 'published.json'
+    binding = _private_json(binding_path) if binding_path.exists() else {}
+    if binding.get('policy_digest') != digest:
+        raise ValueError('manual_policy_present')
+    old = _private_json(state / (binding['intent_key'] + '.json'))
+    if old.get('policy_digest') != digest:
+        raise ValueError('prior_owned_policy_unverified')
+    raw, read_error = policy_api._secure_read_v2_policy(destination)
+    if read_error or raw != old.get('policy_bytes'):
+        raise ValueError('prior_owned_policy_bytes_changed')
+    consumed = ledger.get_policy_consumption(digest)
+    if not consumed:
+        _verify_prior_unconsumed_retired(runtime, root, old, policy)
+        return
+    transaction = ledger.get_transaction(str(consumed.get('transaction_id') or ''))
+    if (not transaction or type(transaction.get('terminal')) not in {bool, int} or transaction['terminal'] != 1):
+        raise ValueError('prior_policy_transaction_incomplete')
+    terminal = ledger.get_terminal_receipt(transaction['transaction_id'])
+    outcomes = {'SUCCEEDED_SEDIMENTED': 'succeeded_sedimented', 'ROLLED_BACK_HEALTHY': 'rolled_back_healthy',
+                'ABORTED_NO_EXTERNAL_EFFECT': 'aborted_no_external_effect',
+                'ABORTED_CANDIDATE_RESTORED': 'aborted_candidate_restored', 'RECOVERY_QUARANTINED': 'recovery_quarantined'}
+    previous_scope = asdict(_prior_owner_scope(old))
+    if (any(transaction.get(k) != v for k, v in previous_scope.items())
+            or transaction.get('payload', {}).get('scope') != previous_scope
+            or not terminal or terminal.get('outcome') != outcomes.get(transaction.get('current_state'))
+            or terminal.get('receipt_digest') != transaction.get('terminal_receipt_digest')
+            or transaction.get('policy_digest') != digest
+            or transaction.get('authorization_digest') != consumed.get('authorization_receipt_digest')):
+        raise ValueError('prior_policy_terminal_receipt_unverified')
+
+
 def _issue_locked(runtime: Any, scope: ScopeRef, root: Path, selected: dict, record: Any,
                   incident: dict, source: dict, grant: dict, provider: dict,
                   state: Path, destination: Path) -> dict:
@@ -260,44 +370,14 @@ def _issue_locked(runtime: Any, scope: ScopeRef, root: Path, selected: dict, rec
         intent = _private_json(path)
         if (intent.get('schema') != 'code_automation_policy_intent.v1' or intent.get('intent_key') != key
                 or intent.get('grant_digest') != report_digest(grant) or intent.get('source') != source
-                or intent.get('scope') != asdict(scope) or intent.get('incident_digest') != incident['incident_digest']):
+                or intent.get('scope') != asdict(scope) or intent.get('incident_digest') != incident['incident_digest']
+                or intent.get('capability_authority') != grant.get('capability_authority')):
             raise ValueError('existing_intent_authority_changed')
         policy = loads(intent['policy_bytes'], max_bytes=65536, max_depth=32)
         if policy_api._policy_digest(policy) != intent['policy_digest']:
             raise ValueError('existing_intent_policy_changed')
     else:
-        if ledger.repository_blocker(str(root)):
-            raise ValueError('repository_transaction_active')
-        if current_policy is not None:
-            binding_path = state / 'published.json'
-            binding = _private_json(binding_path) if binding_path.exists() else {}
-            if binding.get('policy_digest') != current_digest:
-                raise ValueError('manual_policy_present')
-            old = _private_json(state / (binding['intent_key'] + '.json'))
-            if old.get('policy_digest') != current_digest:
-                raise ValueError('prior_owned_policy_unverified')
-            raw, read_error = policy_api._secure_read_v2_policy(destination)
-            if read_error or raw != old.get('policy_bytes'):
-                raise ValueError('prior_owned_policy_bytes_changed')
-            consumed = ledger.get_policy_consumption(current_digest)
-            if consumed:
-                transaction = ledger.get_transaction(str(consumed.get('transaction_id') or ''))
-                if (not transaction or type(transaction.get('terminal')) not in {bool, int}
-                        or transaction['terminal'] != 1):
-                    raise ValueError('prior_policy_transaction_incomplete')
-                terminal = ledger.get_terminal_receipt(transaction['transaction_id'])
-                outcomes = {'SUCCEEDED_SEDIMENTED': 'succeeded_sedimented',
-                            'ROLLED_BACK_HEALTHY': 'rolled_back_healthy',
-                            'ABORTED_NO_EXTERNAL_EFFECT': 'aborted_no_external_effect',
-                            'ABORTED_CANDIDATE_RESTORED': 'aborted_candidate_restored',
-                            'RECOVERY_QUARANTINED': 'recovery_quarantined'}
-                if (not terminal or terminal.get('outcome') != outcomes.get(transaction.get('current_state'))
-                        or terminal.get('receipt_digest') != transaction.get('terminal_receipt_digest')
-                        or transaction.get('policy_digest') != current_digest
-                        or transaction.get('authorization_digest') != consumed.get('authorization_receipt_digest')):
-                    raise ValueError('prior_policy_terminal_receipt_unverified')
-            elif any(i['incident_digest'] == old.get('incident_digest') for _, i in selected['current']):
-                raise ValueError('prior_policy_incident_still_current')
+        _verify_policy_replacement(runtime, ledger, root, state, destination, current_policy, current_digest)
         now = datetime.now(timezone.utc)
         end = now + timedelta(days=2)
         if grant['expires_at'] is not None:
@@ -321,11 +401,14 @@ def _issue_locked(runtime: Any, scope: ScopeRef, root: Path, selected: dict, rec
                   'created_at': now.isoformat(), 'provider': {k: provider[k] for k in (
                       'implementation_digest', 'advertisement_id', 'advertisement_digest',
                       'catalog_case_id', 'catalog_snapshot_digest', 'catalog_activation_state_digest')}}
+        if 'capability_authority' in grant:
+            intent['capability_authority'] = grant['capability_authority']
         atomic_write_json(path, intent)
     consumed = ledger.get_policy_consumption(intent['policy_digest'])
     if consumed:
         return {'ok': True, 'status': 'consumed', 'policy_digest': intent['policy_digest'],
-                'transaction_id': consumed.get('transaction_id'), 'repair_complete': False}
+                'transaction_id': consumed.get('transaction_id'), 'repair_complete': False,
+                **({'capability_authority': intent['capability_authority']} if 'capability_authority' in intent else {})}
     # Late re-read closes grant, repository, release, and native source races.
     fresh_grant = _grant(scope, root, datetime.now(timezone.utc))
     _verify_profile(runtime, scope, fresh_grant)
@@ -337,7 +420,13 @@ def _issue_locked(runtime: Any, scope: ScopeRef, root: Path, selected: dict, rec
         raise ValueError('incident_or_grant_changed_before_publication')
     if not _time(policy['not_before']) <= datetime.now(timezone.utc) < _time(policy['expires_at']):
         raise ValueError('original_intent_policy_expired')
-    if current_digest != intent['policy_digest']:
+    fresh_policy, fresh_digest = _policy_at(destination)
+    if fresh_digest != intent['policy_digest']:
+        if fresh_digest != intent['expected_previous_digest']:
+            raise ValueError('existing_policy_changed_before_publication')
+        # Replays and a first publication both recheck the shared repository
+        # and the original owner's lifecycle before replacing global authority.
+        _verify_policy_replacement(runtime, ledger, root, state, destination, fresh_policy, fresh_digest)
         error = _install_policy_atomically(destination, policy, expected_digest=intent['expected_previous_digest'])
         if error:
             raise ValueError(error)
@@ -359,6 +448,8 @@ def _issue_locked(runtime: Any, scope: ScopeRef, root: Path, selected: dict, rec
                'policy_created_at': intent['created_at'], 'terminal_evidence': False, 'repair_complete': False,
                'l5_origin_verified': False,
                'source_facts': record.content.get('detector_report', {}).get('source_facts')}
+    if 'capability_authority' in intent:
+        receipt['capability_authority'] = intent['capability_authority']
     record_out = RecordEnvelope.create(kind='reflection', title='Native incident policy delegation',
         summary='Standing grant delegated to exact native incident; no repair or terminal success is claimed.',
         content=receipt, source=SOURCE, scope=scope, status='active',
@@ -370,4 +461,5 @@ def _issue_locked(runtime: Any, scope: ScopeRef, root: Path, selected: dict, rec
     atomic_write_json(state / 'published.json', {'intent_key': key, 'policy_digest': intent['policy_digest']})
     return {'ok': True, 'status': 'available', 'policy_digest': intent['policy_digest'],
             'delegation_record_id': stored.record_id, 'incident_record_id': record.record_id,
-            'repair_complete': False}
+            'repair_complete': False,
+            **({'capability_authority': intent['capability_authority']} if 'capability_authority' in intent else {})}

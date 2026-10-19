@@ -39,10 +39,15 @@ from release_report_fixtures import complete_report
 @pytest.fixture
 def native_policy_fixture(tmp_path, monkeypatch):
     repo = tmp_path / 'fixture-git'
-    subprocess.run(['git', 'clone', '--quiet', '--shared', str(Path(__file__).resolve().parents[1]), str(repo)], check=True)
+    subprocess.run(['git', 'clone', '--quiet', '--local', '--shared',
+                    Path(__file__).resolve().parents[1].as_posix(), str(repo)], check=True)
     commit = owner._git(repo, 'rev-parse', 'HEAD')
     branch = owner._git(repo, 'symbolic-ref', '--short', 'HEAD')
     scope = ScopeRef(tenant_id='fixture-tenant', agent_id='fixture-agent', workspace_id='fixture-workspace', user_id='fixture-user')
+    # Real selector inputs are explicit isolated deployment configuration.
+    monkeypatch.setenv('EIMEMORY_AGENT_ID', scope.agent_id)
+    monkeypatch.setenv('EIMEMORY_WORKSPACE_ID', scope.workspace_id)
+    monkeypatch.setenv('EIMEMORY_OPERATOR_USER_ID', scope.user_id)
     runtime = Runtime.create(root=tmp_path/'fixture-runtime')
     release = ReleaseIdentity(commit, 'fixture-version', 'fixture-receipt', 'fixture-session')
     monkeypatch.setattr('eimemory.governance.release.evidence_contract.current_release_identity', lambda *_a, **_k: release)
@@ -85,7 +90,7 @@ def native_policy_fixture(tmp_path, monkeypatch):
             error = policy_api._v2_no_symlink(Path(path), missing_ok=False)
             return ('', error) if error else (Path(path).read_text(encoding='utf8'), '')
         monkeypatch.setattr(policy_api, '_secure_read_v2_policy', fixture_secure_read)
-    def capture(report=None, *, inspect=False, attempt='fixture-attempt'):
+    def capture(report=None, *, inspect=False, attempt='fixture-attempt', scope_override=None):
         value = deepcopy(report) if report is not None else blocked('storage_failed')
         if report is not None:
             def bind(value, key=''):
@@ -102,7 +107,7 @@ def native_policy_fixture(tmp_path, monkeypatch):
         source_path = tmp_path/'fixture-report.json'
         source_path.write_text(json.dumps(value), encoding='utf8')
         return process_capture(source_path, evidence_dir=runtime.store.root/'logs'/'release-closure-captures',
-             scope=asdict(scope), expected_commit=commit, attempt_id=attempt, inspect_only=inspect,
+             scope=asdict(scope_override or scope), expected_commit=commit, attempt_id=attempt, inspect_only=inspect,
              runtime_factory=lambda: SimpleNamespace(store=runtime.store, close=lambda: None))
     fixture = SimpleNamespace(repo=repo, runtime=runtime, scope=scope, release=release, grant=grant,
                               destination=destination, provider=provider, capture=capture, root=tmp_path)
@@ -372,6 +377,111 @@ def test_native_policy_new_incident_handoff_respects_actual_sqlite_terminal(nati
     assert ledger.get_policy_consumption(first['policy_digest']) == consumed
 
 
+@pytest.mark.parametrize('prior', ['still_current', 'missing_current', 'corrupt_current', 'superseded'])
+def test_native_two_owner_unconsumed_policy_requires_original_owner_retirement(native_policy_fixture, prior):
+    f = native_policy_fixture
+    original_scope = ScopeRef.from_dict(asdict(f.scope))
+    captured_a = f.capture()
+    first = _ensure(f)
+    assert first['ok'] is True, first
+    original_policy = f.destination.read_bytes()
+    original_intents = {p.name: p.read_bytes() for p in _state(f).glob('*.json')}
+    marker = capture_owner.capture_marker(Path(captured_a['capture']['path']).parent,
+                                          asdict(original_scope), f.release.commit)
+    if prior == 'missing_current': marker.unlink()
+    elif prior == 'corrupt_current': marker.write_text('{}')
+    elif prior == 'superseded': f.capture(complete_report(), attempt='fixture-A-recovered', scope_override=original_scope)
+    f.scope = ScopeRef.from_dict({**asdict(original_scope), 'user_id': 'fixture-second-business-owner'})
+    f.grant['scope'] = asdict(f.scope)
+    second_capture = f.capture(attempt='fixture-B-real-failure', scope_override=f.scope)
+    result = _ensure(f)
+    if prior == 'superseded':
+        assert result['ok'] is True and result['incident_record_id'] == second_capture['incident_record_id'], result
+        assert f.destination.read_bytes() != original_policy
+    else:
+        assert result['ok'] is False, result
+        assert result['reason'] == ('prior_policy_incident_still_current' if prior == 'still_current'
+                                    else 'prior_policy_currentness_unverified'), result
+        assert f.destination.read_bytes() == original_policy
+        assert {p.name: p.read_bytes() for p in _state(f).glob('*.json')} == original_intents
+    assert CodeEvolutionStore(f.runtime.store).get_policy_consumption(first['policy_digest']) is None
+    assert asdict(f.runtime.store.get_by_id(captured_a['incident_record_id']).scope) == asdict(original_scope)
+
+
+@pytest.mark.parametrize('wrong_scope', [False, True])
+def test_native_two_owner_terminal_handoff_binds_original_transaction_owner(native_policy_fixture, wrong_scope):
+    from eimemory.storage.code_evolution_store import digest_json
+    from eimemory.governance.evolution.code_evolution_transaction import CodeEvolutionTransactionManager
+    f = native_policy_fixture
+    original_scope = asdict(f.scope)
+    f.capture()
+    first = _ensure(f)
+    assert first['ok'] is True, first
+    second_scope = {**original_scope, 'user_id': 'fixture-second-business-owner'}
+    ledger = CodeEvolutionStore(f.runtime.store)
+    tx = ledger.create_transaction({'transaction_id': 'fixture-two-owner-prior', 'idempotency_key': 'fixture-two-owner-prior',
+        'incident': {'incident_id': first['incident_record_id']}, 'scope': second_scope if wrong_scope else original_scope,
+        'repository': {'root': str(f.repo), 'ref': 'master'}, 'current_state': 'DETECTED', 'terminal': False})
+    material = {'transaction_id': tx['transaction_id'], 'policy_digest': first['policy_digest']}
+    ledger.consume_policy(transaction_id=tx['transaction_id'], policy_digest=first['policy_digest'],
+        authorization_receipt_digest=digest_json(material), payload={'authorization_material': material,
+            'authorized_policy': {'ok': True, 'policy_digest': first['policy_digest']}})
+    original_consumption = deepcopy(ledger.get_policy_consumption(first['policy_digest']))
+    CodeEvolutionTransactionManager(f.runtime).effect_disabled(tx['transaction_id'], step='fixture-real-abort-receipt')
+    assert ledger.get_terminal_receipt(tx['transaction_id']) is not None
+    original_policy = f.destination.read_bytes()
+    f.scope = ScopeRef.from_dict(second_scope); f.grant['scope'] = second_scope
+    captured = f.capture(attempt='fixture-next-owner', scope_override=f.scope)
+    result = _ensure(f)
+    if wrong_scope:
+        assert result['ok'] is False and result['reason'] == 'prior_policy_terminal_receipt_unverified', result
+        assert f.destination.read_bytes() == original_policy
+    else:
+        assert result['ok'] is True and result['incident_record_id'] == captured['incident_record_id'], result
+        assert result['policy_digest'] != first['policy_digest']
+    assert ledger.get_policy_consumption(first['policy_digest']) == original_consumption
+
+
+def test_native_two_owner_crash_replay_rechecks_late_prior_consumption(native_policy_fixture, monkeypatch):
+    from eimemory.storage.code_evolution_store import digest_json
+    from eimemory.governance.evolution.code_evolution_transaction import CodeEvolutionTransactionManager
+    f = native_policy_fixture
+    original_scope = asdict(f.scope)
+    f.capture(); first = _ensure(f)
+    assert first['ok'] is True, first
+    first_bytes = f.destination.read_bytes()
+    f.capture(complete_report(), attempt='fixture-original-owner-recovered')
+    f.scope = ScopeRef.from_dict({**original_scope, 'user_id': 'fixture-second-business-owner'})
+    f.grant['scope'] = asdict(f.scope)
+    f.capture(attempt='fixture-second-owner-failed', scope_override=f.scope)
+    installer = owner._install_policy_atomically
+    monkeypatch.setattr(owner, '_install_policy_atomically', lambda *_a, **_k: (_ for _ in ()).throw(OSError('fixture-before-publish')))
+    crashed = _ensure(f)
+    assert crashed['ok'] is False and f.destination.read_bytes() == first_bytes
+    intent_path = next(path for path in _state(f).glob('*.json')
+                       if json.loads(path.read_bytes()).get('scope') == asdict(f.scope))
+    original_intent = intent_path.read_bytes()
+    expected_bytes = json.loads(original_intent)['policy_bytes'].encode()
+    monkeypatch.setattr(owner, '_install_policy_atomically', installer)
+    ledger = CodeEvolutionStore(f.runtime.store)
+    tx = ledger.create_transaction({'transaction_id': 'fixture-late-prior-consumption', 'idempotency_key': 'fixture-late-prior-consumption',
+        'incident': {'incident_id': first['incident_record_id']}, 'scope': original_scope,
+        'repository': {'root': str(f.repo), 'ref': 'master'}, 'current_state': 'DETECTED', 'terminal': False})
+    material = {'transaction_id': tx['transaction_id'], 'policy_digest': first['policy_digest']}
+    ledger.consume_policy(transaction_id=tx['transaction_id'], policy_digest=first['policy_digest'],
+        authorization_receipt_digest=digest_json(material), payload={'authorization_material': material,
+            'authorized_policy': {'ok': True, 'policy_digest': first['policy_digest']}})
+    original_consumption = deepcopy(ledger.get_policy_consumption(first['policy_digest']))
+    blocked = _ensure(f)
+    assert blocked['ok'] is False and blocked['reason'] == 'repository_transaction_active', blocked
+    assert f.destination.read_bytes() == first_bytes and intent_path.read_bytes() == original_intent
+    CodeEvolutionTransactionManager(f.runtime).effect_disabled(tx['transaction_id'], step='fixture-settle-old-owner')
+    resumed = _ensure(f)
+    assert resumed['ok'] is True and f.destination.read_bytes() == expected_bytes, resumed
+    assert intent_path.read_bytes() == original_intent
+    assert ledger.get_policy_consumption(first['policy_digest']) == original_consumption
+
+
 @pytest.mark.parametrize('state', ['ABORTED_NO_EXTERNAL_EFFECT', 'DETECTED'])
 def test_native_policy_terminal_flag_without_native_receipt_cannot_fund_handoff(native_policy_fixture, state):
     f = native_policy_fixture
@@ -502,7 +612,7 @@ def test_native_standing_grant_preparation_rejects_empty_profile(native_policy_f
     from eimemory.governance.evolution.code_automation_policy_grant import prepare_standing_grant
     f = native_policy_fixture
     monkeypatch.setattr(CapabilityProfiles, 'resolve', lambda *_a, **_k: {'profile': {}, 'requirements': []})
-    with pytest.raises(ValueError, match='code_implementation_profile_required'):
+    with pytest.raises(ValueError, match='code_(implementation_profile_required|provider_profile_requires_exact_code_implementation)'):
         prepare_standing_grant(f.runtime, scope=f.scope, profile_key=f.grant['profile_key'])
     assert not owner.standing_grant_path(f.scope).exists()
 
@@ -512,6 +622,84 @@ def test_native_standing_grant_start_requires_timezone(native_policy_fixture):
     f.grant['not_before'] = '2020-01-01T00:00:00'
     with pytest.raises(ValueError, match='time_invalid'):
         owner._validate_grant(f.grant, f.scope, f.repo, datetime.now(timezone.utc))
+
+
+def test_native_standing_grant_pins_explicit_provider_authority_without_moving_incident_owner(native_policy_fixture, monkeypatch):
+    from eimemory.governance.evolution import code_evolution_provider_authority as authority_api
+    from eimemory.governance.evolution.code_automation_policy_grant import prepare_standing_grant
+    f = native_policy_fixture
+    exact = asdict(f.scope)
+    target = {**exact, 'workspace_id': 'fixture-product-workspace', 'user_id': 'fixture-product-operator'}
+    delegation = {'owner_scope': exact, 'provider_scope': target, 'capability_id': 'code.implementation',
+        'capability_scope': 'global', 'operation': 'propose_patch_v2', 'profile_key': f.grant['profile_key'],
+        'profile_digest': f.grant['profile_digest']}
+    root_mapping = {'schema': authority_api.DELEGATION_SCHEMA, 'enabled': True, 'delegations': [delegation]}
+    monkeypatch.setattr(authority_api, 'configured_provider_scope', lambda _scope: target)
+    monkeypatch.setattr(authority_api, '_secure_delegations', lambda: deepcopy(root_mapping))
+    provider_scopes = []
+    def provider(_runtime, **kwargs):
+        provider_scopes.append(kwargs['runtime_scope'])
+        return deepcopy(f.provider)
+    monkeypatch.setattr('eimemory.adapters.hermes.code_implementation.resolve_code_implementation_provider', provider)
+    prepared = prepare_standing_grant(f.runtime, scope=f.scope, profile_key=f.grant['profile_key'])
+    f.grant.update(prepared['grant'])
+    snapshot = f.grant['capability_authority']
+    assert snapshot['owner_scope'] == exact and snapshot['provider_scope'] == target
+    assert snapshot['authorization_basis'] == 'root_code_provider_delegation'
+    captured = f.capture()
+    result = _ensure(f)
+    assert result['ok'] is True and result['capability_authority'] == snapshot, result
+    assert provider_scopes == [target]
+    incident = f.runtime.store.get_by_id(captured['incident_record_id'])
+    assert asdict(incident.scope) == exact and all(incident.provenance[k] is None for k in
+        ('known_before_detection', 'prior_user_reported', 'manual_bootstrap'))
+    intent = next(path for path in _state(f).glob('*.json') if path.name != 'published.json')
+    original_intent = intent.read_bytes(); original_policy = f.destination.read_bytes()
+    assert json.loads(original_intent)['capability_authority'] == snapshot
+    assert f.runtime.store.get_by_id(result['delegation_record_id']).content['capability_authority'] == snapshot
+    proposals = []
+    def blocked_proposal(_runtime, **kwargs):
+        proposals.append(kwargs)
+        return {'ok': False, 'reason': 'isolated-fixture-no-external-effect'}
+    monkeypatch.setattr('eimemory.governance.evolution.code_evolution_bridge.propose_code_patch_v2', blocked_proposal)
+    from eimemory.governance.evolution.system_code_repair import process_system_code_incidents
+    routed = process_system_code_incidents(f.runtime, scope=f.scope, repo_root=f.repo, capability_authority=snapshot)
+    assert routed['ok'] is False and routed['processed'][0]['status'] == 'proposal_blocked'
+    assert proposals[0]['capability_authority'] == snapshot and proposals[0]['scope'] == exact
+    assert all(proposals[0][k] is None for k in ('known_before_detection', 'prior_user_reported', 'manual_bootstrap'))
+    root_mapping['delegations'] = []
+    denied = _ensure(f)
+    assert denied['ok'] is False and f.destination.read_bytes() == original_policy, denied
+    assert intent.read_bytes() == original_intent and provider_scopes == [target]
+
+
+def test_native_legacy_grant_does_not_silently_use_new_provider_delegation(native_policy_fixture, monkeypatch):
+    from eimemory.governance.evolution import code_evolution_provider_authority as authority_api
+    f = native_policy_fixture
+    monkeypatch.setattr(authority_api, 'select_provider_authority', lambda *_a, **_k: pytest.fail('legacy grant stays exact owner'))
+    scopes = []
+    def provider(_runtime, **kwargs):
+        scopes.append(kwargs['runtime_scope'])
+        return deepcopy(f.provider)
+    monkeypatch.setattr('eimemory.adapters.hermes.code_implementation.resolve_code_implementation_provider', provider)
+    f.capture()
+    result = _ensure(f)
+    assert result['ok'] is True and 'capability_authority' not in result
+    assert scopes == [asdict(f.scope)]
+
+
+@pytest.mark.parametrize('bad', ['missing', 'profile', 'owner', 'digest'])
+def test_native_grant_explicit_provider_snapshot_is_strictly_bound(native_policy_fixture, bad):
+    from eimemory.governance.evolution.code_automation_policy_grant import prepare_standing_grant
+    f = native_policy_fixture
+    f.grant.update(prepare_standing_grant(f.runtime, scope=f.scope, profile_key=f.grant['profile_key'])['grant'])
+    if bad == 'missing': f.grant['capability_authority'] = None
+    elif bad == 'profile': f.grant['profile_digest'] = 'f'*64
+    elif bad == 'owner': f.grant['capability_authority']['owner_scope']['user_id'] = 'other-owner'
+    else: f.grant['capability_authority']['digest'] = 'f'*64
+    with pytest.raises((TypeError, ValueError)):
+        owner._validate_grant(f.grant, f.scope, f.repo, datetime.now(timezone.utc))
+    assert not _state(f).exists() and not f.destination.exists()
 
 
 @pytest.mark.skipif(os.name != 'posix' or not hasattr(os, 'geteuid') or os.geteuid() != 0,
@@ -527,6 +715,11 @@ def test_native_standing_grant_root_install_is_digest_reviewed_and_issues_no_chi
     with pytest.raises(ValueError, match='review_digest'):
         install_prepared_standing_grant(prepared, expected_grant_digest='f'*64, runtime_user=account.pw_name)
     assert not owner.standing_grant_path(f.scope).exists()
+    _fixture_runtime_owned_repository(f, account)
+    root_probe = subprocess.run(['/usr/bin/git', '--no-optional-locks', '-C', str(f.repo), 'rev-parse', 'HEAD'],
+        capture_output=True, text=True, env={'PATH': '/usr/bin:/bin', 'HOME': '/',
+            'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'})
+    assert root_probe.returncode != 0 and 'dubious ownership' in root_probe.stderr
     result = install_prepared_standing_grant(prepared, expected_grant_digest=prepared['grant_digest'], runtime_user=account.pw_name)
     info = owner.standing_grant_path(f.scope).stat()
     assert result['status'] == 'installed' and info.st_uid == 0 and info.st_gid == account.pw_gid
@@ -539,6 +732,55 @@ def test_native_standing_grant_root_install_is_digest_reviewed_and_issues_no_chi
     other['grant_digest'] = report_digest(other['grant'])
     with pytest.raises(ValueError, match='existing_authority_preserved'):
         install_prepared_standing_grant(other, expected_grant_digest=other['grant_digest'], runtime_user=account.pw_name)
+
+
+def _fixture_runtime_owned_repository(f, account):
+    # Real native uid ownership, restricted to this disposable pytest tree.
+    assert (f.repo.parent == f.root and f.repo.resolve().is_relative_to(f.root.resolve())
+            and f.repo.name == 'fixture-git' and f.root.name.startswith('test_'))
+    for directory in (f.root.parent, f.root):
+        directory.chmod((directory.stat().st_mode & 0o777) | 0o111)
+    for path in [f.repo, *f.repo.rglob('*')]:
+        os.chown(path, account.pw_uid, account.pw_gid, follow_symlinks=False)
+
+
+@pytest.mark.skipif(os.name != 'posix' or not hasattr(os, 'geteuid') or os.geteuid() != 0,
+                    reason='real root installer with a separate runtime-owned Git repository')
+@pytest.mark.parametrize('bad', ['wrong_account', 'git_owner', 'no_read', 'dirty', 'remote_changed'])
+def test_native_root_grant_install_rejects_runtime_repository_mismatch(native_policy_fixture, monkeypatch, bad):
+    import pwd
+    from eimemory.governance.evolution.code_automation_policy_grant import prepare_standing_grant, install_prepared_standing_grant
+    f = native_policy_fixture
+    account = pwd.getpwnam('nobody')
+    prepared = prepare_standing_grant(f.runtime, scope=f.scope, profile_key=f.grant['profile_key'])
+    _fixture_runtime_owned_repository(f, account)
+    monkeypatch.setattr(owner, '_secure_read_standing_grant', _REAL_STANDING_READER)
+    runtime_user = account.pw_name
+    if bad == 'wrong_account': runtime_user = pwd.getpwnam('daemon').pw_name
+    elif bad == 'git_owner': os.chown(f.repo/'.git', 0, 0)
+    elif bad == 'no_read': f.repo.chmod(0)
+    elif bad == 'dirty':
+        target = f.repo/'README.md'; target.write_bytes(target.read_bytes()+b'\nIsolated fixture dirty worktree\n')
+    else:
+        config = f.repo/'.git'/'config'; original = config.read_text()
+        remote = f.grant['repository']['remote_url_digest']
+        from eimemory.governance.evolution.code_automation_policy_grant import _runtime_git
+        url = _runtime_git(f.repo, account, 'remote', 'get-url', 'origin')
+        assert remote_url_digest(url) == remote and url in original
+        config.write_text(original.replace(url, url+'-isolated-changed'))
+    with pytest.raises(ValueError):
+        install_prepared_standing_grant(prepared, expected_grant_digest=prepared['grant_digest'], runtime_user=runtime_user)
+    assert not owner.standing_grant_path(f.scope).exists() and not f.destination.exists()
+    assert not _state(f).exists()
+
+
+@pytest.mark.parametrize('arguments', [('config', '--global', 'safe.directory', '*'), ('fetch',),
+                                     ('remote', 'get-url', '--all'), ('status', '--porcelain', '--ignored')])
+def test_root_grant_git_runner_allows_only_fixed_read_operations(monkeypatch, arguments):
+    from eimemory.governance.evolution.code_automation_policy_grant import _runtime_git
+    monkeypatch.setattr(subprocess, 'run', lambda *_a, **_k: pytest.fail('forbidden Git operation must not launch'))
+    with pytest.raises(ValueError, match='git_read_operation_forbidden'):
+        _runtime_git(Path('/isolated-fixture'), SimpleNamespace(pw_name='fixture', pw_uid=1001), *arguments)
 
 
 def test_native_policy_parallel_owners_create_one_original_intent_and_receipt(native_policy_fixture):
@@ -649,7 +891,10 @@ _REAL_STANDING_READER = owner._secure_read_standing_grant
 
 
 @pytest.mark.skipif(os.name != 'posix', reason='native AF_UNIX/SO_PEERCRED provider integration')
-def test_native_policy_actual_socket_catalog_activation_profile_and_sqlite(native_policy_fixture, monkeypatch):
+@pytest.mark.parametrize('mapped', [False, pytest.param(True, marks=pytest.mark.skipif(
+    os.name != 'posix' or not hasattr(os, 'geteuid') or os.geteuid() != 0,
+    reason='root-owned exact two-scope provider authority fixture'))])
+def test_native_policy_actual_socket_catalog_activation_profile_and_sqlite(native_policy_fixture, monkeypatch, mapped):
     import tempfile
     import eimemory.adapters.hermes.code_implementation as provider
     import eimemory.capabilities.code_implementation_bootstrap as bootstrap
@@ -659,6 +904,10 @@ def test_native_policy_actual_socket_catalog_activation_profile_and_sqlite(nativ
     from eimemory.capabilities import CapabilityProfile
     f = native_policy_fixture
     scope = asdict(f.scope)
+    if mapped:
+        f.scope.workspace_id += '::channel::hermes'
+        f.scope.user_id = 'ou_fixture_actual_business_owner'
+        f.grant['scope'] = asdict(f.scope)
     monkeypatch.setattr(provider, 'resolve_code_implementation_provider', _REAL_PROVIDER_RESOLVER)
     monkeypatch.setattr(CapabilityProfiles, 'resolve', _REAL_PROFILE_RESOLVER)
     f.runtime.apply_capability_seed_manifest(scope=scope)
@@ -667,12 +916,14 @@ def test_native_policy_actual_socket_catalog_activation_profile_and_sqlite(nativ
         profile_id='l5.default:fixture-native-owner', profile_key=f.grant['profile_key'], revision='fixture-native-owner', scope='global',
         requirements={'code.implementation': {'minimum_maturity': 'evaluated', 'min_pass_rate': 1.0}},
         provenance={'source': 'isolated-test-fixture-only'}, created_at=datetime.now(timezone.utc).isoformat()),
-        runtime_scope=f.scope)
+        runtime_scope=ScopeRef.from_dict(scope))
     # The actual provider transport, server attestation, static protected case,
     # native two-pass activation and resolver execute here. Only completion is
     # a deterministic fixture backend, with no production LLM or source access.
+    completion_requests = []
     def complete(**kwargs):
         request = json.loads(kwargs['input'][0]['text'])
+        completion_requests.append(request)
         return SimpleNamespace(parsed={'schema': provider.RESPONSE_SCHEMA,
             'request_id': request['request_id'], 'request_digest': request['request_digest'],
             'file_updates': [{'path': item['path'], 'prior_sha256': item['sha256'], 'content': 'VALUE = 2\n'}
@@ -702,14 +953,43 @@ def test_native_policy_actual_socket_catalog_activation_profile_and_sqlite(nativ
                             max_candidates=100, max_activate=3, preflight_passes=2)
             assert incubated['ok'] is True and incubated['activated_count'] >= 1, incubated
             f.grant['profile_digest'] = CapabilityProfiles(f.runtime.store).resolve(f.grant['profile_key'],
-                                  runtime_scope=f.scope, capability_scope='global')['profile']['profile_digest']
+                                  runtime_scope=scope, capability_scope='global')['profile']['profile_digest']
             resolved = _REAL_PROVIDER_RESOLVER(f.runtime, runtime_scope=scope, capability_scope='global',
                                                checked_at=datetime.now(timezone.utc).isoformat(), probe=True)
             assert resolved['ok'] is True and resolved['health']['ok'] is True, resolved
+            if mapped:
+                from eimemory.governance.evolution import code_evolution_provider_authority as authority_api
+                directory = owner.STANDING_AUTHORITY_DIRECTORY
+                directory.mkdir(mode=0o750)
+                path = directory/'code-provider-delegations.v1.json'
+                entry = {'owner_scope': asdict(f.scope), 'provider_scope': scope, 'capability_id': 'code.implementation',
+                    'capability_scope': 'global', 'operation': 'propose_patch_v2', 'profile_key': f.grant['profile_key'],
+                    'profile_digest': f.grant['profile_digest']}
+                path.write_text(json.dumps({'schema': authority_api.DELEGATION_SCHEMA, 'enabled': True,
+                                            'delegations': [entry]})); path.chmod(0o640)
+                monkeypatch.setattr(authority_api, 'DELEGATION_PATH', path)
+                f.grant['capability_authority'] = authority_api.select_provider_authority(f.runtime,
+                    owner_scope=f.scope, profile_key=f.grant['profile_key'])
+                assert f.grant['capability_authority']['authorization_basis'] == 'root_code_provider_delegation'
+                grant_path = owner.standing_grant_path(f.scope)
+                grant_path.write_text(json.dumps(f.grant)); grant_path.chmod(0o640)
+                monkeypatch.setattr(owner, '_secure_read_standing_grant', _REAL_STANDING_READER)
             f.capture()
             result = _ensure(f)
             assert result['ok'] is True and result['status'] == 'available', result
             assert json.loads(f.destination.read_bytes())['deployment']['observation_seconds'] == 28800
+            if mapped:
+                assert result['capability_authority'] == f.grant['capability_authority']
+                before = len(completion_requests)
+                from eimemory.governance.evolution.system_code_repair import process_system_code_incidents
+                routed = process_system_code_incidents(f.runtime, scope=f.scope, repo_root=f.repo,
+                    capability_authority=result['capability_authority'])
+                # The deterministic catalog fixture cannot repair arbitrary
+                # production source. It must reach the real attested provider,
+                # then retain semantic rejection instead of inventing a tx.
+                assert len(completion_requests) > before, routed
+                assert routed['ok'] is False and routed['processed'][0]['status'] == 'proposal_blocked', routed
+                assert CodeEvolutionStore(f.runtime.store).list_transactions() == []
         finally:
             server.stop()
 

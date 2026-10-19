@@ -62,6 +62,18 @@ def test_healthy_current_detector_is_idle_and_preserves_owner(owners):
     assert owners.calls[-1][1]["owner_id"] == "test-owner"
 
 
+def test_native_owner_provider_snapshot_is_forwarded_without_replacing_business_scope(owners, monkeypatch):
+    # The owner validates this fixture snapshot; maintenance only carries it.
+    snapshot = {'fixture': 'explicit-native-owner-provider-binding'}
+    monkeypatch.setattr('eimemory.governance.evolution.code_automation_policy_owner.ensure_native_incident_policy',
+                        lambda *_a, **_k: {'ok': True, 'status': 'available', 'capability_authority': snapshot})
+    report = run(owners)
+    assert report['ok'] is True
+    router = next(kwargs for name, kwargs in owners.calls if name == 'router')
+    assert router['capability_authority'] == snapshot and asdict(router['scope']) == SCOPE
+    assert asdict(owners.calls[-1][1]['scope']) == SCOPE
+
+
 def test_dry_run_never_calls_detectors_provider_or_effect_recovery(owners):
     report = run(owners, apply=False)
     assert report["execution_ok"] is True and report["status"] == "skipped"

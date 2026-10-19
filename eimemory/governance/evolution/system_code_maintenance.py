@@ -70,7 +70,9 @@ def run_system_code_maintenance(
             "native_policy_owner",
         )
         route = (_call(
-            lambda: process_system_code_incidents(runtime, scope=scope_ref, repo_root=repo_root, max_items=1),
+            lambda: process_system_code_incidents(runtime, scope=scope_ref, repo_root=repo_root, max_items=1,
+                **({'capability_authority': policy_owner['capability_authority']}
+                   if 'capability_authority' in policy_owner else {})),
             "incident_router") if policy_owner.get("ok") is True else {
                 "ok": False, "status": "blocked", "reason": "native_policy_owner_unverified", "processed": []})
         failure = _call(

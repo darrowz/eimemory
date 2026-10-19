@@ -31,6 +31,7 @@ def process_system_code_incidents(
     scope: ScopeRef | Mapping[str, Any],
     repo_root: str | Path | None = None,
     max_items: int = 1,
+    capability_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Submit at most ``max_items`` genuine detector incidents for repair."""
 
@@ -104,8 +105,13 @@ def process_system_code_incidents(
     from eimemory.capabilities.profiles import CapabilityProfiles, CapabilityProfileError
 
     try:
-        CapabilityProfiles(runtime.store).resolve(profile_key, runtime_scope=scope_ref, capability_scope="global")
-    except CapabilityProfileError:
+        profile_scope = scope_ref
+        if capability_authority is not None:
+            from eimemory.governance.evolution.code_evolution_provider_authority import verify_provider_authority
+            authority = verify_provider_authority(runtime, capability_authority, owner_scope=scope_ref, profile_key=profile_key)
+            profile_scope = ScopeRef.from_dict(authority['provider_scope'])
+        CapabilityProfiles(runtime.store).resolve(profile_key, runtime_scope=profile_scope, capability_scope="global")
+    except (CapabilityProfileError, ValueError):
         return {
             "ok": False, "status": "blocked", "reason": "automation_policy_profile_unavailable",
             "profile_key": profile_key, "processed": [],
@@ -155,6 +161,7 @@ def process_system_code_incidents(
                     "maximum_total_bytes": 96 * 1024,
                     "maximum_changed_lines": 400,
                 },
+                **({'capability_authority': dict(capability_authority)} if capability_authority is not None else {}),
                 **incident_source_facts(record),
             )
         except Exception as exc:

@@ -174,8 +174,7 @@ def current_incident(*,commit=COMMIT,scope=SCOPE,status='active'):
     incident=report['incident']
     record=RecordEnvelope.create(kind='incident',title=incident['title'],source='eimemory.runtime_identity_drift',
         scope=scope,status=status,content={**incident,'detector_report':report},
-        provenance={'origin':'system_detector','detector':'eimemory.runtime_identity_drift.v1',
-                    'known_before_detection':False,'prior_user_reported':False},
+        provenance=dict(report['source_facts']['facts']),
         meta={'observation_valid':True,'incident_digest':incident['incident_digest']})
     record.record_id=incident['incident_id']
     return record
@@ -206,7 +205,7 @@ def test_6074_generic_timer_incidents_cannot_hide_current_eligible_source(tmp_pa
 
 
 @pytest.mark.parametrize('case',['empty','old','archived','other_owner','shared_owner','untrusted_diagnosis'])
-def test_no_current_trusted_incident_is_idle_before_policy_access(tmp_path,monkeypatch,case):
+def test_no_valid_current_incident_never_accesses_policy(tmp_path,monkeypatch,case):
     with closing(RuntimeStore(tmp_path)) as store:
         runtime=router_runtime(store,monkeypatch)
         if case!='empty':
@@ -216,7 +215,12 @@ def test_no_current_trusted_incident_is_idle_before_policy_access(tmp_path,monke
             if case=='untrusted_diagnosis':item.content['detector_report']['status']='diagnosis_required';item.provenance={}
             store.append(item)
         monkeypatch.setattr(router,'_automation_policy_identity',lambda:pytest.fail('idle owner consulted policy'))
-        assert router.process_system_code_incidents(runtime,scope=SCOPE,repo_root=tmp_path)=={'ok':True,'status':'idle','processed':[]}
+        result=router.process_system_code_incidents(runtime,scope=SCOPE,repo_root=tmp_path)
+        if case=='untrusted_diagnosis':
+            assert result['ok'] is False and result['status']=='blocked'
+            assert result['reason']=='current_incident_source_unverified'
+        else:
+            assert result=={'ok':True,'status':'idle','processed':[]}
 
 
 def diagnosis_incident(*,commit=COMMIT,scope=SCOPE,status='active'):
@@ -250,8 +254,10 @@ def test_diagnosis_requires_exact_current_native_authority_before_policy(tmp_pat
         store.append(item)
         monkeypatch.setattr(router,'_automation_policy_identity',lambda:pytest.fail('diagnosis or historical input read policy'))
         result=router.process_system_code_incidents(runtime,scope=SCOPE,repo_root=tmp_path)
-        assert result['status']==('diagnosis_required' if case=='current' else 'idle')
-        assert result['ok'] is (case!='current')
+        expected='diagnosis_required' if case=='current' else 'blocked' if case in {'wrong_detector','tampered_identity'} else 'idle'
+        assert result['status']==expected
+        assert result['ok'] is (expected=='idle')
+        if expected=='blocked':assert result['reason']=='current_incident_source_unverified'
 
 
 def test_allowed_incident_source_sentinel_blocks_before_policy(tmp_path,monkeypatch):
