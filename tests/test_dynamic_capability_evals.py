@@ -213,3 +213,78 @@ def test_profile_backed_evaluation_fails_closed_for_multiple_bindings(tmp_path) 
     assert report["status"] == "rejected"
     assert report["blocked_reasons"] == ["profile_evaluation_selection_blocked"]
     assert any("ambiguous_or_missing_binding" in value for value in report["dynamic_selection"]["errors"])
+
+
+@pytest.mark.parametrize("damage", ["", "revoked", "wrong_owner", "partial_contract"])
+def test_pinned_code_provider_profile_keeps_acceptance_and_manifest_owned_by_business(tmp_path, monkeypatch, damage):
+    """Real Profile/catalog/SQLite evidence; the root-file reader is a fixture.
+
+    This tests delegation semantics, not host root ownership or a production
+    model. Those filesystem boundaries have separate native tests.
+    """
+    from copy import deepcopy
+    from dataclasses import replace
+    from eimemory.governance.evolution import code_evolution_provider_authority as authority
+    from eimemory.governance.capability.provider_selection import verify_selection_authority
+    from eimemory.models.records import ScopeRef
+    from eimemory.governance.capability.capability_replay_packs import replay_selection_contract_digest
+    runtime = Runtime.create(root=tmp_path / "isolated")
+    owner = {**SCOPE, "workspace_id": "channel::business", "user_id": "business-openid"}
+    provider = dict(SCOPE)
+    definition = replace(_definition(), capability_id="code.implementation")
+    revision = _revision(definition)
+    profile = _profile(definition)
+    catalog = CapabilityEvaluationCatalog()
+    catalog.register_executor(executor_id="fixture.code-eval", revision="v1",
+        handler=lambda _i, _f, _r: {"decision": "traceable"})
+    catalog.register_case(CatalogCase(case_id="fixture_code_contract", capability_id=definition.capability_id,
+        executor_id="fixture.code-eval", input_data={"request": "verify"}, fixture={"id": "isolated"},
+        expected_invariants=[{"field": "decision", "op": "eq", "value": "traceable"}],
+        binding_selector={"operations_all": ["evaluate"]}))
+    runtime.capabilities.register_definition(definition, runtime_scope=provider)
+    runtime.capabilities.register_revision(revision, runtime_scope=provider)
+    runtime.capabilities.bind(_binding(definition, revision), runtime_scope=provider)
+    runtime.capabilities.register_profile(profile, runtime_scope=provider)
+    profile_digest = runtime.capabilities.resolve_profile(profile.profile_key, runtime_scope=provider, capability_scope="global")["profile"]["profile_digest"]
+    entry = dict(owner_scope=owner, provider_scope=provider, capability_id=authority.CAPABILITY_ID,
+        capability_scope="global", operation=authority.OPERATION, profile_key=profile.profile_key, profile_digest=profile_digest)
+    mapping = dict(schema=authority.DELEGATION_SCHEMA, enabled=True, delegations=[entry])
+    monkeypatch.setattr(authority, "_secure_delegations", lambda: deepcopy(mapping))
+    monkeypatch.setattr(authority, "configured_provider_scope", lambda _owner: provider)
+    snapshot = authority.select_provider_authority(runtime, owner_scope=owner, profile_key=profile.profile_key)
+    if damage == "revoked":
+        mapping["delegations"] = []
+    elif damage == "wrong_owner":
+        owner = {**owner, "user_id": "other-openid"}
+    try:
+        acceptance = runtime.run_capability_acceptance(scope=owner, persist=True, catalog=catalog,
+            runtime_scope=owner, profile_key=profile.profile_key, provider_authority_snapshot=snapshot)
+        if damage in {"revoked", "wrong_owner"}:
+            assert acceptance["ok"] is False
+            assert runtime.store.list_records(scope=ScopeRef.from_dict(owner), kinds=["replay_result"], limit=50) == []
+            return
+        assert acceptance["ok"] is True, acceptance
+        replay = runtime.build_capability_replay_packs(scope=owner, persist=True, catalog=catalog,
+            runtime_scope=owner, profile_key=profile.profile_key, provider_authority_snapshot=snapshot,
+            acceptance_execution_id=acceptance["execution_id"],
+            acceptance_probe_ids_by_case={row["case_id"]: row["probe_id"] for row in acceptance["results"]})
+        assert replay["ok"] is True, replay
+        contract = replay["selection_contract"]
+        assert acceptance["scope"] == acceptance["runtime_scope"] == contract["runtime_scope"] == owner
+        assert contract["provider_scope"] == provider
+        assert contract["provider_authority_snapshot"] == snapshot
+        manifest = runtime.store.get_by_id(replay["manifest_record_id"], scope=ScopeRef.from_dict(owner))
+        assert manifest is not None and manifest.scope == ScopeRef.from_dict(owner)
+        assert runtime.store.get_by_id(manifest.record_id, scope=ScopeRef.from_dict(provider)) is None
+        verify_selection_authority(runtime, contract, owner_scope=owner)
+        if damage == "partial_contract":
+            del contract["provider_authority_digest"]
+            contract["selection_contract_digest"] = replay_selection_contract_digest(contract)
+            with pytest.raises(ValueError, match="incomplete"):
+                verify_selection_authority(runtime, contract, owner_scope=owner)
+        else:
+            mapping["delegations"] = []
+            with pytest.raises(ValueError):
+                verify_selection_authority(runtime, contract, owner_scope=owner)
+    finally:
+        runtime.close()

@@ -33,3 +33,8 @@ eimemory_default_deploy_scope_user() {
   local value; value="$(_eimemory_deploy_scope_setting user_id)"
   printf '%s' "${value:-$1}"
 }
+
+eimemory_default_deploy_scope_tenant() {
+  local value; value="$(_eimemory_deploy_scope_setting tenant_id)"
+  printf '%s' "${value:-default}"
+}

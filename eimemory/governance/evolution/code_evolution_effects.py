@@ -534,6 +534,8 @@ class CodeEvolutionEffectOwner:
             transaction = self.manager.begin_intent(transaction_id, step="deployment", intent_state="DEPLOY_INTENT", input_data={"candidate_commit": candidate_commit, "observation_deadline": deadline})
             deployment = self.adapter.deploy(self.runtime, transaction=transaction, policy=policy, verification_receipt_digests=receipt_digests, observation_deadline=deadline, heartbeat=heartbeat)
             heartbeat()
+            if deployment.evidence.get("pending") is True:
+                return _deployment_pending(transaction_id, deployment.evidence, self.manager.store.get_transaction(transaction_id))
             if not deployment.ok or deployment.deployed_commit != candidate_commit or _HEX64.fullmatch(deployment.receipt_digest) is None:
                 result = self._rollback_after_deploy_failure(transaction_id, policy, deployment.evidence)
                 cleanup_candidate()
@@ -698,6 +700,8 @@ class CodeEvolutionEffectOwner:
                 heartbeat=heartbeat,
             )
             heartbeat()
+            if deployment.evidence.get("pending") is True:
+                return _deployment_pending(transaction_id, deployment.evidence, self.manager.store.get_transaction(transaction_id))
             if not deployment.ok or deployment.deployed_commit != candidate_commit or _HEX64.fullmatch(deployment.receipt_digest) is None:
                 return self._rollback_after_deploy_failure(transaction_id, policy, deployment.evidence)
             deployment_payload = dict(current.get("payload") or {})
@@ -820,6 +824,8 @@ class CodeEvolutionEffectOwner:
                 policy=policy,
                 heartbeat=lambda: self.manager.renew_lease(transaction_id),
             )
+            if rollback.get("pending") is True:
+                return _deployment_pending(transaction_id, rollback, self.manager.store.get_transaction(transaction_id))
             decision = reconcile_rollback(
                 {
                     "current_commit": str(rollback.get("commit") or ""),
@@ -850,6 +856,8 @@ class CodeEvolutionEffectOwner:
 
         transaction = self.manager.begin_intent(transaction_id, step="rollback", intent_state="ROLLBACK_INTENT", input_data={"deployment_evidence_digest": digest_json(deployment_evidence)})
         rollback = self.adapter.rollback(self.runtime, transaction=transaction, policy=policy, heartbeat=lambda: self.manager.renew_lease(transaction_id))
+        if rollback.get("pending") is True:
+            return _deployment_pending(transaction_id, rollback, self.manager.store.get_transaction(transaction_id))
         if not _candidate_release_landed(transaction, deployment_evidence):
             restoration = reconcile_rollback(
                 {
@@ -1095,54 +1103,126 @@ class ProductionEffectAdapter:
         return {"remote_sha": remote_line.split()[0] if remote_line else ""}
 
     def deploy(self, runtime, *, transaction, policy, verification_receipt_digests, observation_deadline, heartbeat):
-        installer = _trusted_root() / "deploy" / "install_immutable_release.sh"
-        if sha256(installer.read_bytes()).hexdigest() != str(policy["deployment"]["installer_digest"]):
-            return DeploymentResult(False, "", "", "", {"reason": "installer_digest_mismatch"})
-        lineage = _code_evolution_lineage(transaction)
-        exit_status, output = _run_bounded_process(
-            ["bash", str(installer), str(transaction.get("candidate_commit") or "")],
-            cwd=_trusted_root(),
-            env=_deployment_environment(runtime, transaction=transaction, verification_receipt_digests=verification_receipt_digests, observation_deadline=observation_deadline, lineage=lineage),
-            heartbeat=heartbeat,
-        )
-        if exit_status != 0:
-            return DeploymentResult(False, "", "", "", {"reason": "immutable_installer_failed", "output_digest": sha256(output).hexdigest()})
-        receipt = verify_and_record_deployment(
-            runtime,
-            scope=_transaction_scope(transaction),
-            repo_root=_trusted_root(),
-            current_link=policy["deployment"]["current_link"],
-            health_url=policy["deployment"]["health_url"],
-            prior_commit=str(transaction.get("prior_commit") or transaction.get("base_commit") or ""),
-            deployed_commit=str(transaction.get("candidate_commit") or ""),
-            transaction_id=str(transaction.get("transaction_id") or ""),
-            authorization_digest=str(transaction.get("authorization_digest") or ""),
-            policy_digest=str(transaction.get("policy_digest") or ""),
-            patch_digest=str(transaction.get("patch_digest") or ""),
-            candidate_tree_digest=str(transaction.get("candidate_tree_digest") or ""),
-            verification_receipt_digests=list(verification_receipt_digests),
-            observation_deadline=observation_deadline,
-            provider_implementation_digest=str(transaction.get("implementation_digest") or ""),
-            code_evolution_lineage=lineage,
-            strict_transaction=True,
-        )
-        return DeploymentResult(receipt.get("ok") is True, digest_json(receipt) if receipt.get("ok") is True else "", str(receipt.get("commit") or ""), str(receipt.get("version") or ""), receipt)
+        from eimemory.governance.evolution.code_deployment_job import handoff
+        evidence = handoff(runtime, transaction, policy, operation="deploy")
+        if evidence.get("pending") is True:
+            return DeploymentResult(False, "", "", "", evidence)
+        result = evidence["result"]
+        self._verify_managed_result(runtime, transaction, policy, result, operation="deploy")
+        return DeploymentResult(result.get("ok") is True, str(result.get("receipt_digest") or ""),
+            str(result.get("commit") or ""), str(result.get("version") or ""), {**result, **evidence})
 
     def rollback(self, runtime, *, transaction, policy, heartbeat):
-        prior = str(transaction.get("prior_commit") or transaction.get("base_commit") or "")
+        from eimemory.governance.evolution.code_deployment_job import handoff
+        evidence = handoff(runtime, transaction, policy, operation="rollback")
+        if evidence.get("pending") is not True:
+            self._verify_managed_result(runtime, transaction, policy, evidence["result"], operation="rollback")
+        return evidence if evidence.get("pending") is True else {**evidence["result"], **evidence}
+
+    def _verify_managed_result(self, runtime, transaction, policy, result, *, operation):
+        """A user-owned JSON result can never replace physical native evidence."""
+        if result.get("ok") is not True:
+            return
+        from eimemory.governance.release.deployment_receipt import inspect_immutable_deployment
+        target = str(transaction["candidate_commit"] if operation == "deploy" else transaction.get("prior_commit") or transaction["base_commit"])
+        receipt = result.get("receipt") if isinstance(result.get("receipt"), Mapping) else {}
+        from eimemory.governance.release.evidence_contract import verified_deployment_receipt_identity, same_scope
+        record = runtime.store.get_by_id(str(receipt.get("promotion_request_id") or ""), scope=ScopeRef.from_dict(_transaction_scope(transaction)))
+        identity = verified_deployment_receipt_identity(record) if record is not None else None
+        actual = inspect_immutable_deployment(runtime, scope=_transaction_scope(transaction), repo=_trusted_root(),
+            current_link=policy["deployment"]["current_link"], health_url=policy["deployment"]["health_url"],
+            expected_commit=target, transaction_id=str(transaction["transaction_id"]) if operation == "deploy" else "")
+        if (actual.get("ok") is not True or result.get("commit") != target
+            or result.get("verifier_commit") != target or result.get("verifier_exit") != 0
+            or result.get("receipt_digest") != digest_json(receipt)
+            or receipt.get("ok") is not True or receipt.get("commit") != target
+            or not receipt.get("promotion_request_id")
+            or identity is None or identity.commit != target or identity.version != result.get("version")
+            or not same_scope(record.scope if record is not None else None, _transaction_scope(transaction))
+            or (operation == "deploy" and (receipt.get("strict_transaction") is not True
+                or receipt.get("transaction_id") != transaction["transaction_id"]
+                or actual.get("deployment_receipt_digest") != result.get("receipt_digest")))):
+            raise ValueError("deployment_job_physical_receipt_readback_failed")
+
+    def run_managed_installer(self, runtime, *, transaction, policy, operation, job_key):
+        """Called only by the independent job after closing all DB handles.
+
+        Storage quiescence and its normal recovery remain inside the original
+        installer. No transaction heartbeat writes through the migration cut.
+        """
         installer = _trusted_root() / "deploy" / "install_immutable_release.sh"
         if sha256(installer.read_bytes()).hexdigest() != str(policy["deployment"]["installer_digest"]):
             return {"ok": False, "commit": "", "receipt_digest": "", "reason": "installer_digest_mismatch"}
-        exit_status, _output = _run_bounded_process(
-            ["bash", str(installer), prior],
-            cwd=_trusted_root(),
-            env=_base_effect_environment(runtime),
-            heartbeat=heartbeat,
-        )
+        target = str(transaction["candidate_commit"] if operation == "deploy" else transaction.get("prior_commit") or transaction["base_commit"])
+        env = (_deployment_environment(runtime, transaction=transaction,
+            verification_receipt_digests=sorted(transaction["payload"]["verification_receipt_digests"]),
+            observation_deadline=transaction["observation_deadline"], lineage=_code_evolution_lineage(transaction))
+            if operation == "deploy" else _owner_effect_environment(runtime, transaction))
+        env["EIMEMORY_RUNTIME_TRANSITION_JOB"] = job_key
+        exit_status, output = _run_bounded_process(["bash", str(installer), target],
+            cwd=_trusted_root(), env=env, heartbeat=lambda: None)
         if exit_status != 0:
-            return {"ok": False, "commit": "", "receipt_digest": ""}
-        receipt = verify_and_record_deployment(runtime, scope=_transaction_scope(transaction), repo_root=_trusted_root(), current_link=policy["deployment"]["current_link"], health_url=policy["deployment"]["health_url"], prior_commit=str(transaction.get("candidate_commit") or ""), deployed_commit=prior)
-        return {"ok": receipt.get("ok") is True, "commit": str(receipt.get("commit") or ""), "receipt_digest": digest_json(receipt) if receipt.get("ok") is True else ""}
+            return {"ok": False, "commit": "", "receipt_digest": "", "reason": "immutable_installer_failed",
+                    "installer_exit": exit_status, "output_digest": sha256(output).hexdigest()}
+        # This verifier executes the TARGET release's code and interpreter, not
+        # this base controller's Runtime under a forged candidate identity.
+        current = Path(policy["deployment"]["current_link"])
+        release = current.resolve(strict=True)
+        if release.name != target or release.parent.name != "releases":
+            raise ValueError("deployment_job_current_release_mismatch")
+        receipt_args = dict(scope=_transaction_scope(transaction), repo_root=str(_trusted_root()),
+            current_link=str(current), health_url=str(policy["deployment"]["health_url"]),
+            prior_commit=str(transaction.get("prior_commit") or transaction["base_commit"]) if operation == "deploy" else str(transaction["candidate_commit"]),
+            deployed_commit=target)
+        if operation == "deploy":
+            receipt_args.update(strict_transaction=True, transaction_id=str(transaction["transaction_id"]),
+                **{field: str(transaction[field]) for field in ("authorization_digest", "policy_digest", "patch_digest", "candidate_tree_digest", "observation_deadline")},
+                verification_receipt_digests=sorted(transaction["payload"]["verification_receipt_digests"]),
+                provider_implementation_digest=str(transaction["implementation_digest"]),
+                code_evolution_lineage=_code_evolution_lineage(transaction))
+        # A fixed native API reader also works on a rollback predecessor whose
+        # historical CLI did not yet expose --scope-tenant. It never rewrites
+        # the exact owner through CLI aliases/default settings.
+        verifier = '''
+import json,sys
+from pathlib import Path
+import eimemory
+from eimemory.api.runtime import Runtime
+expected=Path(sys.argv[1])
+if Path(eimemory.__file__).resolve().parent.parent != expected:
+    raise SystemExit("deployment_job_verifier_source_mismatch")
+arguments=json.loads(sys.argv[2])
+if Path(arguments["current_link"]).resolve(strict=True)!=expected:
+    raise SystemExit("deployment_job_verifier_current_mismatch")
+runtime=Runtime.create(root=sys.argv[3])
+try:
+    report=runtime.verify_and_record_deployment(**arguments)
+    if Path(arguments["current_link"]).resolve(strict=True)!=expected:
+        raise SystemExit("deployment_job_verifier_current_changed")
+    print(json.dumps(report,sort_keys=True))
+finally:
+    runtime.close()
+'''
+        argv = [str(release / ".venv/bin/python"), "-I", "-B", "-c", verifier,
+                str(release), json.dumps(receipt_args, sort_keys=True, separators=(",", ":")), str(runtime.store.root)]
+        verify_env = _owner_effect_environment(runtime, transaction)
+        verify_env["EIMEMORY_RUNTIME_COMMIT"] = target
+        rc, raw = _run_bounded_process(argv, cwd=release, env=verify_env, heartbeat=lambda: None)
+        if current.resolve(strict=True) != release:
+            raise ValueError("deployment_job_current_release_changed")
+        try:
+            receipt = json.loads(raw)
+        except (ValueError, UnicodeError):
+            receipt = {}
+        valid = (rc == 0 and isinstance(receipt, dict) and receipt.get("ok") is True
+                 and receipt.get("commit") == target and bool(receipt.get("promotion_request_id"))
+                 and (operation != "deploy" or (receipt.get("strict_transaction") is True
+                      and receipt.get("transaction_id") == transaction["transaction_id"])))
+        return {"ok": valid, "commit": str(receipt.get("commit") or ""),
+            "version": str(receipt.get("version") or ""),
+            "receipt_digest": digest_json(receipt) if valid else "", "receipt": receipt,
+            "verifier_commit": target, "verifier_exit": rc,
+            "output_digest": sha256(output).hexdigest(), "verification_output_digest": sha256(raw).hexdigest()}
 
     def cleanup(self, candidate):
         if candidate.root.exists():
@@ -1208,7 +1288,7 @@ def sample_code_evolution_observation(
     )
     from eimemory.governance.release.deployment_receipt import inspect_immutable_deployment
 
-    checked_at = str(observed_at or utc_now())
+    checked_at = utc_now()
     scope = _transaction_scope(transaction)
     profile_key = str(transaction.get("profile_key") or "").strip()
     if not profile_key:
@@ -1273,9 +1353,15 @@ def sample_code_evolution_observation(
     provider_ok = not provider_error
     receipt_digest = str(deployment.get("deployment_receipt_digest") or "")
     health_ok = release.commit == expected_commit and semantic_correct and provider_ok and deployment.get("ok") is True
+    from eimemory.governance.evolution.code_evolution_observation import native_observation_clock
+    clock = native_observation_clock()
+    checked_at = clock["wall_utc"]
+    sample_key = f"phase-{phase}:{checked_at}"
     return {
         "sample_key": sample_key,
         "observed_at": checked_at,
+        "claimed_observed_at": str(observed_at or ""),
+        "clock": clock,
         "commit": release.commit,
         "release_identity": digest_json(release_payload),
         "service_health": {"release_commit_matches": release.commit == expected_commit, "l5_semantics_correct": semantic_correct, "provider_live": provider_ok, "deployment_live": deployment.get("ok") is True},
@@ -1494,6 +1580,16 @@ def read_code_evolution_external_state(
         }
     if state in {"DEPLOY_INTENT", "ROLLBACK_INTENT"}:
         from eimemory.governance.release.deployment_receipt import inspect_immutable_deployment
+        from eimemory.governance.evolution.code_deployment_job import _bound_request, job_state
+
+        operation = "deploy" if state == "DEPLOY_INTENT" else "rollback"
+        binding = _bound_request(transaction, operation)
+        managed = job_state(*binding) if binding else None
+        def observed(value):
+            if binding:
+                value["_managed_job_read"] = {"job_key": binding[0], "state": state,
+                    "state_version": transaction.get("state_version")}
+            return value
 
         prior = str(transaction.get("prior_commit") or base)
         expected = candidate_commit if state == "DEPLOY_INTENT" else prior
@@ -1508,8 +1604,14 @@ def read_code_evolution_external_state(
         )
         current_commit = str(deployment.get("current_commit") or "")
         storage_state = _storage_release_state(runtime)
+        if (managed and managed.get("pending") is True
+            and managed["native_state"].get("ActiveState") not in {"active", "activating", "deactivating"}
+            and not (current_commit == expected and deployment.get("ok") is True)):
+            # A stopped/lost job without a native result is a visible unknown
+            # effect, not a retryable clean-prior deployment or infinite wait.
+            return observed({"managed_job_unknown": managed, "current_commit": current_commit})
         if state == "DEPLOY_INTENT":
-            return {
+            return observed({
                 "current_commit": current_commit,
                 "candidate_commit": candidate_commit,
                 "prior_commit": prior,
@@ -1524,15 +1626,25 @@ def read_code_evolution_external_state(
                     else "unknown"
                 ),
                 "health_ok": deployment.get("health_ok") is True and deployment.get("tree_valid") is True,
-            }
-        return {
+            })
+        return observed({
             "current_commit": current_commit,
             "prior_commit": prior,
-            "receipt_valid": current_commit == prior and deployment.get("tree_valid") is True,
+            "receipt_valid": current_commit == prior and deployment.get("tree_valid") is True
+                and _exact_owner_receipt_present(runtime, transaction, prior),
             "health_ok": deployment.get("health_ok") is True,
             "storage_clean": storage_state == "clean",
-        }
+        })
     return {}
+
+
+def _exact_owner_receipt_present(runtime, transaction, commit):
+    from eimemory.governance.release.evidence_contract import verified_deployment_receipt_identity, same_scope
+    scope = ScopeRef.from_dict(_transaction_scope(transaction))
+    records = runtime.store.list_records(kinds=["promotion_request"], scope=scope, status="deployed", limit=50)
+    return any(same_scope(getattr(record, "scope", None), scope)
+               and (identity := verified_deployment_receipt_identity(record)) is not None
+               and identity.commit == commit for record in records)
 
 
 def _storage_release_state(runtime: Any) -> str:
@@ -1589,6 +1701,12 @@ def _strict_receipt_exists(runtime: Any, transaction: Mapping[str, Any]) -> bool
 def _proposal(transaction: Mapping[str, Any]) -> Mapping[str, Any]:
     payload = transaction.get("payload") if isinstance(transaction.get("payload"), Mapping) else {}
     return payload.get("payload") if isinstance(payload.get("payload"), Mapping) else payload
+
+
+def _deployment_pending(transaction_id, evidence, transaction):
+    return {"ok": True, "applied": False, "pending": True,
+            "blocked_reason": "managed_deployment_job_awaiting_reconciliation",
+            "transaction_id": transaction_id, "transaction": transaction or {}, "deployment_job": dict(evidence)}
 
 
 def _blocked(transaction_id: str, reason: str, transaction: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -1755,8 +1873,18 @@ def _base_effect_environment(runtime: Any) -> dict[str, str]:
     return env
 
 
-def _deployment_environment(runtime: Any, *, transaction: Mapping[str, Any], verification_receipt_digests: Sequence[str], observation_deadline: str, lineage: Mapping[str, Any]) -> dict[str, str]:
+def _owner_effect_environment(runtime, transaction):
     env = _base_effect_environment(runtime)
+    scope = _transaction_scope(transaction)
+    if any(not v.strip() for v in scope.values()):
+        raise ValueError("deployment_owner_scope_required")
+    env.update({"EIMEMORY_DEPLOY_SCOPE_" + name: scope[key] for key, name in
+                (("tenant_id", "TENANT"), ("agent_id", "AGENT"), ("workspace_id", "WORKSPACE"), ("user_id", "USER"))})
+    return env
+
+
+def _deployment_environment(runtime: Any, *, transaction: Mapping[str, Any], verification_receipt_digests: Sequence[str], observation_deadline: str, lineage: Mapping[str, Any]) -> dict[str, str]:
+    env = _owner_effect_environment(runtime, transaction)
     env.update(
         {
             "EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE": "1",

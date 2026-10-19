@@ -40,6 +40,7 @@ EIMEMORY_RELEASE_CLOSURE_MODE="${EIMEMORY_RELEASE_CLOSURE_MODE:-auto}"
 EIMEMORY_HEALTH_URL="${EIMEMORY_HEALTH_URL:-http://127.0.0.1:8091/health}"
 # shellcheck source=deploy/deploy_scope_default.sh
 . "$(dirname "${BASH_SOURCE[0]}")/deploy_scope_default.sh"
+EIMEMORY_DEPLOY_SCOPE_TENANT="${EIMEMORY_DEPLOY_SCOPE_TENANT:-$(eimemory_default_deploy_scope_tenant)}"
 EIMEMORY_DEPLOY_SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-$(eimemory_default_deploy_scope_agent)}"
 EIMEMORY_DEPLOY_SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-$(eimemory_default_deploy_scope_workspace)}"
 EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-$(eimemory_default_deploy_scope_user "${SERVICE_USER}")}"
@@ -80,10 +81,11 @@ _require_nonblank_deploy_scope() {
 }
 
 if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ]; then
-  if ! _require_nonblank_deploy_scope "$EIMEMORY_DEPLOY_SCOPE_AGENT" || \
+  if ! _require_nonblank_deploy_scope "$EIMEMORY_DEPLOY_SCOPE_TENANT" || \
+     ! _require_nonblank_deploy_scope "$EIMEMORY_DEPLOY_SCOPE_AGENT" || \
      ! _require_nonblank_deploy_scope "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" || \
      ! _require_nonblank_deploy_scope "$EIMEMORY_DEPLOY_SCOPE_USER"; then
-    echo "Deployment scope triple must be non-blank (agent/workspace/user)." >&2
+    echo "Deployment scope must be non-blank (tenant/agent/workspace/user)." >&2
     exit 2
   fi
 fi
@@ -1637,7 +1639,7 @@ _find_prior_release_commit_for() {
     --repo-root "$REPO_DIR" \
     --deployed-commit "$deployed_commit" \
     --runtime-root "$EIMEMORY_ROOT" \
-    --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+    --scope-tenant "$EIMEMORY_DEPLOY_SCOPE_TENANT" --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
     --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
     --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"
 }
@@ -2035,6 +2037,7 @@ print(f"{timeout:g}")
     EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE="$HERMES_ATTESTATION_TOKEN_FILE" \
     EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE="$HERMES_RECEIPT_HANDOFF_FILE" \
     EIMEMORY_RUNTIME_COMMIT="$target_commit" \
+    EIMEMORY_TENANT_ID="$EIMEMORY_DEPLOY_SCOPE_TENANT" \
     EIMEMORY_AGENT_ID="$EIMEMORY_DEPLOY_SCOPE_AGENT" \
     EIMEMORY_WORKSPACE_ID="$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
     EIMEMORY_USER_ID="$EIMEMORY_DEPLOY_SCOPE_USER" \
@@ -2127,7 +2130,7 @@ _verify_current_deployment_receipt() {
     EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
     "$RELEASE_DIR/.venv/bin/python" -I -B - "$COMMIT" "$receipt_id" \
       "$EIMEMORY_DEPLOY_SCOPE_AGENT" "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
-      "$EIMEMORY_DEPLOY_SCOPE_USER" <<'PY'
+      "$EIMEMORY_DEPLOY_SCOPE_USER" "$EIMEMORY_DEPLOY_SCOPE_TENANT" <<'PY'
 import json
 import sys
 from types import SimpleNamespace
@@ -2138,12 +2141,12 @@ from eimemory.models.records import ScopeRef
 from eimemory.storage.runtime_store import RuntimeStore
 from eimemory.version import __version__
 
-commit, receipt_id, agent, workspace, user = sys.argv[1:]
+commit, receipt_id, agent, workspace, user, tenant = sys.argv[1:]
 settings = load_settings()
 store = RuntimeStore(settings.root)
 try:
     identity = current_release_identity(SimpleNamespace(store=store), ScopeRef.from_dict({
-        'agent_id': agent, 'workspace_id': workspace, 'user_id': user,
+        'tenant_id': tenant, 'agent_id': agent, 'workspace_id': workspace, 'user_id': user,
     }))
     if (identity is None or identity.commit != commit or identity.version != __version__
             or identity.receipt_id != receipt_id):
@@ -2165,7 +2168,7 @@ _record_deployment_receipt() {
     --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK"
     --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$trusted_prior"
     --deployed-commit "$COMMIT"
-    --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT"
+    --scope-tenant "$EIMEMORY_DEPLOY_SCOPE_TENANT" --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT"
     --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE"
     --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER" --json
   )
@@ -2240,7 +2243,7 @@ _record_release_lineage() {
     "$RELEASE_DIR/.venv/bin/python" -I -B \
       "$RELEASE_DIR/deploy/record_release_lineage.py" \
       --repo-root "$REPO_DIR" --current-commit "$COMMIT" \
-      --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+      --scope-tenant "$EIMEMORY_DEPLOY_SCOPE_TENANT" --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
       --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
       --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"
 }
@@ -2325,7 +2328,7 @@ _run_pre_switch_production_recall_bootstrap() {
         --current-link "$CURRENT_LINK" --health-url "$EIMEMORY_HEALTH_URL" \
         --prior-health-snapshot "$PRIOR_HEALTH_SNAPSHOT_FILE" \
         --root "$EIMEMORY_ROOT" \
-        --agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+        --tenant "$EIMEMORY_DEPLOY_SCOPE_TENANT" --agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
         --workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
         --user "$EIMEMORY_DEPLOY_SCOPE_USER"; then
     bootstrap_status=0
@@ -2442,7 +2445,7 @@ _run_post_switch_closure() {
       "$RELEASE_DIR/.venv/bin/eimemory" learn release-closure \
         --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
         --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$trusted_prior" \
-        --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+        --scope-tenant "$EIMEMORY_DEPLOY_SCOPE_TENANT" --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
         --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
         --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER" --json \
         >"$closure_output"; then
@@ -2459,7 +2462,7 @@ _run_post_switch_closure() {
       --evidence-dir "$EIMEMORY_LOG_DIR/release-closure-captures" \
       --expected-commit "$COMMIT" --attempt-id "$STORAGE_ATTEMPT_ID" \
       --closure-exit-status "$closure_status" \
-      --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+      --scope-tenant "$EIMEMORY_DEPLOY_SCOPE_TENANT" --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
       --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
       --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"
   )"; then

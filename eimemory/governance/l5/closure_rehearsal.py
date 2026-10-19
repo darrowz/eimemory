@@ -59,6 +59,7 @@ def run_l5_closure_rehearsal(
     profile_key: str = "",
     capability_scope: str = "global",
     runtime_scope: ScopeRef | dict[str, Any] | None = None,
+    provider_authority_snapshot: dict | None = None,
     at_time: str = "",
     legacy_compatibility: bool = False,
     correction_capability_id: str = "",
@@ -83,6 +84,7 @@ def run_l5_closure_rehearsal(
             profile_key=profile_key,
             capability_scope=capability_scope,
             runtime_scope=exact_scope,
+            **({"provider_authority_snapshot": provider_authority_snapshot} if provider_authority_snapshot is not None else {}),
             at_time=at_time,
             legacy_compatibility=legacy_compatibility,
         )
@@ -126,6 +128,7 @@ def run_l5_closure_rehearsal(
             profile_key="",
             capability_scope=capability_scope,
             runtime_scope=exact_scope,
+            **({"provider_authority_snapshot": provider_authority_snapshot} if provider_authority_snapshot is not None else {}),
             at_time=at_time,
             legacy_compatibility=True,
         )
@@ -177,6 +180,7 @@ def run_l5_closure_rehearsal(
             profile_key="",
             capability_scope=capability_scope,
             runtime_scope=exact_scope,
+            **({"provider_authority_snapshot": provider_authority_snapshot} if provider_authority_snapshot is not None else {}),
             at_time=at_time,
             legacy_compatibility=True,
         )
@@ -339,12 +343,19 @@ def run_l5_closure_rehearsal(
     if capability_dashboard.get("ok") is not True:
         return _blocked_closure(report, "capability_dashboard_failed")
 
+    from eimemory.governance.capability.provider_selection import provider_selection
+    try:
+        reader_scope, _ = provider_selection(runtime, owner_scope=scope_ref,
+            profile_key=profile_key, snapshot=provider_authority_snapshot)
+    except ValueError:
+        return _blocked_closure(report, "provider_selection_authority_changed")
     l5_readiness = runtime.build_l5_readiness_report(
         scope=asdict(scope_ref),
         persist=persist,
         loop_id=LOOP_ID,
         repo_root=repo_root,
         reader_mode="legacy" if legacy_compatibility else "v3",
+        **({"runtime_scope": asdict(reader_scope)} if provider_authority_snapshot is not None else {}),
         profile_key=profile_key,
         capability_scope=capability_scope,
     )
@@ -924,6 +935,7 @@ def run_capability_replay_gate(
     profile_key: str = "",
     capability_scope: str = "global",
     runtime_scope: ScopeRef | dict[str, Any] | None = None,
+    provider_authority_snapshot: dict | None = None,
     at_time: str = "",
     legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
@@ -944,6 +956,7 @@ def run_capability_replay_gate(
         profile_key=profile_key,
         capability_scope=capability_scope,
         runtime_scope=exact_scope,
+        **({"provider_authority_snapshot": provider_authority_snapshot} if provider_authority_snapshot is not None else {}),
         at_time=at_time,
         legacy_compatibility=legacy_compatibility,
     )
@@ -993,6 +1006,7 @@ def run_capability_replay_gate(
         profile_key=profile_key,
         capability_scope=capability_scope,
         runtime_scope=exact_scope,
+        **({"provider_authority_snapshot": provider_authority_snapshot} if provider_authority_snapshot is not None else {}),
         at_time=at_time,
         legacy_compatibility=legacy_compatibility,
     )
@@ -1040,6 +1054,7 @@ def _run_capability_acceptance(
     runtime_scope: ScopeRef | dict[str, Any],
     at_time: str,
     legacy_compatibility: bool,
+    provider_authority_snapshot: dict | None = None,
 ) -> dict[str, Any]:
     runner = getattr(runtime, "run_capability_acceptance", None)
     if callable(runner):
@@ -1050,6 +1065,7 @@ def _run_capability_acceptance(
             profile_key=profile_key,
             capability_scope=capability_scope,
             runtime_scope=runtime_scope,
+            **({"provider_authority_snapshot": provider_authority_snapshot} if provider_authority_snapshot is not None else {}),
             at_time=at_time,
             legacy_compatibility=legacy_compatibility,
         )
@@ -1063,6 +1079,7 @@ def _run_capability_acceptance(
         profile_key=profile_key,
         capability_scope=capability_scope,
         runtime_scope=runtime_scope,
+        **({"provider_authority_snapshot": provider_authority_snapshot} if provider_authority_snapshot is not None else {}),
         at_time=at_time,
         legacy_compatibility=legacy_compatibility,
     )
@@ -1082,6 +1099,7 @@ def _build_capability_replay_packs(
     runtime_scope: ScopeRef | dict[str, Any],
     at_time: str,
     legacy_compatibility: bool,
+    provider_authority_snapshot: dict | None = None,
 ) -> dict[str, Any]:
     builder = getattr(runtime, "build_capability_replay_packs", None)
     if callable(builder):
@@ -1095,6 +1113,7 @@ def _build_capability_replay_packs(
             profile_key=profile_key,
             capability_scope=capability_scope,
             runtime_scope=runtime_scope,
+            **({"provider_authority_snapshot": provider_authority_snapshot} if provider_authority_snapshot is not None else {}),
             at_time=at_time,
             legacy_compatibility=legacy_compatibility,
         )
@@ -1111,6 +1130,7 @@ def _build_capability_replay_packs(
         profile_key=profile_key,
         capability_scope=capability_scope,
         runtime_scope=runtime_scope,
+        **({"provider_authority_snapshot": provider_authority_snapshot} if provider_authority_snapshot is not None else {}),
         at_time=at_time,
         legacy_compatibility=legacy_compatibility,
     )

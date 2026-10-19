@@ -21,12 +21,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", required=True, type=Path)
     parser.add_argument("--current-commit", required=True)
+    parser.add_argument("--scope-tenant", default="default")
     parser.add_argument("--scope-agent", required=True)
     parser.add_argument("--scope-workspace", required=True)
     parser.add_argument("--scope-user", required=True)
     args = parser.parse_args(argv)
     commit = str(args.current_commit or "").strip().lower()
     scope = {
+        "tenant_id": args.scope_tenant,
         "agent_id": args.scope_agent,
         "workspace_id": args.scope_workspace,
         "user_id": args.scope_user,

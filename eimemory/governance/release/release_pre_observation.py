@@ -64,7 +64,18 @@ def run_pre_observation_closure(runtime: Any, *, receipt: dict, transaction_id: 
     if migration.get("ok") is not True:
         return blocked("storage_migrations", "storage_migrations_pending")
     profile = transaction["profile_key"]
+    from eimemory.governance.evolution.code_evolution_provider_authority import transaction_provider_authority
+    from eimemory.governance.capability.provider_selection import provider_selection
+    try:
+        authority = transaction_provider_authority(transaction)
+        provider_scope, authority_fields = provider_selection(runtime, owner_scope=scope,
+            profile_key=profile, snapshot=authority)
+    except ValueError as exc:
+        return blocked("provider_authority", str(exc))
+    report.update(authority_fields)
     selection = dict(scope=asdict(scope), runtime_scope=asdict(scope), profile_key=profile, persist=True)
+    if authority is not None:
+        selection["provider_authority_snapshot"] = authority
     bootstrap = run_capability_replay_gate(runtime, **selection, loop_id=f"pre_observation:{transaction_id}:0")
     report["replay_bootstrap"] = bootstrap
     if bootstrap.get("ok") is not True:
@@ -108,7 +119,7 @@ def run_pre_observation_closure(runtime: Any, *, receipt: dict, transaction_id: 
     report["release_lineage"] = lineage
     if any(lineage.get(key) is not True for key in ("ok", "validated", "compatible")):
         return blocked("release_lineage", "current_lineage_incompatible")
-    readiness = build_l5_effective_report(runtime, scope=asdict(scope), runtime_scope=asdict(scope),
+    readiness = build_l5_effective_report(runtime, scope=asdict(scope), runtime_scope=asdict(provider_scope),
         profile_key=profile, reader_mode="v3", persist=False, repo_root=identity_kwargs["repo_root"])
     report["readiness"] = readiness
     ready, measure = _l5_observation_semantics(readiness, transaction)

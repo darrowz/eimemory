@@ -588,6 +588,7 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_l5_readiness.add_argument("--capability-scope", default="global")
     learn_l5_readiness.add_argument("--at-time", default="")
     learn_l5_readiness.add_argument("--legacy-compatibility", action="store_true")
+    learn_l5_readiness.add_argument("--scope-tenant", default="")
     learn_l5_readiness.add_argument("--scope-agent", default="")
     learn_l5_readiness.add_argument("--scope-workspace", default="")
     learn_l5_readiness.add_argument("--scope-user", default="")
@@ -705,6 +706,7 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_capability_evolution.add_argument("--max-apply", type=int, default=1)
     learn_capability_evolution.add_argument("--json", action="store_true", default=True)
     learn_closure_rehearsal = learn_sub.add_parser("closure-rehearsal")
+    learn_closure_rehearsal.add_argument("--scope-tenant", default="")
     learn_closure_rehearsal.add_argument("--scope-agent", default="")
     learn_closure_rehearsal.add_argument("--scope-workspace", default="")
     learn_closure_rehearsal.add_argument("--scope-user", default="")
@@ -717,6 +719,7 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_live_acceptance.add_argument("--current-link", required=True)
     learn_live_acceptance.add_argument("--health-url", required=True)
     learn_live_acceptance.add_argument("--prior-commit", required=True)
+    learn_live_acceptance.add_argument("--scope-tenant", default="")
     learn_live_acceptance.add_argument("--scope-agent", default="")
     learn_live_acceptance.add_argument("--scope-workspace", default="")
     learn_live_acceptance.add_argument("--scope-user", default="")
@@ -729,6 +732,7 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_release_closure.add_argument("--current-link", required=True)
     learn_release_closure.add_argument("--health-url", required=True)
     learn_release_closure.add_argument("--prior-commit", required=True)
+    learn_release_closure.add_argument("--scope-tenant", default="")
     learn_release_closure.add_argument("--scope-agent", default="")
     learn_release_closure.add_argument("--scope-workspace", default="")
     learn_release_closure.add_argument("--scope-user", default="")
@@ -756,6 +760,7 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_deployment_receipt.add_argument("--provider-implementation-digest", default="")
     learn_deployment_receipt.add_argument("--code-evolution-lineage-json", default="")
     learn_deployment_receipt.add_argument("--strict-transaction", action="store_true")
+    learn_deployment_receipt.add_argument("--scope-tenant", default="")
     learn_deployment_receipt.add_argument("--scope-agent", default="")
     learn_deployment_receipt.add_argument("--scope-workspace", default="")
     learn_deployment_receipt.add_argument("--scope-user", default="")
@@ -764,6 +769,7 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_code_evolution_status.add_argument("--repo-root", default="")
     learn_code_evolution_status.add_argument("--ref", default="")
     learn_code_evolution_status.add_argument("--limit", type=int, default=100)
+    learn_code_evolution_status.add_argument("--scope-tenant", default="")
     learn_code_evolution_status.add_argument("--scope-agent", default="")
     learn_code_evolution_status.add_argument("--scope-workspace", default="")
     learn_code_evolution_status.add_argument("--scope-user", default="")
@@ -772,6 +778,7 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_code_evolution_auto_revoke.add_argument("--record-id", required=True)
     learn_code_evolution_auto_revoke.add_argument("--reason", required=True)
     learn_code_evolution_auto_revoke.add_argument("--revoked-by", required=True)
+    learn_code_evolution_auto_revoke.add_argument("--scope-tenant", default="")
     learn_code_evolution_auto_revoke.add_argument("--scope-agent", default="")
     learn_code_evolution_auto_revoke.add_argument("--scope-workspace", default="")
     learn_code_evolution_auto_revoke.add_argument("--scope-user", default="")
@@ -936,6 +943,7 @@ def _build_parser() -> argparse.ArgumentParser:
     evolve_autonomous.add_argument("--max-apply", type=int, default=3)
     evolve_autonomous.add_argument("--persist-report", action="store_true")
     evolve_autonomous.add_argument("--web-evidence-json", default="")
+    evolve_autonomous.add_argument("--scope-tenant", default="")
     evolve_autonomous.add_argument("--scope-agent", default="")
     evolve_autonomous.add_argument("--scope-workspace", default="")
     evolve_autonomous.add_argument("--scope-user", default="")
@@ -948,6 +956,7 @@ def _build_parser() -> argparse.ArgumentParser:
     evolve_gates = evolve_sub.add_parser("gates")
     evolve_gates.add_argument("--action", default="")
     evolve_gates.add_argument("--limit", type=int, default=20)
+    evolve_gates.add_argument("--scope-tenant", default="")
     evolve_gates.add_argument("--scope-agent", default="")
     evolve_gates.add_argument("--scope-workspace", default="")
     evolve_gates.add_argument("--scope-user", default="")
@@ -955,6 +964,7 @@ def _build_parser() -> argparse.ArgumentParser:
     evolve_rollback = evolve_sub.add_parser("rollback")
     evolve_rollback.add_argument("--pattern-id", required=True)
     evolve_rollback.add_argument("--reason", default="manual rollback")
+    evolve_rollback.add_argument("--scope-tenant", default="")
     evolve_rollback.add_argument("--scope-agent", default="")
     evolve_rollback.add_argument("--scope-workspace", default="")
     evolve_rollback.add_argument("--scope-user", default="")
@@ -963,6 +973,7 @@ def _build_parser() -> argparse.ArgumentParser:
     evolve_web_scout.add_argument("--url", action="append", default=[])
     evolve_web_scout.add_argument("--evidence-json", default="")
     evolve_web_scout.add_argument("--timeout-seconds", type=int, default=8)
+    evolve_web_scout.add_argument("--scope-tenant", default="")
     evolve_web_scout.add_argument("--scope-agent", default="")
     evolve_web_scout.add_argument("--scope-workspace", default="")
     evolve_web_scout.add_argument("--scope-user", default="")
@@ -1020,6 +1031,7 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_production_query_sub = eval_production_query.add_subparsers(dest="production_query_command")
     for operation in ("collect", "status", "build"):
         operation_parser = eval_production_query_sub.add_parser(operation)
+        operation_parser.add_argument("--scope-tenant", default="")
         operation_parser.add_argument("--scope-agent", default="")
         operation_parser.add_argument("--scope-workspace", default="")
         operation_parser.add_argument("--scope-user", default="")
@@ -1033,6 +1045,7 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_production_query_accept = eval_production_query_sub.add_parser("accept")
     eval_production_query_accept.add_argument("pending_record_id")
     eval_production_query_accept.add_argument("--label-json", required=True)
+    eval_production_query_accept.add_argument("--scope-tenant", default="")
     eval_production_query_accept.add_argument("--scope-agent", default="")
     eval_production_query_accept.add_argument("--scope-workspace", default="")
     eval_production_query_accept.add_argument("--scope-user", default="")
@@ -1042,6 +1055,7 @@ def _build_parser() -> argparse.ArgumentParser:
     auto_review.add_argument("--dry-run", action="store_true")
     auto_review.add_argument("--channel", choices=["codex", "hermes", "openclaw"])
     auto_review.add_argument("--limit", type=int, default=500)
+    auto_review.add_argument("--scope-tenant", default="")
     auto_review.add_argument("--scope-agent", default="")
     auto_review.add_argument("--scope-workspace", default="")
     auto_review.add_argument("--scope-user", default="")
@@ -1051,6 +1065,7 @@ def _build_parser() -> argparse.ArgumentParser:
     auto_review_revoke.add_argument("pending_record_id")
     auto_review_revoke.add_argument("--reason", required=True)
     auto_review_revoke.add_argument("--revoked-by", default="operator")
+    auto_review_revoke.add_argument("--scope-tenant", default="")
     auto_review_revoke.add_argument("--scope-agent", default="")
     auto_review_revoke.add_argument("--scope-workspace", default="")
     auto_review_revoke.add_argument("--scope-user", default="")
@@ -1058,11 +1073,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "original-eval", help="Digest-verified original-query engine rerun; does not replace the natural gate.",
     )
     original_eval.add_argument("--queries-json", required=True)
+    original_eval.add_argument("--scope-tenant", default="")
     original_eval.add_argument("--scope-agent", default="")
     original_eval.add_argument("--scope-workspace", default="")
     original_eval.add_argument("--scope-user", default="")
     for operation in ("accept-negative", "negative-eval", "capture-status", "companion-eval"):
         operation_parser = eval_production_query_sub.add_parser(operation)
+        operation_parser.add_argument("--scope-tenant", default="")
         operation_parser.add_argument("--scope-agent", default="")
         operation_parser.add_argument("--scope-workspace", default="")
         operation_parser.add_argument("--scope-user", default="")
@@ -1075,6 +1092,7 @@ def _build_parser() -> argparse.ArgumentParser:
         operation_parser = eval_production_query_sub.add_parser(
             operation, help="Explicit recall acceptance evidence; never a natural proactive gate.",
         )
+        operation_parser.add_argument("--scope-tenant", default="")
         operation_parser.add_argument("--scope-agent", default="")
         operation_parser.add_argument("--scope-workspace", default="")
         operation_parser.add_argument("--scope-user", default="")
@@ -1089,6 +1107,7 @@ def _build_parser() -> argparse.ArgumentParser:
             operation_parser.add_argument("--output", default="")
     eval_openclaw_e2e = eval_sub.add_parser("openclaw-e2e")
     eval_openclaw_e2e.add_argument("--query", default="eimemory openclaw e2e")
+    eval_openclaw_e2e.add_argument("--scope-tenant", default="")
     eval_openclaw_e2e.add_argument("--scope-agent", default="")
     eval_openclaw_e2e.add_argument("--scope-workspace", default="")
     eval_openclaw_e2e.add_argument("--scope-user", default="")
@@ -1394,6 +1413,9 @@ def _cli_profile_key(value: object) -> str:
 
 def _cli_scope(parsed: object, *, defaults: dict) -> dict:
     values = dict(defaults)
+    scope_tenant = getattr(parsed, "scope_tenant", "")
+    if scope_tenant:
+        values["tenant_id"] = scope_tenant
     scope_agent = getattr(parsed, "scope_agent", "")
     scope_workspace = getattr(parsed, "scope_workspace", "")
     scope_user = getattr(parsed, "scope_user", "")
@@ -1407,7 +1429,7 @@ def _cli_scope(parsed: object, *, defaults: dict) -> dict:
         "tenant_id": str(values.get("tenant_id") or "default"),
         "agent_id": str(values.get("agent_id") or "cli"),
         "workspace_id": str(values.get("workspace_id") or ""),
-        "user_id": canonical_hongtu_user_id(values.get("user_id")),
+        "user_id": str(scope_user) if scope_user else canonical_hongtu_user_id(values.get("user_id")),
     }
 
 

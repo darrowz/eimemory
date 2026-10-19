@@ -24,6 +24,9 @@ from eimemory.governance.code_evolution_test_plans import protected_test_plan_di
 from eimemory.governance.code_evolution_transaction import CodeEvolutionTransactionManager
 from eimemory.storage.code_evolution_store import digest_json
 
+# Collected through this existing CI-registered module.
+from tests.code_deployment_job_cases import *  # noqa: F403
+
 
 TX_ID = "tx-protected-effects"
 SCOPE = {"tenant_id": "tenant", "agent_id": "agent", "workspace_id": "workspace", "user_id": "user"}

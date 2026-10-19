@@ -10,7 +10,7 @@ to a capability name, version, host, or newest row.
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -877,12 +877,28 @@ class CapabilityEvaluationCatalog:
         probe_id: str,
         trace_record_id: str,
         execution_id: str,
+        evidence_scope: ScopeRef | Mapping[str, Any] | None = None,
+        provider_authority_snapshot: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Write an EvaluationSpec/Run after independent trace evidence exists."""
 
         from eimemory.capabilities.registry import exact_runtime_scope
 
         scope = exact_runtime_scope(runtime_scope)
+        source_scope = exact_runtime_scope(evidence_scope) if evidence_scope is not None else scope
+        authority_fields = {}
+        if source_scope != scope or provider_authority_snapshot is not None:
+            from eimemory.governance.capability.provider_selection import provider_selection
+            try:
+                if provider_authority_snapshot is None:
+                    raise ValueError("provider_selection_authority_required")
+                selected, authority_fields = provider_selection(runtime, owner_scope=source_scope,
+                    profile_key=str(provider_authority_snapshot.get("profile_key") or ""),
+                    snapshot=provider_authority_snapshot)
+                if selected != scope:
+                    raise ValueError("provider_selection_registry_mismatch")
+            except (TypeError, ValueError) as exc:
+                raise CatalogResolutionError("independent evidence delegation invalid") from exc
         target = EvaluationTarget.from_value(target)
         if target is None:
             raise CatalogResolutionError("evaluation target is invalid")
@@ -891,6 +907,8 @@ class CapabilityEvaluationCatalog:
             raise CatalogResolutionError(error)
         if target.capability_id != case.capability_id:
             raise CatalogResolutionError("evaluation target capability mismatch")
+        if authority_fields and target.capability_id != authority_fields["provider_authority_snapshot"]["capability_id"]:
+            raise CatalogResolutionError("evaluation target delegation mismatch")
         if not target.capability_revision_id or not target.provider_binding_id:
             raise CatalogResolutionError("evaluation target must include one revision and one binding")
         try:
@@ -902,7 +920,7 @@ class CapabilityEvaluationCatalog:
         execution = _safe_mapping(execution, field="evaluation_execution")
         evidence_validation = _validate_independent_evidence_chain(
             runtime,
-            scope=scope,
+            scope=source_scope,
             probe_id=str(probe_id),
             trace_record_id=str(trace_record_id),
             capability_id=target.capability_id,
@@ -964,6 +982,7 @@ class CapabilityEvaluationCatalog:
                 },
             },
             provenance={
+                **({"evidence_scope": asdict(source_scope), **authority_fields} if authority_fields else {}),
                 "source": "eimemory.evaluation.catalog",
                 "case_id": case.case_id,
                 "case_digest": case.case_digest,

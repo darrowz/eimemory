@@ -25,6 +25,7 @@ EVIDENCE_RECEIPT_ENV_FILE="${EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE:-$EIMEMORY_CONFI
 EIMEMORY_HEALTH_URL="${EIMEMORY_HEALTH_URL:-http://127.0.0.1:8091/health}"
 # shellcheck source=deploy/deploy_scope_default.sh
 . "$(dirname "${BASH_SOURCE[0]}")/deploy_scope_default.sh"
+SCOPE_TENANT="${EIMEMORY_DEPLOY_SCOPE_TENANT:-$(eimemory_default_deploy_scope_tenant)}"
 SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-$(eimemory_default_deploy_scope_agent)}"
 SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-$(eimemory_default_deploy_scope_workspace)}"
 SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-$(eimemory_default_deploy_scope_user "$(id -un)")}"
@@ -101,7 +102,7 @@ else
       "$RELEASE_DIR/.venv/bin/eimemory" learn release-closure \
         --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
         --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$prior" \
-        --scope-agent "$SCOPE_AGENT" --scope-workspace "$SCOPE_WORKSPACE" \
+        --scope-tenant "$SCOPE_TENANT" --scope-agent "$SCOPE_AGENT" --scope-workspace "$SCOPE_WORKSPACE" \
         --scope-user "$SCOPE_USER" --json >"$closure_output"
   closure_status=$?
   set -e
@@ -113,5 +114,5 @@ env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
   --evidence-dir "$EIMEMORY_LOG_DIR/release-closure-captures" \
   --expected-commit "$COMMIT" --attempt-id "$ATTEMPT_ID" \
   --closure-exit-status "$closure_status" \
-  --scope-agent "$SCOPE_AGENT" --scope-workspace "$SCOPE_WORKSPACE" --scope-user "$SCOPE_USER" \
+  --scope-tenant "$SCOPE_TENANT" --scope-agent "$SCOPE_AGENT" --scope-workspace "$SCOPE_WORKSPACE" --scope-user "$SCOPE_USER" \
   --enforce-gate

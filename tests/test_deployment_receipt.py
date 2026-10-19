@@ -16,6 +16,7 @@ from eimemory.governance import deployment_receipt as deployment_receipt_module
 from eimemory.governance.deployment_receipt import verify_and_record_deployment as _verify_deployment_receipt
 from eimemory.governance.evidence_contract import current_release_identity
 from eimemory.runtime_identity import package_tree_digest
+from eimemory.models.records import ScopeRef
 from deploy.find_prior_immutable_release import trusted_receipt_commits
 
 
@@ -692,6 +693,29 @@ def test_deployment_receipt_cli_persists_verified_receipt(tmp_path, monkeypatch,
     assert payload["ok"] is True
     assert payload["commit"] == head_commit
     assert payload["promotion_request_id"]
+
+
+def test_deployment_receipt_cli_preserves_exact_four_part_business_owner(tmp_path,monkeypatch,capsys):
+    repo,prior,head=_git_release_repo(tmp_path,version="9.8.7")
+    release,link=_release_link(tmp_path,head,repo=repo)
+    runtime_root=tmp_path/"runtime"
+    monkeypatch.setenv("EIMEMORY_ROOT",str(runtime_root))
+    owner=dict(tenant_id="business-tenant",agent_id="business-agent",workspace_id="business::channel",user_id="business-openid")
+    with _health_server(_health_payload(commit=head,version="9.8.7",current_link=link,release_dir=release)) as url:
+        with _module_trust_anchors(repo,link,url):
+            args=["learn","deployment-receipt","--repo-root",str(repo),"--current-link",str(link),
+                "--health-url",url,"--prior-commit",prior,"--json"]
+            for key,flag in (("tenant_id","tenant"),("agent_id","agent"),("workspace_id","workspace"),("user_id","user")):
+                args.extend(["--scope-"+flag,owner[key]])
+            code=cli_main(args)
+    receipt=json.loads(capsys.readouterr().out)
+    assert code==0 and receipt["ok"] is True
+    runtime=Runtime.create(root=runtime_root)
+    try:
+        record=runtime.store.get_by_id(receipt["promotion_request_id"],scope=ScopeRef.from_dict(owner))
+        assert record is not None and record.scope==ScopeRef.from_dict(owner)
+        assert runtime.store.get_by_id(receipt["promotion_request_id"],scope=ScopeRef.from_dict({**owner,"tenant_id":"default"})) is None
+    finally:runtime.close()
 
 
 @pytest.mark.parametrize("mutation", ["missing", "tampered"])

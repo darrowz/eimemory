@@ -891,6 +891,16 @@ def _recover_transaction_with_lease(
     if transaction is None:
         raise CodeEvolutionTransactionError("transaction not found")
     state = str(transaction["current_state"])
+    read = external_state.get("_managed_job_read")
+    actual_jobs = (transaction.get("payload") or {}).get("managed_deployment_jobs") or {}
+    if (isinstance(read, Mapping) and read.get("job_key") in actual_jobs.values()
+        and (read.get("state") != state or read.get("state_version") != transaction["state_version"])):
+        return {**transaction, "managed_job_external_read_stale": True}
+    if state in {"DEPLOY_INTENT", "ROLLBACK_INTENT"}:
+        from eimemory.governance.evolution.code_deployment_job import pending
+        actual_job = pending(manager.runtime, transaction)
+        if actual_job is not None:
+            return {**transaction, "managed_job_pending": actual_job}
     if state == "COMMIT_INTENT":
         decision = reconcile_commit(external_state)
         candidate_commit = str(external_state.get("candidate_commit") or "")

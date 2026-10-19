@@ -18,6 +18,8 @@ from eimemory.governance.capability.capability_replay_packs import (
     LEGACY_CORE_REPLAY_CAPABILITIES,
     MANIFEST_REPORT_TYPE,
     MANIFEST_SCHEMA_VERSION,
+    DELEGATED_MANIFEST_SCHEMA_VERSION,
+    DELEGATED_SELECTION_CONTRACT_SCHEMA,
     SELECTION_CONTRACT_SCHEMA,
     capability_replay_case_ids,
     capability_replay_log_sequence_state,
@@ -1873,14 +1875,14 @@ def _manifest_selection_case_contract(
     normalized = dict(selection)
     selection_digest = str(normalized.get("selection_contract_digest") or "").strip()
     if (
-        str(normalized.get("schema") or "") != SELECTION_CONTRACT_SCHEMA
+        str(normalized.get("schema") or "") not in {SELECTION_CONTRACT_SCHEMA, DELEGATED_SELECTION_CONTRACT_SCHEMA}
         or not selection_digest
         or replay_selection_contract_digest(normalized) != selection_digest
     ):
         return [], {}, "manifest_selection_contract_invalid"
     for container in (meta, provenance):
         if (
-            str(container.get("selection_contract_schema") or "") != SELECTION_CONTRACT_SCHEMA
+            str(container.get("selection_contract_schema") or "") != str(normalized.get("schema") or "")
             or str(container.get("selection_contract_digest") or "") != selection_digest
             or str(container.get("selection_mode") or "") != str(normalized.get("mode") or "")
             or str(container.get("profile_key") or "") != str(normalized.get("profile_key") or "")
@@ -1888,6 +1890,14 @@ def _manifest_selection_case_contract(
             or str(container.get("capability_scope") or "") != str(normalized.get("capability_scope") or "")
         ):
             return [], {}, "manifest_selection_contract_envelope_mismatch"
+    authority_keys = {"provider_authority_snapshot", "provider_authority_digest", "provider_scope"}
+    delegated = normalized.get("schema") == DELEGATED_SELECTION_CONTRACT_SCHEMA
+    if (delegated and any(key not in normalized for key in authority_keys)) or (
+        not delegated and any(key in normalized for key in authority_keys)):
+        return [], {}, "manifest_selection_authority_schema_mismatch"
+    for container in (meta, provenance):
+        if any((key in container) != (key in normalized) or container.get(key) != normalized.get(key) for key in authority_keys):
+            return [], {}, "manifest_selection_authority_envelope_mismatch"
     runtime_scope = normalized.get("runtime_scope")
     if not isinstance(runtime_scope, Mapping) or dict(runtime_scope) != asdict(scope):
         return [], {}, "manifest_selection_scope_mismatch"
@@ -1960,6 +1970,11 @@ def _validated_manifest_members(
     execution_id = str(content.get("execution_id") or "").strip()
     digest = str(content.get("manifest_digest") or "").strip()
     selection_contract = content.get("selection_contract") if isinstance(content.get("selection_contract"), Mapping) else {}
+    from eimemory.governance.capability.provider_selection import verify_selection_authority
+    try:
+        verify_selection_authority(runtime, selection_contract, owner_scope=scope)
+    except (TypeError, ValueError):
+        return [], "manifest_provider_authority_invalid"
     if not _record_has_exact_scope(manifest, scope):
         return [], "manifest_scope_mismatch"
     if source != "eimemory.capability_replay":
@@ -1968,7 +1983,8 @@ def _validated_manifest_members(
         return [], "manifest_status_invalid"
     if any(
         str(container.get("report_type") or "") != MANIFEST_REPORT_TYPE
-        or str(container.get("schema_version") or "") != MANIFEST_SCHEMA_VERSION
+        or str(container.get("schema_version") or "") != (DELEGATED_MANIFEST_SCHEMA_VERSION
+            if selection_contract.get("schema") == DELEGATED_SELECTION_CONTRACT_SCHEMA else MANIFEST_SCHEMA_VERSION)
         for container in (content, meta, provenance)
     ):
         return [], "manifest_schema_mismatch"

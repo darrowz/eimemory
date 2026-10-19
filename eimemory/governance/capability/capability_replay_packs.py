@@ -35,6 +35,8 @@ LEGACY_CORE_REPLAY_CAPABILITIES = [
 MANIFEST_REPORT_TYPE = "capability_replay_manifest"
 MANIFEST_SCHEMA_VERSION = "capability_replay_manifest.v2"
 SELECTION_CONTRACT_SCHEMA = "capability_replay_selection.v1"
+DELEGATED_SELECTION_CONTRACT_SCHEMA = "capability_replay_selection.v2"
+DELEGATED_MANIFEST_SCHEMA_VERSION = "capability_replay_manifest.v3"
 
 
 def build_capability_replay_packs(
@@ -50,6 +52,7 @@ def build_capability_replay_packs(
     profile_key: str = "",
     capability_scope: str = "global",
     runtime_scope: ScopeRef | dict[str, Any] | None = None,
+    provider_authority_snapshot: dict | None = None,
     at_time: str = "",
     legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
@@ -97,6 +100,14 @@ def build_capability_replay_packs(
                 release_payload=release_payload,
                 reason="dynamic_runtime_scope_mismatch",
             )
+    from eimemory.governance.capability.provider_selection import provider_selection
+    try:
+        if legacy_compatibility and provider_authority_snapshot is not None:
+            raise ValueError("legacy_provider_delegation_forbidden")
+        provider_scope, authority_fields = provider_selection(runtime, owner_scope=scope_ref,
+            profile_key=str(profile_key or "").strip(), snapshot=provider_authority_snapshot)
+    except ValueError as exc:
+        return _blocked_replay_report(scope=scope_ref, release_payload=release_payload, reason=str(exc))
     dynamic_selection: dict[str, Any] = {}
     dynamic_cases_by_capability: dict[str, list[dict[str, Any]]] = {}
     if legacy_compatibility:
@@ -106,7 +117,7 @@ def build_capability_replay_packs(
         try:
             dynamic_selection = dynamic_evaluation_view(
                 runtime,
-                scope=exact_scope,
+                scope=provider_scope,
                 capability_scope=capability_scope,
                 profile_key=str(profile_key or "").strip(),
                 catalog=active_catalog,
@@ -200,6 +211,7 @@ def build_capability_replay_packs(
             capability_scope=capability_scope,
             at_time=at_time,
             legacy_compatibility=legacy_compatibility,
+            authority_fields=authority_fields,
         )
     except ValueError as exc:
         return _blocked_replay_report(
@@ -563,6 +575,7 @@ def _replay_selection_contract(
     capability_scope: str,
     at_time: str,
     legacy_compatibility: bool,
+    authority_fields: dict | None = None,
 ) -> dict[str, Any]:
     """Build the immutable Profile/catalog selection bound into every manifest."""
 
@@ -629,6 +642,9 @@ def _replay_selection_contract(
         }
         if dynamic_mode == "dynamic_profile" and not contract["resolution_digest"]:
             raise ValueError("profile_resolution_digest_missing")
+    if authority_fields:
+        contract["schema"] = DELEGATED_SELECTION_CONTRACT_SCHEMA
+    contract.update(authority_fields or {})
     contract["selection_contract_digest"] = replay_selection_contract_digest(contract)
     return contract
 
@@ -716,7 +732,7 @@ def _manifest_payload(
         for key in ("release_commit", "release_version", "deployment_receipt_id", "release_session_id")
     }
     payload = {
-        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "schema_version": (DELEGATED_MANIFEST_SCHEMA_VERSION if (selection_contract or {}).get("schema") == DELEGATED_SELECTION_CONTRACT_SCHEMA else MANIFEST_SCHEMA_VERSION),
         "report_type": MANIFEST_REPORT_TYPE,
         "evidence_class": "replay_execution",
         **release_fields,
@@ -737,7 +753,8 @@ def _manifest_payload(
 def _manifest_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     selection = payload.get("selection_contract") if isinstance(payload.get("selection_contract"), dict) else {}
     return {
-        "schema_version": MANIFEST_SCHEMA_VERSION,
+        **{key: selection[key] for key in ("provider_authority_snapshot", "provider_authority_digest", "provider_scope") if key in selection},
+        "schema_version": str(payload.get("schema_version") or ""),
         "report_type": MANIFEST_REPORT_TYPE,
         "evidence_class": "replay_execution",
         **{

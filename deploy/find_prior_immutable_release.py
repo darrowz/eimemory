@@ -126,6 +126,7 @@ def trusted_receipt_commits(
     scope_agent: str,
     scope_workspace: str,
     scope_user: str,
+    scope_tenant: str = "default",
 ) -> list[str]:
     database = runtime_root / "state" / "eimemory.sqlite"
     if not database.is_file():
@@ -141,6 +142,7 @@ def trusted_receipt_commits(
         records = runtime.store.list_records(
             kinds=["promotion_request"],
             scope={
+                "tenant_id": scope_tenant,
                 "agent_id": scope_agent,
                 "workspace_id": scope_workspace,
                 "user_id": scope_user,
@@ -162,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo-root", required=True, type=Path)
     parser.add_argument("--deployed-commit", required=True)
     parser.add_argument("--runtime-root", required=True, type=Path)
+    parser.add_argument("--scope-tenant", default="default")
     parser.add_argument("--scope-agent", required=True)
     parser.add_argument("--scope-workspace", required=True)
     parser.add_argument("--scope-user", required=True)
@@ -169,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     commits = trusted_receipt_commits(
         runtime_root=args.runtime_root,
         repo_root=args.repo_root,
+        scope_tenant=args.scope_tenant,
         scope_agent=args.scope_agent,
         scope_workspace=args.scope_workspace,
         scope_user=args.scope_user,

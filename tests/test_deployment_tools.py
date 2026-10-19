@@ -2817,7 +2817,7 @@ _observe_pre_switch_l5
 
 @pytest.mark.parametrize(
     "scope_name",
-    ["EIMEMORY_DEPLOY_SCOPE_AGENT", "EIMEMORY_DEPLOY_SCOPE_WORKSPACE", "EIMEMORY_DEPLOY_SCOPE_USER"],
+    ["EIMEMORY_DEPLOY_SCOPE_TENANT", "EIMEMORY_DEPLOY_SCOPE_AGENT", "EIMEMORY_DEPLOY_SCOPE_WORKSPACE", "EIMEMORY_DEPLOY_SCOPE_USER"],
 )
 def test_immutable_release_installer_rejects_whitespace_only_governance_scope(scope_name) -> None:
     env = dict(os.environ)
@@ -2842,7 +2842,7 @@ def test_immutable_release_installer_rejects_whitespace_only_governance_scope(sc
     )
 
     assert result.returncode == 2
-    assert "Deployment scope triple must be non-blank" in result.stderr
+    assert "Deployment scope must be non-blank" in result.stderr
 
 
 def test_immutable_release_installer_rejects_dangling_current_link_with_clear_error(tmp_path) -> None:

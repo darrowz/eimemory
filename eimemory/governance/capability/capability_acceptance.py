@@ -496,6 +496,7 @@ def run_capability_acceptance(
     profile_key: str = "",
     capability_scope: str = "global",
     runtime_scope: ScopeRef | dict[str, Any] | None = None,
+    provider_authority_snapshot: dict | None = None,
     at_time: str = "",
     legacy_compatibility: bool = False,
     hypothesis_context_by_case: Mapping[str, Mapping[str, Any]] | None = None,
@@ -562,6 +563,15 @@ def run_capability_acceptance(
                 legacy_compatibility=legacy_compatibility,
             )
 
+    from eimemory.governance.capability.provider_selection import provider_selection
+    try:
+        if legacy_compatibility and provider_authority_snapshot is not None:
+            raise ValueError("legacy_provider_delegation_forbidden")
+        provider_scope, authority_fields = provider_selection(runtime, owner_scope=scope_ref,
+            profile_key=str(profile_key or "").strip(), snapshot=provider_authority_snapshot)
+    except ValueError as exc:
+        return _rejected_acceptance_report(scope=scope_ref, execution_id=final_execution_id,
+            blocked_reason=str(exc), legacy_compatibility=legacy_compatibility)
     selected_entries: list[dict[str, Any]] = []
     selection: dict[str, Any] | None = None
     normalized_profile_key = str(profile_key or "").strip()
@@ -570,7 +580,7 @@ def run_capability_acceptance(
             selection = active_catalog.resolve_profile_cases(
                 runtime,
                 profile_key=normalized_profile_key,
-                runtime_scope=exact_scope,
+                runtime_scope=provider_scope,
                 capability_scope=capability_scope,
                 case_ids=case_ids,
                 at_time=at_time,
@@ -590,7 +600,7 @@ def run_capability_acceptance(
         try:
             selection = active_catalog.resolve_active_cases(
                 runtime,
-                runtime_scope=exact_scope,
+                runtime_scope=provider_scope,
                 capability_scope=capability_scope,
                 case_ids=case_ids,
                 at_time=at_time,
@@ -716,9 +726,10 @@ def run_capability_acceptance(
             execution_id=final_execution_id,
             catalog=active_catalog,
             target=target,
-            runtime_scope=exact_scope,
+            runtime_scope=provider_scope,
             capability_scope=capability_scope,
             hypothesis_context=hypothesis_context,
+            provider_authority_snapshot=provider_authority_snapshot,
             legacy_compatibility=legacy_compatibility,
         )
         results.append(result)
@@ -763,6 +774,7 @@ def run_capability_acceptance(
         "results": results,
         "evaluation_catalog_schema": "capability_evaluation_catalog.v1",
         "dynamic_selection": selection or {},
+        **authority_fields,
         "legacy_compatibility": bool(legacy_compatibility),
         "profile_key": normalized_profile_key,
         "capability_scope": capability_scope,
@@ -822,6 +834,7 @@ def _run_probe(
     capability_scope: str,
     hypothesis_context: dict[str, Any] | None,
     legacy_compatibility: bool,
+    provider_authority_snapshot: dict | None = None,
 ) -> dict[str, Any]:
     case_id = str(artifact["case_id"])
     capability = str(artifact["capability"])
@@ -945,6 +958,8 @@ def _run_probe(
                     probe_id=probe_id,
                     trace_record_id=trace_record_id,
                     execution_id=execution_id,
+                    **({"evidence_scope": scope, "provider_authority_snapshot": provider_authority_snapshot}
+                       if provider_authority_snapshot is not None else {}),
                 )
                 evaluation_spec_id = str(stored["spec"].eval_spec_id)
                 evaluation_run_id = str(stored["run"].run_id)
