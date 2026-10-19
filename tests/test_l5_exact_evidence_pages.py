@@ -72,6 +72,8 @@ def test_52_quality_rows_are_not_hidden_by_7600_unrelated_reflections(tmp_path):
         assert len(records)==52 and all(item.scope==SCOPE and item.source==QUALITY_GAP_SOURCE for item in records)
         transaction=_quality_repair_transaction(SimpleNamespace(store=store),runtime_scope=SCOPE)
         assert transaction['quality_resolution_id']=='resolution-25' and transaction['quality_page_complete'] is True
+        assert len(transaction['quality_chain_digest']) == 64
+        assert transaction['terminal_receipt_digest'] == ''
         assert transaction['evidence_verified'] is False
         assert transaction['evidence_error']=='quality_repair_provenance_unproven'
         for field in ('known_before_detection','prior_user_reported','manual_bootstrap','observation_valid'):

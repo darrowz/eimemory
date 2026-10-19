@@ -81,9 +81,9 @@ def build_product_completion(
     evidence_error = str(transaction_data.get("evidence_error") or "")
     if not transaction_evidence_verified:
         if evidence_error == "terminal_transaction_lineage_mismatch":
-            # Qualified samples not yet bound to current lineage — wait, don't
-            # treat as a hard product failure that poisons release/nightly exit.
-            gaps.append("terminal_transaction_lineage_mismatch:awaiting_evidence")
+            # An existing terminal proof rejected by the current authority is
+            # a binding failure, not the absence of a qualifying sample.
+            gaps.append("terminal_transaction_lineage_mismatch")
         elif evidence_error == "quality_repair_release_unbound":
             gaps.append("quality_repair_release_unbound")
         else:

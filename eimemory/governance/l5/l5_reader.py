@@ -863,7 +863,7 @@ def _quality_repair_transaction(
     gap_id = str(meta.get("resolves_gap_id") or "")
     report_digest = str(meta.get("report_digest") or "")
     material = f"{latest.record_id}:{gap_id}:{report_digest}".encode("utf-8")
-    receipt_digest = sha256(material).hexdigest()
+    quality_chain_digest = sha256(material).hexdigest()
     release_commit = str(meta.get("release_commit") or "").strip().lower()
     deployment_receipt_id = str(meta.get("deployment_receipt_id") or "").strip()
     release_bound = len(release_commit) == 40 and all(char in "0123456789abcdef" for char in release_commit) and bool(deployment_receipt_id)
@@ -889,7 +889,10 @@ def _quality_repair_transaction(
         ],
         "release_commit": release_commit,
         "deployment_receipt_id": deployment_receipt_id,
-        "terminal_receipt_digest": receipt_digest,
+        # This identifies the observed fail-to-pass chain, not an immutable
+        # terminal receipt or a completed product observation window.
+        "quality_chain_digest": quality_chain_digest,
+        "terminal_receipt_digest": "",
         "quality_gap_id": gap_id,
         "quality_resolution_id": latest.record_id,
         "quality_page_complete": True,

@@ -86,6 +86,35 @@ def test_real_negative_evidence_is_archived_but_never_waived_as_starvation(produ
     assert not steps[0]["ok"] and not _aggregate_nightly_ok({"native_l5_assessment": result}, steps)
 
 
+def test_terminal_lineage_binding_failure_agrees_in_product_archive_and_nightly(producer):
+    from eimemory.governance.l5.l5_product_completion import build_product_completion
+
+    transaction = {
+        "transaction_id": "terminal-from-other-release", "terminal_receipt_digest": "c" * 64,
+        "qualifying_terminal_outcome": "succeeded_sedimented", "origin": "system_detector",
+        "known_before_detection": False, "prior_user_reported": False, "manual_bootstrap": False,
+        "observation_valid": True, "evidence_verified": False,
+        "evidence_error": "terminal_transaction_lineage_mismatch",
+    }
+    product = build_product_completion(
+        {"ok": True, "status": "ready"},
+        provider={"ready": True, "catalog_ready": True, "advertisement_fresh": True},
+        transaction=transaction, current_lineage={"ok": True, "compatible": True},
+    )
+    assert product["gaps"] == ["terminal_transaction_lineage_mismatch"]
+    assert not product["product_l5_complete"]
+    producer.value.update(product, transaction_evidence=transaction)
+    result = native.run_native_l5_assessment(producer, scope=asdict(SCOPE))
+    assert result["execution_ok"] and result["archive_verified"] and result["evidence_failed"]
+    assert result["status"] == "blocked" and not result["awaiting_evidence"]
+    archived = producer.store.get_by_id(result["record_id"], scope=SCOPE, exact_scope=True)
+    assert archived.content["envelope"]["gaps"] == ["terminal_transaction_lineage_mismatch"]
+    assert archived.content["envelope"]["transaction_evidence"] == transaction
+    steps = []
+    _nightly_step(steps, "native_l5_assessment", lambda: result)
+    assert not steps[0]["ok"] and not _aggregate_nightly_ok({"native_l5_assessment": result}, steps)
+
+
 @pytest.mark.parametrize("fault", ["scope", "legacy", "boolean", "missing_persistence", "invalid_digest",
     "completion_without_assessment", "reader_error", "projection_exception"])
 def test_unknown_or_failed_reader_cannot_be_an_evidence_wait(producer, fault):

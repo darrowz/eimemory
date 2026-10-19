@@ -230,7 +230,9 @@ def test_unknown_report_without_machine_gate_is_ignored(tmp_path) -> None:
 
 
 def test_resolved_quality_gap_becomes_l5_quality_repair_transaction(tmp_path) -> None:
-    from eimemory.governance.l5_reader import _quality_repair_transaction
+    from hashlib import sha256
+    from eimemory.governance.l5_reader import _completion_evidence_refs, _quality_repair_transaction
+    from eimemory.governance.l5_product_completion import build_product_completion
 
     runtime = Runtime.create(root=tmp_path)
     try:
@@ -252,6 +254,14 @@ def test_resolved_quality_gap_becomes_l5_quality_repair_transaction(tmp_path) ->
             scope=SCOPE,
         )
         transaction = _quality_repair_transaction(runtime, runtime_scope=SCOPE)
+        resolution = next(record for record in runtime.store.list_records(kinds=["reflection"])
+                          if record.record_id == transaction["quality_resolution_id"])
+        material = f"{transaction['quality_resolution_id']}:{transaction['quality_gap_id']}:{resolution.meta['report_digest']}"
+        expected_digest = sha256(material.encode("utf-8")).hexdigest()
+        # A real producer transition may establish useful repair diagnostics,
+        # but must not create a code transaction, observation or terminal proof.
+        for table in ("code_evolution_transactions", "code_evolution_terminal_receipts"):
+            assert runtime.store.sqlite.conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
     finally:
         runtime.close()
 
@@ -261,12 +271,22 @@ def test_resolved_quality_gap_becomes_l5_quality_repair_transaction(tmp_path) ->
     # 947070f8 (1.14.44): the producer only records a gate transition, so the
     # incident/observation facts stay unknown (None) instead of being filled
     # with assumed values; provenance is reported as an explicit gap.
-    assert transaction["observation_valid"] is None
-    assert transaction["known_before_detection"] is None
+    for field in ("known_before_detection", "prior_user_reported", "manual_bootstrap", "observation_valid"):
+        assert transaction[field] is None
     assert transaction["evidence_verified"] is False
     assert transaction["evidence_error"] == "quality_repair_release_unbound"
     assert transaction["evidence_gaps"] == [
         "quality_repair_provenance_unproven",
         "quality_repair_release_unbound",
     ]
-    assert len(transaction["terminal_receipt_digest"]) == 64
+    assert transaction["quality_chain_digest"] == expected_digest
+    assert transaction["terminal_receipt_digest"] == ""
+    assert _completion_evidence_refs(provider={}, transaction=transaction, lineage={})["transaction"] == []
+    report = build_product_completion(
+        {"ok": True, "status": "ready"},
+        provider={"ready": True, "catalog_ready": True, "advertisement_fresh": True},
+        transaction=transaction, current_lineage={"ok": True, "compatible": True},
+    )
+    assert report["product_l5_complete"] is False
+    assert {"terminal_receipt_unbound", "incident_prior_knowledge_unproven",
+            "incident_not_user_reported_unproven", "observation_not_valid"} <= set(report["gaps"])
