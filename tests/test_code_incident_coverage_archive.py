@@ -88,7 +88,7 @@ def test_original_guards_are_restored_and_archive_indices_are_append_only(runtim
         conn.rollback()
 
 
-@pytest.mark.parametrize('failure', ['seal', 'after_prune'])
+@pytest.mark.parametrize('failure', ['seal', 'after_prune', 'directory_fsync'])
 def test_failure_rolls_back_sql_prefix_and_guards_without_accepting_orphan_frames(runtime, monkeypatch, failure):
     original = prepare(runtime)
     conn = connection(runtime)
@@ -98,11 +98,16 @@ def test_failure_rolls_back_sql_prefix_and_guards_without_accepting_orphan_frame
         with pytest.raises(ValueError, match='fixture_seal_failure'):
             CodeIncidentCoverageStore(runtime.store).maintain_archive(seal=failing_seal, verify=verify,
                 keep={table: 1 for table in TABLES})
-    else:
+    elif failure == 'after_prune':
         with monkeypatch.context() as patch:
             patch.setattr(CoverageArchive, '_rows', lambda *_args:
                 (_ for _ in ()).throw(ValueError('fixture_readback_failure')))
             with pytest.raises(ValueError, match='fixture_readback_failure'): compact(runtime)
+    else:
+        with monkeypatch.context() as patch:
+            patch.setattr('eimemory.storage.code_incident_coverage_archive._fsync_directory',
+                lambda *_args: (_ for _ in ()).throw(OSError('fixture_directory_fsync_failure')))
+            with pytest.raises(OSError, match='fixture_directory_fsync_failure'): compact(runtime)
     for table in TABLES:
         assert [tuple(row) for row in conn.execute(f'SELECT * FROM {table}')] == before[table]
         assert conn.execute('SELECT sql FROM sqlite_master WHERE name=?',
@@ -131,10 +136,14 @@ def test_corrupt_cold_evidence_becomes_unknown_without_resealing(runtime, damage
         conn.execute(f'DROP TRIGGER trg_{ARCHIVES}_no_update')
         body['signature'] = '0' * 64
         conn.execute(f'UPDATE {ARCHIVES} SET payload_json=? WHERE sequence=?', (json.dumps(body), row['sequence']))
+        from eimemory.storage.migrations.code_incident_coverage_archive import triggers
+        conn.execute(triggers()[f'trg_{ARCHIVES}_no_update'])
         conn.commit()
     else:
         conn.execute(f'DROP TRIGGER trg_{KEYS}_no_update')
         conn.execute(f'UPDATE {KEYS} SET original_sequence=999999 WHERE table_name=?', (OBSERVATIONS,))
+        from eimemory.storage.migrations.code_incident_coverage_archive import triggers
+        conn.execute(triggers()[f'trg_{KEYS}_no_update'])
         conn.commit()
     result = read_native_ingress_coverage(runtime, scope=SCOPE, record_id=original['incident_record_id'])
     assert result['status'] == 'unproven'
@@ -205,8 +214,22 @@ def test_multiple_cold_frames_reject_parent_gap_and_bounded_read_overflow(runtim
     first = conn.execute(f'SELECT sequence FROM {ARCHIVES} WHERE table_name=? ORDER BY first_sequence LIMIT 1', (JOURNAL,)).fetchone()[0]
     conn.execute(f'DROP TRIGGER trg_{ARCHIVES}_no_delete')
     conn.execute(f'DELETE FROM {ARCHIVES} WHERE sequence=?', (first,))
+    from eimemory.storage.migrations.code_incident_coverage_archive import triggers
+    conn.execute(triggers()[f'trg_{ARCHIVES}_no_delete'])
     conn.commit()
     with pytest.raises(ValueError, match='prefix_missing'): cold.range_rows(JOURNAL, 0, high)
+    assert read_native_ingress_coverage(runtime, scope=SCOPE,
+        record_id=original['incident_record_id'])['status'] == 'unproven'
+
+
+def test_cold_reads_require_complete_archive_schema_and_guards(runtime):
+    original = prepare(runtime)
+    compact(runtime)
+    conn = connection(runtime)
+    conn.execute(f'DROP TRIGGER trg_{ARCHIVES}_no_update')
+    conn.commit()
+    cold = CoverageArchive(runtime.store, verify)
+    with pytest.raises(ValueError, match='schema_or_guards_unverified'): cold.high_water(JOURNAL)
     assert read_native_ingress_coverage(runtime, scope=SCOPE,
         record_id=original['incident_record_id'])['status'] == 'unproven'
 

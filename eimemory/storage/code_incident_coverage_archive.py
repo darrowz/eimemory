@@ -17,6 +17,7 @@ from eimemory.contracts.code_incident_coverage import canonical, digest, SCOPE_F
 from eimemory.storage.migrations.code_incident_coverage import JOURNAL, CHECKPOINTS, OBSERVATIONS, trigger_definitions
 from eimemory.storage.migrations.code_incident_coverage_archive import ARCHIVES, KEYS, schema_ready
 from eimemory.storage.payload_segments import PayloadSegmentStore
+from eimemory.storage.atomic_file import _fsync_directory
 
 SCHEMA = 'code_incident_coverage_archive.v1'
 ROWS_SCHEMA = 'code_incident_coverage_archive_rows.v1'
@@ -38,7 +39,10 @@ class CoverageArchive:
         self._reader = None
 
     def _installed(self):
-        return self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (ARCHIVES,)).fetchone() is not None
+        installed = self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (ARCHIVES,)).fetchone() is not None
+        if installed and not schema_ready(self.conn):
+            raise ValueError('incident_archive_schema_or_guards_unverified')
+        return installed
 
     def _segments(self, write=False):
         if self.root is None: raise ValueError('incident_archive_root_unavailable')
@@ -171,6 +175,10 @@ class CoverageArchive:
                         raise ValueError('incident_archive_capacity_requires_export')
                     pointer = writer.append(raw)
                     if writer.read(pointer) != raw: raise ValueError('incident_archive_durable_readback_failed')
+                    # Persist the segment's entry and the newly created
+                    # archive directory's entry before committing any prune.
+                    _fsync_directory(self.root)
+                    _fsync_directory(self.root.parent)
                     body = seal(dict(schema=SCHEMA, table_name=table,
                         first_sequence=page[0]['sequence'], last_sequence=page[-1]['sequence'], row_count=len(page),
                         previous_digest=prior['payload_digest'] if prior is not None else '',

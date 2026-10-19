@@ -1506,6 +1506,8 @@ def _manifest_profile_replay_contract(
 
     from eimemory.governance.capability.capability_replay_packs import (
         SELECTION_CONTRACT_SCHEMA,
+        DELEGATED_SELECTION_CONTRACT_SCHEMA,
+        DELEGATED_MANIFEST_SCHEMA_VERSION,
         replay_selection_contract_digest,
     )
 
@@ -1553,16 +1555,28 @@ def _manifest_profile_replay_contract(
             continue
         contract = dict(selection)
         digest = str(contract.get("selection_contract_digest") or "").strip()
+        schema = str(contract.get('schema') or '')
         if (
-            str(contract.get("schema") or "") != SELECTION_CONTRACT_SCHEMA
+            schema not in {SELECTION_CONTRACT_SCHEMA, DELEGATED_SELECTION_CONTRACT_SCHEMA}
             or not digest
             or replay_selection_contract_digest(contract) != digest
             or str(meta.get("selection_contract_digest") or "") != digest
             or str(provenance.get("selection_contract_digest") or "") != digest
-            or str(meta.get("selection_contract_schema") or "") != SELECTION_CONTRACT_SCHEMA
-            or str(provenance.get("selection_contract_schema") or "") != SELECTION_CONTRACT_SCHEMA
+            or str(meta.get("selection_contract_schema") or "") != schema
+            or str(provenance.get("selection_contract_schema") or "") != schema
         ):
             return set(), {}, "release_governance_replay_selection_contract_invalid"
+        provider_fields = {'provider_authority_snapshot', 'provider_authority_digest', 'provider_scope'}
+        delegated = schema == DELEGATED_SELECTION_CONTRACT_SCHEMA
+        if ((delegated and not provider_fields <= contract.keys())
+                or (not delegated and bool(provider_fields.intersection(contract)))
+                or any((key in container) != (key in contract) or container.get(key) != contract.get(key)
+                       for container in (meta, provenance) for key in provider_fields)
+                or (delegated and any(container.get('schema_version') != DELEGATED_MANIFEST_SCHEMA_VERSION
+                                      for container in (content, meta, provenance)))
+                or (not delegated and any(container.get('schema_version') == DELEGATED_MANIFEST_SCHEMA_VERSION
+                                          for container in (content, meta, provenance)))):
+            return set(), {}, 'release_governance_replay_selection_authority_invalid'
         runtime_scope = contract.get("runtime_scope")
         if not isinstance(runtime_scope, Mapping) or dict(runtime_scope) != asdict(scope):
             return set(), {}, "release_governance_replay_selection_scope_mismatch"
