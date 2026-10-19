@@ -78,7 +78,10 @@ def is_code_evolution_schema_ready(conn: sqlite3.Connection) -> bool:
                 "SELECT name FROM sqlite_master WHERE type='trigger'"
             ).fetchall()
         }
-        return set(_append_only_trigger_names()).issubset(triggers)
+        recovery_index = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_code_evolution_recovery_scope'"
+        ).fetchone()
+        return set(_append_only_trigger_names()).issubset(triggers) and recovery_index is not None
     except sqlite3.DatabaseError:
         return False
 
@@ -276,6 +279,11 @@ def ensure_code_evolution_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_code_evolution_state_lease "
             "ON code_evolution_transactions(current_state, lease_expires_at, updated_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_code_evolution_recovery_scope "
+            "ON code_evolution_transactions(tenant_id,agent_id,workspace_id,user_id,"
+            "terminal ASC,updated_at DESC,transaction_id DESC)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_code_evolution_incident "

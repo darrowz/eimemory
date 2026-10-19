@@ -652,7 +652,9 @@ def resume_code_evolution_transactions(
     manager = CodeEvolutionTransactionManager(runtime, owner_id=run_owner_id)
     scope_ref = _scope(scope)
     reports: list[dict[str, Any]] = []
-    for transaction in manager.store.list_transactions(limit=max(1, min(500, int(limit)))):
+    for transaction in manager.store.list_recovery_transactions_exact_scope(
+        scope=scope_ref, limit=max(1, min(500, int(limit))),
+    ):
         payload = transaction.get("payload") if isinstance(transaction.get("payload"), dict) else {}
         tx_scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
         if tx_scope and tx_scope != asdict(scope_ref):
@@ -668,7 +670,7 @@ def resume_code_evolution_transactions(
         state = str(transaction.get("current_state") or "")
         if state in FORWARD_EFFECT_STATES and state not in {"COMMIT_INTENT", "PUSH_INTENT", "DEPLOY_INTENT"}:
             if not effect_execution_authorized(transaction):
-                reports.append({"transaction_id": transaction_id, "status": "effect_execution_not_authorized", "state": state})
+                reports.append({"ok": False, "transaction_id": transaction_id, "status": "effect_execution_not_authorized", "state": state})
                 continue
             from eimemory.governance.evolution.code_evolution_effects import execute_code_evolution_effects
 
@@ -690,6 +692,7 @@ def resume_code_evolution_transactions(
             if sample.get("ok") is False:
                 reports.append(
                     {
+                        "ok": False,
                         "transaction_id": transaction_id,
                         "status": "observation_authority_unavailable",
                         "reason": str(sample.get("reason") or "observation_sample_unavailable"),
@@ -743,7 +746,13 @@ def resume_code_evolution_transactions(
                 reports.append(recovered)
         except Exception as exc:
             reports.append({"transaction_id": transaction_id, "status": "recovery_error", "error": type(exc).__name__})
-    return {"ok": all(item.get("status") not in {"recovery_error"} for item in reports), "reports": reports}
+    return {"ok": all(
+        ("ok" not in item or item["ok"] is True)
+        and not item.get("error") and not item.get("errors")
+        and item.get("status") != "recovery_error"
+        and item.get("current_state") != "RECOVERY_QUARANTINED"
+        for item in reports
+    ), "reports": reports}
 
 
 def _parse_observation_time(value: str) -> datetime | None:

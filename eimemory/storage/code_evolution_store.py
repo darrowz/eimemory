@@ -95,6 +95,26 @@ def _transaction_row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return result
 
 
+def _exact_transaction_rows(rows: list[sqlite3.Row], owner: Mapping[str, Any]) -> list[dict[str, Any]]:
+    result = []
+    for row in rows:
+        item = _transaction_row_dict(row)
+        payload = item.get("payload") if item is not None else None
+        repository = None
+        if isinstance(payload, Mapping):
+            repository = payload["repository"] if isinstance(payload.get("repository"), Mapping) else payload
+        if (not isinstance(payload, Mapping) or not isinstance(payload.get("scope"), Mapping)
+                or payload.get("scope") != owner or not isinstance(repository, Mapping)
+                or payload.get("transaction_id") != row["transaction_id"]
+                or str(repository.get("repository_root") or repository.get("root") or "") != row["repository_root"]
+                or str(repository.get("repository_ref") or repository.get("ref") or "") != row["repository_ref"]
+                or row["terminal"] not in (0, 1)
+                or not isinstance(row["current_state"], str) or not row["current_state"]):
+            raise CodeEvolutionStoreError("exact transaction page payload identity mismatch")
+        result.append(item)
+    return result
+
+
 def _check_transaction_profile_update(row: sqlite3.Row, payload: Any) -> None:
     current = _transaction_row_dict(row) or {}
     if _transaction_profile_key(payload) != current.get("profile_key"):
@@ -529,6 +549,34 @@ class CodeEvolutionStore:
 
         return self._read(read)
 
+    def list_recovery_transactions_exact_scope(self, *, scope: Any, limit: int = 100) -> list[dict[str, Any]]:
+        """Read a bounded owner queue, with unfinished work before history.
+
+        This queue is not evidence that every transaction was examined. Each
+        effect still requires its original repository, policy and lease authority.
+        """
+        from eimemory.models.records import ScopeRef
+
+        if not isinstance(scope, (ScopeRef, Mapping)):
+            raise CodeEvolutionStoreError("exact transaction scope required")
+        owner = ({key: getattr(scope, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")}
+                 if isinstance(scope, ScopeRef) else dict(scope))
+        exact = _scope({"scope": owner})
+        if tuple(owner.get(key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")) != exact:
+            raise CodeEvolutionStoreError("exact transaction identity must not be normalized")
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise CodeEvolutionStoreError("invalid recovery transaction queue bounds")
+
+        def read():
+            rows = self.conn.execute(
+                "SELECT * FROM code_evolution_transactions WHERE tenant_id=? AND agent_id=? "
+                "AND workspace_id=? AND user_id=? "
+                "ORDER BY terminal ASC,updated_at DESC,transaction_id DESC LIMIT ?",
+                (*exact, limit),
+            ).fetchall()
+            return _exact_transaction_rows(rows, owner)
+        return self._read(read)
+
     def list_transactions_exact_scope(
         self, *, scope: Any, repository_root: str,
         repository_refs: tuple[str, ...] = ("master", "refs/heads/master"),
@@ -557,23 +605,7 @@ class CodeEvolutionStore:
                 + ") ORDER BY updated_at DESC,transaction_id DESC LIMIT ?",
                 (*exact, root, *repository_refs, limit),
             ).fetchall()
-            result = []
-            for row in rows:
-                item = _transaction_row_dict(row)
-                payload = item.get("payload") if item is not None else None
-                repository = None
-                if isinstance(payload, Mapping):
-                    repository = payload["repository"] if isinstance(payload.get("repository"), Mapping) else payload
-                if (not isinstance(payload, Mapping) or not isinstance(payload.get("scope"), Mapping)
-                        or payload.get("scope") != owner or not isinstance(repository, Mapping)
-                        or payload.get("transaction_id") != row["transaction_id"]
-                        or str(repository.get("repository_root") or repository.get("root") or "") != row["repository_root"]
-                        or str(repository.get("repository_ref") or repository.get("ref") or "") != row["repository_ref"]
-                        or row["terminal"] not in (0, 1)
-                        or not isinstance(row["current_state"], str) or not row["current_state"]):
-                    raise CodeEvolutionStoreError("exact transaction page payload identity mismatch")
-                result.append(item)
-            return result
+            return _exact_transaction_rows(rows, owner)
         return self._read(read)
 
     def cas_transition(

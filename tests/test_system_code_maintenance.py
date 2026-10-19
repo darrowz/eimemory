@@ -6,6 +6,10 @@ import pytest
 from eimemory.governance.evolution.system_code_maintenance import run_system_code_maintenance
 from eimemory.ops.runtime_identity_drift import detect_runtime_identity_drift
 from eimemory.ops.system_code_repair_failure import detect_system_code_repair_failure
+from eimemory.governance.promotion_watch import resume_code_evolution_transactions
+from eimemory.storage.code_evolution_store import CodeEvolutionStoreError
+from eimemory.storage.runtime_store import RuntimeStore
+from test_code_evolution_recovery import _observing_manager, _sample
 
 
 SCOPE = {"tenant_id": "default", "agent_id": "hongrui", "workspace_id": "embodied", "user_id": "darrow"}
@@ -175,3 +179,185 @@ def test_watch_uses_shared_owner_and_propagates_nested_failure(monkeypatch, caps
     assert cli._cmd_learn(args, runtime=object(), scope=SCOPE) == (0 if maintenance_ok else 1)
     assert calls[0]["apply"] is apply and calls[0]["owner_id"] == "learn-watch:code-evolution"
     assert '"system_code_maintenance"' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("owner_field", ["tenant_id", "agent_id", "workspace_id", "user_id", "history"])
+def test_recovery_limit_cannot_hide_owned_observation_behind_other_owners_or_history(tmp_path, monkeypatch, owner_field):
+    runtime_store = RuntimeStore(tmp_path / "runtime")
+    try:
+        manager = _observing_manager(runtime_store, "owned-observation")
+        owner = {"tenant_id": "tenant", "agent_id": "agent", "workspace_id": "workspace", "user_id": "user"}
+        other = dict(owner)
+        if owner_field != "history":
+            other[owner_field] = "other"
+        for index in range(105):
+            manager.store.create_transaction({
+                "transaction_id": f"newer-history-{index}", "idempotency_key": f"newer-history-{index}",
+                "scope": other, "incident": {"incident_id": f"other-{index}"},
+                "repository": {"root": f"/other-{index}", "ref": "master"},
+                "current_state": "SUCCEEDED_SEDIMENTED", "terminal": True,
+                "updated_at": "2099-01-01T00:00:00+00:00",
+            })
+        seen = []
+        def sample(_runtime, *, transaction):
+            seen.append(transaction["transaction_id"])
+            return _sample("owned-phase-0", observed_at="2026-01-01T00:00:00+00:00", health_ok=True)
+        monkeypatch.setattr("eimemory.governance.code_evolution_effects.sample_code_evolution_observation", sample)
+        report = resume_code_evolution_transactions(runtime_store, scope=owner, limit=1)
+        assert report["ok"] is True
+        assert seen == ["owned-observation"]
+        assert len(report["reports"]) == 1 and report["reports"][0]["status"] == "observing"
+        current = manager.store.get_transaction("owned-observation")
+        assert current["current_state"] == "OBSERVING" and not current["terminal"]
+        assert current["payload"]["observation_samples"][0]["sample_key"] == "owned-phase-0"
+        assert manager.store.get_terminal_receipt("owned-observation") is None
+    finally:
+        runtime_store.close()
+
+
+@pytest.mark.parametrize("failure", ["authority", "invalid_sample", "effects", "unauthorized"])
+def test_recovery_failures_cannot_make_the_maintenance_owner_report_success(tmp_path, monkeypatch, failure):
+    from eimemory.governance.evolution.system_code_maintenance import run_system_code_maintenance
+    from types import SimpleNamespace
+
+    runtime_store = RuntimeStore(tmp_path / "runtime")
+    owner = {"tenant_id": "tenant", "agent_id": "agent", "workspace_id": "workspace", "user_id": "user"}
+    try:
+        manager = _observing_manager(runtime_store, "owned-failure")
+        if failure in {"effects", "unauthorized"}:
+            # Isolate the execution/authorization verdict; never execute an
+            # actual external effect or grant authority to this fixture.
+            monkeypatch.setattr("eimemory.governance.evolution.code_evolution_transaction.FORWARD_EFFECT_STATES", {"OBSERVING"})
+            monkeypatch.setattr("eimemory.governance.evolution.code_evolution_transaction.effect_execution_authorized",
+                                lambda _transaction: failure == "effects")
+            monkeypatch.setattr("eimemory.governance.code_evolution_effects.execute_code_evolution_effects",
+                                lambda *a, **kw: {"ok": False, "status": "blocked", "blocked_reason": "machine_policy_blocked"})
+        else:
+            sample = ({"ok": False, "reason": "observation_release_identity_unavailable"}
+                      if failure == "authority" else {"observed_at": "2026-01-01T00:00:00+00:00"})
+            monkeypatch.setattr("eimemory.governance.code_evolution_effects.sample_code_evolution_observation",
+                                lambda *a, **kw: sample)
+        runtime = SimpleNamespace(resume_code_evolution_transactions=lambda **kw: resume_code_evolution_transactions(runtime_store, **kw))
+        result = run_system_code_maintenance(runtime, scope=owner, owner_id="test-maintenance", detect_and_route=False)
+        assert result["ok"] is False and result["execution_ok"] is False
+        assert len(result["reports"]) == 1
+        assert manager.store.get_transaction("owned-failure")["current_state"] == "OBSERVING"
+        assert manager.store.get_terminal_receipt("owned-failure") is None
+    finally:
+        runtime_store.close()
+
+
+@pytest.mark.parametrize("defect", ["json", "owner", "repository", "missing_owner"])
+def test_owned_corrupt_recovery_page_blocks_before_sampling_or_effects(tmp_path, monkeypatch, defect):
+    from eimemory.governance.evolution.system_code_maintenance import run_system_code_maintenance
+    from types import SimpleNamespace
+    import json
+
+    runtime_store = RuntimeStore(tmp_path / "runtime")
+    owner = {"tenant_id": "tenant", "agent_id": "agent", "workspace_id": "workspace", "user_id": "user"}
+    try:
+        manager = _observing_manager(runtime_store, "corrupt-owned")
+        payload = dict(manager.store.get_transaction("corrupt-owned")["payload"])
+        if defect == "owner": payload["scope"] = {**owner, "user_id": "foreign"}
+        if defect == "missing_owner": payload.pop("scope")
+        if defect == "repository": payload["repository"] = {"root": "/different", "ref": "master"}
+        raw = "not json" if defect == "json" else json.dumps(payload)
+        runtime_store.sqlite.conn.execute("UPDATE code_evolution_transactions SET payload_json=? WHERE transaction_id=?",
+                                          (raw, "corrupt-owned"))
+        runtime_store.sqlite.conn.commit()
+        monkeypatch.setattr("eimemory.governance.code_evolution_effects.sample_code_evolution_observation",
+                            lambda *a, **kw: pytest.fail("corrupt owned page reached a sampler"))
+        runtime = SimpleNamespace(resume_code_evolution_transactions=lambda **kw: resume_code_evolution_transactions(runtime_store, **kw))
+        report = run_system_code_maintenance(runtime, scope=owner, owner_id="page-test", detect_and_route=False)
+        assert report["ok"] is False and report["execution_ok"] is False
+        assert report["reason"].startswith("transaction_recovery_error:")
+    finally:
+        runtime_store.close()
+
+
+def test_recovery_queue_keeps_a_bounded_new_terminal_feedback_slot_after_active_work(tmp_path, monkeypatch):
+    runtime_store = RuntimeStore(tmp_path / "runtime")
+    owner = {"tenant_id": "tenant", "agent_id": "agent", "workspace_id": "workspace", "user_id": "user"}
+    try:
+        manager = _observing_manager(runtime_store, "active")
+        for name, stamp in (("old-feedback", "2020-01-01T00:00:00+00:00"),
+                            ("new-feedback", "2099-01-01T00:00:00+00:00")):
+            manager.store.create_transaction({
+                "transaction_id": name, "idempotency_key": name, "scope": owner,
+                "incident": {"incident_id": name}, "repository": {"root": "/history", "ref": "master"},
+                "current_state": "SUCCEEDED_SEDIMENTED", "terminal": True, "updated_at": stamp,
+                "payload": {"dynamic_capability_context": {"fixture_only": True}},
+            })
+        monkeypatch.setattr("eimemory.governance.code_evolution_effects.sample_code_evolution_observation",
+                            lambda *a, **kw: _sample("phase-0", observed_at="2026-01-01T00:00:00+00:00", health_ok=True))
+        seen = []
+        def feedback(*args, **kwargs):
+            seen.append(kwargs["transaction_id"])
+            return {"ok": True, "status": "feedback-checked", "transaction_id": kwargs["transaction_id"]}
+        monkeypatch.setattr("eimemory.governance.evolution.code_evolution_hypothesis_feedback.record_transaction_hypothesis_feedback", feedback)
+        report = resume_code_evolution_transactions(runtime_store, scope=owner, limit=2)
+        assert report["ok"] is True and len(report["reports"]) == 2
+        assert report["reports"][0]["status"] == "observing" and seen == ["new-feedback"]
+        assert len(manager.store.list_recovery_transactions_exact_scope(scope=owner, limit=1)) == 1
+        for invalid in (0, 501, True):
+            with pytest.raises(CodeEvolutionStoreError, match="queue bounds"):
+                manager.store.list_recovery_transactions_exact_scope(scope=owner, limit=invalid)
+    finally:
+        runtime_store.close()
+
+
+def test_owned_recovery_queue_has_an_indexed_bounded_read_without_history_sort(tmp_path):
+    runtime_store = RuntimeStore(tmp_path / "runtime")
+    try:
+        manager = _observing_manager(runtime_store, "indexed-active")
+        owner = {"tenant_id": "tenant", "agent_id": "agent", "workspace_id": "workspace", "user_id": "user"}
+        conn = runtime_store.sqlite.conn
+        def measured_read():
+            statements, steps = [], []
+            conn.set_trace_callback(statements.append)
+            conn.set_progress_handler(lambda: steps.append(1) or 0, 1)
+            try:
+                rows = manager.store.list_recovery_transactions_exact_scope(scope=owner, limit=1)
+            finally:
+                conn.set_progress_handler(None, 0)
+                conn.set_trace_callback(None)
+            return rows, len(steps), statements
+        _, baseline_steps, _ = measured_read()
+        for index in range(105):
+            manager.store.create_transaction({
+                "transaction_id": f"indexed-history-{index}", "idempotency_key": f"indexed-history-{index}",
+                "scope": owner, "incident": {"incident_id": f"history-{index}"},
+                "repository": {"root": "/history", "ref": "master"},
+                "current_state": "SUCCEEDED_SEDIMENTED", "terminal": True,
+                "updated_at": "2099-01-01T00:00:00+00:00",
+            })
+        rows, expanded_steps, statements = measured_read()
+        assert len(rows) == 1 and rows[0]["transaction_id"] == "indexed-active"
+        assert expanded_steps <= baseline_steps + 10
+        query = next(sql for sql in statements if sql.startswith("SELECT * FROM code_evolution_transactions"))
+        plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + query)]
+        assert any("idx_code_evolution_recovery_scope" in item for item in plan), plan
+        assert not any("TEMP B-TREE" in item for item in plan), plan
+    finally:
+        runtime_store.close()
+
+
+def test_existing_ledger_adds_the_recovery_index_without_changing_transaction_evidence(tmp_path):
+    from eimemory.storage.migrations.code_evolution_transactions import (
+        ensure_code_evolution_schema, is_code_evolution_schema_ready,
+    )
+
+    runtime_store = RuntimeStore(tmp_path / "runtime")
+    try:
+        manager = _observing_manager(runtime_store, "existing-evidence")
+        before = manager.store.get_transaction("existing-evidence")
+        conn = runtime_store.sqlite.conn
+        conn.execute("DROP INDEX idx_code_evolution_recovery_scope")
+        conn.commit()
+        assert is_code_evolution_schema_ready(conn) is False
+        ensure_code_evolution_schema(conn)
+        assert is_code_evolution_schema_ready(conn) is True
+        assert manager.store.get_transaction("existing-evidence") == before
+        assert manager.store.get_terminal_receipt("existing-evidence") is None
+    finally:
+        runtime_store.close()

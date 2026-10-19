@@ -19,7 +19,7 @@ eimemory learn code-evolution-policy-issue \
   --incident-digest "$CURRENT_NATIVE_INCIDENT_SHA256" \
   --test-plan-id deployment.runtime-identity-drift.v1 \
   --max-transactions 1 \
-  --effects-mode all-disabled
+  --effects all-disabled
 
 eimemory learn code-evolution-policy-validate \
   --path /etc/eimemory/code-automation-policy.v2.json \
