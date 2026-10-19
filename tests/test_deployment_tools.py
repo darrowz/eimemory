@@ -151,7 +151,11 @@ def test_native_product_launcher_selects_raw_source_over_noneditable_wheel_and_r
         launcher = authority / "runtime_manager_launch.py"
         _private_product_launcher(source, launcher, {
             "CURRENT": current, "RELEASES": root / "releases", "REGISTRY": registry_path, "EMPTY_PYCACHE": cache})
-        for path in (registry_path, launcher):
+        # The launcher's strict loader imports only its adjacent reviewed root
+        # copy, never the runtime-writable product contract or wheel copy.
+        root_contract = authority / "runtime_manager_contract.py"
+        shutil.copyfile(Path(contract.__file__), root_contract)
+        for path in (registry_path, launcher, root_contract):
             os.chown(path, 0, account.pw_gid)
             path.chmod(0o640)
         flags = ["-I", "-B", "-X", "pycache_prefix=" + str(cache)]

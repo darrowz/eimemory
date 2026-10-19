@@ -175,7 +175,7 @@ def source_managed_snapshot(runtime, record):
     return value
 
 
-def collect_physical_facts(database_path, *, manifest, source_record_id, source_digest, after=0):
+def collect_physical_facts(database_path, *, manifest, source_record_id, source_digest, after=0, cursor_anchor=None):
     """Fixed UID worker. URI read-only, SELECT-only and no Runtime/DAO writes.
 
 Each call reads at most 5000 original receive rows. A root-owned persistent
@@ -204,6 +204,29 @@ bounded call never declares an unfinished prefix complete.
             "SELECT name,sql FROM sqlite_master WHERE name LIKE 'trg_code_incident_coverage_%' OR name LIKE 'idx_incident_coverage_%' ORDER BY name")}
         if digest(captured_schema) != manifest['schema_digest']:
             raise ValueError('managed_incident_ingress_schema_changed')
+        facade = SimpleNamespace(sqlite=SimpleNamespace(conn=conn, path=Path(database_path)))
+        cold = CoverageArchive(facade, verify)
+        high = max(int(conn.execute(f'SELECT coalesce(max(sequence),0) FROM {JOURNAL}').fetchone()[0]), cold.high_water(JOURNAL))
+        seq = conn.execute('SELECT seq FROM sqlite_sequence WHERE name=?', (JOURNAL,)).fetchone()
+        if seq is None and high!=0 or seq is not None and seq[0] != high:
+            raise ValueError('managed_incident_receive_sequence_changed')
+        if cursor_anchor is not None:
+            if (not isinstance(cursor_anchor,dict) or set(cursor_anchor)!={'schema','sequence','digest'}
+                    or cursor_anchor['schema']!='managed_code_receive_anchor.v1'
+                    or type(cursor_anchor['sequence']) is not int or cursor_anchor['sequence']<1):
+                raise ValueError('managed_incident_receive_anchor_invalid')
+            hex_value(cursor_anchor['digest'])
+            anchor_sequence=cursor_anchor['sequence']
+            anchor_rows=[dict(row) for row in conn.execute(f'SELECT * FROM {JOURNAL} WHERE sequence=?',(anchor_sequence,))]
+            anchor_rows+=cold.range_rows(JOURNAL,anchor_sequence-1,anchor_sequence)
+            if len(anchor_rows)!=1 or digest(anchor_rows[0])!=cursor_anchor['digest']:
+                # Check before source lookup or after<=high: a restored database
+                # can lose the source and then numerically overtake the cursor.
+                # This is a root-verified chronology gap, never a new incident.
+                return dict(schema='managed_code_physical_facts.v1',scope=None,incident=None,
+                    source_record_id=source_record_id,source_digest=source_digest,after=after,
+                    high_water=high,cursor_anchor=cursor_anchor,cursor_anchor_verified=False,
+                    schema_digest=manifest['schema_digest'],observed_at=datetime.now(timezone.utc).isoformat())
         source={};owner=None;incident=None;key=None
         if source_record_id:
             matches = conn.execute('SELECT * FROM records WHERE record_id=? LIMIT 2', (source_record_id,)).fetchall()
@@ -222,12 +245,7 @@ bounded call never declares an unfinished prefix complete.
             if incident is None:
                 raise ValueError('managed_incident_native_source_unverified')
             key = stable_defect_key(incident['incident_class'], incident['diagnostic_codes'])
-        facade = SimpleNamespace(sqlite=SimpleNamespace(conn=conn, path=Path(database_path)))
-        cold = CoverageArchive(facade, verify)
-        high = max(int(conn.execute(f'SELECT coalesce(max(sequence),0) FROM {JOURNAL}').fetchone()[0]), cold.high_water(JOURNAL))
-        seq = conn.execute('SELECT seq FROM sqlite_sequence WHERE name=?', (JOURNAL,)).fetchone()
-        if (seq is None and high!=0 or seq is not None and seq[0] != high
-                or type(after) is not int or not 0 <= after <= high):
+        if type(after) is not int or not 0 <= after <= high:
             raise ValueError('managed_incident_receive_sequence_changed')
         through = min(high, after + 5000)
         hot = [dict(row) for row in conn.execute(f'SELECT * FROM {JOURNAL} WHERE sequence>? AND sequence<=? ORDER BY sequence', (after, through))]
@@ -293,6 +311,7 @@ bounded call never declares an unfinished prefix complete.
             source_time=source.get('time',{}).get('occurred_at'),source_created_at=source.get('time',{}).get('created_at'),
             source_received_at=first[0]['observed_at'] if first else None,
             after=after, through=through, high_water=high, complete=through == high, rows=rows,
+            cursor_anchor=cursor_anchor,cursor_anchor_verified=True,
             history=history, schema_digest=manifest['schema_digest'], observed_at=datetime.now(timezone.utc).isoformat())
     finally:
         conn.close()

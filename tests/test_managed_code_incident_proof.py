@@ -118,6 +118,69 @@ def test_historical_typed_prehistory_and_cross_scope_isolation():
     assert authority._known(conn,other)==(None,None,None,'original_receive_sequence_unverified')
 
 
+def test_manifest_extension_replays_original_receive_prefix_and_typed_history_without_erasing_positives():
+    conn=state();original=original_facts();other_scope={**SCOPE,'user_id':'newly-registered-owner'}
+    other_row={**original['rows'][0],**other_scope,'record_id':'old-other-scope-incident',
+        'payload_digest':'d'*64,'source_time':'2026-10-18T00:00:00+00:00'}
+    initial=deepcopy(original);initial.update(through=2,high_water=2)
+    initial['rows']=[other_row,{**initial['rows'][0],'sequence':2}]
+    manifest={'scopes':[SCOPE]}
+    authority._ingest(conn,initial,manifest)
+    saved=[tuple(row) for row in conn.execute('SELECT * FROM managed_knowledge')]
+    assert len(saved)==1 and authority._known(conn,initial)==(False,False,2,'')
+    assert authority._catchup_progress(conn,manifest)=={'epoch':0,'cursor':2,'complete':True,'high_water':2}
+    expanded={'scopes':[SCOPE,other_scope],'previous_manifest_digest':authority.digest(manifest)}
+    authority._prepare_manifest_catchup(conn,expanded)
+    assert [tuple(row) for row in conn.execute('SELECT * FROM managed_knowledge')]==saved
+    assert authority._catchup_progress(conn,expanded)=={'epoch':1,'cursor':0,'complete':False,'high_water':2}
+    # The physical global sequence is replayed in bounded pages. A formerly
+    # excluded owner is not treated as having no retained typed prehistory.
+    first=deepcopy(original);first.update(through=1,high_water=3,complete=False,rows=[other_row],history=[{
+        'scope':other_scope,'record_id':'retained-before-capture','defect_key':original['defect_key'],
+        'source_digest':'e'*64,'source_time':'2026-10-17T00:00:00+00:00','human_input':False}])
+    authority._ingest(conn,first,expanded)
+    assert authority._catchup_progress(conn,expanded)=={'epoch':1,'cursor':1,'complete':False,'high_water':2}
+    new_source={**other_row,'sequence':3,'record_id':'new-other-scope-incident','payload_digest':'f'*64,
+        'source_time':original['source_created_at']}
+    last=deepcopy(original);last.update(scope=other_scope,source_record_id=new_source['record_id'],
+        source_digest=new_source['payload_digest'],after=1,through=3,high_water=3,
+        rows=[initial['rows'][1],new_source],history=[])
+    authority._ingest(conn,last,expanded)
+    assert authority._catchup_progress(conn,expanded)=={'epoch':1,'cursor':3,'complete':True,'high_water':3}
+    assert authority._known(conn,last)==(True,False,3,'')
+    assert conn.execute('SELECT * FROM managed_knowledge WHERE record_id=?',
+        (original['source_record_id'],)).fetchone() is not None
+    assert authority._known(conn,initial)==(False,False,2,'')
+    before=conn.total_changes
+    authority._prepare_manifest_catchup(conn,expanded)
+    assert conn.total_changes==before  # replay does not create a new generation
+    with pytest.raises(ValueError,match='continuity_unverified'):
+        authority._prepare_manifest_catchup(conn,{'scopes':[SCOPE,other_scope]})
+    assert conn.total_changes==before
+    with pytest.raises(ValueError,match='high_water_regressed'):
+        authority._ingest(conn,original,expanded)
+
+
+def test_legacy_manifest_index_requires_bounded_catchup_and_corrupt_cursor_cannot_reset_it():
+    conn=state();manifest={'scopes':[SCOPE]};token=authority.digest(manifest)
+    conn.execute("INSERT INTO authority_meta VALUES('manifest',?)",(token,))
+    conn.execute("INSERT INTO authority_meta VALUES('high_water','9')")
+    assert not authority._catchup_progress(conn,manifest)['complete']
+    authority._prepare_manifest_catchup(conn,manifest)
+    assert authority._catchup_progress(conn,manifest)=={'epoch':0,'cursor':0,'complete':False,'high_water':9}
+    conn.execute("UPDATE authority_meta SET value='different' WHERE key='catchup_manifest'")
+    with pytest.raises(ValueError,match='catchup_manifest_mismatch'):
+        authority._prepare_manifest_catchup(conn,manifest)
+    conn.execute("UPDATE authority_meta SET value=? WHERE key='catchup_manifest'",(token,))
+    conn.execute("UPDATE authority_meta SET value='10' WHERE key='catchup_cursor'")
+    with pytest.raises(ValueError,match='catchup_state_invalid'):
+        authority._catchup_progress(conn,manifest)
+    conn.execute("UPDATE authority_meta SET value='0' WHERE key='catchup_cursor'")
+    conn.execute("DELETE FROM authority_meta WHERE key='catchup_manifest'")
+    with pytest.raises(ValueError,match='catchup_state_missing'):
+        authority._prepare_manifest_catchup(conn,manifest)
+
+
 def test_unclassified_manual_code_report_is_unknown_and_same_symptom_cannot_reset_novelty():
     facts=original_facts();conn=state()
     facts['history']=[dict(scope=SCOPE,record_id='unclassified-original-human-code-report',defect_key='*',
@@ -137,8 +200,11 @@ def test_issuer_real_hmac_original_bytes_and_readback_not_only_a_flag(tmp_path,m
     facts=original_facts();manifest=dict(scopes=[SCOPE]);token=authority.digest(manifest)
     conn.execute('INSERT INTO managed_manifest_history VALUES(?)',(token,));conn.commit()
     @contextmanager
-    def writable(*_args):
-        try:yield conn;conn.commit()
+    def writable(_registry,current_manifest):
+        try:
+            authority._prepare_manifest_catchup(conn,current_manifest)
+            conn.execute('INSERT OR IGNORE INTO managed_manifest_history VALUES(?)',(authority.digest(current_manifest),))
+            yield conn;conn.commit()
         except BaseException:conn.rollback();raise
     @contextmanager
     def readonly(*_args):
@@ -146,10 +212,13 @@ def test_issuer_real_hmac_original_bytes_and_readback_not_only_a_flag(tmp_path,m
         conn.backup(memory)
         try:yield memory
         finally:memory.close()
-    def worker(_manifest,_registry,_id,_digest,after):
+    def worker(_manifest,_registry,_id,_digest,after,cursor_anchor=None):
         value=deepcopy(facts)
+        value.update(cursor_anchor=cursor_anchor,cursor_anchor_verified=True)
         if after:
             value.update(after=1,through=1,high_water=1,rows=[])
+        if not _id:
+            value.update(scope=None,incident=None,source_record_id='',source_digest='')
         return value
     monkeypatch.setattr(authority,'RECEIPT_DIRECTORY',str(tmp_path))
     monkeypatch.setattr(authority,'_configuration',lambda _: (manifest,b'private-root-fixture-key-'*4))
@@ -213,7 +282,28 @@ def test_issuer_real_hmac_original_bytes_and_readback_not_only_a_flag(tmp_path,m
     old=build_product_completion(dict(ok=True,status='ready'),provider=dict(ready=True,catalog_ready=True,advertisement_fresh=True),
         transaction=legacy,current_lineage=dict(ok=True,compatible=True))
     assert old['schema_version']=='l5_readiness.v4' and old['product_l5_complete'] is False
+    # A newly reviewed scope cannot inherit a completed old-domain cursor.
+    # The original HMAC/clock/receipt stay authentic while qualification waits
+    # for explicit durable maintenance, even if readback can inspect one page.
+    manifest.update(scopes=[SCOPE,{**SCOPE,'user_id':'new-domain-owner'}],previous_manifest_digest=token)
+    before_transition=conn.total_changes
+    pending=authority.verify(reference['receipt_id'],reference['digest'],registry=registry)
+    assert pending['snapshot']==snapshot and not pending['qualification_current']
+    assert pending['current_managed_facts']['known_before_detection'] is None
+    assert pending['reason']=='managed_history_manifest_catchup_incomplete'
+    assert conn.total_changes==before_transition
+    assert (tmp_path/(reference['receipt_id']+'.json')).read_bytes()==original
+    assert not completion()['product_l5_complete']
+    checkpoint=authority.checkpoint(registry=registry,peer={'uid':1001})
+    assert checkpoint['status']=='ready' and checkpoint['catchup_epoch']==1
+    assert checkpoint['catchup_complete'] is True and checkpoint['catchup_cursor']==1
+    assert checkpoint['catchup_manifest_digest']==authority.digest(manifest)
+    assert authority.verify(reference['receipt_id'],reference['digest'],registry=registry)['qualification_current']
+    assert completion()['product_l5_complete'] is True
+    assert (tmp_path/(reference['receipt_id']+'.json')).read_bytes()==original
+    changes=conn.total_changes
     late=deepcopy(facts);late.update(after=1,through=2,high_water=2,history=[])
+    late.update(cursor_anchor=authority._receive_anchor(conn),cursor_anchor_verified=True)
     late['rows'][0].update(sequence=2,record_id='late-original-report',payload_digest='d'*64,
         human_input=1,source='eimemory.code_maintenance',source_time='2026-10-18T00:00:00+00:00')
     monkeypatch.setattr(authority,'_worker',lambda *_:deepcopy(late))
@@ -231,6 +321,37 @@ def test_issuer_real_hmac_original_bytes_and_readback_not_only_a_flag(tmp_path,m
         verified_activation_receipt=lambda *_:pytest.fail('must keep original receipt'),
         registry=registry,peer={'uid':1001,'pid':1000})
     assert replay==reference and (tmp_path/(reference['receipt_id']+'.json')).read_bytes()==original
+    # A retained historical transaction can establish a prior positive after
+    # this receipt was signed. Root positives must survive even a later gap.
+    learned=worker(manifest,registry,facts['source_record_id'],facts['source_digest'],1,authority._receive_anchor(conn))
+    learned['history']=[dict(scope=SCOPE,record_id='retained-prior-user-transaction',defect_key=facts['defect_key'],
+        source_digest='f'*64,source_time='2026-10-18T00:00:00+00:00',human_input=True)]
+    authority._ingest(conn,learned,manifest);conn.commit()
+    assert authority._known(conn,facts)==(True,True,1,'')
+    changes=conn.total_changes
+    # A storage rollback can numerically reattain the old HWM with different
+    # logical rows. Authenticity survives, but no negative current fact does.
+    anchor=authority._receive_anchor(conn);saved_positives=[tuple(row) for row in conn.execute('SELECT * FROM managed_knowledge')]
+    broken=dict(cursor_anchor=anchor,cursor_anchor_verified=False,high_water=99)
+    monkeypatch.setattr(authority,'_worker',lambda *_:deepcopy(broken))
+    gap=authority.verify(reference['receipt_id'],reference['digest'],registry=registry)
+    assert gap['snapshot']==snapshot and not gap['qualification_current']
+    assert gap['current_managed_facts']['known_before_detection'] is True
+    assert gap['current_managed_facts']['prior_user_reported'] is True
+    assert gap['reason']=='receive_prefix_anchor_changed'
+    assert conn.total_changes==changes  # verifier remains genuinely read-only
+    assert not completion()['product_l5_complete']
+    diagnosed=authority.checkpoint(registry=registry,peer={'uid':1001})
+    assert diagnosed['status']=='unproven' and diagnosed['physical_high_water']==99
+    assert authority._receive_anchor(conn)==anchor
+    assert [tuple(row) for row in conn.execute('SELECT * FROM managed_knowledge')]==saved_positives
+    # Once persisted, neither restoring the original row nor later catching up
+    # a numeric sequence can replace the old witness or clear the uncertainty.
+    monkeypatch.setattr(authority,'_worker',lambda *_:pytest.fail('sticky chronology gap must not silently heal'))
+    assert authority.checkpoint(registry=registry,peer={'uid':1001})['status']=='unproven'
+    assert not authority.verify(reference['receipt_id'],reference['digest'],registry=registry)['qualification_current']
+    assert authority._receive_anchor(conn)==anchor
+    assert (tmp_path/(reference['receipt_id']+'.json')).read_bytes()==original
     packet=json.loads(original);packet['payload']['snapshot']['managed_facts']['manual_bootstrap']=True
     mutated=authority.canonical(packet);(tmp_path/(reference['receipt_id']+'.json')).write_bytes(mutated)
     from hashlib import sha256
@@ -676,3 +797,87 @@ def test_real_native_source_and_sqlite_receive_prefix_are_read_only(physical):
     registry=state();authority._ingest(registry,facts,dict(scopes=[SCOPE]))
     known,reported,sequence,reason=authority._known(registry,facts)
     assert (known,reported,reason)==(False,False,'') and sequence>0
+
+
+def _physical_prefix_fixture(physical):
+    report=dict(report_type='l5_release_closure',ok=False,closure_complete=False,data_accumulating=False,
+        blocked_stage='release_lineage',blocked_reason='release_lineage_not_compatible',
+        deployment=dict(commit=COMMIT,version='1.14.156'),
+        release_lineage=dict(ok=True,compatible=False,unknown_production_paths=[]))
+    actual=record_release_closure_failure(physical,scope=ScopeRef.from_dict(SCOPE),closure_report=report,
+        detected_at=datetime.now(timezone.utc).isoformat())
+    record=physical.store.get_by_id(actual['incident_record_id'],scope=ScopeRef.from_dict(SCOPE))
+    conn=physical.store.sqlite.conn
+    schema={row['name']:row['sql'] for row in conn.execute("SELECT name,sql FROM sqlite_master WHERE name LIKE 'trg_code_incident_coverage_%' OR name LIKE 'idx_incident_coverage_%' ORDER BY name")}
+    manifest=dict(scopes=[SCOPE],schema_digest=digest(schema))
+    facts=collect_physical_facts(physical.store.sqlite.path,manifest=manifest,
+        source_record_id=record.record_id,source_digest=digest(record.to_dict()))
+    root=state();authority._ingest(root,facts,manifest)
+    return manifest,facts,root,authority._receive_anchor(root)
+
+
+def test_receive_anchor_is_same_original_logical_row_after_signed_cold_move(physical):
+    from eimemory.models.records import RecordEnvelope
+    from eimemory.storage.migrations.code_incident_coverage import JOURNAL
+    from eimemory.storage.code_incident_coverage_store import CodeIncidentCoverageStore
+    from eimemory.storage.code_incident_coverage_archive import TABLES
+    from eimemory.governance.learning.effect_policy import seal,verify
+    manifest,original,root,anchor=_physical_prefix_fixture(physical)
+    for index in range(3):
+        physical.store.append(RecordEnvelope.create(kind='reflection',source='managed.anchor.fixture',
+            scope=ScopeRef.from_dict(SCOPE),title=f'ordinary subsequent write {index}'))
+    result=CodeIncidentCoverageStore(physical.store).maintain_archive(
+        seal=seal,verify=verify,keep={table:1 for table in TABLES})
+    assert result['ok']
+    assert physical.store.sqlite.conn.execute(f'SELECT 1 FROM {JOURNAL} WHERE sequence=?',
+        (anchor['sequence'],)).fetchone() is None
+    before=physical.store.sqlite.conn.total_changes
+    later=collect_physical_facts(physical.store.sqlite.path,manifest=manifest,
+        source_record_id=original['source_record_id'],source_digest=original['source_digest'],
+        after=anchor['sequence'],cursor_anchor=anchor)
+    assert later['cursor_anchor_verified'] is True and later['cursor_anchor']==anchor
+    assert later['complete'] and physical.store.sqlite.conn.total_changes==before
+    authority._ingest(root,later,manifest)
+    assert authority._known(root,original)==(False,False,original['through'],'')
+    assert authority._receive_anchor(root)['sequence']==later['through']>anchor['sequence']
+
+
+@pytest.mark.parametrize('later_rows',[0,2])
+def test_restored_sqlite_cannot_requalify_by_numerically_reattaining_old_watermark(physical,tmp_path,later_rows):
+    from eimemory.models.records import RecordEnvelope
+    from eimemory.storage.migrations.code_incident_coverage import JOURNAL
+    # Preserve a real pre-detection SQLite snapshot, then observe the original
+    # first INSERT into the live fixture before restoring that older snapshot.
+    restored_root=tmp_path/'restored-runtime';(restored_root/'state').mkdir(parents=True)
+    target=restored_root/'state/eimemory.sqlite'
+    with sqlite3.connect(target) as backup:
+        physical.store.sqlite.conn.backup(backup)
+    manifest,original,root,anchor=_physical_prefix_fixture(physical)
+    restored=RuntimeStore(restored_root)
+    try:
+        rewound=collect_physical_facts(restored.sqlite.path,manifest=manifest,
+            source_record_id=original['source_record_id'],source_digest=original['source_digest'],
+            after=anchor['sequence'],cursor_anchor=anchor)
+        assert rewound['cursor_anchor_verified'] is False and rewound['high_water']<anchor['sequence']
+        while restored.sqlite.conn.execute(f'SELECT coalesce(max(sequence),0) FROM {JOURNAL}').fetchone()[0] < anchor['sequence']+later_rows:
+            restored.append(RecordEnvelope.create(kind='reflection',source='managed.restore.fixture',
+                scope=ScopeRef.from_dict(SCOPE),title='actual replacement after old SQLite snapshot'))
+        assert restored.sqlite.conn.execute('SELECT 1 FROM records WHERE record_id=?',
+            (original['source_record_id'],)).fetchone() is None
+        changes=restored.sqlite.conn.total_changes
+        facts=collect_physical_facts(restored.sqlite.path,manifest=manifest,
+            source_record_id=original['source_record_id'],source_digest=original['source_digest'],
+            after=anchor['sequence'],cursor_anchor=anchor)
+        assert facts['cursor_anchor_verified'] is False and facts['cursor_anchor']==anchor
+        assert facts['high_water']==anchor['sequence']+later_rows
+        assert facts['incident'] is None and facts['scope'] is None
+        assert restored.sqlite.conn.total_changes==changes
+    finally:
+        restored.close()
+    assert authority._receive_anchor(root)==anchor
+    # Deleting a root witness is also not a legitimate legacy-reset route.
+    root.execute("DELETE FROM authority_meta WHERE key='receive_anchor'")
+    with pytest.raises(ValueError,match='receive_anchor_unverified'):
+        authority._ingest(root,original,manifest)
+    assert authority._anchor_gap(root,None,anchor['sequence'])=='receive_prefix_anchor_unavailable'
+    assert not authority._catchup_progress(root,manifest)['complete']

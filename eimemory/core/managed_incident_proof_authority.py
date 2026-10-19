@@ -304,12 +304,13 @@ def _empty_pycache():
     return str(path)
 
 
-def _worker(manifest, registry, source_id, source_digest, after):
+def _worker(manifest, registry, source_id, source_digest, after, cursor_anchor=None):
     before=_producer_guard(manifest, registry)
     pycache=_empty_pycache()
     worker_manifest={key:manifest[key] for key in ('scopes','source_directory','schema_digest')}
     request = {'manifest': worker_manifest, 'runtime_uid': registry['runtime_uid'], 'database_path': DATABASE_PATH,
-        'source_record_id': source_id, 'source_digest': source_digest, 'after': after}
+        'source_record_id': source_id, 'source_digest': source_digest, 'after': after,
+        'cursor_anchor':cursor_anchor}
     completed = subprocess.run(['/usr/sbin/runuser', '-u', registry['runtime_user'], '--',
         '/usr/bin/python3', '-I', '-S', '-B', '-X', 'pycache_prefix='+pycache,
         str(Path(__file__).absolute()), '--readonly-worker'],
@@ -323,7 +324,8 @@ def _worker(manifest, registry, source_id, source_digest, after):
     facts = _json(completed.stdout)
     if (not isinstance(facts, dict) or facts.get('schema') != 'managed_code_physical_facts.v1'
             or facts.get('source_record_id') != source_id or facts.get('source_digest') != source_digest
-            or facts.get('after') != after or facts.get('schema_digest') != manifest['schema_digest']):
+            or facts.get('after') != after or facts.get('schema_digest') != manifest['schema_digest']
+            or facts.get('cursor_anchor')!=cursor_anchor or type(facts.get('cursor_anchor_verified')) is not bool):
         raise ValueError('managed_authority_worker_identity_mismatch')
     return facts
 
@@ -369,12 +371,9 @@ def _state(registry, manifest):
                   receipt_id TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(source_record_id,source_digest));
                 CREATE TABLE IF NOT EXISTS managed_manifest_history(digest TEXT PRIMARY KEY);''')
             conn.execute('BEGIN IMMEDIATE')
-            prior = conn.execute("SELECT value FROM authority_meta WHERE key='manifest'").fetchone()
             token = digest(manifest)
-            if prior and prior[0] != token and manifest['previous_manifest_digest'] != prior[0]:
-                raise ValueError('managed_authority_manifest_continuity_unverified')
+            _prepare_manifest_catchup(conn, manifest)
             conn.execute('INSERT OR IGNORE INTO managed_manifest_history(digest) VALUES(?)', (token,))
-            conn.execute("INSERT OR REPLACE INTO authority_meta VALUES('manifest',?)", (token,))
             yield conn
             conn.commit()
             _fsync_directory(root)
@@ -389,6 +388,97 @@ def _fsync_directory(path):
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try: os.fsync(fd)
     finally: os.close(fd)
+
+
+def _meta_integer(conn, name, *, default=None):
+    row=conn.execute('SELECT value FROM authority_meta WHERE key=?',(name,)).fetchone()
+    if row is None:
+        if default is None:raise ValueError('managed_authority_catchup_state_missing')
+        return default
+    if not isinstance(row[0],str) or re.fullmatch('0|[1-9][0-9]{0,18}',row[0]) is None:
+        raise ValueError('managed_authority_catchup_state_invalid')
+    return int(row[0])
+
+
+def _receive_anchor(conn):
+    row=conn.execute("SELECT value FROM authority_meta WHERE key='receive_anchor'").fetchone()
+    if row is None:return None
+    value=_json(row[0])
+    if (not isinstance(value,dict) or set(value)!={'schema','sequence','digest'}
+            or value['schema']!='managed_code_receive_anchor.v1'
+            or type(value['sequence']) is not int or value['sequence']<1):
+        raise ValueError('managed_authority_receive_anchor_invalid')
+    _hex(value['digest'])
+    if value['sequence']!=_meta_integer(conn,'high_water',default=0):
+        raise ValueError('managed_authority_receive_anchor_sequence_changed')
+    return value
+
+
+def _record_anchor_gap(conn, reason):
+    # A numeric HWM may catch up after storage rollback; that never repairs the
+    # already broken chronology or replaces its original acknowledged anchor.
+    conn.execute("INSERT OR IGNORE INTO authority_meta VALUES('uncertainty',?)",(reason,))
+    conn.execute("INSERT OR IGNORE INTO authority_meta VALUES('receive_anchor_uncertainty',?)",(reason,))
+    conn.execute("INSERT OR REPLACE INTO authority_meta VALUES('catchup_complete','0')")
+
+
+def _anchor_gap(conn, anchor, high_water):
+    row=conn.execute("SELECT value FROM authority_meta WHERE key='receive_anchor_uncertainty'").fetchone()
+    if row is not None:
+        if row[0] not in {'receive_prefix_anchor_changed','receive_prefix_anchor_unavailable'}:
+            raise ValueError('managed_authority_receive_anchor_state_invalid')
+        return row[0]
+    return 'receive_prefix_anchor_unavailable' if high_water and anchor is None else ''
+
+
+def _prepare_manifest_catchup(conn, manifest):
+    """Re-register a complete history domain without erasing any known fact.
+
+    The positive high water is monotonic. A separate bounded replay cursor is
+    reset for every reviewed manifest transition, including newly added scopes.
+    Legacy root indexes also replay once instead of assuming their old domain
+    was complete under this manifest. All original receipts remain untouched.
+    """
+    token=digest(manifest)
+    prior=conn.execute("SELECT value FROM authority_meta WHERE key='manifest'").fetchone()
+    if prior and prior[0]!=token and manifest.get('previous_manifest_digest')!=prior[0]:
+        raise ValueError('managed_authority_manifest_continuity_unverified')
+    marker=conn.execute("SELECT value FROM authority_meta WHERE key='catchup_manifest'").fetchone()
+    if prior and prior[0]==token and marker is not None:
+        if marker[0]!=token:raise ValueError('managed_authority_catchup_manifest_mismatch')
+        progress=_catchup_progress(conn,manifest)
+        if progress['high_water'] and _receive_anchor(conn) is None:
+            _record_anchor_gap(conn,'receive_prefix_anchor_unavailable')
+        return
+    if marker is None and conn.execute("SELECT 1 FROM authority_meta WHERE key IN ('catchup_epoch','catchup_cursor','catchup_complete') LIMIT 1").fetchone():
+        raise ValueError('managed_authority_catchup_state_missing')
+    if marker is not None and (prior is None or marker[0]!=prior[0]):
+        raise ValueError('managed_authority_catchup_manifest_mismatch')
+    epoch=_meta_integer(conn,'catchup_epoch',default=0)
+    if prior and prior[0]!=token:epoch+=1
+    high=_meta_integer(conn,'high_water',default=0)
+    if high and _receive_anchor(conn) is None:
+        _record_anchor_gap(conn,'receive_prefix_anchor_unavailable')
+    for name,value in {'manifest':token,'catchup_manifest':token,'catchup_epoch':str(epoch),
+            'catchup_cursor':'0','catchup_complete':'0'}.items():
+        conn.execute('INSERT OR REPLACE INTO authority_meta VALUES(?,?)',(name,value))
+
+
+def _catchup_progress(conn, manifest):
+    token=digest(manifest)
+    values=dict(conn.execute("SELECT key,value FROM authority_meta WHERE key IN ('manifest','catchup_manifest','catchup_complete')"))
+    high=_meta_integer(conn,'high_water',default=0)
+    if values.get('manifest')==token and values.get('catchup_manifest') not in {None,token}:
+        raise ValueError('managed_authority_catchup_manifest_mismatch')
+    if values.get('manifest')!=token or values.get('catchup_manifest')!=token:
+        # Verification is read-only and must not initialize a new history domain.
+        return {'epoch':None,'cursor':0,'complete':False,'high_water':high}
+    epoch=_meta_integer(conn,'catchup_epoch')
+    cursor=_meta_integer(conn,'catchup_cursor')
+    complete=values.get('catchup_complete')
+    if complete not in {'0','1'} or cursor>high:
+        raise ValueError('managed_authority_catchup_state_invalid')
+    return {'epoch':epoch,'cursor':cursor,'complete':complete=='1','high_water':high}
 
 
 def _known(conn, facts):
@@ -416,6 +506,33 @@ def _known(conn, facts):
     return known, reported, cutoff, ''
 
 
+def _retained_positive_facts(conn, snapshot):
+    """Only preserve adverse facts from the independent root positive index.
+
+    A broken runtime chronology cannot erase a previously retained positive.
+    It also cannot prove any negative: ambiguous keys, late rows and missing
+    original coordinates remain unknown in this projection.
+    """
+    rows=conn.execute('SELECT * FROM managed_knowledge WHERE owner=? AND defect_key=?',
+        (digest(snapshot['scope']),snapshot['defect_key'])).fetchall()
+    original=[row for row in rows if row['record_id']==snapshot['source_record_id']
+        and row['source_digest']==snapshot['source_digest'] and row['sequence']==snapshot['source_sequence']]
+    if len(original)!=1:return None,None
+    try:detected=_time(original[0]['source_time'])
+    except ValueError:detected=None
+    known=reported=None
+    for row in rows:
+        if row['record_id']==snapshot['source_record_id'] and row['source_digest']==snapshot['source_digest']:continue
+        prior=type(row['sequence']) is int and 0<row['sequence']<snapshot['source_sequence']
+        if row['sequence'] is None and detected is not None:
+            try:prior=_time(row['source_time'])<=detected
+            except ValueError:prior=False
+        if prior:
+            known=True
+            if row['human_input']==1:reported=True
+    return known,reported
+
+
 def _ingest(conn, facts, manifest):
     after = facts['after']; through = facts['through']; high = facts['high_water']; rows = facts['rows']
     if (any(type(x) is not int for x in (after, through, high)) or not 0 <= after <= through <= high
@@ -423,6 +540,13 @@ def _ingest(conn, facts, manifest):
             or any(row.get('sequence') != after+i+1 for i,row in enumerate(rows))
             or facts.get('complete') is not (through == high)):
         raise ValueError('managed_authority_worker_prefix_incomplete')
+    _prepare_manifest_catchup(conn,manifest)
+    progress=_catchup_progress(conn,manifest)
+    anchor=_receive_anchor(conn) if progress['high_water'] else None
+    if _anchor_gap(conn,anchor,progress['high_water']):
+        raise ValueError('managed_authority_receive_anchor_unverified')
+    if high<progress['high_water']:
+        raise ValueError('managed_authority_receive_high_water_regressed')
     def add(value, seq):
         owner = _scope(value['scope'])
         if owner not in manifest['scopes']: raise ValueError('managed_authority_history_scope_invalid')
@@ -458,7 +582,18 @@ def _ingest(conn, facts, manifest):
         if row['human_input']:key='*'  # no native defect mapping can be inferred from manual prose
         add({'scope':owner,'defect_key':key,'record_id':row['record_id'],'source_digest':row['payload_digest'],
             'source_time':row['source_time'],'human_input':bool(row['human_input'])}, row['sequence'])
-    conn.execute("INSERT OR REPLACE INTO authority_meta VALUES('high_water',?)", (str(through),))
+    conn.execute("INSERT OR REPLACE INTO authority_meta VALUES('high_water',?)", (str(max(progress['high_water'],through)),))
+    conn.execute("INSERT OR REPLACE INTO authority_meta VALUES('catchup_cursor',?)", (str(max(progress['cursor'],through)),))
+    conn.execute("INSERT OR REPLACE INTO authority_meta VALUES('catchup_complete',?)", ('1' if facts['complete'] else '0',))
+    # Retain the original high-water witness during lower catchup pages. Cold
+    # moves preserve this logical row digest exactly; archive physical offsets
+    # and current SQL rowids are deliberately absent from the anchor.
+    if through>progress['high_water']:
+        if not rows or rows[-1]['sequence']!=through:
+            raise ValueError('managed_authority_receive_anchor_missing')
+        anchor={'schema':'managed_code_receive_anchor.v1','sequence':through,'digest':digest(rows[-1])}
+    if anchor is not None:
+        conn.execute("INSERT OR REPLACE INTO authority_meta VALUES('receive_anchor',?)",(canonical(anchor).decode(),))
 
 
 def _activation_facts(facts, activation, registry, peer):
@@ -511,10 +646,17 @@ def issue(source_record_id, source_digest, *, verified_activation_receipt, regis
         if existing is not None:
             return {'schema':'managed_code_incident_proof_ref.v1','receipt_id':existing['receipt_id'],'digest':existing['digest']}
         producer_before=_runtime_producer_guard(manifest,registry)
-        row = conn.execute("SELECT value FROM authority_meta WHERE key='high_water'").fetchone()
-        facts = _worker(manifest,registry,source_record_id,source_digest,int(row[0]) if row else 0)
+        progress=_catchup_progress(conn,manifest)
+        anchor=_receive_anchor(conn)
+        anchor_gap=_anchor_gap(conn,anchor,progress['high_water'])
+        facts = (_worker(manifest,registry,source_record_id,source_digest,progress['cursor'],anchor)
+            if not anchor_gap else {'cursor_anchor_verified':False})
         if producer_before!=_runtime_producer_guard(manifest,registry):
             raise ValueError('managed_authority_runtime_producer_identity_changed')
+        if facts.get('cursor_anchor_verified') is False:
+            reason=anchor_gap or 'receive_prefix_anchor_changed'
+            _record_anchor_gap(conn,reason)
+            return {'status':'unproven','reason':reason,'high_water':progress['high_water']}
         _ingest(conn,facts,manifest)
         if not facts['complete']:
             return {'status':'unproven','reason':'managed_history_accumulation_incomplete','high_water':facts['through']}
@@ -571,18 +713,32 @@ def checkpoint(*,registry,peer):
     if peer.get('uid')!=registry['runtime_uid']:
         raise ValueError('managed_authority_checkpoint_peer_invalid')
     with _state(registry,manifest) as conn:
-        row=conn.execute("SELECT value FROM authority_meta WHERE key='high_water'").fetchone()
+        progress=_catchup_progress(conn,manifest)
         producer_before=_runtime_producer_guard(manifest,registry)
-        facts=_worker(manifest,registry,'','',int(row[0]) if row else 0)
+        anchor=_receive_anchor(conn)
+        anchor_gap=_anchor_gap(conn,anchor,progress['high_water'])
+        facts=(_worker(manifest,registry,'','',progress['cursor'],anchor)
+            if not anchor_gap else {'cursor_anchor_verified':False,'high_water':None})
         if producer_before!=_runtime_producer_guard(manifest,registry):
             raise ValueError('managed_authority_runtime_producer_identity_changed')
+        if facts.get('cursor_anchor_verified') is False:
+            reason=anchor_gap or 'receive_prefix_anchor_changed'
+            _record_anchor_gap(conn,reason)
+            return {'schema':'managed_code_knowledge_checkpoint.v1','qualification_domain':DOMAIN,
+                'status':'unproven','reason':reason,'high_water':progress['high_water'],
+                'physical_high_water':facts['high_water'],'catchup_epoch':progress['epoch'],
+                'catchup_cursor':progress['cursor'],'catchup_complete':False,'catchup_manifest_digest':digest(manifest),
+                'qualifies_for_product_completion':False,'incident_created':False,'child_authority_created':False}
         if facts.get('incident') is not None or facts.get('scope') is not None:
             raise ValueError('managed_authority_checkpoint_no_source_expected')
         _ingest(conn,facts,manifest)
         uncertain=conn.execute("SELECT value FROM authority_meta WHERE key='uncertainty'").fetchone()
+        progress=_catchup_progress(conn,manifest)
         return {'schema':'managed_code_knowledge_checkpoint.v1','qualification_domain':DOMAIN,
             'status':'unproven' if uncertain else 'ready' if facts['complete'] else 'accumulating',
             'high_water':facts['through'],'physical_high_water':facts['high_water'],
+            'catchup_epoch':progress['epoch'],'catchup_cursor':progress['cursor'],
+            'catchup_complete':progress['complete'],'catchup_manifest_digest':digest(manifest),
             'reason':uncertain[0] if uncertain else '', 'qualifies_for_product_completion':False,
             'incident_created':False,'child_authority_created':False}
 
@@ -651,8 +807,23 @@ def verify(receipt_id, digest_value, *, registry):
             raise ValueError('managed_authority_original_registry_mismatch')
         if conn.execute('SELECT 1 FROM managed_manifest_history WHERE digest=?',(snapshot['manifest_digest'],)).fetchone() is None:
             raise ValueError('managed_authority_manifest_history_missing')
-        row=conn.execute("SELECT value FROM authority_meta WHERE key='high_water'").fetchone()
-        facts=_worker(manifest,registry,snapshot['source_record_id'],snapshot['source_digest'],int(row[0]))
+        progress=_catchup_progress(conn,manifest)
+        anchor=_receive_anchor(conn)
+        anchor_gap=_anchor_gap(conn,anchor,progress['high_water'])
+        facts=(_worker(manifest,registry,snapshot['source_record_id'],snapshot['source_digest'],progress['cursor'],anchor)
+            if not anchor_gap else {'cursor_anchor_verified':False})
+        if facts.get('cursor_anchor_verified') is False:
+            # The immutable host-root receipt still authenticates its original
+            # capture. A read-only verifier cannot heal a replaced receive
+            # prefix, and grants no negative current knowledge in this case.
+            original=_snapshot(receipt,{'schema':'managed_code_incident_proof_ref.v1','receipt_id':receipt_id,'digest':digest_value})
+            retained=dict(zip(('known_before_detection','prior_user_reported'),_retained_positive_facts(conn,snapshot)))
+            current={key:True if snapshot['global_facts'][key] is True or snapshot['managed_facts'][key] is True or retained.get(key) is True
+                     else snapshot['managed_facts'][key] if key=='manual_bootstrap' else None for key in FIELDS}
+            return {'schema':'managed_code_incident_proof_verification.v1','snapshot':original,
+                'qualification_current':False,'current_managed_facts':current,
+                'current_watermark':max(progress['high_water'],snapshot['history_watermark']),
+                'reason':anchor_gap or 'receive_prefix_anchor_changed'}
         if (facts['scope']!=snapshot['scope'] or facts['defect_key']!=snapshot['defect_key']
                 or facts['incident']['incident_id']!=snapshot['incident_id']
                 or facts['incident']['incident_digest']!=snapshot['incident_digest']
@@ -666,13 +837,21 @@ def verify(receipt_id, digest_value, *, registry):
         if facts['global_facts']['known_before_detection'] is True:known=True
         if facts['global_facts']['prior_user_reported'] is True:reported=True
         if sequence!=snapshot['source_sequence']:raise ValueError('managed_authority_original_sequence_changed')
-        if not facts['complete']:known=reported=None;reason='managed_history_accumulation_incomplete'
+        if not progress['complete']:
+            known=True if known is True else None
+            reported=True if reported is True else None
+            reason='managed_history_manifest_catchup_incomplete'
+        elif not facts['complete']:
+            known=True if known is True else None
+            reported=True if reported is True else None
+            reason='managed_history_accumulation_incomplete'
         current_facts={'known_before_detection':known,'prior_user_reported':reported,
             'manual_bootstrap':snapshot['managed_facts']['manual_bootstrap']}
         original=_snapshot(receipt,{'schema':'managed_code_incident_proof_ref.v1','receipt_id':receipt_id,'digest':digest_value})
         return {'schema':'managed_code_incident_proof_verification.v1','snapshot':original,
             'qualification_current':snapshot['status']=='proven' and all(value is False for value in current_facts.values()),
-            'current_managed_facts':current_facts,'current_watermark':facts['through'],'reason':reason}
+            'current_managed_facts':current_facts,
+            'current_watermark':max(progress['high_water'],facts['through']), 'reason':reason}
 
 
 def _readonly_worker():
@@ -685,7 +864,8 @@ def _readonly_worker():
     sys.path.insert(0,value['manifest']['source_directory'])
     from eimemory.governance.evolution.managed_code_incident_proof import collect_physical_facts
     facts=collect_physical_facts(value['database_path'],manifest=value['manifest'],
-        source_record_id=value['source_record_id'],source_digest=value['source_digest'],after=value['after'])
+        source_record_id=value['source_record_id'],source_digest=value['source_digest'],after=value['after'],
+        cursor_anchor=value.get('cursor_anchor'))
     sys.stdout.buffer.write(canonical(facts))
 
 
