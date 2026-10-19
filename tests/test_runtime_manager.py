@@ -210,6 +210,8 @@ def test_bundle_is_byte_pinned_pid1_and_keeps_all_product_exec_nonroot():
                     assert not line.partition('=')[2].startswith(('+','!'))
     daemon=files['eimemory-runtime-manager.service'].decode()
     assert 'User=root' in daemon and 'runtime_manager_bridge.py' in daemon
+    assert 'AmbientCapabilities=CAP_SETUID CAP_SETGID\n' in daemon
+    assert 'NoNewPrivileges=yes\n' in daemon
     assert '/opt/eimemory/current' not in daemon
     policy=files['runtime-policy.conf'].decode()
     assert '/etc/eimemory-code-automation-authority' in policy
@@ -223,6 +225,68 @@ def test_bundle_is_byte_pinned_pid1_and_keeps_all_product_exec_nonroot():
     restored,manifest=bootstrap.bundle(raw,sha256(raw).hexdigest())
     assert manifest['controller_commit']=='a'*40 and restored['runtime-policy.conf']==files['runtime-policy.conf']
     with pytest.raises(ValueError,match='digest'):bootstrap.bundle(raw,'f'*64)
+
+
+@pytest.mark.skipif(sys.platform!='linux' or not hasattr(os,'geteuid') or os.geteuid()!=0,
+    reason='real Linux root capability and credential transitions')
+def test_native_manager_declared_caps_allow_uid_drop_under_no_new_privileges():
+    """Exercise kernel credentials inside the masked native test namespace.
+
+    No PID1 access, product import, PAM session or production path is needed.
+    Only the ambient capabilities declared by the real manager template remain
+    permitted before exec, so inherited broad root privileges cannot hide a
+    missing credential capability as they did in ordinary root fixtures.
+    """
+    import subprocess
+    text=standalone('build_runtime_manager_bundle').build(ROOT,'a'*40)['eimemory-runtime-manager.service'].decode()
+    properties=dict(line.split('=',1) for line in text.splitlines() if '=' in line)
+    assert properties['User']=='root' and properties['NoNewPrivileges']=='yes'
+    names=properties['AmbientCapabilities'].split()
+    numbers={'CAP_SETUID':7,'CAP_SETGID':6}
+    assert set(names)==set(numbers)
+    mask=sum(1<<numbers[name] for name in names)
+    leaf="""import os,json
+from pathlib import Path
+fields=dict(line.split(':',1) for line in Path('/proc/self/status').read_text().splitlines() if ':' in line)
+print(json.dumps({'uid':os.getuid(),'euid':os.geteuid(),'gid':os.getgid(),'egid':os.getegid(),
+    'cap_eff':int(fields['CapEff'].strip(),16),'cap_amb':int(fields['CapAmb'].strip(),16),
+    'no_new_privileges':int(fields['NoNewPrivs'].strip())}))
+"""
+    runner="""import os,json,subprocess,sys
+from pathlib import Path
+fields=dict(line.split(':',1) for line in Path('/proc/self/status').read_text().splitlines() if ':' in line)
+result=subprocess.run([sys.executable,'-I','-S','-B','-c',LEAF],user=1001,group=1001,
+    extra_groups=[],capture_output=True,text=True,timeout=20)
+assert result.returncode==0,result.stderr
+print(json.dumps({'uid':os.getuid(),'no_new_privileges':int(fields['NoNewPrivs'].strip()),
+    'cap_eff':int(fields['CapEff'].strip(),16),'cap_amb':int(fields['CapAmb'].strip(),16),
+    'child':json.loads(result.stdout)}))
+""".replace('LEAF',repr(leaf))
+    bootstrap="""import ctypes,os,sys
+class Header(ctypes.Structure):
+    _fields_=[('version',ctypes.c_uint32),('pid',ctypes.c_int)]
+class Data(ctypes.Structure):
+    _fields_=[('effective',ctypes.c_uint32),('permitted',ctypes.c_uint32),('inheritable',ctypes.c_uint32)]
+libc=ctypes.CDLL(None,use_errno=True)
+libc.capset.argtypes=[ctypes.POINTER(Header),ctypes.POINTER(Data)]
+libc.prctl.argtypes=[ctypes.c_int,ctypes.c_ulong,ctypes.c_ulong,ctypes.c_ulong,ctypes.c_ulong]
+mask=int(sys.argv[1]);header=Header(0x20080522,0);data=(Data*2)()
+data[0]=Data(mask,mask,mask)
+assert libc.prctl(47,4,0,0,0)==0,ctypes.get_errno()
+assert libc.capset(ctypes.byref(header),data)==0,ctypes.get_errno()
+for capability in (6,7):
+    assert libc.prctl(47,2,capability,0,0)==0,ctypes.get_errno()
+assert libc.prctl(38,1,0,0,0)==0,ctypes.get_errno()
+os.execve(sys.executable,[sys.executable,'-I','-S','-B','-c',RUNNER],{'PATH':'/usr/bin:/bin','LC_ALL':'C'})
+""".replace('RUNNER',repr(runner))
+    result=subprocess.run([sys.executable,'-I','-S','-B','-c',bootstrap,str(mask)],
+        capture_output=True,text=True,timeout=35)
+    assert result.returncode==0,result.stderr
+    observed=json.loads(result.stdout)
+    assert observed['uid']==0 and observed['no_new_privileges']==1
+    assert observed['cap_eff']==observed['cap_amb']==mask
+    assert observed['child']==dict(uid=1001,euid=1001,gid=1001,egid=1001,
+        cap_eff=0,cap_amb=0,no_new_privileges=1)
 
 
 def bridge_fixture(monkeypatch):

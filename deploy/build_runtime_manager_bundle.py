@@ -151,6 +151,7 @@ ExecStart=/usr/bin/python3 -I -B -X pycache_prefix=/var/lib/eimemory-manager/emp
 RuntimeDirectory=eimemory-manager
 RuntimeDirectoryMode=0750
 UMask=0027
+AmbientCapabilities=CAP_SETUID CAP_SETGID
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=read-only
