@@ -109,7 +109,7 @@ def _root_validation_status(key, operation):
         or response.get("registry_generation") != registry["generation"]
         or not isinstance(response.get("validation"), dict)):
         raise ValueError("validation_root_status_unverified")
-    return response["validation"]
+    return response["validation"], uid
 
 
 def _assert_execution_identity(request, key, operation, native, invocation, status, cgroups):
@@ -167,9 +167,17 @@ def main():
         raise ValueError("validation_pycache_prefix_not_empty")
     # An environment InvocationID is a claim. The authenticated root response
     # and actual kernel cgroup/identity must agree before any product import.
-    _assert_execution_identity(request, key, operation, _root_validation_status(key, operation),
+    native, peer_uid = _root_validation_status(key, operation)
+    _assert_execution_identity(request, key, operation, native,
         os.environ.get("INVOCATION_ID", ""), Path("/proc/self/status").read_text(),
         Path("/proc/self/cgroup").read_text())
+    print(json.dumps({"schema":"managed_code_validation_bootstrap.v1", "job_key":key,
+        "operation":operation, "invocation":native["original_invocation"], "host_root_peer_uid":peer_uid,
+        "uid_map":Path("/proc/self/uid_map").read_text(), "gid_map":Path("/proc/self/gid_map").read_text(),
+        "root_job_uid":(Path("/var/lib/eimemory-manager/jobs")/(key+".json")).lstat().st_uid,
+        "root_registry_uid":Path("/etc/eimemory/runtime-manager.v1.json").lstat().st_uid,
+        "root_pycache_uid":cache.lstat().st_uid, "root_socket_uid":Path("/run/eimemory-manager/bridge.sock").lstat().st_uid,
+        "actual_cgroup":Path("/proc/self/cgroup").read_text()}, sort_keys=True), flush=True)
     sys.path.insert(0, str(release))
     # These are the same narrowly allowlisted configuration readers used by
     # the standard installer. Their target source is inside the RO release.
