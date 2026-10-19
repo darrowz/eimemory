@@ -1104,3 +1104,18 @@ def test_fused_stop_hook_does_not_reenter_deployment_lifecycle_lock(monkeypatch,
     monkeypatch.setattr(m.Path,'exists',lambda _:True)
     monkeypatch.setattr(m.socket,'socket',lambda *_args:pytest.fail('must not call a locked bridge for a nonpending fused context'))
     m.recover_fused()
+
+
+def test_product_templates_use_root_reviewed_source_launcher_even_for_old_first_bootstrap():
+    files=standalone('build_runtime_manager_bundle').build(ROOT,'a'*40)
+    for name in ('eimemory-rpc.service','eimemory-console.service','eimemory-nightly.service','eimemory-l1-extract.service','eimemory-vector-sync.service','eimemory-audit-verify.service'):
+        text=files['templates/'+name].decode()
+        assert '/usr/libexec/eimemory-manager/runtime_manager_launch.py --product-module eimemory.' in text
+        assert ' -m eimemory.' not in text and '/opt/eimemory/current/deploy/runtime_manager_launch.py' not in text
+
+
+@pytest.mark.parametrize('module',['os','eimemory.api.runtime','eimemory.cli.main;sh','../eimemory.cli.main'])
+def test_source_launcher_rejects_unregistered_module_before_loading_product(monkeypatch,module):
+    m=standalone('runtime_manager_launch')
+    monkeypatch.setattr(m,'read_root',lambda *_args,**_kwargs:pytest.fail('unregistered modules never read authority/source'))
+    with pytest.raises(ValueError,match='module_not_registered'):m.prepare_product_module(module)

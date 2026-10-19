@@ -71,11 +71,11 @@ export EIMEMORY_DEPLOY_SCOPE_WORKSPACE="$SCOPE_WORKSPACE"
 export EIMEMORY_DEPLOY_SCOPE_USER="$SCOPE_USER"
 
 echo "stage=memory_plane_eval"
-EIMEMORY_L1_WORKER_ACTION=eval "$BIN" -I -B -X "pycache_prefix=$CACHE" -m eimemory.cli.l1_worker
+EIMEMORY_L1_WORKER_ACTION=eval "$BIN" -I -B -X "pycache_prefix=$CACHE" /usr/libexec/eimemory-manager/runtime_manager_launch.py --product-module eimemory.cli.l1_worker
 echo "stage=memory_plane_eval ok"
 
 echo "stage=production_query_collect"
-"$BIN" -I -B -X "pycache_prefix=$CACHE" -m eimemory.cli.main eval production-query collect \
+"$BIN" -I -B -X "pycache_prefix=$CACHE" /usr/libexec/eimemory-manager/runtime_manager_launch.py --product-module eimemory.cli.main eval production-query collect \
   --scope-tenant "$SCOPE_TENANT" \
   --scope-agent "$SCOPE_AGENT" \
   --scope-workspace "$SCOPE_WORKSPACE" \
@@ -84,7 +84,7 @@ echo "stage=production_query_collect"
 echo "stage=production_query_collect ok"
 
 echo "stage=production_query_status"
-"$BIN" -I -B -X "pycache_prefix=$CACHE" -m eimemory.cli.main eval production-query status \
+"$BIN" -I -B -X "pycache_prefix=$CACHE" /usr/libexec/eimemory-manager/runtime_manager_launch.py --product-module eimemory.cli.main eval production-query status \
   --scope-tenant "$SCOPE_TENANT" \
   --scope-agent "$SCOPE_AGENT" \
   --scope-workspace "$SCOPE_WORKSPACE" \
@@ -100,7 +100,7 @@ if [ "$ready" != "1" ]; then
 fi
 
 echo "stage=release_closure"
-"$BIN" -I -B -X "pycache_prefix=$CACHE" -m eimemory.cli.main learn release-closure \
+"$BIN" -I -B -X "pycache_prefix=$CACHE" /usr/libexec/eimemory-manager/runtime_manager_launch.py --product-module eimemory.cli.main learn release-closure \
   --repo-root "$REPO" \
   --current-link "$CURRENT" \
   --health-url "$HEALTH" \

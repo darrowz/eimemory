@@ -19,6 +19,7 @@ def test_fused_closure_script_keeps_memory_plane_before_l5_gates():
     assert 'fused-begin' in text and 'fused-end' in text
     assert text.count('--scope-tenant "$SCOPE_TENANT"')==3
     assert '"$BIN" -m' not in text and '"$BIN" -c' not in text
+    assert text.count('--product-module eimemory.')==4
     assert 'production_query_not_ready' in text
 
 

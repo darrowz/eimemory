@@ -44,6 +44,9 @@ def build(root,commit):
             for line in text.splitlines():
                 if line.startswith('Exec') and '/.venv/bin/python ' in line and 'pycache_prefix=' not in line:
                     line=line.replace('/.venv/bin/python ', '/.venv/bin/python'+cache+' ')
+                if line.startswith('Exec'):
+                    line=re.sub(r'(/opt/eimemory/current/\.venv/bin/python -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache) -m (eimemory(?:\.[A-Za-z_][A-Za-z_0-9]*)+)',
+                        r'\1 /usr/libexec/eimemory-manager/runtime_manager_launch.py --product-module \2',line)
                 if line.startswith('Environment=PYTHONPYCACHEPREFIX='):
                     line='Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory-manager/empty-pycache'
                 lines.append(line)

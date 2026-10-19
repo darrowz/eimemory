@@ -24,11 +24,26 @@ if [[ -z "${EIMEMORY_TRUSTED_REPOSITORY_ROOT:-}${EIMEMORY_DEPLOYMENT_REPO_ROOT:-
 fi
 
 readiness_exit=0
+managed_effect_review=0
+while IFS= read -r cgroup; do
+  case "$cgroup" in
+    0::/system.slice/*eimemory-l5-effect-review.service)
+      managed_effect_review=1 ;;
+  esac
+done </proc/self/cgroup
+if [ "$managed_effect_review" = 1 ]; then
+  # The fixed PID1 owner cannot select a console-copy override. The reviewed
+  # helper requires the protected registry and actual venv/raw-source identity.
+  "$EIMEMORY_PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
+    /usr/libexec/eimemory-manager/runtime_manager_launch.py --product-module \
+    eimemory.cli.main learn l5-readiness --json >"$temporary" || readiness_exit=$?
+else
 EIMEMORY_ROOT="$EIMEMORY_ROOT" \
 EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
 PYTHONDONTWRITEBYTECODE=1 \
 PYTHONPYCACHEPREFIX=/var/lib/eimemory-manager/empty-pycache \
   "$EIMEMORY_BIN" learn l5-readiness --json >"$temporary" || readiness_exit=$?
+fi
 
 "$EIMEMORY_PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache - "$temporary" "$readiness_exit" <<'PY'
 import json

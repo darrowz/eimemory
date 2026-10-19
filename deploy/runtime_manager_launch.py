@@ -9,10 +9,13 @@ import stat
 import sys
 import socket
 import struct
+import importlib
+import runpy
 from hashlib import sha256
 
 
-def read_root(path):
+def read_root(path,*,raw=False):
+    return_raw=raw
     path=Path(path)
     for parent in (path.parent,*path.parent.parents):
         st=parent.lstat()
@@ -26,12 +29,83 @@ def read_root(path):
         raw=os.read(fd,65537);b=os.fstat(fd);c=path.lstat()
         coordinates=lambda s:(s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns,s.st_mode,s.st_uid,s.st_gid,s.st_nlink)
         if coordinates(a)!=coordinates(b) or coordinates(a)!=coordinates(c):raise ValueError('manager_launcher_record_changed')
-        return json.loads(raw)
+        return raw if return_raw else json.loads(raw)
     finally:os.close(fd)
 
 
 EMPTY_PYCACHE=Path('/var/lib/eimemory-manager/empty-pycache')
 REGISTRY=Path('/etc/eimemory-code-automation-authority/runtime-manager.v1.json')
+CURRENT=Path('/opt/eimemory/current')
+RELEASES=Path('/opt/eimemory/releases')
+PRODUCT_MODULES=frozenset({'eimemory.cli.main','eimemory.cli.l1_worker',
+    'eimemory.governance.serve_console','eimemory.governance.safety.audit_verifier',
+    'eimemory.retrieval.vector_sync_worker'})
+
+
+def assert_product_origins(release):
+    package=release/'eimemory'
+    for name,module in list(sys.modules.items()):
+        if name!='eimemory' and not name.startswith('eimemory.'):continue
+        if module is None:raise ValueError('manager_product_preloaded_module_invalid')
+        relative=Path(*name.split('.'))
+        path=release/relative;filename=getattr(module,'__file__',None)
+        namespace=getattr(module,'__path__',None)
+        if filename is None:
+            if not path.is_dir() or namespace is None:raise ValueError('manager_product_module_origin_invalid')
+        else:
+            expected=path/'__init__.py' if namespace is not None else path.with_suffix('.py')
+            if (Path(filename)!=expected or expected.is_symlink() or expected.resolve(strict=True)!=expected
+                    or not expected.is_file()):
+                raise ValueError('manager_product_module_origin_invalid')
+        if namespace is not None and (list(namespace)!=[str(path)] or path.is_symlink() or path.resolve(strict=True)!=path):
+            raise ValueError('manager_product_package_path_invalid')
+    loaded=sys.modules.get('eimemory')
+    if loaded is not None and (getattr(loaded,'__file__',None)!=str(package/'__init__.py')
+            or list(getattr(loaded,'__path__',[]))!=[str(package)]):
+        raise ValueError('manager_product_package_origin_invalid')
+
+
+def prepare_product_module(module):
+    if module not in PRODUCT_MODULES:raise ValueError('manager_product_module_not_registered')
+    # Only reviewed root-owned launcher bytes run here; no root process imports
+    # a runtime package. The actual current link is authoritative for serving
+    # even during publish -> activate, when the registry still names its prior.
+    read_root(__file__,raw=True);registry=read_root(REGISTRY)
+    if os.getuid()!=registry['runtime_uid'] or os.geteuid()!=registry['runtime_uid'] or os.geteuid()==0:
+        raise ValueError('manager_launcher_runtime_uid_required')
+    flags=protected_cache()
+    if not sys.flags.isolated or not sys.dont_write_bytecode or sys._xoptions.get('pycache_prefix')!=str(EMPTY_PYCACHE):
+        raise ValueError('manager_product_interpreter_flags_required')
+    release=CURRENT.resolve(strict=True)
+    if release.parent!=RELEASES or re.fullmatch('[0-9a-f]{40}',release.name) is None or release.is_symlink():
+        raise ValueError('manager_product_current_release_invalid')
+    if not os.statvfs(release).f_flag & os.ST_RDONLY:raise ValueError('manager_product_source_not_readonly')
+    prefix=release/'.venv'
+    if Path(sys.prefix).resolve(strict=True)!=prefix or Path(sys.executable) not in {
+            prefix/'bin/python',CURRENT/'.venv/bin/python'}:
+        raise ValueError('manager_product_target_interpreter_required')
+    package=release/'eimemory'
+    if package.is_symlink() or not package.is_dir() or not (package/'__init__.py').is_file():
+        raise ValueError('manager_product_source_package_invalid')
+    assert_product_origins(release)  # A .pth-preloaded site-packages copy fails.
+    sys.path.insert(0,str(release));importlib.invalidate_caches()
+    importlib.import_module('eimemory')
+    assert_product_origins(release)
+    spec=importlib.util.find_spec(module)
+    expected=release/Path(*module.split('.')).with_suffix('.py')
+    if spec is None or spec.origin!=str(expected) or expected.is_symlink() or expected.resolve(strict=True)!=expected:
+        raise ValueError('manager_product_entry_origin_invalid')
+    assert_product_origins(release)
+    return release
+
+
+def product_module(module,args):
+    if len(args)>128 or sum(len(v) for v in args)>65536 or any('\0' in v for v in args):
+        raise ValueError('manager_product_argv_invalid')
+    release=prepare_product_module(module)
+    sys.argv=[module,*args]
+    try:runpy.run_module(module,run_name='__main__',alter_sys=True)
+    finally:assert_product_origins(release)
 
 
 def protected_cache():
@@ -146,7 +220,8 @@ def launch(key,*,preflight=False):
 
 
 if __name__=='__main__':
-    if len(sys.argv)==2 and sys.argv[1]=='--recover-fused':recover_fused()
+    if len(sys.argv)>=3 and sys.argv[1]=='--product-module':product_module(sys.argv[2],sys.argv[3:])
+    elif len(sys.argv)==2 and sys.argv[1]=='--recover-fused':recover_fused()
     elif len(sys.argv)==2:launch(sys.argv[1])
     elif len(sys.argv)==3 and sys.argv[1]=='--preflight':launch(sys.argv[2],preflight=True)
     elif len(sys.argv)==4 and sys.argv[1]=='--validation':validate(sys.argv[2],sys.argv[3])
