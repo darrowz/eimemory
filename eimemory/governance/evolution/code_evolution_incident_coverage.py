@@ -19,7 +19,10 @@ _PRODUCER_PATHS = (
     'eimemory/contracts/code_incident_coverage.py',
     'eimemory/contracts/code_incident_provenance.py',
     'eimemory/storage/code_incident_coverage_store.py',
+    'eimemory/storage/code_incident_coverage_archive.py',
     'eimemory/storage/migrations/code_incident_coverage.py',
+    'eimemory/storage/migrations/code_incident_coverage_archive.py',
+    'eimemory/storage/payload_segments.py',
     'eimemory/storage/sqlite_store.py',
     'eimemory/governance/evolution/code_evolution_incident_coverage.py',
     'eimemory/governance/evolution/code_automation_policy_incidents.py',
@@ -46,12 +49,20 @@ def _owner(scope):
     return exact_scope(asdict(scope) if isinstance(scope, ScopeRef) else scope)
 
 
-def checkpoint_native_ingress(runtime, *, scope):
+def checkpoint_native_ingress(runtime, *, scope, archive_report=None):
     """Called before real detector work; no bootstrap when apply is disabled."""
     try:
-        return CodeIncidentCoverageStore(runtime.store).checkpoint(
+        coverage = CodeIncidentCoverageStore(runtime.store)
+        archive = coverage.maintain_archive(seal=seal, verify=verify)
+        if isinstance(archive_report, dict): archive_report.update(archive)
+        return coverage.checkpoint(
             _owner(scope), producer_digest=producer_identity(), seal=seal, verify=verify)
     except (AttributeError, OSError, TypeError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        if isinstance(archive_report, dict):
+            archive_report.update(ok=False, status='unproven', error_type=type(exc).__name__,
+                reason=str(exc) if str(exc) in {'incident_archive_capacity_requires_export',
+                    'incident_archive_read_bound_exceeded', 'incident_archive_row_exceeds_frame_bound'}
+                else 'incident_archive_or_checkpoint_unavailable', raw_evidence_deleted=False)
         return unknown('checkpoint_unavailable:' + type(exc).__name__)
 
 

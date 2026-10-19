@@ -152,6 +152,22 @@ def test_current_release_must_exist_before_reader_or_any_write(producer, monkeyp
     assert result["error"] == "native_l5_current_release_unverified" and producer.calls == []
 
 
+def test_current_controlled_lineage_failure_is_archived_as_failure_without_running_reader(producer, monkeypatch):
+    current = replace(RELEASE, version='1.14.156')
+    monkeypatch.setattr(native, 'current_release_identity', lambda *args: current)
+    monkeypatch.setattr('eimemory.governance.release.evidence_contract.current_release_identity', lambda *args: current)
+    monkeypatch.setattr('eimemory.governance.release.controlled_release_lineage.refresh_current_controlled_release_lineage',
+        lambda *_a, **_k: dict(ok=False, status='blocked', reason='current_controlled_recall_evidence_invalid'))
+    result = native.run_native_l5_assessment(producer, scope=asdict(SCOPE), loop_id='fixture-current-lineage-failed')
+    assert result['error'] == 'native_l5_controlled_lineage_revalidation_failed'
+    assert result['failure_stage'] == 'controlled_release_lineage'
+    assert not result['execution_ok'] and not result['awaiting_evidence'] and not producer.calls
+    assert result['failure_evidence']['archive_verified']
+    steps = []
+    _nightly_step(steps, 'native_l5_assessment', lambda: result)
+    assert not steps[0]['ok'] and not _aggregate_nightly_ok({'native_l5_assessment': result}, steps)
+
+
 def test_release_authority_change_cannot_be_archived_as_current(producer, monkeypatch):
     releases = iter([RELEASE, replace(RELEASE, receipt_id="different-receipt")])
     monkeypatch.setattr(native, "current_release_identity", lambda *args: next(releases))

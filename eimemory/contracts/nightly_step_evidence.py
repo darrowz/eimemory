@@ -17,6 +17,7 @@ NATIVE_L5_ERROR_CODES = frozenset({
     "native_l5_completion_contract_invalid", "native_l5_archive_missing_after_write",
     "native_l5_archive_authority_mismatch", "native_l5_reader_execution_failed",
     "native_l5_execution_failed",
+    "native_l5_controlled_lineage_revalidation_failed",
 })
 _REFERENCE_FIELDS = frozenset({
     "schema", "ok", "archive_verified", "archive_complete", "record_id", "source_id",

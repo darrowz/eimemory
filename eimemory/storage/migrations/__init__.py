@@ -47,6 +47,13 @@ from .code_incident_coverage import (
     data_is_scheduled as code_incident_coverage_data_is_scheduled,
     apply_data_batch as apply_code_incident_coverage_data_batch,
 )
+from .code_incident_coverage_archive import (
+    MIGRATION_ID as CODE_INCIDENT_COVERAGE_ARCHIVE_MIGRATION,
+    ensure_schema as ensure_code_incident_coverage_archive_schema,
+    schema_ready as is_code_incident_coverage_archive_schema_ready,
+    data_is_scheduled as code_incident_coverage_archive_data_is_scheduled,
+    apply_data_batch as apply_code_incident_coverage_archive_data_batch,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +102,13 @@ REGISTERED_STORAGE_MIGRATIONS: tuple[StorageMigrationSpec, ...] = (
         is_schema_ready=is_code_evolution_quarantine_resolution_schema_ready,
         data_is_scheduled=code_evolution_quarantine_resolution_backfill_is_scheduled,
         apply_data_batch=apply_code_evolution_quarantine_resolution_backfill_batch,
+    ),
+    StorageMigrationSpec(
+        migration_id=CODE_INCIDENT_COVERAGE_ARCHIVE_MIGRATION,
+        ensure_schema=ensure_code_incident_coverage_archive_schema,
+        is_schema_ready=is_code_incident_coverage_archive_schema_ready,
+        data_is_scheduled=code_incident_coverage_archive_data_is_scheduled,
+        apply_data_batch=apply_code_incident_coverage_archive_data_batch,
     ),
 )
 

@@ -150,12 +150,16 @@ def refresh_current_controlled_release_lineage(runtime: Any, *, scope: ScopeRef,
     for record in native._release_lineage_records(runtime, scope=owner, before_rowid=None):
         content = record.content if isinstance(record.content, dict) else {}
         body = content.get('lineage')
+        declares_current = (record.meta.get('current_commit') == release.commit
+                            or content.get('release_commit') == release.commit)
         # No fallback past a corrupt newest physical current-release record.
         if not isinstance(body, dict):
-            if record.meta.get('current_commit') == release.commit:
+            if declares_current:
                 raise ValueError('controlled_lineage_current_record_invalid')
             continue
         identity = native._identity_from_payload(body.get('current_release'))
+        if declares_current and not same_release_authority(identity, release):
+            raise ValueError('controlled_lineage_current_record_invalid')
         if same_release_authority(identity, release):
             selected = body
             break

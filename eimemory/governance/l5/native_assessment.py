@@ -133,6 +133,8 @@ def run_native_l5_assessment(runtime: Any, *, scope: Mapping[str, Any],
             result['controlled_release_lineage'] = refresh_current_controlled_release_lineage(
                 runtime, scope=owner, release=before,
             )
+            if result['controlled_release_lineage'].get('ok') is not True:
+                raise ValueError('native_l5_controlled_lineage_revalidation_failed')
         stage = "readiness_reader"
         envelope = runtime.build_l5_readiness_report(scope=asdict(owner), runtime_scope=selector,
             reader_mode="v3", profile_key=profile, capability_scope=capability_scope,

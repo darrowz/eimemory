@@ -25,8 +25,25 @@ def _now():
 
 class CodeIncidentCoverageStore:
     def __init__(self, store):
+        self.store = store
         self.conn = store.sqlite.conn
         self.lock = store._lock
+        self._archive_verifier = None
+
+    def _cold(self):
+        from eimemory.storage.code_incident_coverage_archive import CoverageArchive
+        if self._archive_verifier is None:
+            raise ValueError('incident_archive_verifier_required')
+        return CoverageArchive(self.store, self._archive_verifier)
+
+    def maintain_archive(self, *, seal, verify, keep=None, batches=16):
+        self._archive_verifier = verify
+        return self._transaction(True, lambda: self._cold().maintain(seal=seal, keep=keep, batches=batches))
+
+    def _range_count(self, after, through):
+        hot = self.conn.execute(f'SELECT count(*) FROM {JOURNAL} WHERE sequence>? AND sequence<=?',
+                                (after, through)).fetchone()[0]
+        return hot + len(self._cold().range_rows(JOURNAL, after, through))
 
     def _transaction(self, write, callback):
         with self.lock:
@@ -47,6 +64,7 @@ class CodeIncidentCoverageStore:
 
     def _head(self):
         high = int(self.conn.execute(f'SELECT coalesce(max(sequence),0) FROM {JOURNAL}').fetchone()[0])
+        high = max(high, self._cold().high_water(JOURNAL))
         row = self.conn.execute('SELECT seq FROM sqlite_sequence WHERE name=?', (JOURNAL,)).fetchone()
         if row is not None and int(row[0]) != high:
             raise ValueError('incident_coverage_journal_prefix_changed')
@@ -58,7 +76,11 @@ class CodeIncidentCoverageStore:
             UNION ALL SELECT * FROM {JOURNAL} WHERE sequence>? AND sequence<=? AND table_name='coverage_control'
             ORDER BY sequence LIMIT ?''',
             (after, through, *(scope[key] for key in SCOPE_FIELDS), after, through, MAX_JOURNAL_PAGE + 1)).fetchall()
-        if len(rows) > MAX_JOURNAL_PAGE:
+        cold = self._cold().range_rows(JOURNAL, after, through)
+        cold = [row for row in cold if row['table_name'] == 'coverage_control'
+                or all(row[key] == scope[key] for key in SCOPE_FIELDS)]
+        rows = sorted([*[dict(row) for row in rows], *cold], key=lambda row: row['sequence'])
+        if len(rows) > MAX_JOURNAL_PAGE or len({row['sequence'] for row in rows}) != len(rows):
             raise ValueError('incident_coverage_incremental_page_incomplete')
         return [dict(row) for row in rows]
 
@@ -67,7 +89,9 @@ class CodeIncidentCoverageStore:
         args = [scope[key] for key in SCOPE_FIELDS] + ([record_id] if record_id is not None else [])
         row = self.conn.execute(f'SELECT * FROM {table} WHERE tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?{condition} ORDER BY sequence DESC LIMIT 1', args).fetchone()
         if row is None:
-            return None
+            cold = self._cold().key_rows(table, scope=scope, record_id=record_id, limit=1)
+            row = cold[0] if cold else None
+        if row is None: return None
         body = json.loads(row['payload_json'])
         domain = CHECKPOINT_SCHEMA if table == CHECKPOINTS else OBSERVATION_SCHEMA
         validate_diagnostic(body, schema=domain, scope=scope)
@@ -77,6 +101,9 @@ class CodeIncidentCoverageStore:
 
     def _checkpoint_by_digest(self, value, scope, verify):
         row = self.conn.execute(f'SELECT payload_json,payload_digest FROM {CHECKPOINTS} WHERE payload_digest=?', (value,)).fetchone()
+        if row is None:
+            cold = self._cold().key_rows(CHECKPOINTS, scope=scope, payload_digest=value, limit=1)
+            row = cold[0] if cold else None
         if row is None:
             raise ValueError('incident_coverage_checkpoint_prefix_missing')
         body = json.loads(row['payload_json'])
@@ -93,7 +120,7 @@ class CodeIncidentCoverageStore:
             return
         if high - low > MAX_JOURNAL_PAGE or low > high:
             raise ValueError('incident_coverage_incremental_bound_invalid')
-        count = self.conn.execute(f'SELECT count(*) FROM {JOURNAL} WHERE sequence>? AND sequence<=?', (low, high)).fetchone()[0]
+        count = self._range_count(low, high)
         page = self._page(scope, low, high)
         if count != high - low or len(page) != checkpoint['incremental_count'] or digest(page) != checkpoint['incremental_digest']:
             raise ValueError('incident_coverage_incremental_prefix_changed')
@@ -131,6 +158,7 @@ class CodeIncidentCoverageStore:
             VALUES(?,?,?,?,?,?,?,?)''', (*[scope[key] for key in SCOPE_FIELDS], body.get('record_id', ''), canonical(body), digest(body), body['observed_at']))
 
     def checkpoint(self, scope, *, producer_digest, seal, verify):
+        self._archive_verifier = verify
         owner = exact_scope(scope)
         def perform():
             if not schema_ready(self.conn):
@@ -147,7 +175,7 @@ class CodeIncidentCoverageStore:
                     self._checkpoint_by_digest(previous['prior_checkpoint_digest'], owner, verify)
             truncated = high - start > MAX_JOURNAL_PAGE
             if not truncated:
-                count = self.conn.execute(f'SELECT count(*) FROM {JOURNAL} WHERE sequence>? AND sequence<=?', (start, high)).fetchone()[0]
+                count = self._range_count(start, high)
                 if count != high - start:
                     raise ValueError('incident_coverage_incremental_sequence_gap')
             page = [] if truncated else self._page(owner, start, high)
@@ -199,7 +227,7 @@ class CodeIncidentCoverageStore:
             return unknown('high_water_regressed')
         if high - checkpoint['epoch_start_sequence'] > MAX_JOURNAL_PAGE:
             return unknown('bounded_epoch_capacity_exceeded')
-        count = self.conn.execute(f'SELECT count(*) FROM {JOURNAL} WHERE sequence>? AND sequence<=?', (checkpoint['high_water'], high)).fetchone()[0]
+        count = self._range_count(checkpoint['high_water'], high)
         if count != high - checkpoint['high_water']:
             return unknown('incremental_sequence_gap')
         rows = self.conn.execute('SELECT * FROM records INDEXED BY idx_records_record_id WHERE tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? AND record_id=? LIMIT 2',
@@ -226,6 +254,9 @@ class CodeIncidentCoverageStore:
         inserted = self.conn.execute(f'''SELECT * FROM {JOURNAL} WHERE table_name='records' AND operation='INSERT'
             AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? AND record_id=? AND payload_digest=?
             ORDER BY sequence LIMIT 2''', (*[owner[field] for field in SCOPE_FIELDS], record_id, physical['payload_digest'])).fetchall()
+        inserted = [dict(row) for row in inserted] + self._cold().key_rows(
+            JOURNAL, scope=owner, record_id=record_id, payload_digest=physical['payload_digest'], limit=2)
+        inserted = [row for row in inserted if row['table_name'] == 'records' and row['operation'] == 'INSERT']
         if len(inserted) != 1 or inserted[0]['sequence'] <= checkpoint['epoch_start_sequence']:
             return unknown('incident_precedes_actual_coverage_epoch')
         detection = dict(inserted[0])
@@ -293,6 +324,7 @@ class CodeIncidentCoverageStore:
         return validate_diagnostic(body, schema=OBSERVATION_SCHEMA, scope=owner)
 
     def observe(self, scope, record_id, *, producer_digest, seal, verify, expected_payload_digest=None):
+        self._archive_verifier = verify
         owner = exact_scope(scope)
         def perform():
             body = self._observation(owner, record_id, producer_digest, verify, expected_payload_digest)
@@ -324,8 +356,7 @@ class CodeIncidentCoverageStore:
                 or original['high_water'] > saved['high_water']):
             raise ValueError('incident_coverage_observation_epoch_changed')
         low, high = saved['epoch_start_sequence'], saved['high_water']
-        count = self.conn.execute(f'SELECT count(*) FROM {JOURNAL} WHERE sequence>? AND sequence<=?',
-                                  (low, high)).fetchone()[0]
+        count = self._range_count(low, high)
         page = self._page(owner, low, high)
         if count != high - low or len(page) != saved['page_count'] or digest(page) != saved['page_digest']:
             raise ValueError('incident_coverage_observation_prefix_changed')
@@ -334,8 +365,7 @@ class CodeIncidentCoverageStore:
         low, high = saved['high_water'], current['high_water']
         if high < low or high - low > MAX_JOURNAL_PAGE:
             return False
-        count = self.conn.execute(f'SELECT count(*) FROM {JOURNAL} WHERE sequence>? AND sequence<=?',
-                                  (low, high)).fetchone()[0]
+        count = self._range_count(low, high)
         page = self._page(owner, low, high)
         if count != high - low:
             return False
@@ -354,6 +384,7 @@ class CodeIncidentCoverageStore:
         return True
 
     def read_observation(self, scope, record_id, *, producer_digest, verify):
+        self._archive_verifier = verify
         owner = exact_scope(scope)
         def perform():
             if not schema_ready(self.conn):

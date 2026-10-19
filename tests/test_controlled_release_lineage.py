@@ -118,6 +118,22 @@ def test_native_lineage_refresh_requires_established_closure_and_current_attempt
     assert not result['ok'] and result['reason'] == 'current_controlled_recall_evidence_invalid'
 
 
+@pytest.mark.parametrize('body', [None, {}, {'current_release': {'release_commit': 'f' * 40}}])
+def test_refresh_never_falls_back_past_malformed_latest_current_release(setup, monkeypatch, body):
+    from eimemory.models.records import RecordEnvelope
+    from test_release_lineage import _receipt
+    current = _receipt(setup.runtime, OWNER, RELEASE['release_commit'], RELEASE['release_version'])
+    monkeypatch.setattr(cpa, '_release', lambda *args, **kwargs:
+        (release_identity_payload(current), {'record_ref': current.receipt_id, 'record_digest': 'c' * 64}))
+    assert run(setup)['accepted']
+    setup.runtime.store.append(RecordEnvelope.create(kind='l5_self_continuity',
+        title='Newest current-release lineage with invalid physical identity', scope=OWNER,
+        source=release_lineage.SOURCE, content={'lineage': body},
+        meta={'report_type': 'release_lineage', 'current_commit': current.commit}))
+    with pytest.raises(ValueError, match='controlled_lineage_current_record_invalid'):
+        module.refresh_current_controlled_release_lineage(setup.runtime, scope=OWNER, release=current)
+
+
 @pytest.mark.parametrize('failed_replay', [False, True])
 def test_refresh_rebinds_only_actual_latest_acceptance_without_replaying_queries(setup, monkeypatch, tmp_path, failed_replay):
     from eimemory.models.records import RecordEnvelope

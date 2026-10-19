@@ -63,10 +63,36 @@ whether PostgreSQL recall is enabled or disabled. This mechanism does not
 claim all-backend coverage or infer meaning from free text. Pre-epoch
 knowledge remains unknown. No historical incident facts are rewritten.
 
-The three append-only evidence tables currently have no archive or retention
-protocol. Metadata disk usage therefore grows with ingress and maintenance
-cycles. Existing database/disk monitoring still applies, but automatic
-capacity management and long-term evidence archival are not complete.
-Operators must preserve the journal/checkpoint prefixes; manual deletion or
-truncation invalidates proof. Do not delete entries to recover space without
-a separately reviewed retention and verification protocol.
+The additive `code.incident.coverage.archive.v1` migration installs separate
+append-only archive manifests and exact-scope key indices. Startup only
+installs this schema: it never scans, backfills or prunes existing history.
+Native maintenance archives old prefixes before taking a checkpoint. Its
+default hot limits are 10,000 journal rows and 512 checkpoint/observation rows
+each. A maintenance call moves at most 16 batches of 256 rows per table, so
+an existing backlog drains gradually rather than holding an unbounded write
+transaction. The separate archive report exposes actual hot rows and backlog.
+
+Raw metadata is preserved in private compressed payload segments beside the
+SQLite database. Each frame is fsynced and independently read back before its
+HMAC manifest, parent digest, exact sequence range and lookup keys are committed
+with pruning in one SQLite transaction. The original delete guard is restored
+inside that same transaction. A crash or failed readback rolls back the SQL
+prune; an uncommitted orphan frame is never accepted as evidence. Ordinary
+UPDATE/DELETE on both hot evidence and archive indices remain blocked.
+
+Historical readers verify original signatures and exact raw rows across hot
+and cold ranges, including physical first-INSERT versions. They never reseal
+an old observation or reset its sequence, source time, epoch or unknown global
+facts. Reads are bounded to 64 frames per range and maintenance to 8 MiB per
+raw frame. Missing frames, changed signatures, gaps and excessive read spans
+produce unknown. Late or unclassified input retains its original invalidating
+effect after archival.
+
+Compression bounds the hot SQL footprint; preserving raw evidence still
+requires growing cold storage and small indices. Maintenance stops before
+8 GiB of segments, 256 segment files, or insufficient disk space, reports
+`incident_archive_capacity_requires_export`, and preserves the original SQL
+prefix. This limit requires an operator-reviewed export and readback path;
+there is no automatic expiry or silent deletion. Archive bytes and manifests
+belong in the database backup set. Manual deletion, truncation or moving cold
+segments without their verified pointers invalidates proof.
