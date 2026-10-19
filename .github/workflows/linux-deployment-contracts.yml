@@ -79,6 +79,8 @@ jobs:
           tests/test_postgres_readiness_recovery.py
           tests/test_readiness_reader_pool_wait.py
           tests/test_candidate_readiness_barrier.py
+          tests/test_memory_projection_authority.py
+          tests/test_projection_reader_transaction_ownership.py
           tests/test_controlled_projection_phase_readiness.py
           tests/test_l5_service_receipt_lineage.py
           tests/test_record_release_lineage_cli.py

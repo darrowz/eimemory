@@ -3386,7 +3386,8 @@ def _registered_discovery_fixture(tmp_path, installed, *, fault=None):
         +'m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)\n'
         +f'm.read_registry=lambda:c.validate_registry(c.strict_json(Path({str(fixture)!r}).read_bytes()))\n'
         +('raise SystemExit(7)\n' if fault=='transport_failure' else '')
-        +'try:raise SystemExit(m.systemctl(sys.argv[1:]))\n'
+        +'assert sys.argv[1]=="systemctl"\n'
+        +'try:raise SystemExit(m.systemctl(sys.argv[2:]))\n'
         +'except (ValueError,RuntimeError) as exc:\n'
         +'    print(str(exc),file=sys.stderr);raise SystemExit(2)\n',
         encoding='utf-8',newline='\n')
