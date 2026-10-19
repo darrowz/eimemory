@@ -339,18 +339,13 @@ def test_missing_current_release_blocks_before_any_policy_or_provider(routing_ha
     }
 
 
-def test_current_system_repair_policy_incident_uses_protected_routing_plan(routing_harness):
+def test_legacy_router_source_label_cannot_replace_native_current_fence(routing_harness):
     _select_system_repair_policy_incident(routing_harness.record)
 
     report = routing_harness.run()
 
-    assert report["status"] == "processed"
-    assert routing_harness.calls["proposal"][0]["allowed_files"] == (
-        "eimemory/governance/evolution/system_code_repair.py",
-    )
-    assert routing_harness.calls["proposal"][0]["test_plan_id"] == (
-        "code.incident-routing-repair.v1"
-    )
+    assert report["status"] == "blocked" and report['reason'] == 'current_incident_source_unverified'
+    assert routing_harness.calls['proposal'] == [] and routing_harness.calls['evolution'] == []
 
 
 def test_consumed_policy_for_no_matching_current_incident_is_idle(routing_harness, monkeypatch):

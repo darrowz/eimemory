@@ -698,6 +698,26 @@ class CodeEvolutionStore:
             return _exact_transaction_rows(rows, owner)
         return self._read(read)
 
+    def find_incident_transaction(self, *, scope: Any, repository_root: str,
+                                  incident_id: str, incident_digest: str, base_commit: str) -> dict[str, Any] | None:
+        """Any ref, exact owner/repository/release; one-shot recovery cannot omit a ref."""
+        from eimemory.models.records import ScopeRef
+        owner = ({key: getattr(scope, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")}
+                 if isinstance(scope, ScopeRef) else dict(scope))
+        exact = _scope({"scope": owner})
+        if (owner != dict(zip(("tenant_id", "agent_id", "workspace_id", "user_id"), exact))
+                or not repository_root or not incident_id or not incident_digest or not base_commit):
+            raise CodeEvolutionStoreError('exact incident transaction identity required')
+        def read():
+            row = self.conn.execute(
+                "SELECT * FROM code_evolution_transactions WHERE tenant_id=? AND agent_id=? "
+                "AND workspace_id=? AND user_id=? AND repository_root=? AND base_commit=? AND "
+                "(incident_id=? OR json_extract(payload_json,'$.incident_digest')=? "
+                "OR json_extract(payload_json,'$.incident.incident_digest')=?) ORDER BY created_at LIMIT 1",
+                (*exact, repository_root, base_commit, incident_id, incident_digest, incident_digest)).fetchone()
+            return _transaction_row_dict(row) if row is not None else None
+        return self._read(read)
+
     def list_transactions_exact_scope(
         self, *, scope: Any, repository_root: str,
         repository_refs: tuple[str, ...] = ("master", "refs/heads/master"),

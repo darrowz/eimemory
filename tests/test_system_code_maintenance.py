@@ -12,10 +12,20 @@ from eimemory.storage.runtime_store import RuntimeStore
 from test_code_evolution_recovery import _observing_manager, _sample
 from native_policy_owner_cases import *  # Native owner regressions run in both existing CI lanes.
 from native_provenance_cases import *  # Typed original facts are covered in the same CI lanes.
+from native_lifecycle_cases import *  # Real lifecycle/clock/one-shot recovery runs in both lanes.
 
 
 SCOPE = {"tenant_id": "default", "agent_id": "hongrui", "workspace_id": "embodied", "user_id": "darrow"}
 COMMIT = "a" * 40
+
+
+@pytest.fixture(autouse=True)
+def isolated_maintenance_observation_clock(monkeypatch):
+    # Recovery queue fixtures use a fixed first sample; this is no elapsed-time
+    # claim. Dedicated lifecycle cases inject their own independent clock.
+    monkeypatch.setattr('eimemory.governance.promotion.promotion_watch.native_observation_clock', lambda: {
+        'schema': 'code_observation_clock.v1', 'wall_utc': '2026-01-01T00:00:00+00:00',
+        'boot_id': '11111111-1111-1111-1111-111111111111', 'monotonic_ns': 0})
 
 
 @pytest.fixture
@@ -179,7 +189,8 @@ def test_native_policy_owner_failure_keeps_existing_transaction_recovery(owners,
     assert report['ok'] is False
     assert report['native_policy_owner']['reason'] == 'native_policy_owner_error:OSError'
     assert report['system_code_repair']['reason'] == 'native_policy_owner_unverified'
-    assert [name for name, _ in owners.calls] == ['detector', 'failure', 'recovery']
+    assert [name for name, _ in owners.calls] == ['detector', 'recovery']
+    assert report['system_code_repair_failure']['reason'] == 'router_not_executed'
 
 
 @pytest.mark.parametrize("stage", ["detector", "route", "failure", "recovery"])

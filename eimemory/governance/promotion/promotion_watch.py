@@ -19,6 +19,8 @@ from eimemory.governance.evolution.code_evolution_observation import (
     observation_phase as _shared_observation_phase,
     parse_observation_time as _shared_parse_observation_time,
     compact_observation_samples,
+    native_observation_clock, verified_observation_clock, observation_clock_discontinuity,
+    observation_monotonic_complete, MAX_WINDOW_RESTARTS,
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import normalize_source_id
@@ -247,7 +249,13 @@ def _record_code_evolution_observation_sample(
                 "transaction_id": transaction_id,
                 "state": current_state,
             }
-        checked_at = str(observed_at or sample.get("observed_at") or utc_now())
+        claimed_at = str(observed_at or sample.get("observed_at") or utc_now())
+        try:
+            clock = verified_observation_clock(native_observation_clock())
+            clock_error = observation_clock_discontinuity(None, clock, claimed_at)
+        except (OSError, ValueError):
+            clock, clock_error = {}, 'native_observation_clock_unavailable'
+        checked_at = clock['wall_utc'] if clock else utc_now()
         receipt_digest = str(
             sample.get("deployment_receipt_digest")
             or sample.get("receipt_digest")
@@ -262,6 +270,7 @@ def _record_code_evolution_observation_sample(
         normalized_sample = {
             "transaction_id": transaction_id,
             "observed_at": checked_at,
+            "claimed_at": claimed_at,
             "commit": str(sample.get("commit") or ""),
             "release_identity": str(sample.get("release_identity") or ""),
             "service_health": dict(sample.get("service_health") or {}),
@@ -271,6 +280,8 @@ def _record_code_evolution_observation_sample(
             "health_ok": sample.get("health_ok") is True,
             "incident_regressed": sample.get("incident_regressed") is True,
             "hard_failure": sample.get("hard_failure") is True,
+            "owner_clock": clock,
+            "clock_error": clock_error,
         }
         # Optional for historical samples; new samples retain both the exact
         # proposal advertisement and the independently checked live refresh.
@@ -281,6 +292,9 @@ def _record_code_evolution_observation_sample(
             normalized_sample["live_provider_advertisement_digest"] = live_advertisement_digest
             normalized_sample["provider_authority_error"] = str(sample.get("provider_authority_error") or "")
         payload = dict(transaction.get("payload") or {})
+        if not clock_error:
+            clock_error = observation_clock_discontinuity(payload.get('observation_last_clock'), clock, claimed_at)
+            normalized_sample['clock_error'] = clock_error
         expected_receipt_digest = str(
             payload.get("deployment_receipt_digest")
             or payload.get("receipt_digest")
@@ -339,6 +353,11 @@ def _record_code_evolution_observation_sample(
             None,
         )
         if persisted_sample is not None:
+            # A duplicate does not create a second observation clock. Verify
+            # its original public input against the original persisted clock.
+            normalized_sample['owner_clock'] = persisted_sample.get('owner_clock', {})
+            normalized_sample['clock_error'] = persisted_sample.get('clock_error', '')
+            normalized_sample['observed_at'] = persisted_sample['observed_at']
             if payload.get("observation_failure") is True:
                 transaction = manager.begin_intent(
                     transaction_id,
@@ -395,6 +414,7 @@ def _record_code_evolution_observation_sample(
                 "sample_key": sample_key,
                 "input_digest": digest_json(normalized_sample),
                 "observed_at": checked_at,
+                "claimed_at": claimed_at,
                 "event_sequence": 0,
                 "health_ok": normalized_sample["health_ok"],
                 "incident_regressed": normalized_sample["incident_regressed"],
@@ -404,6 +424,8 @@ def _record_code_evolution_observation_sample(
                 "provider_advertisement_digest": normalized_sample["provider_advertisement_digest"],
                 "deployment_receipt_digest": normalized_sample["deployment_receipt_digest"],
                 "incident_measure": normalized_sample["incident_measure"],
+                "owner_clock": clock,
+                "clock_error": clock_error,
             }
         )
         if live_advertisement_digest:
@@ -412,6 +434,49 @@ def _record_code_evolution_observation_sample(
         start = _parse_observation_time(str(transaction.get("observation_started_at") or ""))
         if start is None or (payload.get("observation_anchor_pending") is True and not payload.get("observation_samples")):
             start = _parse_observation_time(checked_at)
+        # Legacy samples retain their original events but cannot establish a
+        # trusted monotonic/boot anchor for a newly certified window.
+        restart_reason = clock_error
+        if not restart_reason and payload.get('observation_samples') and not payload.get('observation_clock_anchor'):
+            restart_reason = 'observation_clock_contract_unanchored'
+        phase = _observation_phase(start, _parse_observation_time(checked_at))
+        previous_phases = {_observation_phase(start, _parse_observation_time(str(item.get('observed_at') or '')))
+                           for item in payload.get('observation_samples', [])}
+        if not restart_reason and previous_phases and any(offset < phase and offset not in previous_phases
+                                                         for offset in CODE_EVOLUTION_OBSERVATION_OFFSETS):
+            restart_reason = 'observation_phase_missed'
+        generation = payload.get('observation_window_generation', 0)
+        if type(generation) is not int or not 0 <= generation <= MAX_WINDOW_RESTARTS:
+            restart_reason = 'observation_window_generation_invalid'
+            generation = MAX_WINDOW_RESTARTS
+        history = list(payload.get('observation_window_history') or [])
+        if len(history) != generation or any(not isinstance(item, dict)
+                or item.get('schema') != 'code_observation_window.v1'
+                or item.get('generation') != index or not isinstance(item.get('samples'), list)
+                or not isinstance(item.get('sample_event_sequences'), list)
+                for index, item in enumerate(history)):
+            restart_reason = 'observation_window_generation_invalid'
+            generation = MAX_WINDOW_RESTARTS
+        # Caller timestamps are never an eligible new anchor. A genuine owner
+        # clock discontinuity may restart once, using this actual sample time.
+        can_restart = bool(restart_reason and clock and generation < MAX_WINDOW_RESTARTS
+                           and not normalized_sample['hard_failure'] and not normalized_sample['incident_regressed']
+                           and restart_reason not in {'caller_observation_time_untrusted',
+                                                      'observation_window_generation_invalid'})
+        if can_restart:
+            history.append({'schema': 'code_observation_window.v1', 'generation': generation, 'reason': restart_reason,
+                'started_at': str(transaction.get('observation_started_at') or ''),
+                'deadline': str(payload.get('observation_effective_deadline') or transaction.get('observation_deadline') or ''),
+                'samples': list(payload.get('observation_samples') or []),
+                'sample_event_sequences': [item['sequence'] for item in events
+                    if item.get('step') == 'observation' and item.get('phase') == 'result'],
+                'clock_anchor': payload.get('observation_clock_anchor'), 'last_clock': payload.get('observation_last_clock'),
+                'restarted_at': clock['wall_utc']})
+            generation += 1
+            start = _parse_observation_time(clock['wall_utc'])
+            observations = [observations[-1]]
+        elif not payload.get('observation_clock_anchor') and not payload.get('observation_samples') and clock:
+            start = _parse_observation_time(clock['wall_utc'])
         observations = compact_observation_samples(observations, start)
         receipt_deadline = _parse_observation_time(str(transaction.get("observation_deadline") or ""))
         deadline = _parse_observation_time(str(payload.get("observation_effective_deadline") or "")) or receipt_deadline
@@ -429,6 +494,7 @@ def _record_code_evolution_observation_sample(
         hard_failure = bool(
             normalized_sample["hard_failure"]
             or normalized_sample["incident_regressed"]
+            or restart_reason and not can_restart
         )
         degraded_tail = [
             not bool(item.get("health_ok"))
@@ -442,6 +508,7 @@ def _record_code_evolution_observation_sample(
             and _parse_observation_time(checked_at) is not None
             and _parse_observation_time(checked_at) >= deadline
             and set(CODE_EVOLUTION_OBSERVATION_OFFSETS) <= phases
+            and observation_monotonic_complete(clock if can_restart else payload.get('observation_clock_anchor', clock), clock)
         )
         next_action = "rollback" if hard_failure or consecutive_degraded else "sedimentation" if observation_valid else ""
         persisted_payload = dict(payload)
@@ -455,6 +522,11 @@ def _record_code_evolution_observation_sample(
                 "observation_failure": hard_failure or consecutive_degraded,
                 "observation_consecutive_degraded": consecutive_degraded,
                 "observation_effective_deadline": deadline.isoformat(timespec="seconds") if deadline else "",
+                "observation_clock_anchor": clock if can_restart or not payload.get('observation_clock_anchor') else payload['observation_clock_anchor'],
+                "observation_last_clock": clock,
+                "observation_window_generation": generation,
+                "observation_window_history": history,
+                "observation_recovery_reason": restart_reason,
             }
         )
         committed = manager.store.commit_observation_result(
@@ -495,6 +567,8 @@ def _record_code_evolution_observation_sample(
             "sample_key": sample_key,
             "observation_valid": False,
             "required_phases": sorted(phases),
+            "window_restarted": can_restart,
+            "recovery_reason": restart_reason,
         }
     except CodeEvolutionConflict:
         return {"ok": False, "status": "lease_or_sample_conflict", "transaction_id": transaction_id}

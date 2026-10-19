@@ -81,11 +81,12 @@ def run_system_code_maintenance(
                    if 'capability_authority' in policy_owner else {})),
             "incident_router") if policy_owner.get("ok") is True else {
                 "ok": False, "status": "blocked", "reason": "native_policy_owner_unverified", "processed": []})
-        failure = _call(
+        failure = (_call(
             lambda: record_system_code_repair_failure(
                 runtime, scope=scope_ref, repair_report=route, detected_at=detected_at),
             "repair_failure_detector",
-        )
+        ) if policy_owner.get("ok") is True else {
+            "ok": True, "status": "skipped", "reason": "router_not_executed", "incident_record_id": ""})
     else:
         policy_owner = {"ok": True, "status": "skipped", "reason": "runtime_identity_unverified"}
         route = {"ok": False, "status": "blocked", "reason": "runtime_identity_unverified", "processed": []}

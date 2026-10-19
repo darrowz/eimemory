@@ -136,9 +136,12 @@ def _trusted_incident_identity(record: Any, base_commit: str, *, diagnosis: bool
                 or getattr(record, "record_id", None) != incident["incident_id"]):
             return None
     elif incident["incident_class"] == SYSTEM_REPAIR_FAILURE_INCIDENT_CLASS:
+        from eimemory.ops.system_code_repair_failure import validate_system_code_repair_failure_report
         if (
             detector_report.get("detector") != SYSTEM_REPAIR_FAILURE_DETECTOR_ID
             or detector_report.get("release_commit") != base_commit
+            or not validate_system_code_repair_failure_report(detector_report)
+            or detector_report.get("incident") != incident
         ):
             return None
     return incident
@@ -260,6 +263,15 @@ def select_current_system_incidents(runtime: Any, *, scope: ScopeRef, root: Path
         current = [(record, incident) for record, incident in current
                    if incident["incident_class"] != "deployment.runtime_commit_drift"
                    or incident["incident_digest"] == current_digest]
+    if any(i['incident_class'] == SYSTEM_REPAIR_FAILURE_INCIDENT_CLASS for _, i in current):
+        from eimemory.ops.system_code_repair_failure import current_system_code_repair_failure
+        latest = current_system_code_repair_failure(runtime.store, scope=scope_ref,
+                                                     expected_commit=repository['base_commit'])
+        if latest is None:
+            return {'ok': False, 'status': 'blocked', 'reason': 'repair_current_observation_unverified',
+                    'repair_complete': False, 'processed': []}
+        current = [(r, i) for r, i in current if i['incident_class'] != SYSTEM_REPAIR_FAILURE_INCIDENT_CLASS
+                   or i['incident_digest'] == latest]
     diagnosis = [record.record_id for record in records
                  if _trusted_incident(record, repository["base_commit"], diagnosis=True) is not None]
     if any(i['incident_class'].startswith('release.closure_') for _, i in current) or diagnosis:

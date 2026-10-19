@@ -51,6 +51,7 @@ DENY_SELF_PATH_GLOBS: tuple[str, ...] = (
     "eimemory/governance/release/release_pre_observation.py",
     "eimemory/governance/release_pre_observation.py",
     "eimemory/ops/closure_capture.py",
+    "eimemory/ops/system_code_repair_failure.py",
     "eimemory/contracts/code_incident_provenance.py",
     "eimemory/contracts/code_incident_coverage.py",
     "eimemory/contracts/nightly_step_evidence.py",

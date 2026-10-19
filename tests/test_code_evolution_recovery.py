@@ -25,6 +25,24 @@ from eimemory.storage.code_evolution_store import CodeEvolutionConflict
 from eimemory.storage.code_evolution_store import CodeEvolutionStore
 
 
+@pytest.fixture(autouse=True)
+def isolated_native_observation_clock(monkeypatch):
+    """These recovery fixtures simulate elapsed time; never use a production clock."""
+    from eimemory.governance.promotion import promotion_watch as native_watch
+    original = _sample
+    clock = {'schema': 'code_observation_clock.v1', 'wall_utc': '2026-01-01T00:00:00+00:00',
+             'boot_id': '11111111-1111-1111-1111-111111111111',
+             'monotonic_ns': int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()) * 10**9}
+    def fixture_sample(*args, **kwargs):
+        instant = datetime.fromisoformat(kwargs['observed_at'])
+        clock.update(schema='code_observation_clock.v1', wall_utc=instant.isoformat(),
+                     boot_id='11111111-1111-1111-1111-111111111111',
+                     monotonic_ns=int(instant.timestamp()) * 10**9)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(__name__ + '._sample', fixture_sample)
+    monkeypatch.setattr(native_watch, 'native_observation_clock', lambda: dict(clock))
+
+
 def _observing_manager(runtime_store: RuntimeStore, transaction_id: str) -> CodeEvolutionTransactionManager:
     manager = CodeEvolutionTransactionManager(runtime_store, owner_id="watch-test")
     manager.create_detected({
