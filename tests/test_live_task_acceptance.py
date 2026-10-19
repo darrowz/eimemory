@@ -55,6 +55,28 @@ def test_configured_profile_live_probe_accepts_supported_dynamic_reader_schemas(
         runtime.close()
 
 
+@pytest.mark.parametrize("fault",["","domain","semantics","envelope","schema-version"])
+def test_live_replay_v5_requires_explicit_managed_domain_without_claiming_l5(tmp_path,monkeypatch,fault):
+    report={"schema":"l5.reader.v5","schema_version":"l5_readiness.v5","reader_mode":"v3",
+        "profile_key":"l5.test","qualification_domain":"registered_code_defect_knowledge.v1",
+        "qualification_key_semantics":"conservative_native_symptom_signature.v1",
+        "ok":False,"product_l5_complete":False,"status":"incomplete",
+        "assessment":{"projection":{"snapshots":[]}},"gaps":[]}
+    if fault=="domain":report["qualification_domain"]="global_code_incident_provenance.v1"
+    elif fault=="semantics":report.pop("qualification_key_semantics")
+    elif fault=="envelope":report["schema"]="l5.reader.v4"
+    elif fault=="schema-version":report["schema_version"]="l5_readiness.v6"
+    runtime=Runtime.create(root=tmp_path)
+    monkeypatch.setattr(runtime,"build_l5_readiness_report",lambda **kw:report)
+    try:
+        definitions=live_task_acceptance._case_definitions(runtime,scope=ScopeRef.from_dict(SCOPE),identity={},
+            l5_reader_mode="v3",profile_key="l5.test",capability_scope="global")
+        check=next(item["check"] for item in definitions if item["case_id"]=="governance.replay_integrity")
+        assert check()["passed"] is (not fault)
+        assert report["product_l5_complete"] is False
+    finally:runtime.close()
+
+
 def test_live_task_acceptance_records_ten_current_deployment_tasks_idempotently(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     runtime._test_runtime_commit = "a" * 40

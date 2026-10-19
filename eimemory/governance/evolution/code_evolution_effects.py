@@ -1134,6 +1134,13 @@ class ProductionEffectAdapter:
         """A user-owned JSON result can never replace physical native evidence."""
         if result.get("ok") is not True:
             return
+        key = ((transaction.get("payload") or {}).get("managed_deployment_jobs") or {}).get(operation)
+        if key:
+            from eimemory.governance.evolution.code_deployment_job import managed_validation_report
+            native_receipt, native_transport = managed_validation_report(key, "receipt", heartbeat=lambda: None)
+            if (native_receipt != result.get("receipt") or native_transport["exit_status"] != 0
+                or native_transport["artifact_digest"] != result.get("validation_artifact_digest")):
+                raise ValueError("deployment_job_native_receipt_validation_changed")
         from eimemory.governance.release.deployment_receipt import inspect_immutable_deployment
         target = str(transaction["candidate_commit"] if operation == "deploy" else transaction.get("prior_commit") or transaction["base_commit"])
         receipt = result.get("receipt") if isinstance(result.get("receipt"), Mapping) else {}
@@ -1183,108 +1190,33 @@ class ProductionEffectAdapter:
         release = current.resolve(strict=True)
         if release.name != target or release.parent.name != "releases":
             raise ValueError("deployment_job_current_release_mismatch")
-        receipt_args = dict(scope=_transaction_scope(transaction), repo_root=str(_trusted_root()),
-            current_link=str(current), health_url=str(policy["deployment"]["health_url"]),
-            prior_commit=str(transaction.get("prior_commit") or transaction["base_commit"]) if operation == "deploy" else str(transaction["candidate_commit"]),
-            deployed_commit=target)
-        if operation == "deploy":
-            receipt_args.update(strict_transaction=True, transaction_id=str(transaction["transaction_id"]),
-                **{field: str(transaction[field]) for field in ("authorization_digest", "policy_digest", "patch_digest", "candidate_tree_digest", "observation_deadline")},
-                verification_receipt_digests=sorted(transaction["payload"]["verification_receipt_digests"]),
-                provider_implementation_digest=str(transaction["implementation_digest"]),
-                code_evolution_lineage=_code_evolution_lineage(transaction))
-        # A fixed native API reader also works on a rollback predecessor whose
-        # historical CLI did not yet expose --scope-tenant. It never rewrites
-        # the exact owner through CLI aliases/default settings.
-        verifier = '''
-import json,sys
-from pathlib import Path
-import eimemory
-from eimemory.api.runtime import Runtime
-expected=Path(sys.argv[1])
-if Path(eimemory.__file__).resolve().parent.parent != expected:
-    raise SystemExit("deployment_job_verifier_source_mismatch")
-arguments=json.loads(sys.argv[2])
-if Path(arguments["current_link"]).resolve(strict=True)!=expected:
-    raise SystemExit("deployment_job_verifier_current_mismatch")
-runtime=Runtime.create(root=sys.argv[3])
-try:
-    report=runtime.verify_and_record_deployment(**arguments)
-    if Path(arguments["current_link"]).resolve(strict=True)!=expected:
-        raise SystemExit("deployment_job_verifier_current_changed")
-    print(json.dumps(report,sort_keys=True))
-finally:
-    runtime.close()
-'''
-        argv = [str(release / ".venv/bin/python"), "-I", "-B", "-c", verifier,
-                str(release), json.dumps(receipt_args, sort_keys=True, separators=(",", ":")), str(runtime.store.root)]
-        verify_env = _owner_effect_environment(runtime, transaction)
-        verify_env["EIMEMORY_RUNTIME_COMMIT"] = target
-        receipt, transport, raw, errors = _run_native_json_report(argv, cwd=release, env=verify_env, heartbeat=lambda: None)
-        _exclusive_blob(JOBS_ROOT / job_key / "receipt-verifier.stdout", raw)
-        _exclusive_blob(JOBS_ROOT / job_key / "receipt-verifier.stderr", errors)
-        rc = transport["exit_status"]
+        from eimemory.governance.evolution.code_deployment_job import managed_validation_report
+        receipt, transport = managed_validation_report(job_key, 'receipt', heartbeat=lambda: None)
         if current.resolve(strict=True) != release:
-            raise ValueError("deployment_job_current_release_changed")
-        valid = (rc == 0 and isinstance(receipt, dict) and receipt.get("ok") is True
-                 and receipt.get("commit") == target and bool(receipt.get("promotion_request_id"))
-                 and (operation != "deploy" or (receipt.get("strict_transaction") is True
-                      and receipt.get("transaction_id") == transaction["transaction_id"])))
-        return {"ok": valid, "commit": str(receipt.get("commit") or ""),
-            "version": str(receipt.get("version") or ""),
-            "receipt_digest": digest_json(receipt) if valid else "", "receipt": receipt,
-            "verifier_commit": target, "verifier_exit": rc,
-            "output_digest": sha256(output).hexdigest(), "verification_output_digest": sha256(raw).hexdigest()}
+            raise ValueError('deployment_job_current_release_changed')
+        valid = (transport['exit_status'] == 0 and receipt.get('ok') is True
+            and receipt.get('commit') == target and bool(receipt.get('promotion_request_id'))
+            and (operation != 'deploy' or (receipt.get('strict_transaction') is True
+                and receipt.get('transaction_id') == transaction['transaction_id'])))
+        return {'ok': valid, 'commit': str(receipt.get('commit') or ''),
+            'version': str(receipt.get('version') or ''), 'receipt_digest': digest_json(receipt) if valid else '',
+            'receipt': receipt, 'verifier_commit': target, 'verifier_exit': transport['exit_status'],
+            'validation_artifact_digest': transport['artifact_digest'], 'validation_native_transport': transport,
+            'output_digest': sha256(output).hexdigest()}
 
     def run_post_resume_business(self, runtime, *, transaction, policy, job_key, heartbeat):
-        """Use actual target code for full controlled business after restoration."""
-        current = Path(policy["deployment"]["current_link"])
+        # Fixed PID1 child executes target gates with ALL release source RO;
+        # the installer's controller namespace must remain writable for staging.
+        from eimemory.governance.evolution.code_deployment_job import managed_validation_report
+        current = Path(policy['deployment']['current_link'])
         release = current.resolve(strict=True)
-        if release.parent.name != "releases" or release.name != transaction["candidate_commit"]:
-            raise ValueError("post_resume_current_release_mismatch")
-        worker = '''
-import json,sys
-from pathlib import Path
-import eimemory
-from eimemory.api.runtime import Runtime
-from eimemory.governance.release.release_closure import run_managed_post_resume_closure
-expected=Path(sys.argv[1])
-if Path(eimemory.__file__).resolve().parent.parent!=expected:
-    raise SystemExit("post_resume_verifier_source_mismatch")
-runtime=Runtime.create(root=sys.argv[3])
-try:
-    report=run_managed_post_resume_closure(runtime,job_key=sys.argv[2])
-    print(json.dumps(report,sort_keys=True,allow_nan=False))
-    raise SystemExit(0 if report.get("ok") is True and report.get("business_qualified") is True else 1)
-finally:
-    runtime.close()
-'''
-        env = _deployment_environment(runtime, transaction=transaction,
-            verification_receipt_digests=transaction["payload"]["verification_receipt_digests"],
-            observation_deadline=transaction["observation_deadline"], lineage=_code_evolution_lineage(transaction))
-        env.update(EIMEMORY_RUNTIME_COMMIT=release.name, EIMEMORY_RUNTIME_TRANSITION_JOB=job_key,
-                   INVOCATION_ID=str(os.environ.get("INVOCATION_ID") or ""),
-                   EIMEMORY_CONFIG_DIR="/etc/eimemory",
-                   EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="/etc/eimemory/evidence-receipt.env")
-        python = str(release / ".venv/bin/python")
-        # The controlled policy is bound to the real service recall engine.
-        # Load the SAME allowlisted files/order as the standard installer;
-        # a stripped subprocess environment must not silently select SQLite.
-        argv = [python, "-I", "-B", str(release / "deploy/run_with_governance_env.py"),
-                "--env-file", "/etc/eimemory/governance.env", "--optional",
-                "--runtime-recall-config-dir", "/etc/eimemory",
-                "--runtime-recall-root", str(runtime.store.root),
-                "--optional-runtime-authority-env-file", "/etc/eimemory/runtime-authority.env", "--",
-                python, "-I", "-B", "-c", worker,
-                str(release), job_key, str(runtime.store.root)]
-        report, transport, raw, errors = _run_native_json_report(argv, cwd=release, env=env, heartbeat=heartbeat)
-        from eimemory.governance.evolution.code_deployment_job import JOBS_ROOT, _exclusive_blob
-        _exclusive_blob(JOBS_ROOT / job_key / "post-resume-business.stdout", raw)
-        _exclusive_blob(JOBS_ROOT / job_key / "post-resume-business.stderr", errors)
+        if release.parent.name != 'releases' or release.name != transaction['candidate_commit']:
+            raise ValueError('post_resume_current_release_mismatch')
+        report, transport = managed_validation_report(job_key, 'post_resume', heartbeat=heartbeat)
         if current.resolve(strict=True) != release:
-            raise ValueError("post_resume_current_release_changed")
-        report["native_transport"] = transport
-        if transport["exit_status"] != 0:
+            raise ValueError('post_resume_current_release_changed')
+        report['native_transport'] = transport
+        if transport['exit_status'] != 0:
             report.update(ok=False, business_qualified=False)
         return report
 
@@ -1512,6 +1444,34 @@ def _l5_observation_semantics(
     }
     provenance = _observation_provenance(transaction)
     reported_provenance = _observation_provenance(evidence)
+    effective_provenance = provenance
+    managed_required = "managed_incident_proof" in transaction or report.get("schema") == "l5.reader.v5"
+    managed_verified = not managed_required
+    if managed_required:
+        try:
+            from eimemory.contracts.managed_code_incident_proof import DOMAIN, KEY_SEMANTICS, FIELDS, SCOPE_FIELDS
+            from eimemory.governance.evolution.managed_code_incident_proof import qualification_evidence
+            qualified = qualification_evidence(transaction)
+            effective_provenance = _observation_provenance({
+                "origin": transaction.get("origin"), **qualified["facts"]})
+            managed_verified = (
+                qualified["qualification_domain"] == DOMAIN
+                and report.get("qualification_domain") == DOMAIN
+                and report.get("qualification_key_semantics") == KEY_SEMANTICS
+                and report.get("global_provenance") == qualified["global_facts"]
+                and report.get("managed_provenance") == qualified["facts"]
+                and qualified["snapshot"] == transaction.get("managed_incident_proof")
+                and evidence.get("managed_incident_proof") == qualified["snapshot"]
+                and evidence.get("transaction_schema_version") == "code_evolution_transaction.v4"
+                and all(field in evidence and field in transaction
+                    and evidence[field] == transaction[field] for field in FIELDS)
+                and all(field in transaction and evidence.get(field) == transaction[field]
+                    for field in (*SCOPE_FIELDS, "incident_id", "incident_digest"))
+                and provenance is not None
+                and {field: provenance[field] for field in FIELDS} == qualified["global_facts"]
+            )
+        except (ImportError, KeyError, TypeError, ValueError, RuntimeError, OSError):
+            managed_verified = False
     provenance_gap_names = {
         "manual_bootstrap_nonqualifying", "incident_known_before_system_detection",
         "incident_not_system_originated", "incident_prior_knowledge_unproven",
@@ -1519,27 +1479,27 @@ def _l5_observation_semantics(
         'incident_not_manual_bootstrap_unproven',
     }
     expected_provenance_gaps: set[str] = set()
-    if provenance is not None:
-        if provenance["manual_bootstrap"] is None:
+    if effective_provenance is not None:
+        if effective_provenance["manual_bootstrap"] is None:
             expected_provenance_gaps.add('incident_not_manual_bootstrap_unproven')
-        elif provenance["manual_bootstrap"]:
+        elif effective_provenance["manual_bootstrap"]:
             expected_provenance_gaps.add("manual_bootstrap_nonqualifying")
-        if provenance["known_before_detection"]:
+        if effective_provenance["known_before_detection"]:
             expected_provenance_gaps.update({
                 "incident_known_before_system_detection", "incident_prior_knowledge_unproven",
             })
-        elif provenance['known_before_detection'] is None:
+        elif effective_provenance['known_before_detection'] is None:
             expected_provenance_gaps.add('incident_prior_knowledge_unproven')
-        if provenance["prior_user_reported"] or provenance["origin"] != "system_detector":
+        if effective_provenance["prior_user_reported"] or effective_provenance["origin"] != "system_detector":
             expected_provenance_gaps.add("incident_not_system_originated")
-        if provenance["prior_user_reported"]:
+        if effective_provenance["prior_user_reported"]:
             expected_provenance_gaps.add("incident_not_user_reported_unproven")
-        elif provenance['prior_user_reported'] is None:
+        elif effective_provenance['prior_user_reported'] is None:
             expected_provenance_gaps.add('incident_not_user_reported_unproven')
     allowed_gaps |= expected_provenance_gaps
     checks = {
-        "schema": report.get("schema") == "l5.reader.v4"
-        and report.get("schema_version") == "l5_readiness.v4"
+        "schema": (report.get("schema"), report.get("schema_version")) == (
+            ("l5.reader.v5", "l5_readiness.v5") if managed_required else ("l5.reader.v4", "l5_readiness.v4"))
         and report.get("report_type") == "l5_readiness_report"
         and report.get("reader_mode") == "v3",
         "profile": bool(profile_key) and str(report.get("profile_key") or "") == profile_key,
@@ -1557,6 +1517,7 @@ def _l5_observation_semantics(
         and code.get("advertisement_fresh") is True,
         "lineage": code.get("current_lineage_compatible") is True,
         "transaction_provenance": provenance is not None and reported_provenance == provenance,
+        "managed_provenance": managed_verified,
         "transaction_identity": isinstance(transaction.get("current_state"), str)
         and transaction.get("current_state") in {
             "DEPLOY_INTENT", "DEPLOYED_VERIFIED", "HEALTHY", "OBSERVING",

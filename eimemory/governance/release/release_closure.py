@@ -397,7 +397,7 @@ def read_strict_deployment_receipt(runtime: Any, *, scope, repo_root: str, curre
     return {"ok": False, "error": "managed_strict_receipt_unavailable"}
 
 
-def run_managed_post_resume_closure(runtime: Any, *, job_key: str) -> dict:
+def run_managed_post_resume_closure(runtime: Any, *, job_key: str, validation_context: dict | None = None) -> dict:
     """Real controlled business/stability admission after native restoration.
 
     This entry is deliberately separate from strict pre-observation. It never
@@ -406,6 +406,7 @@ def run_managed_post_resume_closure(runtime: Any, *, job_key: str) -> dict:
     from eimemory.contracts.code_deployment_job import validate_request, request_key
     from eimemory.core.runtime_manager import deployment_job_status, read_registry
     from eimemory.governance.evolution.code_deployment_job import JOBS_ROOT, _read, _bound_request
+    from eimemory.governance.evolution.code_deployment_job import validation_context as native_validation_context
     from eimemory.governance.evolution.code_evolution_transaction import effect_execution_authorized
     from eimemory.storage.code_evolution_store import CodeEvolutionStore
     from eimemory.evaluation.controlled_production_acceptance import load_controlled_policy
@@ -429,15 +430,21 @@ def run_managed_post_resume_closure(runtime: Any, *, job_key: str) -> dict:
         return _blocked(report, "transaction", "managed_healthy_transaction_required")
     scope = dict(body["scope"])
     report.update(scope=scope, managed_transaction_id=body["transaction_id"])
+    _, child = native_validation_context(job_key, "post_resume")
+    identity = ("job_key", "operation", "unit", "original_invocation", "parent_original_invocation",
+        "target_commit", "controller_commit", "phase")
+    if not isinstance(validation_context, dict) or any(validation_context.get(k) != child.get(k) for k in identity):
+        return _blocked(report, "managed_resume", "native_validation_context_required")
     native = deployment_job_status(job_key)
     state = native.get("state") if isinstance(native.get("state"), dict) else {}
-    invocation = str(os.environ.get("INVOCATION_ID") or "")
+    invocation = str(child.get("parent_original_invocation") or "")
     started = _read(JOBS_ROOT / job_key / "started.json")
     finalized = _read(JOBS_ROOT / job_key / "finalized.json")
     registry = read_registry()
     if (native.get("manager") != "system" or native.get("unit") != f"eimemory-code-deployment-job@{job_key}.service"
         or native.get("phase") != "resumed_awaiting_business" or state.get("ActiveState") not in {"active", "activating"}
         or not re.fullmatch(r"[0-9a-f]{32}", invocation) or state.get("InvocationID") != invocation
+        or native.get("original_invocation") != invocation
         or started != {"request_key": job_key, "invocation": invocation}
         or finalized.get("request_key") != job_key or finalized.get("invocation") != invocation
         or (finalized.get("native") or {}).get("resumed") is not True

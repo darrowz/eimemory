@@ -913,6 +913,57 @@ def test_system_observation_rejects_silently_defaulted_provenance():
     assert _l5_observation_semantics(report, transaction)[0] is False
 
 
+def test_managed_observation_uses_actual_hmac_readback_and_preserves_late_unknown(tmp_path,monkeypatch):
+    """Run the real issuer/readback fixture; only its root transport is doubled.
+
+    Other health/receipt/window axes below are explicit consumer fixtures. This
+    verifies their domain contract, not an actual deployment or eight hours.
+    """
+    from tests import test_managed_code_incident_proof as proof_tests
+    from eimemory.governance.l5 import l5_product_completion as completion
+    from eimemory.governance.evolution.managed_code_incident_proof import qualification_evidence
+    original=completion.build_product_completion
+    seen=[]
+    def checked(assessment,*,provider=None,transaction=None,current_lineage=None):
+        result=original(assessment,provider=provider,transaction=transaction,current_lineage=current_lineage)
+        if "managed_incident_proof" in (transaction or {}):
+            owner={**_observation_transaction(),**transaction,"current_state":"OBSERVING",
+                "nonterminal":True,"evidence_verified":False,"observation_valid":False,
+                "terminal_receipt_digest":"","profile_key":"l5.default:v1"}
+            pending=original(assessment,provider=provider,transaction=owner,current_lineage=current_lineage)
+            report={**_pending_observation_report(),**pending,"schema":"l5.reader.v5",
+                "transaction_evidence":{**owner,"quarantined":False},
+                "assessment":{"deployment_assurance":{"ok":None,"required":False,"blocking":False}}}
+            # These are operational consumer dimensions, independent of the
+            # real HMAC/source authority exercised by this fixture.
+            report["axes"].update(capability_ready=True,adapter_ready=True,deployment_assurance="ready")
+            try:
+                qualified=qualification_evidence(owner)
+                expected=True
+            except (TypeError,ValueError,RuntimeError,OSError):
+                qualified=None;expected=False
+            accepted,measure=_l5_observation_semantics(report,owner)
+            assert accepted is expected,measure
+            assert report["transaction_evidence"]["known_before_detection"] is None
+            assert report["global_provenance"]["known_before_detection"] is None
+            assert report["product_l5_complete"] is False
+            if qualified:
+                assert measure["checks"]["managed_provenance"] is True
+                assert report["managed_provenance"]==qualified["facts"]
+                for field in ("qualification_domain","qualification_key_semantics"):
+                    damaged={**report,field:"untrusted"}
+                    assert _l5_observation_semantics(damaged,owner)[0] is False
+                stripped={**report,"schema":"l5.reader.v4","schema_version":"l5_readiness.v4"}
+                assert _l5_observation_semantics(stripped,owner)[0] is False
+                changed={**report,"transaction_evidence":{**owner,"known_before_detection":False}}
+                assert _l5_observation_semantics(changed,owner)[0] is False
+            seen.append((accepted,None if not qualified else qualified["facts"]["known_before_detection"]))
+        return result
+    monkeypatch.setattr(completion,"build_product_completion",checked)
+    proof_tests.test_issuer_real_hmac_original_bytes_and_readback_not_only_a_flag(tmp_path,monkeypatch)
+    assert (True,False) in seen and (True,None) in seen and (False,None) in seen
+
+
 @pytest.mark.parametrize("deployment_ok", [True, False])
 def test_observation_uses_transaction_profile_and_still_requires_live_deployment(monkeypatch, deployment_ok):
     from eimemory.governance.evidence_contract import ReleaseIdentity

@@ -473,6 +473,10 @@ def _case_definitions(
         configured = bool(str(profile_key or "").strip())
         snapshots = [item for item in projection.get("snapshots") or [] if isinstance(item, dict)]
         gaps = [item for item in report.get("gaps") or [] if isinstance(item, dict)]
+        supported_schema = report.get("schema_version") in {"l5_readiness.v3", "l5_readiness.v4"} or (
+            report.get("schema") == "l5.reader.v5" and report.get("schema_version") == "l5_readiness.v5"
+            and report.get("qualification_domain") == "registered_code_defect_knowledge.v1"
+            and report.get("qualification_key_semantics") == "conservative_native_symptom_signature.v1")
         # Deployment acceptance only confirms that an explicitly requested
         # dynamic replay/projection read is internally shaped; it does not
         # recast a fixed replay quota as a deployment requirement.
@@ -481,7 +485,7 @@ def _case_definitions(
             and (
                 not configured
                 or (
-                    report.get("schema_version") in {"l5_readiness.v3", "l5_readiness.v4"}
+                    supported_schema
                     and report.get("reader_mode") == "v3"
                     and report.get("profile_key") == profile_key
                     and isinstance(report.get("assessment"), dict)

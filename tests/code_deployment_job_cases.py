@@ -319,9 +319,17 @@ def test_post_resume_entry_requires_native_resume_and_calls_full_business_not_st
     jobs._exclusive(f.root/key/"started.json",{"request_key":key,"invocation":"e"*32})
     jobs._exclusive(f.root/key/"finalized.json",{"request_key":key,"invocation":"e"*32,
         "native":{"resumed":True,"phase":"resumed_awaiting_business"}})
-    monkeypatch.setenv("INVOCATION_ID","e"*32)
+    monkeypatch.setenv("INVOCATION_ID","d"*32)
     f.core.deployment_job_status=lambda value:{"manager":"system","unit":f"eimemory-code-deployment-job@{key}.service",
-        "phase":phase,"state":{"ActiveState":"activating","InvocationID":"e"*32}}
+        "phase":phase,"original_invocation":"e"*32,"state":{"ActiveState":"activating","InvocationID":"e"*32}}
+    child={"manager":"system","job_key":key,"operation":"post_resume",
+        "unit":jobs._validation_unit(key,"post_resume"),"target_commit":body["target_commit"],
+        "controller_commit":body["controller_commit"],"artifact_basename":"validation-post_resume-result.json",
+        "parent_original_invocation":"e"*32,"original_invocation":"d"*32,"phase":phase,
+        "state":{"ActiveState":"activating","InvocationID":"d"*32,
+            "ControlGroup":"/system.slice/"+jobs._validation_unit(key,"post_resume")}}
+    monkeypatch.setattr(jobs,"_native_child_cgroup",lambda:"0::"+child["state"]["ControlGroup"])
+    f.core.deployment_validation_status=lambda *a:child
     f.core.read_registry=lambda:{"runtime_commit":body["candidate_commit"],"controller_commit":body["controller_commit"]}
     receipt={"ok":True,"commit":body["candidate_commit"],"version":"1.0.0",
         "transaction_id":f.txid,"promotion_request_id":"strict-original","release_session_id":"session-original"}
@@ -334,7 +342,7 @@ def test_post_resume_entry_requires_native_resume_and_calls_full_business_not_st
         seen.append(kw)
         return {**kw["report"],"ok":False,"blocked_stage":"isolated_actual_business_transport"}
     monkeypatch.setattr(closure,"_run_controlled_operational_closure",controlled)
-    result=closure.run_managed_post_resume_closure(f.runtime,job_key=key)
+    result=closure.run_managed_post_resume_closure(f.runtime,job_key=key,validation_context=child)
     if phase!="resumed_awaiting_business":
         assert result["blocked_reason"]=="native_restoration_not_verified" and seen==[]
     elif not policy_exists:
@@ -376,30 +384,221 @@ def test_restoration_transport_renews_sql_only_on_original_thread_and_propagates
         jobs._after_storage_call(failed_transport,manager=SimpleNamespace(renew_lease=renew),transaction_id="tx",interval=.01)
 
 
-def test_post_resume_runtime_loads_service_recall_configuration_instead_of_ambient_route(tmp_path,monkeypatch):
+def test_post_resume_uses_managed_readonly_child_instead_of_parent_interpreter(tmp_path,monkeypatch):
     release=tmp_path/"releases"/("b"*40);release.mkdir(parents=True)
     key="d"*64;root=tmp_path/"jobs";jobs._directory(root/key,create=True)
     monkeypatch.setattr(jobs,"JOBS_ROOT",root)
     transaction={**_body()["scope"],"candidate_commit":release.name,"payload":{
         "verification_receipt_digests":["6"*64,"7"*64,"8"*64]},"observation_deadline":"2030-01-01T00:00:00Z"}
-    monkeypatch.setattr(effects,"_code_evolution_lineage",lambda tx:{})
-    monkeypatch.setenv("EIMEMORY_POSTGRES_VECTOR_DSN","ambient-untrusted-route")
     seen=[]
-    def native(argv,**kwargs):
-        seen.append((argv,kwargs))
-        return {"ok":False,"business_qualified":False},{"exit_status":1},b'{"ok":false}',b"retained"
-    monkeypatch.setattr(effects,"_run_native_json_report",native)
+    def native(value,operation,**kwargs):
+        seen.append((value,operation));kwargs["heartbeat"]()
+        return {"ok":False,"business_qualified":False},{"exit_status":1,"manager":"system","source_readonly":True}
+    monkeypatch.setattr(jobs,"managed_validation_report",native)
+    monkeypatch.setattr(effects,"_run_native_json_report",lambda *a,**kw:pytest.fail("parent namespace must not execute target"))
     runtime=SimpleNamespace(store=SimpleNamespace(root=tmp_path/"runtime"))
     result=effects.ProductionEffectAdapter().run_post_resume_business(runtime,transaction=transaction,
         policy={"deployment":{"current_link":str(release)}},job_key=key,heartbeat=lambda:None)
-    argv,kwargs=seen[0]
-    assert str(release/"deploy/run_with_governance_env.py") in argv
-    assert argv[argv.index("--runtime-recall-config-dir")+1]=="/etc/eimemory"
-    assert argv[argv.index("--runtime-recall-root")+1]==str(runtime.store.root)
-    assert argv[argv.index("--optional-runtime-authority-env-file")+1]=="/etc/eimemory/runtime-authority.env"
-    assert "EIMEMORY_POSTGRES_VECTOR_DSN" not in kwargs["env"]
+    assert seen==[(key,"post_resume")]
     assert result["business_qualified"] is False and result["native_transport"]["exit_status"]==1
-    assert (root/key/"post-resume-business.stderr").read_bytes()==b"retained"
+
+
+@pytest.fixture
+def managed_validation_fixture(tmp_path,monkeypatch):
+    from hashlib import sha256
+    body=_body();key=request_key(body);operation="receipt";root=tmp_path/"jobs"
+    jobs._directory(root/key,create=True);monkeypatch.setattr(jobs,"JOBS_ROOT",root)
+    jobs._exclusive(root/key/"request.json",body)
+    jobs._exclusive(root/key/"started.json",{"request_key":key,"invocation":"e"*32})
+    context={"schema":"managed_code_deployment_validation.v1","job_key":key,"operation":operation,
+        "parent_invocation":"e"*32,"invocation":"d"*32,"target_commit":body["target_commit"],
+        "controller_commit":body["controller_commit"],"scope":body["scope"],"source_readonly":True}
+    artifact={**context,"report":{"ok":True,"commit":body["target_commit"]},
+        "target_transport":{"exit_status":0,"executed":True}}
+    jobs._exclusive(root/key/"validation-receipt-started.json",context)
+    jobs._exclusive(root/key/"validation-receipt-result.json",artifact)
+    native={"job_key":key,"operation":operation,"manager":"system","unit":jobs._validation_unit(key,operation),
+        "original_invocation":"d"*32,"parent_original_invocation":"e"*32,
+        "target_commit":body["target_commit"],"controller_commit":body["controller_commit"],
+        "phase":"resume_deferred_until_terminal","artifact_basename":"validation-receipt-result.json",
+        "artifact_sha256":sha256(jobs.canonical_bytes(artifact)).hexdigest(),
+        "state":{"LoadState":"loaded","ActiveState":"inactive","SubState":"dead","InvocationID":"d"*32,
+                 "Result":"success","ExecMainStatus":"0","ControlGroup":""}}
+    native["terminal_state"]=deepcopy(native["state"])
+    def root_envelope():
+        envelope={"schema":"eimemory.deployment_validation_seal.v1","job_key":key,"operation":operation,
+            "invocation":"d"*32,"parent_invocation":"e"*32,"artifact_sha256":native["artifact_sha256"],
+            "raw_hex":jobs.canonical_bytes(artifact).hex()}
+        raw=jobs.canonical_bytes(envelope)
+        native["sealed_artifact"]={name:value for name,value in envelope.items() if name!="raw_hex"}
+        native["sealed_artifact"].update(schema="eimemory.deployment_validation_artifact.v1",
+            envelope_sha256=sha256(raw).hexdigest())
+        return raw
+    sealed_raw=root_envelope()
+    monkeypatch.setattr(jobs,"_root_validation_envelope",lambda *a:sealed_raw)
+    core=ModuleType("eimemory.core.runtime_manager");calls=[];accepted=set()
+    def submit(value,op):
+        calls.append((value,op));accepted.add((value,op));return deepcopy(native)
+    core.validate_deployment_job=submit
+    core.deployment_validation_status=lambda *a:deepcopy(native)
+    monkeypatch.setitem(sys.modules,"eimemory.core.runtime_manager",core)
+    return SimpleNamespace(key=key,body=body,root=root,native=native,core=core,calls=calls,accepted=accepted,
+        artifact=artifact,root_envelope=root_envelope)
+
+
+def test_managed_validation_reads_root_sealed_child_without_duplicate_execution(managed_validation_fixture):
+    f=managed_validation_fixture
+    first=jobs.managed_validation_report(f.key,"receipt",heartbeat=lambda:None)
+    second=jobs.managed_validation_report(f.key,"receipt",heartbeat=lambda:None)
+    assert first==second and first[0]["commit"]==f.body["target_commit"]
+    assert f.accepted=={(f.key,"receipt")} and f.calls==[(f.key,"receipt")]*2
+    assert first[1]["invocation"]=="d"*32 and first[1]["parent_invocation"]=="e"*32
+
+
+@pytest.mark.parametrize("field,value", [("parent_original_invocation","f"*32),("original_invocation","f"*32),
+    ("target_commit","f"*40),("controller_commit","f"*40),("manager","user"),
+    ("unit","eimemory-code-validation-receipt@other.service"),("artifact_sha256","f"*64)])
+def test_managed_validation_rejects_other_child_parent_target_or_mutable_artifact(managed_validation_fixture,field,value):
+    f=managed_validation_fixture;f.native[field]=value
+    with pytest.raises(ValueError):jobs.managed_validation_report(f.key,"receipt",heartbeat=lambda:None)
+
+
+def test_managed_validation_unknown_does_not_issue_another_key_or_rerun(managed_validation_fixture):
+    f=managed_validation_fixture
+    f.core.validate_deployment_job=lambda *a:(_ for _ in ()).throw(TimeoutError("original_root_request_unknown"))
+    with pytest.raises(TimeoutError):jobs.managed_validation_report(f.key,"receipt",heartbeat=lambda:None)
+    assert f.calls==[] and len(list(f.root.iterdir()))==1
+
+
+def test_managed_validation_unit_gc_preserves_original_root_sealed_exit(managed_validation_fixture):
+    f=managed_validation_fixture
+    f.native["state"]={"LoadState":"not-found","ActiveState":"inactive","InvocationID":"",
+        "Result":"","ExecMainStatus":"0","ControlGroup":""}
+    report,transport=jobs.managed_validation_report(f.key,"receipt",heartbeat=lambda:None)
+    assert report["ok"] is True and transport["native_state"]["Result"]=="success"
+    assert transport["current_native_state"]["LoadState"]=="not-found"
+    assert transport["invocation"]=="d"*32
+
+
+@pytest.mark.parametrize("change",["replace","remove"])
+def test_managed_validation_uses_root_original_after_uid_artifact_tampering(managed_validation_fixture,change):
+    f=managed_validation_fixture;path=f.root/f.key/"validation-receipt-result.json"
+    path.unlink()
+    if change=="replace":jobs._exclusive(path,{"ok":True,"commit":"f"*40})
+    report,transport=jobs.managed_validation_report(f.key,"receipt",heartbeat=lambda:None)
+    assert report==f.artifact["report"] and report["commit"]==f.body["target_commit"]
+    assert transport["artifact_digest"]==f.native["artifact_sha256"]
+
+
+@pytest.mark.parametrize("fault",["absent","reference","root-bytes","envelope-parent","raw-bytes"])
+def test_managed_validation_rejects_missing_or_mismatched_root_seal(managed_validation_fixture,monkeypatch,fault):
+    from hashlib import sha256
+    f=managed_validation_fixture
+    if fault=="absent":f.native.pop("sealed_artifact")
+    elif fault=="reference":f.native["sealed_artifact"]["invocation"]="f"*32
+    else:
+        raw=f.root_envelope();envelope=json.loads(raw)
+        if fault=="root-bytes":raw+=b" "
+        else:
+            if fault=="envelope-parent":envelope["parent_invocation"]="f"*32
+            else:envelope["raw_hex"]=jobs.canonical_bytes({"ok":True}).hex()
+            raw=jobs.canonical_bytes(envelope)
+            f.native["sealed_artifact"]["envelope_sha256"]=sha256(raw).hexdigest()
+        monkeypatch.setattr(jobs,"_root_validation_envelope",lambda *a:raw)
+    with pytest.raises(ValueError):jobs.managed_validation_report(f.key,"receipt",heartbeat=lambda:None)
+
+
+@pytest.mark.parametrize("fault",["missing-seal","other-invocation","running-again","seal-not-terminal",
+    "failed-exit","false-success","not-executed"])
+def test_managed_validation_gc_never_turns_unknown_or_failed_exit_into_success(managed_validation_fixture,fault):
+    f=managed_validation_fixture
+    f.native["state"]={"LoadState":"not-found","ActiveState":"inactive","InvocationID":""}
+    if fault=="missing-seal":f.native.pop("terminal_state")
+    elif fault=="other-invocation":f.native["terminal_state"]["InvocationID"]="f"*32
+    elif fault=="running-again":f.native["state"].update(ActiveState="active",InvocationID="d"*32)
+    elif fault=="seal-not-terminal":f.native["terminal_state"]["ActiveState"]="active"
+    elif fault=="failed-exit":
+        f.native["terminal_state"].update(Result="exit-code",ExecMainStatus="1")
+        report,transport=jobs.managed_validation_report(f.key,"receipt",heartbeat=lambda:None)
+        assert report["ok"] is False and transport["exit_status"]==1
+        return
+    else:
+        artifact=f.artifact
+        artifact["target_transport"]["executed" if fault=="not-executed" else "exit_status"]=False if fault=="not-executed" else 1
+        (f.root/f.key/"validation-receipt-result.json").unlink()
+        jobs._exclusive(f.root/f.key/"validation-receipt-result.json",artifact)
+        from hashlib import sha256
+        f.native["artifact_sha256"]=sha256(jobs.canonical_bytes(artifact)).hexdigest()
+        sealed_raw=f.root_envelope()
+        # This is an explicit root-seal fault fixture; production code never
+        # manufactures or replaces the protected envelope from an app file.
+        # Parent tests only double the root transport/storage boundary.
+        f.core.validate_deployment_job=lambda *a:deepcopy(f.native)
+        from unittest.mock import patch
+        with patch.object(jobs,"_root_validation_envelope",return_value=sealed_raw):
+            with pytest.raises(ValueError):jobs.managed_validation_report(f.key,"receipt",heartbeat=lambda:None)
+        return
+    with pytest.raises(ValueError):jobs.managed_validation_report(f.key,"receipt",heartbeat=lambda:None)
+
+
+@pytest.mark.parametrize("fault",["","unit","group","user-manager","other-cgroup","sub-cgroup","invocation",
+    "parent","owner","target","controller","inactive","uid","gid","nnp","effective-caps","permitted-caps","ambient-caps"])
+def test_validation_entry_authenticates_kernel_identity_before_product_import(fault):
+    from deploy import run_code_deployment_validation as entry
+    body=_body();key=request_key(body);unit=jobs._validation_unit(key,"receipt")
+    group="/system.slice/"+unit
+    native={"job_key":key,"operation":"receipt","manager":"system","unit":unit,
+        "target_commit":body["target_commit"],"controller_commit":body["controller_commit"],
+        "artifact_basename":"validation-receipt-result.json","original_invocation":"d"*32,
+        "parent_original_invocation":"e"*32,
+        "state":{"InvocationID":"d"*32,"ControlGroup":group,"ActiveState":"activating"}}
+    status="Uid:\t1001 1001 1001 1001\nGid:\t1001 1001 1001 1001\nNoNewPrivs:\t1\nCapEff:\t0000\nCapPrm:\t0000\nCapAmb:\t0000"
+    actual="0::"+group
+    if fault=="unit":native["unit"]="eimemory-rpc.service"
+    elif fault=="group":native["state"]["ControlGroup"]="/system.slice/eimemory-rpc.service"
+    elif fault=="user-manager":native["state"]["ControlGroup"]=group.replace("system.slice","user.slice")
+    elif fault=="other-cgroup":actual="0::/system.slice/eimemory-rpc.service"
+    elif fault=="sub-cgroup":actual+="/unreviewed"
+    elif fault=="invocation":native["original_invocation"]="f"*32
+    elif fault=="parent":native["parent_original_invocation"]=None
+    elif fault=="owner":native["manager"]="user"
+    elif fault in {"target","controller"}:native[fault+"_commit"]="f"*40
+    elif fault=="inactive":native["state"]["ActiveState"]="inactive"
+    elif fault=="uid":status=status.replace("Uid:\t1001", "Uid:\t0",1)
+    elif fault=="gid":status=status.replace("Gid:\t1001", "Gid:\t0",1)
+    elif fault=="nnp":status=status.replace("NoNewPrivs:\t1","NoNewPrivs:\t0")
+    elif fault in {"effective-caps","permitted-caps","ambient-caps"}:
+        field={"effective-caps":"CapEff","permitted-caps":"CapPrm","ambient-caps":"CapAmb"}[fault]
+        status=status.replace(field+":\t0000",field+":\t0001")
+    if fault:
+        with pytest.raises(ValueError,match="actual_execution_identity"):
+            entry._assert_execution_identity(body,key,"receipt",native,"d"*32,status,actual)
+    else:
+        entry._assert_execution_identity(body,key,"receipt",native,"d"*32,status,actual)
+        jobs._assert_child_cgroup(native,actual)
+
+
+def test_validation_bootstrap_is_stdlib_only_and_precedes_all_product_imports():
+    import ast
+    from deploy import run_code_deployment_validation as entry
+    source=Path(entry.__file__).read_text(encoding="utf8")
+    tree=ast.parse(source)
+    assert all(not isinstance(node,(ast.Import,ast.ImportFrom)) or
+        (getattr(node,"module","") or "").split(".")[0] not in {"eimemory","deploy"} for node in tree.body)
+    main=next(node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name=="main")
+    identity=next(node.lineno for node in ast.walk(main) if isinstance(node,ast.Call)
+        and isinstance(node.func,ast.Name) and node.func.id=="_assert_execution_identity")
+    assert all(identity<node.lineno for node in ast.walk(main) if isinstance(node,ast.ImportFrom)
+        and (node.module or "").split(".")[0] in {"eimemory","deploy"})
+    with pytest.raises(ValueError,match="duplicate_json_key"):entry._strict_json(b'{"ok":true,"ok":false}')
+
+
+def test_validation_entry_cannot_rewrite_its_own_authority_even_with_exact_allow_pin():
+    from eimemory.governance.evolution.code_evolution_path_policy import path_allowed_for_evolution
+    path="deploy/run_code_deployment_validation.py"
+    for custom_denies in (None,()):
+        assert path_allowed_for_evolution(path,allowed_path_globs=("**",),exact_allow_files=(path,),
+            denied_path_globs=(),deny_self_paths=custom_denies)==(False,"deny_self")
 
 
 @pytest.mark.skipif(os.name!="posix",reason="actual directory fsync/no-follow requires POSIX")

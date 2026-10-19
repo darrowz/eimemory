@@ -346,6 +346,299 @@ def _after_storage_call(call, *, manager, transaction_id: str, interval: float =
         return future.result()
 
 
+def _validation_unit(key, operation):
+    if re.fullmatch(r"[0-9a-f]{64}", str(key)) is None or operation not in {"receipt", "post_resume"}:
+        raise ValueError("deployment_validation_identity_invalid")
+    return f"eimemory-code-validation-{operation.replace('_', '-')}@{key}.service"
+
+
+def _native_child_cgroup() -> str:
+    return Path("/proc/self/cgroup").read_text()
+
+
+def _assert_child_cgroup(native: dict, actual: str) -> None:
+    expected = (native.get("state") or {}).get("ControlGroup", "")
+    if (not expected.startswith("/system.slice/") or expected.rsplit("/", 1)[-1] != native.get("unit")
+        or [line[3:] for line in actual.splitlines() if line.startswith("0::")] != [expected]):
+        raise ValueError("deployment_validation_actual_cgroup_unverified")
+
+
+def validation_context(key: str, operation: str) -> tuple[dict, dict]:
+    """Verify the actual child Invocation against the protected root record."""
+    from eimemory.core.runtime_manager import deployment_validation_status
+    unit = _validation_unit(key, operation)
+    body = validate_request(_read(JOBS_ROOT / key / "request.json"))
+    started = _read(JOBS_ROOT / key / "started.json")
+    native = deployment_validation_status(key, operation)
+    invocation = os.environ.get("INVOCATION_ID", "")
+    if (request_key(body) != key or not re.fullmatch(r"[0-9a-f]{32}", invocation)
+        or native.get("job_key") != key or native.get("operation") != operation
+        or native.get("manager") != "system" or native.get("unit") != unit
+        or native.get("target_commit") != body["target_commit"]
+        or native.get("controller_commit") != body["controller_commit"]
+        or native.get("artifact_basename") != f"validation-{operation}-result.json"
+        or native.get("original_invocation") != invocation
+        or (native.get("state") or {}).get("InvocationID") != invocation
+        or (native.get("state") or {}).get("ActiveState") not in {"active", "activating"}
+        or started != {"request_key": key, "invocation": native.get("parent_original_invocation")}
+        or not re.fullmatch(r"[0-9a-f]{32}", str(native.get("parent_original_invocation") or ""))):
+        raise ValueError("deployment_validation_native_context_unverified")
+    _assert_child_cgroup(native, _native_child_cgroup())
+    return body, native
+
+
+def _root_validation_envelope(key: str, operation: str) -> bytes:
+    """Read only the root's immutable copy, never a late UID1001 replacement."""
+    path = Path("/var/lib/eimemory-manager/validation-results") / f"{key}-{operation}.json"
+    for parent in (path.parent, *path.parent.parents):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError("deployment_validation_root_artifact_parent_untrusted")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) != 0o640 or before.st_size > 8 * 1024 * 1024 + 65536):
+            raise ValueError("deployment_validation_root_artifact_untrusted")
+        raw = os.read(descriptor, 8 * 1024 * 1024 + 65537)
+        if (_stable(before) != _stable(os.fstat(descriptor)) or _stable(before) != _stable(path.lstat())
+            or len(raw) != before.st_size):
+            raise ValueError("deployment_validation_root_artifact_changed")
+        return raw
+    finally:
+        os.close(descriptor)
+
+
+def _sealed_validation_artifact(native: dict, *, key: str, operation: str, child: str, parent: str) -> tuple[dict, str]:
+    reference = native.get("sealed_artifact")
+    common = {"job_key": key, "operation": operation, "invocation": child, "parent_invocation": parent,
+        "artifact_sha256": native.get("artifact_sha256")}
+    if (not isinstance(reference, dict) or set(reference) != {"schema", "envelope_sha256", *common}
+        or reference.get("schema") != "eimemory.deployment_validation_artifact.v1"
+        or any(reference.get(name) != value for name, value in common.items())
+        or re.fullmatch(r"[0-9a-f]{64}", str(common["artifact_sha256"])) is None):
+        raise ValueError("deployment_validation_root_artifact_reference_invalid")
+    raw = _root_validation_envelope(key, operation)
+    if sha256(raw).hexdigest() != reference.get("envelope_sha256"):
+        raise ValueError("deployment_validation_root_envelope_digest_mismatch")
+    envelope = json.loads(raw)
+    if (not isinstance(envelope, dict) or set(envelope) != {"schema", "raw_hex", *common}
+        or envelope.get("schema") != "eimemory.deployment_validation_seal.v1"
+        or any(envelope.get(name) != value for name, value in common.items())
+        or not isinstance(envelope.get("raw_hex"), str) or len(envelope["raw_hex"]) > 8 * 1024 * 1024
+        or re.fullmatch(r"(?:[0-9a-f]{2})*", envelope["raw_hex"]) is None):
+        raise ValueError("deployment_validation_root_envelope_identity_invalid")
+    artifact_raw = bytes.fromhex(envelope["raw_hex"])
+    if sha256(artifact_raw).hexdigest() != common["artifact_sha256"]:
+        raise ValueError("deployment_validation_root_artifact_digest_mismatch")
+    artifact = json.loads(artifact_raw)
+    if not isinstance(artifact, dict) or canonical_bytes(artifact) != artifact_raw:
+        raise ValueError("deployment_validation_root_artifact_encoding_invalid")
+    return artifact, common["artifact_sha256"]
+
+
+def run_validation(runtime, *, key: str, operation: str) -> dict:
+    """Fixed controller dispatch; the actual target interpreter performs gates."""
+    from eimemory.governance.evolution.code_evolution_transaction import effect_execution_authorized
+    from eimemory.storage.code_evolution_store import CodeEvolutionStore
+    body, native = validation_context(key, operation)
+    release = Path(__file__).resolve().parents[3]
+    if (release.parent.name != "releases" or release.name != body["controller_commit"]
+        or os.name != "posix" or not os.statvfs(release).f_flag & os.ST_RDONLY
+        or not os.statvfs(release / "eimemory").f_flag & os.ST_RDONLY):
+        raise ValueError("deployment_validation_actual_source_not_readonly")
+    invocation = native["original_invocation"]
+    context = {"schema": "managed_code_deployment_validation.v1", "job_key": key, "operation": operation,
+        "parent_invocation": native["parent_original_invocation"], "invocation": invocation,
+        "target_commit": body["target_commit"], "controller_commit": body["controller_commit"],
+        "scope": body["scope"], "source_readonly": True}
+    _exclusive(JOBS_ROOT / key / f"validation-{operation}-started.json", context)
+    target_transport = {"exit_status": None, "executed": None}
+    try:
+        transaction = CodeEvolutionStore(runtime.store).get_transaction(body["transaction_id"])
+        if (not transaction or not effect_execution_authorized(transaction)
+            or _bound_request(transaction, body["operation"]) != (key, body)):
+            raise ValueError("deployment_validation_transaction_changed")
+        policy = transaction["payload"]["authorized_policy"]
+        if operation == "receipt":
+            expected = "DEPLOY_INTENT" if body["operation"] == "deploy" else "ROLLBACK_INTENT"
+            if transaction.get("current_state") != expected:
+                raise ValueError("deployment_validation_receipt_state_invalid")
+            arguments = dict(scope=body["scope"], repo_root=transaction["repository_root"],
+                current_link=policy["deployment"]["current_link"], health_url=policy["deployment"]["health_url"],
+                prior_commit=body["base_commit"] if body["operation"] == "deploy" else body["candidate_commit"],
+                deployed_commit=body["target_commit"])
+            if body["operation"] == "deploy":
+                from eimemory.governance.evolution.code_evolution_effects import _code_evolution_lineage
+                arguments.update(strict_transaction=True, transaction_id=body["transaction_id"],
+                    **{name: body[name] for name in ("authorization_digest", "policy_digest", "patch_digest",
+                        "candidate_tree_digest", "verification_receipt_digests", "observation_deadline")},
+                    provider_implementation_digest=transaction["implementation_digest"],
+                    code_evolution_lineage=_code_evolution_lineage(transaction))
+        else:
+            if body["operation"] != "deploy":
+                raise ValueError("deployment_validation_business_requires_forward_job")
+            arguments = native
+        result, target_transport = _target_validation_report(runtime, key=key, operation=operation,
+            body=body, transaction=transaction, arguments=arguments)
+        _, after = validation_context(key, operation)
+        if any(native.get(name) != after.get(name) for name in ("unit", "original_invocation",
+            "parent_original_invocation", "target_commit", "controller_commit", "phase")):
+            raise ValueError("deployment_validation_native_context_changed")
+        if (Path(policy["deployment"]["current_link"]).resolve(strict=True) != release.parent / body["target_commit"]
+            or not os.statvfs(release).f_flag & os.ST_RDONLY):
+            raise ValueError("deployment_validation_current_or_source_changed")
+    except Exception as exc:
+        result = {"ok": False, "business_qualified": False,
+            "blocked_reason": "deployment_validation_failed", "error_type": type(exc).__name__,
+            "error_code": str(exc) if re.fullmatch(r"[a-z0-9_]{1,120}", str(exc)) else "validation_exception"}
+    artifact = {**context, "report": result, "target_transport": target_transport}
+    raw = canonical_bytes(artifact)
+    _exclusive_blob(JOBS_ROOT / key / f"validation-{operation}-result.json", raw)
+    from eimemory.core.runtime_manager import seal_deployment_validation_result
+    sealed = seal_deployment_validation_result(key, operation, invocation, sha256(raw).hexdigest())
+    if (sealed.get("artifact_sha256") != sha256(raw).hexdigest()
+        or not isinstance(sealed.get("sealed_artifact"), dict)):
+        raise ValueError("deployment_validation_child_seal_unverified")
+    stored, _ = _sealed_validation_artifact(sealed, key=key, operation=operation,
+        child=invocation, parent=context["parent_invocation"])
+    if stored != artifact:
+        raise ValueError("deployment_validation_child_seal_original_mismatch")
+    return result
+
+
+def _target_validation_report(runtime, *, key, operation, body, transaction, arguments):
+    """No old CLI flags or controller-as-target identity; all source is RO."""
+    from eimemory.governance.evolution.code_evolution_effects import _run_native_json_report
+    target = Path("/opt/eimemory/releases") / body["target_commit"]
+    if target.is_symlink() or not os.statvfs(target).f_flag & os.ST_RDONLY:
+        raise ValueError("deployment_validation_target_not_readonly")
+    program = '''
+import inspect,json,os,sys
+from dataclasses import asdict
+from pathlib import Path
+expected=Path(sys.argv[1]);key=sys.argv[2];operation=sys.argv[3];arguments=json.loads(sys.argv[4])
+sys.path.insert(0,str(expected))
+import eimemory
+if Path(eimemory.__file__).resolve().parent.parent!=expected or not os.statvfs(expected).f_flag & os.ST_RDONLY:
+    raise SystemExit('deployment_validation_target_import_or_mount_invalid')
+from eimemory.api.runtime import Runtime
+from eimemory.models.records import ScopeRef
+runtime=Runtime.create(root=sys.argv[5])
+try:
+    if operation=='receipt':
+        if asdict(ScopeRef.from_dict(arguments['scope']))!=arguments['scope']:
+            raise SystemExit('deployment_validation_legacy_exact_scope_unsupported')
+        if not set(arguments)<=set(inspect.signature(runtime.verify_and_record_deployment).parameters):
+            raise SystemExit('deployment_validation_legacy_native_api_unsupported')
+        report=runtime.verify_and_record_deployment(**arguments)
+    elif operation=='post_resume':
+        from eimemory.governance.release.release_closure import run_managed_post_resume_closure
+        report=run_managed_post_resume_closure(runtime,job_key=key,validation_context=arguments)
+    else:
+        raise SystemExit('deployment_validation_operation_invalid')
+    if Path(eimemory.__file__).resolve().parent.parent!=expected or not os.statvfs(expected).f_flag & os.ST_RDONLY:
+        raise SystemExit('deployment_validation_target_changed')
+    print(json.dumps({'report':report,'source_commit':expected.name,'source_readonly':True},sort_keys=True,allow_nan=False))
+    raise SystemExit(0 if report.get('ok') is True and (operation=='receipt' or report.get('business_qualified') is True) else 1)
+finally:
+    runtime.close()
+'''
+    env = dict(os.environ, EIMEMORY_RUNTIME_COMMIT=body["target_commit"])
+    argv = [str(target / ".venv/bin/python"), "-I", "-B", "-X",
+        "pycache_prefix=/var/lib/eimemory-manager/empty-pycache", "-c", program,
+        str(target), key, operation, json.dumps(arguments, sort_keys=True, separators=(",", ":")), str(runtime.store.root)]
+    envelope, transport, raw, errors = _run_native_json_report(argv, cwd=target, env=env, heartbeat=lambda: None)
+    transport["executed"] = True
+    _exclusive_blob(JOBS_ROOT / key / f"validation-{operation}-target.stdout", raw)
+    _exclusive_blob(JOBS_ROOT / key / f"validation-{operation}-target.stderr", errors)
+    if (set(envelope) != {"report", "source_commit", "source_readonly"}
+        or envelope.get("source_commit") != body["target_commit"] or envelope.get("source_readonly") is not True
+        or not isinstance(envelope.get("report"), dict)):
+        raise ValueError("deployment_validation_target_report_unverified")
+    result = envelope["report"]
+    if transport["exit_status"] != 0:
+        result = {**result, "ok": False, "business_qualified": False}
+    return result, transport
+
+
+def managed_validation_report(key: str, operation: str, *, heartbeat) -> tuple[dict, dict]:
+    """One root-managed child per key/op; an unknown result is never rerun."""
+    from eimemory.core.runtime_manager import validate_deployment_job, deployment_validation_status
+    unit = _validation_unit(key, operation)
+    body = validate_request(_read(JOBS_ROOT / key / "request.json"))
+    parent = _read(JOBS_ROOT / key / "started.json")
+    native = validate_deployment_job(key, operation)
+    begin = time.monotonic()
+    deadline = begin + (1800 if operation == "post_resume" else 600)
+    next_heartbeat = begin
+    while True:
+        state = native.get("state") if isinstance(native.get("state"), dict) else {}
+        if (request_key(body) != key or native.get("job_key") != key or native.get("operation") != operation
+            or native.get("manager") != "system" or native.get("unit") != unit
+            or native.get("target_commit") != body["target_commit"]
+            or native.get("controller_commit") != body["controller_commit"]
+            or native.get("parent_original_invocation") != parent.get("invocation")
+            or parent.get("request_key") != key
+            or native.get("artifact_basename") != f"validation-{operation}-result.json"):
+            raise ValueError("deployment_validation_root_identity_changed")
+        child = native.get("original_invocation")
+        if child:
+            if (re.fullmatch(r"[0-9a-f]{32}", str(child)) is None
+                or state.get("InvocationID") not in {"", None, child}):
+                raise ValueError("deployment_validation_invocation_changed")
+            sealed = native.get("terminal_state")
+            if sealed is not None:
+                if (not isinstance(sealed, dict) or sealed.get("InvocationID") != child
+                    or sealed.get("LoadState") != "loaded" or sealed.get("ActiveState") not in {"inactive", "failed"}
+                    or state.get("ActiveState") in {"active", "activating"}
+                    or re.fullmatch(r"[0-9a-f]{64}", str(native.get("artifact_sha256"))) is None):
+                    raise ValueError("deployment_validation_terminal_seal_invalid")
+                state = sealed
+            terminal = state.get("ActiveState") in {"inactive", "failed"} or (
+                state.get("ActiveState") == "active" and state.get("SubState") == "exited")
+            if terminal:
+                break
+        elif time.monotonic() - begin >= 30:
+            raise RuntimeError("deployment_validation_start_unknown")
+        if time.monotonic() >= deadline:
+            raise TimeoutError("deployment_validation_result_unknown")
+        if time.monotonic() >= next_heartbeat:
+            heartbeat()
+            next_heartbeat = time.monotonic() + 30
+        time.sleep(min(1, max(0, deadline - time.monotonic())))
+        native = deployment_validation_status(key, operation)
+    artifact, artifact_digest = _sealed_validation_artifact(native, key=key, operation=operation,
+        child=child, parent=parent["invocation"])
+    expected = {"schema": "managed_code_deployment_validation.v1", "job_key": key, "operation": operation,
+        "parent_invocation": parent["invocation"], "invocation": child,
+        "target_commit": body["target_commit"], "controller_commit": body["controller_commit"],
+        "scope": body["scope"], "source_readonly": True}
+    if (set(artifact) != set(expected) | {"report", "target_transport"} or any(artifact.get(name) != value for name, value in expected.items())
+        or not isinstance(artifact.get("report"), dict)
+        or not isinstance(artifact.get("target_transport"), dict)
+        or native.get("artifact_sha256") != artifact_digest
+        or _read(JOBS_ROOT / key / f"validation-{operation}-started.json") != expected):
+        raise ValueError("deployment_validation_artifact_identity_changed")
+    try:
+        exit_status = int(state["ExecMainStatus"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("deployment_validation_exit_unknown") from None
+    if state.get("Result") != "success" and exit_status == 0:
+        raise ValueError("deployment_validation_native_result_contradiction")
+    if exit_status == 0 and artifact["report"].get("ok") is True and (
+        artifact["target_transport"].get("exit_status") != 0 or artifact["target_transport"].get("executed") is not True):
+        raise ValueError("deployment_validation_target_result_contradiction")
+    report = dict(artifact["report"])
+    if exit_status != 0 or state.get("Result") != "success":
+        report.update(ok=False, business_qualified=False)
+    transport = {"exit_status": exit_status, "manager": "system", "unit": unit,
+        "invocation": child, "parent_invocation": parent["invocation"], "source_readonly": True,
+        "artifact_digest": artifact_digest, "native_state": state, "current_native_state": native.get("state"),
+        "target_transport": artifact["target_transport"]}
+    return report, transport
+
+
 def run_job(runtime, key: str, *, wait_seconds: float = 310) -> dict:
     """The fixed low-privilege entry; parent lease loss never overlaps effects."""
     from eimemory.governance.evolution.code_evolution_transaction import CodeEvolutionTransactionManager, effect_execution_authorized

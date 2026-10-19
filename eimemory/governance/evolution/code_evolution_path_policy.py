@@ -94,6 +94,7 @@ DENY_SELF_PATH_GLOBS: tuple[str, ...] = (
     "deploy/build_runtime_manager_bundle.py",
     "eimemory/governance/release/release_closure.py",
     "eimemory/governance/release_closure.py",
+    "deploy/run_code_deployment_validation.py",
     "eimemory/ops/closure_capture.py",
     "eimemory/ops/system_code_repair_failure.py",
     "eimemory/contracts/code_incident_provenance.py",
@@ -141,6 +142,7 @@ DENY_SELF_PATHS: frozenset[str] = frozenset(
     {
         "eimemory/governance/release/release_closure.py",
         "eimemory/governance/release_closure.py",
+        "deploy/run_code_deployment_validation.py",
         "eimemory/governance/dynamic_capability_evolution.py",
         "eimemory/governance/evolution/dynamic_capability_evolution.py",
         "eimemory/governance/evolution/code_evolution_dynamic_context.py",
