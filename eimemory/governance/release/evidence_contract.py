@@ -148,6 +148,57 @@ def current_release_identity(
     return None
 
 
+def current_deployment_receipt_for_owner(
+    runtime: Any,
+    receipt_id: str,
+    scope: ScopeRef | Mapping[str, Any],
+    *,
+    expected_commit: str,
+    expected_version: str,
+) -> ReleaseIdentity | None:
+    """Re-read a new deployment receipt on its exact persisted owner.
+
+    Shared service version evidence deliberately ignores caller memory scope.
+    An installer or deployment child instead needs the particular receipt it
+    just wrote on all four requested owner coordinates. Native exact hydration
+    also checks the physical projection/payload; the explicit comparisons below
+    do not trust a store adapter to honor its scope arguments.
+    """
+    fields = ("tenant_id", "agent_id", "workspace_id", "user_id")
+    if not isinstance(scope, ScopeRef):
+        if (not isinstance(scope, Mapping) or set(scope) != set(fields)
+                or any(not isinstance(scope[field], str) or not scope[field] for field in fields)):
+            return None
+    owner = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope))
+    if (not isinstance(receipt_id, str) or not receipt_id
+            or not re.fullmatch(r"[0-9a-f]{40}", str(expected_commit or ""))
+            or not isinstance(expected_version, str) or not expected_version
+            or any(not isinstance(getattr(owner, field), str) or not getattr(owner, field)
+                   for field in fields)
+            or _runtime_commit(runtime) != expected_commit):
+        return None
+    try:
+        record = runtime.store.get_by_id(receipt_id, scope=owner, exact_scope=True)
+        if (record is None or getattr(record, "record_id", None) != receipt_id
+                or not same_scope(getattr(record, "scope", None), owner)):
+            return None
+        identity = _verified_receipt_identity(record)
+        if (identity is None or identity.commit != expected_commit
+                or identity.version != expected_version or identity.receipt_id != receipt_id):
+            return None
+        evolution = record.content["side_effect"].get("code_evolution")
+        if isinstance(evolution, Mapping) and evolution.get("strict") is True:
+            from eimemory.governance.release.deployment_receipt import strict_code_evolution_receipt_error
+
+            if strict_code_evolution_receipt_error(
+                runtime, scope=owner, record=record, deployed_commit=expected_commit
+            ):
+                return None
+        return identity
+    except (AttributeError, KeyError, TypeError, ValueError, RuntimeError):
+        return None
+
+
 def release_owner_scope(
     runtime: Any,
     scope: ScopeRef | Mapping[str, Any] | None,

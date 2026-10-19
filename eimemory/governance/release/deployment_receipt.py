@@ -232,6 +232,10 @@ def strict_code_evolution_receipt_error(
     record's descriptive ``strict`` flag.  All transaction coordinates are
     taken from the immutable receipt and then matched to the ledger.
     """
+    from eimemory.governance.release.evidence_contract import same_scope
+
+    if not same_scope(getattr(record, "scope", None), scope):
+        return "code_evolution_receipt_scope_mismatch"
 
     content = record.content if isinstance(getattr(record, "content", None), Mapping) else {}
     side_effect = content.get("side_effect") if isinstance(content.get("side_effect"), Mapping) else {}

@@ -2240,7 +2240,7 @@ import sys
 from types import SimpleNamespace
 
 from eimemory.config.loader import load_settings
-from eimemory.governance.release.evidence_contract import current_release_identity
+from eimemory.governance.release.evidence_contract import current_deployment_receipt_for_owner
 from eimemory.models.records import ScopeRef
 from eimemory.storage.runtime_store import RuntimeStore
 from eimemory.version import __version__
@@ -2249,9 +2249,9 @@ commit, receipt_id, agent, workspace, user, tenant = sys.argv[1:]
 settings = load_settings()
 store = RuntimeStore(settings.root)
 try:
-    identity = current_release_identity(SimpleNamespace(store=store), ScopeRef.from_dict({
+    identity = current_deployment_receipt_for_owner(SimpleNamespace(store=store), receipt_id, ScopeRef.from_dict({
         'tenant_id': tenant, 'agent_id': agent, 'workspace_id': workspace, 'user_id': user,
-    }))
+    }), expected_commit=commit, expected_version=__version__)
     if (identity is None or identity.commit != commit or identity.version != __version__
             or identity.receipt_id != receipt_id):
         raise SystemExit('current_deployment_receipt_unavailable')

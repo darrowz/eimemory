@@ -665,8 +665,32 @@ try:
     if operation=='receipt' and report.get('ok') is True:
         runtime.close()
         runtime=Runtime.create(root=sys.argv[5], **({'bootstrap_schema':False} if 'bootstrap_schema' in inspect.signature(Runtime.create).parameters else {}))
-        from eimemory.governance.release.evidence_contract import current_release_identity
-        identity=current_release_identity(runtime,ScopeRef.from_dict(arguments['scope']))
+        from eimemory.governance.release import evidence_contract
+        from eimemory.version import __version__
+        owner=ScopeRef.from_dict(arguments['scope'])
+        reader=getattr(evidence_contract,'current_deployment_receipt_for_owner',None)
+        if callable(reader):
+            identity=reader(runtime,report.get('promotion_request_id'),owner,
+                expected_commit=expected.name,expected_version=__version__)
+        else:
+            # The installed 154 rollback target predates the new owner reader.
+            # Its original shared current identity is still necessary, but is
+            # never sufficient evidence of this newly written receipt's owner.
+            if (__version__!='1.14.154'
+                or expected.name!='f14770f01e17984d0cb7945baaebeb1db63502ab'):
+                raise SystemExit('deployment_validation_exact_owner_reader_unavailable')
+            shared=evidence_contract.current_release_identity(runtime,owner)
+            record=runtime.store.get_by_id(report.get('promotion_request_id'),scope=owner,exact_scope=True)
+            physical=evidence_contract.verified_deployment_receipt_identity(record)
+            if (record is None or not evidence_contract.same_scope(record.scope,owner)
+                or record.record_id!=report.get('promotion_request_id')
+                or evidence_contract._runtime_commit(runtime)!=expected.name
+                or shared is None or shared.commit!=expected.name or shared.version!=__version__
+                or physical is None or physical.receipt_id!=report.get('promotion_request_id')
+                or physical.commit!=expected.name or physical.version!=__version__):
+                identity=None
+            else:
+                identity=physical
         if identity is None or identity.commit!=expected.name or identity.receipt_id!=report.get('promotion_request_id') or identity.version!=report.get('version'):
             raise SystemExit('current_deployment_receipt_unavailable')
         readback={'current_deployment_receipt_verified':True,'commit':identity.commit,'receipt_id':identity.receipt_id}
