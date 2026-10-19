@@ -1093,18 +1093,45 @@ def test_fused_template_identity_and_hooks_are_fixed_root_reviewed_commands():
     assert text.count('runtime_manager_launch.py --recover-fused')==2
 
 
-def test_fused_restore_failure_retains_capture_and_failed_invocation_until_native_recovery(monkeypatch,tmp_path):
+@pytest.mark.parametrize('dispatch_observed',[False,True])
+def test_fused_restore_failure_retains_capture_and_failed_invocation_until_native_recovery(monkeypatch,tmp_path,dispatch_observed):
     _m,b,r,calls,states,native,_process,_target=fused_fixture(monkeypatch,tmp_path)
     original=b.fused_closure(r,'begin',42,1001);real=b.systemctl
     def command(reg,unit,*args):
-        if args[0]=='start' and unit.endswith('.timer'):raise ValueError('manager_start_failed')
+        if args[0]=='start' and unit.endswith('.timer'):
+            if dispatch_observed:real(reg,unit,*args)
+            raise ValueError('manager_start_failed')
         return real(reg,unit,*args)
     monkeypatch.setattr(b,'systemctl',command)
     with pytest.raises(ValueError,match='start_failed'):b.fused_closure(r,'end',42,1001,original['context_key'])
-    assert b.fused_record(original['context_key'])['active_before']==list(c.FUSED_L1_UNITS)
+    captured=b.fused_record(original['context_key'])
+    assert captured['active_before']==list(c.FUSED_L1_UNITS)
+    assert captured['invocation']=='a'*32 and captured['phase']=='restore_intent'
+    timer,service=c.FUSED_L1_UNITS
+    assert captured['restore_units'][service]['phase']=='restored'
+    assert captured['restore_units'][timer]['phase']=='dispatch_intent'
     assert c.strict_json((tmp_path/'active-transition.json').read_bytes())['complete'] is False
     native.update(ActiveState='deactivating',MainPID='0');monkeypatch.setattr(b,'systemctl',real)
+    before=list(calls)
+    if not dispatch_observed:
+        # A generic failed call cannot prove whether PID1 accepted the start.
+        # Removing the transport fault must never authorize a second dispatch.
+        with pytest.raises(ValueError,match='restore_submission_unknown'):
+            b.fused_closure(r,'recover',42,1001)
+        assert calls==before
+        assert b.fused_record(original['context_key'])==captured
+        assert c.strict_json((tmp_path/'active-transition.json').read_bytes())['complete'] is False
+        # Recovery is permitted only after an independent native observation of
+        # the original start, with a fresh invocation. It still issues no start.
+        states[timer].update(ActiveState='active',InvocationID='e'*32,Result='success')
     assert b.fused_closure(r,'recover',42,1001)['restored'] is True
+    assert calls==before
+    finished=b.fused_record(original['context_key'])
+    assert finished['invocation']==captured['invocation']
+    assert finished['active_before']==captured['active_before']
+    assert finished['restore_units'][service]==captured['restore_units'][service]
+    assert finished['restore_units'][timer]['invocation']==states[timer]['InvocationID']
+    assert c.strict_json((tmp_path/'active-transition.json').read_bytes())['complete'] is True
 
 
 def test_deployment_quiesce_refuses_fused_context_without_loading_a_fake_job(monkeypatch,tmp_path):

@@ -1480,11 +1480,10 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
     assert "Environment=EIMEMORY_RUNTIME_COMMIT=@EIMEMORY_COMMIT@" in runtime_dropin
     assert "Environment=EIMEMORY_RUNTIME_RELEASE_DIR=/opt/eimemory/current" in runtime_dropin
     assert "Environment=EIMEMORY_RPC_URL=http://127.0.0.1:8091/" in runtime_dropin
-    assert "find \"$USER_SYSTEMD_DIR\" -maxdepth 1 -type f -name '*.service'" in discovery
-    assert "grep -Fq '/opt/eimemory/current'" in discovery
-    for unit in expected_units:
-        # Agent gateways are discovered by unit-name pattern, not a site list.
-        assert unit in discovery or (unit.endswith("-gateway.service") and '"$USER_SYSTEMD_DIR"/*-gateway.service' in discovery)
+    from eimemory.contracts.runtime_manager import REGISTERED_UNITS
+    assert 'python3 -I -B "$CONTROL" systemctl list-units' in discovery
+    assert 'find ' not in discovery and 'grep ' not in discovery
+    assert expected_units <= REGISTERED_UNITS
 
 
 def test_immutable_release_installer_manages_truthful_loop_watchdog_unit() -> None:
@@ -2129,7 +2128,8 @@ def test_immutable_release_installer_runs_fd_safe_cleanup_before_switch() -> Non
     assert '--from-stage "$OLD_STAGE_PATH"' in script
     assert '--to-release "$RELEASE_DIR"' in script
     assert 'mktemp -d "$INSTALL_ROOT/releases/.eimemory-stage-${COMMIT}-XXXXXXXX"' in script
-    assert '"$PYTHON_BIN" -I -B -m venv --clear "$STAGE_DIR/.venv"' in script
+    assert ('"$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache '
+            '-m venv --clear "$STAGE_DIR/.venv"') in script
     assert '--release-dir "$RELEASE_DIR"' in script
     assert '--releases-root "$INSTALL_ROOT/releases"' in script
     install_at = script.index('pip install --no-compile --no-deps "$STAGE_DIR"')
@@ -2264,6 +2264,7 @@ def test_immutable_release_installer_does_not_rebuild_active_existing_release(tm
             "OPENCLAW_LOOP_DEPLOY_VERIFY": "0",
             "OPENCLAW_LOOP_COMPAT_SCRIPT": "",
             **_installer_test_service_env(tmp_path),
+            **_installer_test_systemctl_env(tmp_path),
         }
     )
 
@@ -2385,7 +2386,7 @@ def _write_installer_test_python(target: Path) -> None:
         "from pathlib import Path\n"
         "import sys\n"
         "args = sys.argv[1:]\n"
-        "if args[:4] == ['-I', '-B', '-m', 'venv']:\n"
+        "if args[:6] == ['-I', '-B', '-X', 'pycache_prefix=/var/lib/eimemory-manager/empty-pycache', '-m', 'venv']:\n"
         "    bin_dir = Path(args[-1]) / 'bin'\n"
         "    bin_dir.mkdir(parents=True)\n"
         "    stub = '#!/usr/bin/env bash\\nexit 0\\n'\n"
@@ -2757,7 +2758,8 @@ def test_installer_reports_business_closure_outcome_without_unqualified_completi
     real_python = _bash_path(Path(sys.executable))
     fake_python.write_text(
         "#!/usr/bin/env bash\n"
-        f"if [ \"${{3:-}}\" = -c ]; then exec {real_python} \"$@\"; fi\n"
+        "printf '%s\\0' \"$@\" >> \"$ARGUMENT_LOG\"\n"
+        f"for argument in \"$@\"; do if [ \"$argument\" = -c ]; then exec {real_python} \"$@\"; fi; done\n"
         "if [[ \"$*\" == *record_release_closure_incident.py* ]]; then\n"
         f"  printf '%s\\n' \"$SUMMARY_JSON\" | {real_python} -c "
         "'import json,sys; d=json.load(sys.stdin); d[\"capture_saved\"]=True; print(json.dumps(d))'\n"
@@ -2799,6 +2801,7 @@ EIMEMORY_HEALTH_URL=http://127.0.0.1:8091/health
 EVIDENCE_RECEIPT_ENV_FILE={_bash_path(tmp_path / 'receipt.env')}
 GOVERNANCE_ENV_FILE={_bash_path(tmp_path / 'governance.env')}
 STORAGE_ATTEMPT_ID=test-attempt
+EIMEMORY_DEPLOY_SCOPE_TENANT=business-tenant-fixture
 EIMEMORY_DEPLOY_SCOPE_AGENT=hongtu
 EIMEMORY_DEPLOY_SCOPE_WORKSPACE=embodied
 EIMEMORY_DEPLOY_SCOPE_USER=darrow
@@ -2808,7 +2811,8 @@ EIMEMORY_RELEASE_CLOSURE_MODE=never
 REQUEST_CLOSURE=0
 SUMMARY_JSON='{{}}'
 SUMMARY_STATUS=0
-export SUMMARY_JSON SUMMARY_STATUS
+ARGUMENT_LOG={_bash_path(tmp_path / "closure-arguments.bin")}
+export SUMMARY_JSON SUMMARY_STATUS ARGUMENT_LOG
 BUSINESS_CLOSURE_OUTCOME=not_run
 RELEASE_IMPACT_JSON=
 _run_post_switch_closure
@@ -2844,6 +2848,9 @@ echo "observation=$BUSINESS_CLOSURE_OUTCOME"
     )
 
     assert result.returncode == 0, result.stderr + "\n" + result.stdout
+    arguments=(tmp_path / "closure-arguments.bin").read_bytes().split(b"\0")
+    tenants=[arguments[i+1] for i,value in enumerate(arguments[:-1]) if value==b"--scope-tenant"]
+    assert len(tenants)==6 and set(tenants)=={b"business-tenant-fixture"}
     assert "skipped=skipped" in result.stdout
     assert "accumulating=data_accumulating" in result.stdout
     assert "closed=closure_complete" in result.stdout
@@ -2900,6 +2907,7 @@ EIMEMORY_ROOT={_bash_path(tmp_path / 'runtime')}
 EIMEMORY_CONFIG_DIR={_bash_path(tmp_path / 'config')}
 GOVERNANCE_ENV_FILE={_bash_path(tmp_path / 'config' / 'governance.env')}
 PYTHON_BIN=python
+EIMEMORY_DEPLOY_SCOPE_TENANT=bootstrap-tenant-fixture
 EIMEMORY_DEPLOY_SCOPE_AGENT=hongtu
 EIMEMORY_DEPLOY_SCOPE_WORKSPACE=embodied
 EIMEMORY_DEPLOY_SCOPE_USER=darrow
@@ -2910,6 +2918,7 @@ _capture_prior_health_snapshot() {{
   printf '{{}}' >"$PRIOR_HEALTH_SNAPSHOT_FILE"
 }}
 _run_as_service_user() {{
+  printf '%s\\n' "$@" >{_bash_path(tmp_path / "bootstrap-arguments.txt")}
   return "$BOOTSTRAP_STATUS"
 }}
 # A lightweight release may skip its own post-switch closure, but it must
@@ -2930,6 +2939,8 @@ touch {_bash_path(core_switch)}
     assert result.returncode == 0, result.stderr
     assert expected_marker in result.stdout + result.stderr
     assert core_switch.is_file()
+    arguments=(tmp_path / "bootstrap-arguments.txt").read_text().splitlines()
+    assert arguments[arguments.index("--scope-tenant")+1]=="bootstrap-tenant-fixture"
     assert not snapshot.exists()
 
 
@@ -3349,136 +3360,116 @@ def test_immutable_release_installer_refreshes_openclaw_registry_before_gateway_
     assert current_switch < main_metadata < main_restart
 
 
-def test_python_runtime_unit_discovery_is_dynamic_deduplicated_and_regular_file_only(tmp_path) -> None:
-    systemd_dir = tmp_path / "systemd"
-    systemd_dir.mkdir()
-    (systemd_dir / "custom-worker.service").write_text(
-        "[Service]\nExecStart=/opt/eimemory/current/.venv/bin/python -m worker\n",
-        encoding="utf-8",
-    )
-    (systemd_dir / "eimemory-rpc.service").write_text(
-        "[Service]\nExecStart=/opt/eimemory/current/.venv/bin/python -m rpc\n",
-        encoding="utf-8",
-    )
-    (systemd_dir / "irrelevant.service").write_text("[Service]\nExecStart=/usr/bin/true\n", encoding="utf-8")
-    (systemd_dir / "openclaw-loop-watch.service").write_text(
-        "[Service]\nExecStart=/opt/eimemory/current/.venv/bin/python -m watcher\n", encoding="utf-8",
-    )
-    (systemd_dir / "directory.service").mkdir()
-    outside = tmp_path / "outside.service"
-    outside.write_text("[Service]\nExecStart=/opt/eimemory/current/.venv/bin/python -m outside\n", encoding="utf-8")
-    linked = systemd_dir / "linked.service"
-    try:
-        linked.symlink_to(outside)
-    except OSError:
-        linked = None
+def _registered_discovery_fixture(tmp_path, installed, *, fault=None):
+    """Real read-only adapter/parser in a child process; registry IO is a fixture.
 
-    result = subprocess.run(
-        [_bash_binary(), "deploy/discover_python_runtime_units.sh", _bash_path(systemd_dir)],
-        cwd=Path.cwd(),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    units = result.stdout.splitlines()
-    assert units.count("eimemory-rpc.service") == 1
-    assert units.count("custom-worker.service") == 1
-    assert units.count("openclaw-loop-watch.service") == 1
-    assert "openclaw-loop-compact.service" not in units
-    assert "eimemory-console.service" not in units
-    assert "irrelevant.service" not in units
-    assert "directory.service" not in units
-    if linked is not None:
-        assert "linked.service" not in units
+    Root filesystem/socket authentication has its own native manager fixtures.
+    This binds the shell delegation to the real registry contract without
+    exposing the test namespace to either production service manager.
+    """
+    from tests.test_runtime_manager import registry
+    from eimemory.contracts import runtime_manager as contract
+    value=registry()
+    assert set(installed)<=contract.REGISTERED_UNITS
+    for name in installed:value['units'][name]['installed']=True
+    value['generation']=contract.digest({k:v for k,v in value.items() if k!='generation'})
+    if fault=='corrupt_registry':value['units'].pop('eimemory-rpc.service')
+    fixture=tmp_path/'manager-registry-fixture.json'
+    fixture.write_bytes(contract.canonical(value))
+    adapter=tmp_path/'registered-manager-adapter.py'
+    adapter.write_text(
+        'from pathlib import Path\nimport importlib.util,sys\n'
+        +f'sys.path.insert(0,{str(Path.cwd())!r})\n'
+        +'from eimemory.contracts import runtime_manager as c\n'
+        +f'path=Path({str(Path.cwd() / "deploy/runtime_manager_control.py")!r})\n'
+        +'spec=importlib.util.spec_from_file_location("actual_manager_control",path)\n'
+        +'m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)\n'
+        +f'm.read_registry=lambda:c.validate_registry(c.strict_json(Path({str(fixture)!r}).read_bytes()))\n'
+        +('raise SystemExit(7)\n' if fault=='transport_failure' else '')
+        +'try:raise SystemExit(m.systemctl(sys.argv[1:]))\n'
+        +'except (ValueError,RuntimeError) as exc:\n'
+        +'    print(str(exc),file=sys.stderr);raise SystemExit(2)\n',
+        encoding='utf-8',newline='\n')
+    return {'EIMEMORY_RUNTIME_MANAGER_CONTROL':_bash_path(adapter)}
 
 
-
-def test_python_runtime_discovery_includes_colleague_gateways(tmp_path) -> None:
-    """Hongxin/Hongtai/Xiaomage gateway units must be refreshed on next deploy."""
-    systemd_dir = tmp_path / "systemd"
-    systemd_dir.mkdir()
-    for name in (
-        "hongxin-gateway.service",
-        "hongtai-gateway.service",
-        "xiaomage-gateway.service",
-        "openclaw-gateway.service",
-        "custom-worker.service",
-    ):
-        (systemd_dir / name).write_text(
-            "[Service]\nExecStart=/usr/bin/true\n",
-            encoding="utf-8",
-        )
-    # Drop-in-only colleague binding (main unit has no /opt/eimemory/current).
-    drop = systemd_dir / "hongrui-gateway.service.d"
-    drop.mkdir()
-    (systemd_dir / "hongrui-gateway.service").write_text(
-        "[Service]\nExecStart=/usr/bin/hongrui\n", encoding="utf-8"
-    )
-    (drop / "zzzz-eimemory-python-runtime.conf").write_text(
-        "[Service]\nEnvironment=EIMEMORY_RUNTIME_RELEASE_DIR=/opt/eimemory/current\n",
-        encoding="utf-8",
-    )
-
-    result = subprocess.run(
-        [_bash_binary(), "deploy/discover_python_runtime_units.sh", _bash_path(systemd_dir)],
-        cwd=Path.cwd(),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    units = result.stdout.splitlines()
-    assert "hermes-gateway.service" in units
-    assert "openclaw-gateway.service" in units
-    assert "hongxin-gateway.service" in units
-    assert "hongtai-gateway.service" in units
-    assert "xiaomage-gateway.service" in units
-    assert "hongrui-gateway.service" in units
-    assert units.count("hongxin-gateway.service") == 1
+def test_python_runtime_unit_discovery_uses_only_registered_installed_services(tmp_path) -> None:
+    systemd_dir=tmp_path/'systemd';systemd_dir.mkdir()
+    for name in ('custom-worker.service','irrelevant.service','openclaw-loop-watch.service'):
+        (systemd_dir/name).write_text('[Service]\nExecStart=/opt/eimemory/current/.venv/bin/python -m worker\n')
+    (systemd_dir/'directory.service').mkdir()
+    outside=tmp_path/'outside.service';outside.write_text('[Service]\nExecStart=/opt/eimemory/current\n')
+    try:(systemd_dir/'linked.service').symlink_to(outside)
+    except OSError:pass
+    selected={'eimemory-rpc.service','eimemory-l1-extract.service'}
+    result=subprocess.run([_bash_binary(),'deploy/discover_python_runtime_units.sh',_bash_path(systemd_dir)],
+        cwd=Path.cwd(),env={**os.environ,**_registered_discovery_fixture(tmp_path,selected)},
+        capture_output=True,text=True,check=False)
+    assert result.returncode==0,result.stderr
+    assert set(result.stdout.splitlines())==selected
+    assert len(result.stdout.splitlines())==len(selected)
 
 
-def test_python_runtime_unit_discovery_failure_propagates_to_installer(tmp_path) -> None:
-    systemd_dir = tmp_path / "systemd"
-    systemd_dir.mkdir()
-    result = subprocess.run(
-        [
-            _bash_binary(),
-            "-c",
-            'find(){ return 7; }; export -f find; source "$1" "$2"',
-            "bash",
-            "deploy/discover_python_runtime_units.sh",
-            _bash_path(systemd_dir),
-        ],
-        cwd=Path.cwd(),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+def test_python_runtime_discovery_includes_all_registered_colleague_gateways(tmp_path) -> None:
+    systemd_dir=tmp_path/'systemd';systemd_dir.mkdir()
+    # A plausible same-UID unit name or a leftover drop-in cannot add authority.
+    (systemd_dir/'hongxin-gateway.service').write_text('[Service]\nExecStart=/usr/bin/true\n')
+    selected={'hermes-gateway.service','hermes-gateway-hongxin.service',
+              'hermes-gateway-hongtai.service','hermes-gateway-xiaomage.service',
+              'openclaw-gateway.service'}
+    result=subprocess.run([_bash_binary(),'deploy/discover_python_runtime_units.sh',_bash_path(systemd_dir)],
+        cwd=Path.cwd(),env={**os.environ,**_registered_discovery_fixture(tmp_path,selected)},
+        capture_output=True,text=True,check=False)
+    assert result.returncode==0,result.stderr
+    assert set(result.stdout.splitlines())==selected
+    assert len(result.stdout.splitlines())==len(selected)
 
-    assert result.returncode == 7
+
+@pytest.mark.parametrize(('fault','expected'),[('transport_failure',7),('corrupt_registry',2)])
+def test_python_runtime_unit_discovery_failure_propagates_without_directory_fallback(tmp_path,fault,expected) -> None:
+    systemd_dir=tmp_path/'systemd';systemd_dir.mkdir()
+    (systemd_dir/'eimemory-rpc.service').write_text('[Service]\nExecStart=/opt/eimemory/current\n')
+    result=subprocess.run([_bash_binary(),'deploy/discover_python_runtime_units.sh',_bash_path(systemd_dir)],
+        cwd=Path.cwd(),env={**os.environ,**_registered_discovery_fixture(tmp_path,{'eimemory-rpc.service'},fault=fault)},
+        capture_output=True,text=True,check=False)
+    assert result.returncode==expected
+    assert not result.stdout.strip()
+    if fault=='corrupt_registry':assert 'manager_registry_unit_inventory_invalid' in result.stderr
+    installer=Path('deploy/install_immutable_release.sh').read_text(encoding='utf-8')
     assert 'if ! PYTHON_RUNTIME_UNIT_OUTPUT="$(_run_as_service_user bash -s --' in installer
-    assert "Unable to discover Python runtime systemd units" in installer
+    assert 'Unable to discover Python runtime systemd units' in installer
 
 
-def test_user_systemd_owner_check_uses_only_user_service_as_rpc_owner() -> None:
-    script = Path("deploy/check_user_systemd_owner.sh").read_text(encoding="utf-8")
-
-    assert "systemctl --user is-active eimemory-rpc.service" in script
-    assert "systemctl --user is-enabled eimemory-rpc.service" in script
-    assert "systemctl is-active eimemory-rpc.service" in script
-    assert "systemctl is-enabled eimemory-rpc.service" in script
-    assert "system_owner_active" in script
-    assert "system_owner_enabled" in script
-    assert "system_owner_fragment" in script
-    assert "system_rpc_service_unit_present" in script
-    assert "ok=user_systemd_owner" in script
-    # P1: stable collector; never require Tailscale primary health or raw curl exits.
-    assert "collect_release_health.py" in script
-    assert "100.105.189.120" not in script
-    assert 'curl -fsS "$HEALTH_URL"' not in script
+@pytest.mark.parametrize(('owner_status','health_status','reason'),[
+    (0,0,None),(7,0,'registered_rpc_owner_not_unique'),(0,3,'loopback_health_failed')])
+def test_registered_systemd_owner_check_delegates_authority_and_keeps_health_separate(tmp_path,owner_status,health_status,reason):
+    script=Path('deploy/check_user_systemd_owner.sh').read_text(encoding='utf-8')
+    assert '"$CONTROL" single-owner' in script
+    assert 'systemctl --user' not in script and 'systemctl is-active' not in script
+    assert 'ok=registered_systemd_owner' in script
+    assert 'collect_release_health.py' in script and '100.105.189.120' not in script
+    # Copy the original shell bytes; only its fixed neighbouring transport and
+    # collector endpoints are private fixtures. No native manager is contacted.
+    private=tmp_path/'owner-check';private.mkdir()
+    entry=private/'check_user_systemd_owner.sh';entry.write_text(script,encoding='utf-8',newline='\n')
+    (private/'runtime_manager_control.py').write_text(
+        'import sys\nassert sys.argv[1:]==["single-owner"]\n'
+        +f'raise SystemExit({owner_status})\n',encoding='utf-8')
+    marker=private/'health-arguments.json'
+    collector=private/'collect_release_health.py'
+    collector.write_text('import json,sys\nfrom pathlib import Path\n'
+        +f'Path({str(marker)!r}).write_text(json.dumps(sys.argv[1:]))\n'
+        +f'raise SystemExit({health_status})\n',encoding='utf-8')
+    result=subprocess.run([_bash_binary(),_bash_path(entry)],cwd=Path.cwd(),
+        env={**os.environ,'EIMEMORY_HEALTH_COLLECTOR':_bash_path(collector),
+             'EIMEMORY_HEALTH_PYTHON':_bash_path(Path(sys.executable)),
+             'LOOPBACK_HEALTH_URL':'http://127.0.0.1:8091/health'},
+        capture_output=True,text=True,check=False)
+    assert result.returncode==(0 if reason is None else 1)
+    if reason is None:assert 'ok=registered_systemd_owner' in result.stdout
+    else:assert 'ok=false' in result.stdout and 'reason='+reason in result.stdout
+    if owner_status:assert not marker.exists()
+    else:assert json.loads(marker.read_bytes())==['--url','http://127.0.0.1:8091/health','--probe-only']
 
 
 def test_learn_watch_timer_is_not_five_minute_heavy_polling() -> None:
@@ -3864,19 +3855,14 @@ def test_hermes_deploy_recall_acceptance_times_the_tool_and_never_retries(monkey
 
 
 def test_learning_policy_release_bound_units_are_runtime_identity_base_units() -> None:
-    # 1.14.22 rollback: eimemory-backup.service was installed by
-    # _install_learning_runtime_policy *after* the runtime-identity drop-in pass
-    # discovered units, so its first deploy had no EIMEMORY_RUNTIME_COMMIT and
-    # runtime_identity failed (environment_unavailable). Every release-bound
-    # unit that function installs must be discoverable before it exists.
+    # Every release-bound learning unit must be explicitly registered.
+    # Directory contents cannot extend this root-reviewed inventory.
     import re
 
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     start = script.index("_install_learning_runtime_policy() {")
     body = script[start:script.index("\n}\n", start)]
-    discovery = Path("deploy/discover_python_runtime_units.sh").read_text(encoding="utf-8")
-    base = discovery[discovery.index("BASE_UNITS=("):discovery.index("\n)\n", discovery.index("BASE_UNITS=("))]
-    base_units = set(re.findall(r"^\s+([A-Za-z0-9_.@-]+\.service)\s*$", base, re.M))
+    from eimemory.contracts.runtime_manager import REGISTERED_UNITS
     installed = set(re.findall(r'"\$target_release/deploy/systemd/([A-Za-z0-9_.@-]+\.service)"', body))
     assert "eimemory-backup.service" in installed
     release_bound = {
@@ -3884,7 +3870,7 @@ def test_learning_policy_release_bound_units_are_runtime_identity_base_units() -
         if "/opt/eimemory/current" in Path("deploy/systemd", name).read_text(encoding="utf-8")
     }
     assert release_bound, "expected release-bound learning units"
-    assert release_bound <= base_units, sorted(release_bound - base_units)
+    assert release_bound <= REGISTERED_UNITS, sorted(release_bound - REGISTERED_UNITS)
 
 
 def test_source_validation_refusal_names_runtime_bytecode(tmp_path) -> None:
