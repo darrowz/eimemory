@@ -1054,6 +1054,7 @@ def _gate_errors(
             "eimemory.capability_replay",
             "eimemory.evaluation.production_recall",
             "eimemory.evaluation.production_recall.bootstrap",
+            "eimemory.evaluation.controlled_production_acceptance",
         },
         "memory.governance": {"eimemory.capability_replay"},
         "channel.delivery": {"eimemory.external_channel.acceptance"},
@@ -1244,6 +1245,12 @@ def _recall_gate_contract_error(
     legacy_compatibility: bool = False,
 ) -> str:
     sources = {str(record.source or "") for record in records.values()}
+    if sources == {"eimemory.evaluation.controlled_production_acceptance"}:
+        from eimemory.governance.release.controlled_release_lineage import controlled_recall_gate_error
+
+        return controlled_recall_gate_error(
+            runtime, scope=scope, release=current_release, references=references,
+        )
     if sources == {
         "eimemory.capability_replay",
         "eimemory.evaluation.production_recall.bootstrap",
@@ -1401,6 +1408,17 @@ def _governance_gate_contract_error(
 ) -> str:
     from eimemory.governance.l5.l5_readiness import _verified_replay_summary
 
+    provider_fields = {'provider_authority_snapshot', 'provider_authority_digest', 'provider_scope'}
+    for record in records.values():
+        content = getattr(record, 'content', {})
+        selection = content.get('selection_contract', {}) if isinstance(content, Mapping) else {}
+        if isinstance(selection, Mapping) and provider_fields.intersection(selection):
+            from eimemory.governance.capability.provider_selection import verify_selection_authority
+
+            try:
+                verify_selection_authority(runtime, selection, owner_scope=scope)
+            except (TypeError, ValueError, RuntimeError, OSError):
+                return 'release_governance_provider_authority_invalid'
     selected_capabilities, minimums, selection_error = _manifest_profile_replay_contract(
         records,
         references,
@@ -1588,6 +1606,9 @@ def _manifest_profile_replay_contract(
                 "resolution_digest",
                 "registry_watermark",
                 "lifecycle_watermark",
+                "provider_authority_snapshot",
+                "provider_authority_digest",
+                "provider_scope",
             )
         }
         if common_context is None:

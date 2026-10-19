@@ -301,6 +301,11 @@ def pipeline(tmp_path, monkeypatch):
     monkeypatch.setattr(prompt_safety_executor, "bind_prompt_safety_from_service", lambda runtime: None)
     monkeypatch.setattr(closure, "_wait_for_controlled_health_refresh", lambda: None)
     monkeypatch.setattr(closure, "_wait_for_controlled_window", lambda started: None)
+    from eimemory.governance.release import controlled_release_lineage
+    monkeypatch.setattr(controlled_release_lineage, 'finalize_controlled_release_lineage',
+        lambda *args, **kwargs: dict(ok=True, validated=True, compatible=True,
+            record_id='lineage-current', recall_evidence_basis='controlled_existing_memory',
+            certifies_natural_queries=False, l5_certified=False))
     monkeypatch.setattr(closure, "_controlled_natural_progress", lambda *args, **kwargs: {
         "certifies_natural_queries": False, "natural_samples_created": 0,
         "agents": [{"agent_id": "colleague", "accepted_case_count": 0, "required_case_count": 3}]})

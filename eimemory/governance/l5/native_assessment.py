@@ -124,6 +124,15 @@ def run_native_l5_assessment(runtime: Any, *, scope: Mapping[str, Any],
             raise ValueError("native_l5_current_release_unverified")
         release = release_identity_payload(before)
         result.update(scope=asdict(owner), selector_scope=asdict(selector), profile_key=profile, **release)
+        version_parts = str(before.version or '').split('.')
+        if (len(version_parts) == 3 and all(part.isdigit() for part in version_parts)
+                and tuple(map(int, version_parts)) >= (1, 14, 156)):
+            from eimemory.governance.release.controlled_release_lineage import refresh_current_controlled_release_lineage
+
+            stage = 'controlled_release_lineage'
+            result['controlled_release_lineage'] = refresh_current_controlled_release_lineage(
+                runtime, scope=owner, release=before,
+            )
         stage = "readiness_reader"
         envelope = runtime.build_l5_readiness_report(scope=asdict(owner), runtime_scope=selector,
             reader_mode="v3", profile_key=profile, capability_scope=capability_scope,

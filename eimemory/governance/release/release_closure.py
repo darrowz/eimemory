@@ -461,6 +461,20 @@ def _run_controlled_operational_closure(
         return _blocked(report, "channel_acceptance",
                         _failure_reason(channel, "current_release_channel_acceptance_missing"))
 
+    from eimemory.governance.release.controlled_release_lineage import finalize_controlled_release_lineage
+
+    report['release_lineage_required'] = True
+    lineage = finalize_controlled_release_lineage(
+        runtime, scope=scope, repo_root=identity_kwargs['repo_root'], release=release,
+        controlled_reference=reference, replay=replay, live=live,
+        channel_reference=report['record_ids']['channel_acceptance'],
+    )
+    report['release_lineage'] = lineage
+    report['record_ids']['release_lineage'] = str(lineage.get('record_id') or '')
+    if any(lineage.get(key) is not True for key in ('ok', 'validated', 'compatible')):
+        return _blocked(report, 'release_lineage',
+                        _failure_reason(lineage, 'controlled_release_lineage_incompatible'))
+
     from eimemory.ops.controlled_stability import assess_controlled_stability
 
     # Replay, live and channel gates can write memory and advance index authority.

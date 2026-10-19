@@ -9,7 +9,7 @@ NATIVE_L5_STAGES = frozenset({
     "scope_selection", "provider_authority", "release_authority", "readiness_reader",
     "envelope_validation", "evidence_classification", "normalized_assessment",
     "release_recheck", "completion_validation", "archive_write", "archive_readback",
-    "provider_authority_recheck", "result_projection",
+    "provider_authority_recheck", "result_projection", "controlled_release_lineage",
 })
 NATIVE_L5_ERROR_CODES = frozenset({
     "native_l5_current_release_unverified", "native_l5_envelope_contract_invalid",

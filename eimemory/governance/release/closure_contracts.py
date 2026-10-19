@@ -415,6 +415,22 @@ def controlled_production_closure_report_ok(report: Any) -> bool:
     stability = _object(report.get("stability"))
     transport = _object(report.get("rpc_controlled_probe"))
     commit = receipt.get("commit")
+    # Original historical reports retain their original contract. New reports
+    # cannot omit the release-lineage boundary by deleting the feature marker.
+    version = str(receipt.get('version') or '')
+    version_parts = version.split('.')
+    current_contract = (len(version_parts) == 3 and all(part.isdigit() for part in version_parts)
+                        and tuple(map(int, version_parts)) >= (1, 14, 156))
+    if current_contract or report.get('release_lineage_required') is True:
+        lineage = _object(report.get('release_lineage'))
+        if (report.get('release_lineage_required') is not True
+                or any(lineage.get(key) is not True for key in ('ok', 'validated', 'compatible'))
+                or not _name(lineage.get('record_id'))
+                or _object(report.get('record_ids')).get('release_lineage') != lineage['record_id']
+                or lineage.get('recall_evidence_basis') != 'controlled_existing_memory'
+                or lineage.get('certifies_natural_queries') is not False
+                or lineage.get('l5_certified') is not False):
+            return False
     historical_business = historical_business_qualification_ok(controlled)
     expected_scope = "historical_business" if historical_business else "operational_only"
     if historical_business:
