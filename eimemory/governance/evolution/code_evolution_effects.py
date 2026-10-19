@@ -733,6 +733,17 @@ class CodeEvolutionEffectOwner:
             )
             state = "HEALTHY"
         if state == "HEALTHY":
+            if (payload.get("managed_deployment_jobs") or {}).get("deploy"):
+                from eimemory.governance.evolution.code_deployment_job import pending, post_resume_business_error
+                active = pending(self.runtime, current)
+                if active is not None:
+                    return _deployment_pending(transaction_id, active, current)
+                error = post_resume_business_error(self.runtime, current)
+                if error:
+                    quarantined = self.manager.reconcile(transaction_id, step="post_resume_business",
+                        decision=ReconciliationDecision("quarantine", error, quarantine_required=True,
+                            evidence_digest=digest_json({"reason": error})))
+                    return _blocked(transaction_id, error, quarantined)
             current = self._start_observing(transaction_id, current, policy)
             _cleanup_recovered_worktree(current)
             return {
@@ -1161,6 +1172,8 @@ class ProductionEffectAdapter:
         env["EIMEMORY_RUNTIME_TRANSITION_JOB"] = job_key
         exit_status, output = _run_bounded_process(["bash", str(installer), target],
             cwd=_trusted_root(), env=env, heartbeat=lambda: None)
+        from eimemory.governance.evolution.code_deployment_job import JOBS_ROOT, _exclusive_blob
+        _exclusive_blob(JOBS_ROOT / job_key / "installer-output.bin", output)
         if exit_status != 0:
             return {"ok": False, "commit": "", "receipt_digest": "", "reason": "immutable_installer_failed",
                     "installer_exit": exit_status, "output_digest": sha256(output).hexdigest()}
@@ -1207,13 +1220,12 @@ finally:
                 str(release), json.dumps(receipt_args, sort_keys=True, separators=(",", ":")), str(runtime.store.root)]
         verify_env = _owner_effect_environment(runtime, transaction)
         verify_env["EIMEMORY_RUNTIME_COMMIT"] = target
-        rc, raw = _run_bounded_process(argv, cwd=release, env=verify_env, heartbeat=lambda: None)
+        receipt, transport, raw, errors = _run_native_json_report(argv, cwd=release, env=verify_env, heartbeat=lambda: None)
+        _exclusive_blob(JOBS_ROOT / job_key / "receipt-verifier.stdout", raw)
+        _exclusive_blob(JOBS_ROOT / job_key / "receipt-verifier.stderr", errors)
+        rc = transport["exit_status"]
         if current.resolve(strict=True) != release:
             raise ValueError("deployment_job_current_release_changed")
-        try:
-            receipt = json.loads(raw)
-        except (ValueError, UnicodeError):
-            receipt = {}
         valid = (rc == 0 and isinstance(receipt, dict) and receipt.get("ok") is True
                  and receipt.get("commit") == target and bool(receipt.get("promotion_request_id"))
                  and (operation != "deploy" or (receipt.get("strict_transaction") is True
@@ -1223,6 +1235,47 @@ finally:
             "receipt_digest": digest_json(receipt) if valid else "", "receipt": receipt,
             "verifier_commit": target, "verifier_exit": rc,
             "output_digest": sha256(output).hexdigest(), "verification_output_digest": sha256(raw).hexdigest()}
+
+    def run_post_resume_business(self, runtime, *, transaction, policy, job_key, heartbeat):
+        """Use actual target code for full controlled business after restoration."""
+        current = Path(policy["deployment"]["current_link"])
+        release = current.resolve(strict=True)
+        if release.parent.name != "releases" or release.name != transaction["candidate_commit"]:
+            raise ValueError("post_resume_current_release_mismatch")
+        worker = '''
+import json,sys
+from pathlib import Path
+import eimemory
+from eimemory.api.runtime import Runtime
+from eimemory.governance.release.release_closure import run_managed_post_resume_closure
+expected=Path(sys.argv[1])
+if Path(eimemory.__file__).resolve().parent.parent!=expected:
+    raise SystemExit("post_resume_verifier_source_mismatch")
+runtime=Runtime.create(root=sys.argv[3])
+try:
+    report=run_managed_post_resume_closure(runtime,job_key=sys.argv[2])
+    print(json.dumps(report,sort_keys=True,allow_nan=False))
+    raise SystemExit(0 if report.get("ok") is True and report.get("business_qualified") is True else 1)
+finally:
+    runtime.close()
+'''
+        env = _deployment_environment(runtime, transaction=transaction,
+            verification_receipt_digests=transaction["payload"]["verification_receipt_digests"],
+            observation_deadline=transaction["observation_deadline"], lineage=_code_evolution_lineage(transaction))
+        env.update(EIMEMORY_RUNTIME_COMMIT=release.name, EIMEMORY_RUNTIME_TRANSITION_JOB=job_key,
+                   INVOCATION_ID=str(os.environ.get("INVOCATION_ID") or ""))
+        argv = [str(release / ".venv/bin/python"), "-I", "-B", "-c", worker,
+                str(release), job_key, str(runtime.store.root)]
+        report, transport, raw, errors = _run_native_json_report(argv, cwd=release, env=env, heartbeat=heartbeat)
+        from eimemory.governance.evolution.code_deployment_job import JOBS_ROOT, _exclusive_blob
+        _exclusive_blob(JOBS_ROOT / job_key / "post-resume-business.stdout", raw)
+        _exclusive_blob(JOBS_ROOT / job_key / "post-resume-business.stderr", errors)
+        if current.resolve(strict=True) != release:
+            raise ValueError("post_resume_current_release_changed")
+        report["native_transport"] = transport
+        if transport["exit_status"] != 0:
+            report.update(ok=False, business_qualified=False)
+        return report
 
     def cleanup(self, candidate):
         if candidate.root.exists():
@@ -1295,6 +1348,11 @@ def sample_code_evolution_observation(
         return {"ok": False, "reason": "observation_profile_required"}
     expected_commit = str(transaction.get("deployed_commit") or transaction.get("candidate_commit") or "")
     payload = transaction.get("payload") if isinstance(transaction.get("payload"), Mapping) else {}
+    if (payload.get("managed_deployment_jobs") or {}).get("deploy"):
+        from eimemory.governance.evolution.code_deployment_job import observation_completion_error
+        error = observation_completion_error(transaction)
+        if error:
+            return {"ok": False, "reason": error, "hard_failure": True}
     phase_start = str(transaction.get("observation_started_at") or checked_at)
     if payload.get("observation_anchor_pending") is True and not payload.get("observation_samples"):
         phase_start = checked_at
@@ -1986,6 +2044,22 @@ def _run_bounded_process(
         max_seconds=max_seconds,
     )
     return result.returncode, result.stdout
+
+
+def _run_native_json_report(argv, *, cwd, env, heartbeat):
+    """Keep stderr separate so a diagnostic cannot corrupt or impersonate JSON."""
+    from eimemory.governance.learning.effect_process import run_owned_process
+    result = run_owned_process(argv, cwd=cwd, env=env, heartbeat=heartbeat,
+        merge_stderr=False, output_limit=4 * 1024 * 1024)
+    transport = {"exit_status": result.returncode, "timed_out": result.timed_out,
+        "stdout_digest": sha256(result.stdout).hexdigest(), "stderr_digest": sha256(result.stderr).hexdigest()}
+    try:
+        report = json.loads(result.stdout)
+        if not isinstance(report, dict):
+            raise ValueError()
+    except (ValueError, UnicodeError):
+        report = {"ok": False, "blocked_reason": "native_report_json_unavailable"}
+    return report, transport, result.stdout, result.stderr
 
 
 def _git(root: Path, *argv: str) -> str:

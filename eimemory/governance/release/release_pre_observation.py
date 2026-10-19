@@ -88,7 +88,7 @@ def run_pre_observation_closure(runtime: Any, *, receipt: dict, transaction_id: 
         extra = run_capability_replay_gate(runtime, **selection, loop_id=f"pre_observation:{transaction_id}:{index}")
         if extra.get("ok") is not True:
             return blocked("replay", "profile_replay_failed")
-    live = runtime.run_live_task_acceptance(**identity_kwargs, profile_key=profile)
+    live = runtime.run_live_task_acceptance(**identity_kwargs, profile_key=profile, deployment_receipt=receipt)
     report["live_acceptance"] = live
     if not _live_acceptance_ok(live, receipt=receipt):
         return blocked("live_acceptance", "live_acceptance_failed")

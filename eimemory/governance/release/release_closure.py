@@ -369,6 +369,112 @@ def run_release_closure(
     )
 
 
+def read_strict_deployment_receipt(runtime: Any, *, scope, repo_root: str, current_link: str,
+                                   health_url: str, transaction_id: str, deployed_commit: str) -> dict:
+    """Re-read the original strict receipt and live target without writing one."""
+    from eimemory.governance.release.deployment_receipt import (
+        inspect_immutable_deployment, strict_code_evolution_receipt_error, _deployment_receipt_response,
+    )
+    from eimemory.governance.release.evidence_contract import same_scope
+    from eimemory.storage.code_evolution_store import digest_json
+    owner = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    if not transaction_id or not deployed_commit:
+        return {"ok": False, "error": "managed_strict_receipt_identity_required"}
+    live = inspect_immutable_deployment(runtime, scope=owner, repo=repo_root,
+        current_link=current_link, health_url=health_url, expected_commit=deployed_commit,
+        transaction_id=transaction_id)
+    if live.get("ok") is not True:
+        return {"ok": False, "error": "managed_strict_deployment_not_current"}
+    records = runtime.store.list_records_by_meta_value(kinds=["promotion_request"], scope=owner,
+        meta_key="transaction_id", meta_value=transaction_id, status="deployed", limit=10) or []
+    for record in records:
+        if (not same_scope(getattr(record, "scope", None), owner)
+            or strict_code_evolution_receipt_error(runtime, scope=owner, record=record, deployed_commit=deployed_commit)):
+            continue
+        receipt = _deployment_receipt_response(record)
+        if digest_json(receipt) == live.get("deployment_receipt_digest"):
+            return receipt
+    return {"ok": False, "error": "managed_strict_receipt_unavailable"}
+
+
+def run_managed_post_resume_closure(runtime: Any, *, job_key: str) -> dict:
+    """Real controlled business/stability admission after native restoration.
+
+    This entry is deliberately separate from strict pre-observation. It never
+    re-records an ordinary deployment receipt and never starts the L5 clock.
+    """
+    from eimemory.contracts.code_deployment_job import validate_request, request_key
+    from eimemory.core.runtime_manager import deployment_job_status, read_registry
+    from eimemory.governance.evolution.code_deployment_job import JOBS_ROOT, _read, _bound_request
+    from eimemory.governance.evolution.code_evolution_transaction import effect_execution_authorized
+    from eimemory.storage.code_evolution_store import CodeEvolutionStore
+    from eimemory.evaluation.controlled_production_acceptance import load_controlled_policy
+    from eimemory.governance.release.closure_contracts import controlled_production_closure_report_ok
+    from eimemory.governance.l5.l5_readiness import _storage_migration_status
+    from eimemory.governance.safety.prompt_safety_executor import bind_prompt_safety_from_service
+    import re
+
+    report = {"ok": False, "closure_complete": False, "data_accumulating": False,
+        "report_type": "managed_post_resume_business", "blocked_stage": "", "blocked_reason": "",
+        "business_qualified": False, "observation_started": False, "l5_certification": "not_certified",
+        "managed_job_key": job_key, "record_ids": {}}
+    if not isinstance(job_key, str) or re.fullmatch(r"[0-9a-f]{64}", job_key) is None:
+        return _blocked(report, "managed_job", "managed_job_key_invalid")
+    body = validate_request(_read(JOBS_ROOT / job_key / "request.json"))
+    if request_key(body) != job_key or body["operation"] != "deploy":
+        return _blocked(report, "managed_job", "managed_forward_request_required")
+    transaction = CodeEvolutionStore(runtime.store).get_transaction(body["transaction_id"])
+    if (not transaction or transaction.get("current_state") != "HEALTHY" or transaction.get("terminal")
+        or not effect_execution_authorized(transaction) or _bound_request(transaction, "deploy") != (job_key, body)):
+        return _blocked(report, "transaction", "managed_healthy_transaction_required")
+    scope = dict(body["scope"])
+    report.update(scope=scope, managed_transaction_id=body["transaction_id"])
+    native = deployment_job_status(job_key)
+    state = native.get("state") if isinstance(native.get("state"), dict) else {}
+    invocation = str(os.environ.get("INVOCATION_ID") or "")
+    started = _read(JOBS_ROOT / job_key / "started.json")
+    finalized = _read(JOBS_ROOT / job_key / "finalized.json")
+    registry = read_registry()
+    if (native.get("manager") != "system" or native.get("unit") != f"eimemory-code-deployment-job@{job_key}.service"
+        or native.get("phase") != "resumed_awaiting_business" or state.get("ActiveState") not in {"active", "activating"}
+        or not re.fullmatch(r"[0-9a-f]{32}", invocation) or state.get("InvocationID") != invocation
+        or started != {"request_key": job_key, "invocation": invocation}
+        or finalized.get("request_key") != job_key or finalized.get("invocation") != invocation
+        or (finalized.get("native") or {}).get("resumed") is not True
+        or registry.get("runtime_commit") != body["candidate_commit"]
+        or registry.get("controller_commit") != body["controller_commit"]):
+        return _blocked(report, "managed_resume", "native_restoration_not_verified")
+    policy = transaction["payload"]["authorized_policy"]
+    receipt = read_strict_deployment_receipt(runtime, scope=scope, repo_root=transaction["repository_root"],
+        current_link=policy["deployment"]["current_link"], health_url=policy["deployment"]["health_url"],
+        transaction_id=body["transaction_id"], deployed_commit=body["candidate_commit"])
+    if receipt.get("ok") is not True:
+        return _blocked(report, "deployment_receipt", str(receipt.get("error") or "managed_strict_receipt_invalid"))
+    report.update(deployment_receipt=receipt, deployment=_deployment_identity(receipt))
+    report["record_ids"]["deployment_receipt"] = receipt["promotion_request_id"]
+    try:
+        controlled_policy = load_controlled_policy(runtime, scope)
+    except (OSError, ValueError) as exc:
+        return _blocked(report, "controlled_policy", "controlled_policy_invalid:" + type(exc).__name__)
+    if controlled_policy is None or controlled_policy.get("purpose") != "historical_business_qualification":
+        return _blocked(report, "controlled_policy", "historical_business_policy_required")
+    migration = _storage_migration_status(runtime)
+    report["storage_migrations"] = migration
+    if migration.get("ok") is not True:
+        return _blocked(report, "storage_migrations", "storage_migrations_pending")
+    bind_prompt_safety_from_service(runtime)
+    release = ReleaseIdentity(commit=receipt["commit"], version=receipt["version"],
+        receipt_id=receipt["promotion_request_id"], session_id=receipt["release_session_id"])
+    identity_kwargs = dict(scope=scope, repo_root=transaction["repository_root"],
+        current_link=policy["deployment"]["current_link"], health_url=policy["deployment"]["health_url"],
+        prior_commit=body["base_commit"], deployed_commit=body["candidate_commit"], deployment_receipt=receipt)
+    report = _run_controlled_operational_closure(runtime, report=report, scope=scope,
+        identity_kwargs=identity_kwargs, release=release, policy=controlled_policy)
+    report["business_qualified"] = controlled_production_closure_report_ok(report)
+    report["observation_started"] = False
+    return report
+
+
 def _run_controlled_operational_closure(
     runtime: Any, *, report: dict[str, Any], scope: dict[str, Any],
     identity_kwargs: dict[str, Any], release: ReleaseIdentity, policy: dict[str, Any],

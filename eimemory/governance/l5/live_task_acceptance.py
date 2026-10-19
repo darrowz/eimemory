@@ -167,6 +167,8 @@ def run_live_task_acceptance(
     current_link: str = DEFAULT_DEPLOYMENT_CURRENT_LINK,
     health_url: str = DEFAULT_DEPLOYMENT_HEALTH_URL,
     prior_commit: str = "",
+    deployed_commit: str = "",
+    deployment_receipt: dict | None = None,
     l5_reader_mode: str = "v3",
     profile_key: str = "",
     capability_scope: str = "global",
@@ -179,6 +181,7 @@ def run_live_task_acceptance(
         current_link=current_link,
         health_url=health_url,
         prior_commit=prior_commit,
+        deployed_commit=deployed_commit, deployment_receipt=deployment_receipt,
     )
     if identity.get("ok") is not True:
         return {
@@ -283,13 +286,26 @@ def _verified_deployment_identity(
     current_link: str,
     health_url: str,
     prior_commit: str,
+    deployed_commit: str = "",
+    deployment_receipt: dict | None = None,
 ) -> dict[str, Any]:
+    if deployment_receipt is not None:
+        from eimemory.governance.release.release_closure import read_strict_deployment_receipt
+        actual = read_strict_deployment_receipt(runtime, scope=scope, repo_root=repo_root,
+            current_link=current_link, health_url=health_url,
+            transaction_id=str(deployment_receipt.get("transaction_id") or ""),
+            deployed_commit=str(deployed_commit or deployment_receipt.get("commit") or ""))
+        if (actual.get("ok") is not True or actual != deployment_receipt
+                or not _runtime_matches_identity(actual)):
+            return {"ok": False, "error": "acceptance_strict_receipt_readback_failed"}
+        return actual
     identity = runtime.verify_and_record_deployment(
         scope=asdict(scope),
         repo_root=repo_root,
         current_link=current_link,
         health_url=health_url,
         prior_commit=prior_commit,
+        **({"deployed_commit": deployed_commit} if deployed_commit else {}),
     )
     if identity.get("ok") is not True:
         return identity

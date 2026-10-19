@@ -27,7 +27,8 @@ def validate_request(value: object) -> dict:
         raise ValueError("deployment_job_transaction_invalid")
     scope = value["scope"]
     if not isinstance(scope, dict) or set(scope) != SCOPE_KEYS or any(
-        not isinstance(v, str) or not v.strip() or v != v.strip() or len(v) > 256 for v in scope.values()
+        not isinstance(v, str) or not v.strip() or v != v.strip() or len(v) > 256
+        or any(c in v for c in "\r\n\x00") for v in scope.values()
     ):
         raise ValueError("deployment_job_scope_invalid")
     for key in ("base_commit", "candidate_commit", "target_commit", "controller_commit"):

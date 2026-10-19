@@ -13,6 +13,29 @@ from eimemory.runtime_identity import runtime_package_tree_digest
 SCOPE = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
 
 
+@pytest.mark.parametrize("changed", [False, True])
+def test_live_runtime_facade_preserves_supplied_strict_receipt_without_ordinary_reissue(tmp_path,monkeypatch,changed):
+    from eimemory.governance.release import release_closure
+    receipt={"ok":True,"strict_transaction":True,"transaction_id":"tx-pinned-live",
+        "commit":"a"*40,"promotion_request_id":"receipt-original","release_session_id":"session-original"}
+    seen=[]
+    def physical(runtime,**kw):
+        seen.append(kw)
+        return {**receipt,"release_session_id":"other"} if changed else dict(receipt)
+    monkeypatch.setattr(release_closure,"read_strict_deployment_receipt",physical)
+    monkeypatch.setattr(live_task_acceptance,"_runtime_matches_identity",lambda value:True)
+    monkeypatch.setattr(live_task_acceptance,"_case_definitions",lambda *a,**kw:[])
+    runtime=Runtime.create(root=tmp_path)
+    monkeypatch.setattr(runtime,"verify_and_record_deployment",lambda **kw:pytest.fail("strict receipt must not be reissued"))
+    try:
+        result=runtime.run_live_task_acceptance(scope=SCOPE,deployed_commit="a"*40,
+            deployment_receipt=receipt,repo_root="/repo",current_link="/current",health_url="http://health")
+        assert seen[0]["transaction_id"]=="tx-pinned-live" and seen[0]["deployed_commit"]=="a"*40
+        assert seen[0]["scope"]==ScopeRef.from_dict(SCOPE)
+        assert result["error"]==("acceptance_strict_receipt_readback_failed" if changed else "invalid_live_acceptance_case_set")
+    finally:runtime.close()
+
+
 @pytest.mark.parametrize("schema,expected", [("l5_readiness.v3", True), ("l5_readiness.v4", True), ("l5_readiness.v99", False)])
 def test_configured_profile_live_probe_accepts_supported_dynamic_reader_schemas(tmp_path, monkeypatch, schema, expected):
     runtime = Runtime.create(root=tmp_path)

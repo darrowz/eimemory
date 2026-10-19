@@ -41,7 +41,34 @@ def _parent_fd(path: Path):
         raise
 
 def _directory(path: Path, *, create=False) -> None:
-    if create:
+    if create and os.name == "posix":
+        if not path.is_absolute():
+            raise ValueError("deployment_job_directory_not_absolute")
+        parent = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        current = Path(path.anchor)
+        try:
+            for component in path.parts[1:]:
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=parent)
+                except FileExistsError:
+                    pass
+                else:
+                    # The directory entry must survive power loss before a
+                    # request/CAS can refer to this newly created directory.
+                    os.fsync(parent)
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                current /= component
+                try:
+                    if _stable(os.fstat(child)) != _stable(current.lstat()):
+                        raise ValueError("deployment_job_directory_changed")
+                except BaseException:
+                    os.close(child)
+                    raise
+                os.close(parent)
+                parent = child
+        finally:
+            os.close(parent)
+    elif create:
         path.mkdir(mode=0o700, parents=True, exist_ok=True)
     for parent in (path, *path.parents):
         info = parent.lstat()
@@ -52,7 +79,9 @@ def _directory(path: Path, *, create=False) -> None:
         if info.st_uid != os.geteuid() or info.st_mode & 0o077:
             raise ValueError("deployment_job_directory_not_private")
 
-def _read(path: Path) -> dict:
+def _read(path: Path, *, maximum: int = 65536) -> dict:
+    if type(maximum) is not int or not 0 < maximum <= 8 * 1024 * 1024:
+        raise ValueError("deployment_job_read_budget_invalid")
     _directory(path.parent)
     parent = _parent_fd(path)
     try:
@@ -64,10 +93,10 @@ def _read(path: Path) -> dict:
         raise
     try:
         before = os.fstat(fd)
-        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > 65536
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > maximum
                 or (os.name == "posix" and (before.st_uid != os.geteuid() or before.st_mode & 0o077))):
             raise ValueError("deployment_job_file_unsafe")
-        raw = os.read(fd, 65537)
+        raw = os.read(fd, maximum + 1)
         if (_stable(before) != _stable(os.fstat(fd)) or _stable(before) != _stable(path.lstat())
                 or len(raw) != before.st_size or (parent is not None
                     and _stable(os.fstat(parent)) != _stable(path.parent.lstat()))):
@@ -82,6 +111,11 @@ def _read(path: Path) -> dict:
             os.close(parent)
 
 def _exclusive(path: Path, value: dict) -> None:
+    _exclusive_blob(path, canonical_bytes(value))
+
+def _exclusive_blob(path: Path, raw: bytes) -> None:
+    if not isinstance(raw, bytes) or len(raw) > 8 * 1024 * 1024:
+        raise ValueError("deployment_job_artifact_budget_invalid")
     _directory(path.parent)
     parent = _parent_fd(path)
     try:
@@ -93,7 +127,6 @@ def _exclusive(path: Path, value: dict) -> None:
             os.close(parent)
         raise
     try:
-        raw = canonical_bytes(value)
         with os.fdopen(fd, "wb", closefd=False) as stream:
             stream.write(raw)
             stream.flush()
@@ -209,7 +242,8 @@ def job_state(key: str, body: dict) -> dict:
 
 def pending(runtime, transaction: Mapping) -> dict | None:
     """Re-read a real bound request; caller-supplied flags cannot defer recovery."""
-    operation = {"DEPLOY_INTENT": "deploy", "ROLLBACK_INTENT": "rollback"}.get(transaction.get("current_state"))
+    operation = {"DEPLOY_INTENT": "deploy", "DEPLOYED_VERIFIED": "deploy", "HEALTHY": "deploy",
+                 "ROLLBACK_INTENT": "rollback"}.get(transaction.get("current_state"))
     if not operation:
         return None
     binding = _bound_request(transaction, operation)
@@ -220,6 +254,97 @@ def pending(runtime, transaction: Mapping) -> dict | None:
     # The normal physical readback must decide success or explicit quarantine.
     active = evidence["native_state"].get("ActiveState") in {"active", "activating", "deactivating"}
     return evidence if evidence["pending"] and active else None
+
+
+def post_resume_business_error(runtime, transaction: Mapping) -> str:
+    """Reconcile a saved business admission; its JSON alone is not authority."""
+    from eimemory.governance.release.closure_contracts import controlled_production_closure_report_ok
+    from eimemory.governance.release.release_closure import read_strict_deployment_receipt
+    from eimemory.evaluation.controlled_production_acceptance import verify_controlled_production_acceptance
+    from eimemory.governance.release.evidence_contract import ReleaseIdentity
+    from eimemory.core.runtime_manager import deployment_job_status
+    payload = transaction.get("payload") or {}
+    try:
+        binding = _bound_request(transaction, "deploy")
+        if not binding or payload.get("post_resume_business_job_key") != binding[0]:
+            return "managed_post_resume_business_required"
+        key, body = binding
+        report = _read(JOBS_ROOT / key / "post-resume-business.json", maximum=4 * 1024 * 1024)
+        if (sha256(canonical_bytes(report)).hexdigest() != payload.get("post_resume_business_digest")
+            or report.get("business_qualified") is not True or report.get("observation_started") is not False
+            or report.get("managed_job_key") != key or report.get("managed_transaction_id") != body["transaction_id"]
+            or report.get("scope") != body["scope"] or not controlled_production_closure_report_ok(report)
+            or (report.get("native_transport") or {}).get("exit_status") != 0):
+            return "managed_post_resume_business_proof_invalid"
+        native = deployment_job_status(key)
+        invocation = payload.get("post_resume_business_invocation")
+        if (not isinstance(invocation, str) or not re.fullmatch(r"[0-9a-f]{32}", invocation)
+            or _read(JOBS_ROOT / key / "started.json") != {"request_key": key, "invocation": invocation}
+            or native.get("phase") not in {"resumed_awaiting_business", "completed"}
+            or (native.get("state") or {}).get("InvocationID") not in {"", None, invocation}):
+            return "managed_post_resume_native_identity_changed"
+        policy = payload["authorized_policy"]
+        receipt = read_strict_deployment_receipt(runtime, scope=body["scope"], repo_root=transaction["repository_root"],
+            current_link=policy["deployment"]["current_link"], health_url=policy["deployment"]["health_url"],
+            transaction_id=body["transaction_id"], deployed_commit=body["candidate_commit"])
+        if receipt.get("ok") is not True or receipt != report.get("deployment_receipt"):
+            return "managed_post_resume_strict_receipt_changed"
+        release = ReleaseIdentity(commit=receipt["commit"], version=receipt["version"],
+            receipt_id=receipt["promotion_request_id"], session_id=receipt["release_session_id"])
+        checked = verify_controlled_production_acceptance(runtime, scope=body["scope"], release=release,
+            record_id=str((report.get("record_ids") or {}).get("controlled_production_acceptance") or ""), limit=500)
+        if checked.get("ok") is not True or checked.get("accepted") is not True:
+            return "managed_post_resume_current_business_evidence_invalid"
+        from eimemory.governance.evolution.code_automation_policy_owner import verify_native_standing_authority
+        if verify_native_standing_authority(runtime, transaction=transaction).get("ok") is not True:
+            return "managed_post_resume_standing_authority_invalid"
+    except Exception as exc:
+        return "managed_post_resume_readback_unavailable:" + type(exc).__name__
+    return ""
+
+
+def observation_completion_error(transaction: Mapping) -> str:
+    """A live observation cannot certify a root transition still held open."""
+    try:
+        binding = _bound_request(transaction, "deploy")
+        if binding is None:
+            return ""
+        key, _ = binding
+        body = binding[1]
+        from eimemory.core.runtime_manager import deployment_job_status, read_registry
+        native = deployment_job_status(key)
+        registry = read_registry()
+        started = _read(JOBS_ROOT / key / "started.json")
+        policy = (transaction.get("payload") or {}).get("authorized_policy") or {}
+        current = Path(policy["deployment"]["current_link"]).resolve(strict=True)
+        if (native.get("manager") != "system" or native.get("unit") != f"eimemory-code-deployment-job@{key}.service"
+            or native.get("phase") != "completed" or started.get("request_key") != key
+            or not re.fullmatch(r"[0-9a-f]{32}", str(started.get("invocation") or ""))
+            or native.get("original_invocation") != started["invocation"]
+            or registry.get("runtime_commit") != body["candidate_commit"]
+            or registry.get("controller_commit") != body["controller_commit"]
+            or current.parent.name != "releases" or current.name != body["candidate_commit"]
+            or (native.get("state") or {}).get("InvocationID") not in {"", None, started["invocation"]}):
+            return "managed_native_business_completion_unverified"
+    except Exception as exc:
+        return "managed_native_completion_unavailable:" + type(exc).__name__
+    return ""
+
+def _after_storage_call(call, *, manager, transaction_id: str, interval: float = 30):
+    """Renew the existing SQL lease only after physical storage commit.
+
+    Manager transport has its own bounded timeout. Only its socket operation
+    runs on the worker thread; SQLite stays on the original owning thread.
+    This helper is never used for installer/quiesce/backup/migration calls.
+    """
+    from concurrent.futures import ThreadPoolExecutor, wait
+    manager.renew_lease(transaction_id)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="deployment-manager") as pool:
+        future = pool.submit(call)
+        while not wait((future,), timeout=interval).done:
+            manager.renew_lease(transaction_id)
+        return future.result()
+
 
 def run_job(runtime, key: str, *, wait_seconds: float = 310) -> dict:
     """The fixed low-privilege entry; parent lease loss never overlaps effects."""
@@ -258,6 +383,9 @@ def run_job(runtime, key: str, *, wait_seconds: float = 310) -> dict:
         if passed != body["verification_receipt_digests"]:
             raise ValueError("deployment_job_verification_receipts_mismatch")
         adapter = ProductionEffectAdapter()
+        current = Path(policy["deployment"]["current_link"]).resolve(strict=True)
+        if current.parent.name != "releases" or current.name not in {body["base_commit"], body["candidate_commit"]}:
+            raise ValueError("deployment_job_current_release_unbound")
         if body["operation"] == "deploy":
             from eimemory.governance.evolution.code_evolution_effects import _dynamic_patch_authority_error, _live_proposal_authority_error
             from eimemory.governance.evolution.code_automation_policy_owner import verify_native_standing_authority
@@ -278,6 +406,8 @@ def run_job(runtime, key: str, *, wait_seconds: float = 310) -> dict:
         runtime_closed = True
         result = adapter.run_managed_installer(runtime, transaction=tx, policy=policy,
             operation=body["operation"], job_key=key)
+        _exclusive(JOBS_ROOT / key / "technical-install.json", {
+            "request_key": key, "invocation": invocation, "result": result})
         from eimemory.api.runtime import Runtime
         reopened = Runtime.create(root=runtime.store.root)
         manager = CodeEvolutionTransactionManager(reopened, owner_id=f"deployment-job:{key}:{invocation}")
@@ -299,6 +429,8 @@ def run_job(runtime, key: str, *, wait_seconds: float = 310) -> dict:
         from eimemory.governance.evolution.code_evolution_transaction import reconcile_rollback
         if result.get("ok") is True:
             adapter._verify_managed_result(reopened, fresh, policy, result, operation=body["operation"])
+            if _storage_release_state(reopened) != "clean":
+                raise ValueError("deployment_job_storage_commit_unverified")
             if body["operation"] == "deploy":
                 payload = {**dict(fresh.get("payload") or {}), "deployment_receipt_digest": result["receipt_digest"],
                     "candidate_pushed_and_deployed": True, "deployment_version": result["version"]}
@@ -307,9 +439,37 @@ def run_job(runtime, key: str, *, wait_seconds: float = 310) -> dict:
                     updates={"deployed_commit": body["candidate_commit"], "payload_json": payload})
                 fresh = manager.record_result(body["transaction_id"], step="health", result_state="HEALTHY",
                     output_data={"deployment_receipt_digest": result["receipt_digest"], "job_key": key})
-                owner = CodeEvolutionEffectOwner(reopened, owner_id=manager.owner_id, adapter=adapter,
-                    policy_loader=lambda: policy, policy_consumer=lambda **kw: None)
-                fresh = owner._start_observing(body["transaction_id"], fresh, policy)
+                from eimemory.core.runtime_manager import finalize_deployment_job
+                finalized = _after_storage_call(lambda: finalize_deployment_job(key),
+                    manager=manager, transaction_id=body["transaction_id"])
+                _exclusive(JOBS_ROOT / key / "finalized.json", {"request_key": key, "invocation": invocation, "native": finalized})
+                if (finalized.get("job_key") != key or finalized.get("resumed") is not True
+                    or finalized.get("phase") != "resumed_awaiting_business"):
+                    result.update(ok=False, deployment_verified=True, automation_resumed=False,
+                                  status="held_background", finalization=finalized)
+                else:
+                    business = adapter.run_post_resume_business(reopened, transaction=fresh, policy=policy,
+                        job_key=key, heartbeat=lambda: manager.renew_lease(body["transaction_id"]))
+                    _exclusive(JOBS_ROOT / key / "post-resume-business.json", business)
+                    business_digest = sha256(canonical_bytes(business)).hexdigest()
+                    result.update(post_resume_business_digest=business_digest,
+                                  business_qualified=business.get("business_qualified") is True)
+                    if business.get("ok") is not True or business.get("business_qualified") is not True:
+                        result.update(ok=False, deployment_verified=True, reason="post_resume_business_not_qualified")
+                    else:
+                        adapter._verify_managed_result(reopened, fresh, policy, result, operation="deploy")
+                        fresh = manager.update_metadata(body["transaction_id"], payload_updates={
+                            "post_resume_business_digest": business_digest, "post_resume_business_job_key": key,
+                            "post_resume_business_invocation": invocation,
+                            "post_resume_business_record_ids": business.get("record_ids") or {}})
+                        error = post_resume_business_error(reopened, fresh)
+                        if error:
+                            raise ValueError(error)
+                        owner = CodeEvolutionEffectOwner(reopened, owner_id=manager.owner_id, adapter=adapter,
+                            policy_loader=lambda: policy, policy_consumer=lambda **kw: None)
+                        fresh = owner._start_observing(body["transaction_id"], fresh, policy)
+                        result.update(deployment_verified=True, automation_resumed=True,
+                                      business_qualified=True, status="observing")
             else:
                 decision = reconcile_rollback({"current_commit": result["commit"], "prior_commit": body["base_commit"],
                     "receipt_valid": True, "health_ok": True, "storage_clean": _storage_release_state(reopened) == "clean"})
@@ -324,20 +484,69 @@ def run_job(runtime, key: str, *, wait_seconds: float = 310) -> dict:
                 decision=reconcile_rollback({"current_commit": "", "prior_commit": body["base_commit"],
                     "receipt_valid": False, "health_ok": False, "storage_clean": False}))
             result["ledger_state"] = fresh["current_state"]
-        _exclusive(JOBS_ROOT / key / "result.json", {"request_key": key, "invocation": invocation, "result": result})
-        if result.get("ok") is True and fresh["current_state"] in {"OBSERVING", "ROLLED_BACK_HEALTHY"}:
+        if body["operation"] == "deploy" and result.get("ok") is not True and fresh["current_state"] != "ROLLBACK_INTENT":
+            fresh = manager.begin_intent(body["transaction_id"], step="rollback", intent_state="ROLLBACK_INTENT",
+                input_data={"deployment_evidence_digest": sha256(canonical_bytes(result)).hexdigest(), "job_key": key})
+        result["ledger_state"] = fresh["current_state"]
+        if result.get("ok") is True and body["operation"] == "rollback" and fresh["current_state"] == "ROLLED_BACK_HEALTHY":
             # Native background writers stay held until their transaction has
             # durably advanced. In particular, an old rollback watch cannot
             # race the worker and replay an installer it does not understand.
             from eimemory.core.runtime_manager import finalize_deployment_job
-            finalized = finalize_deployment_job(key)
+            finalized = _after_storage_call(lambda: finalize_deployment_job(key),
+                manager=manager, transaction_id=body["transaction_id"])
             _exclusive(JOBS_ROOT / key / "finalized.json", {"request_key": key, "invocation": invocation, "native": finalized})
             if finalized.get("job_key") != key or finalized.get("resumed") is not True:
-                return {**result, "ok": False, "deployment_verified": True,
-                    "automation_resumed": False, "status": "held_background", "finalization": finalized}
-        elif body["operation"] == "deploy":
+                result.update(ok=False, deployment_verified=True, automation_resumed=False,
+                              status="held_background", finalization=finalized)
+            else:
+                result.update(deployment_verified=True, automation_resumed=True, status="rolled_back_healthy")
+        if (body["operation"] == "deploy" and fresh["current_state"] == "OBSERVING" and result.get("ok") is True
+            or body["operation"] == "rollback" and fresh["current_state"] == "ROLLED_BACK_HEALTHY"):
+            from eimemory.core.runtime_manager import complete_deployment_job
+            # Root retains the global transition until real business admission
+            # and the observation anchor (or a rollback terminal) are durable.
+            try:
+                completed = _after_storage_call(lambda: complete_deployment_job(key),
+                    manager=manager, transaction_id=body["transaction_id"])
+            except (OSError, RuntimeError, ValueError, TimeoutError) as exc:
+                completed = {"job_key": key, "complete": False, "error_type": type(exc).__name__}
+            _exclusive(JOBS_ROOT / key / "completed.json", {
+                "request_key": key, "invocation": invocation, "native": completed})
+            result["completion"] = completed
+            held = result.get("status") == "held_background"
+            expected_phase = "completed_held" if held else "completed"
+            if (completed.get("job_key") != key or completed.get("complete") is not True
+                or completed.get("phase") != expected_phase or completed.get("resumed") is not (not held)
+                or completed.get("operational_complete") is not (not held)):
+                result.update(ok=False, status="native_completion_unknown", reconciliation_required=True)
+            result["operational_complete"] = result.get("ok") is True and not held
+        else:
+            result["operational_complete"] = False
+        # Final outcome is published only after restoration/business/complete.
+        # The immutable technical-install artifact keeps the physical effect
+        # separate from a held or unknown operational result.
+        _exclusive(JOBS_ROOT / key / "result.json", {"request_key": key, "invocation": invocation, "result": result})
+        if body["operation"] == "deploy" and result.get("ok") is not True and fresh["current_state"] == "ROLLBACK_INTENT":
             handoff(reopened, fresh, policy, operation="rollback")
         return result
+    except Exception as exc:
+        # A crash/exception after the exclusive execution claim is an unknown
+        # effect, not permission to rerun the installer or declare success.
+        # Preserve a bounded, non-secret diagnostic even when no Runtime/SQL
+        # connection can safely be used for reconciliation at this point.
+        try:
+            if (_read(JOBS_ROOT / key / "started.json") == {"request_key": key, "invocation": invocation}
+                and not (JOBS_ROOT / key / "result.json").exists()):
+                _exclusive(JOBS_ROOT / key / "result.json", {"request_key": key, "invocation": invocation,
+                    "result": {"ok": False, "operational_complete": False,
+                        "status": "job_execution_unknown", "reconciliation_required": True,
+                        "error_type": type(exc).__name__}})
+        except (OSError, ValueError):
+            # The original failure remains the native unit's failure; an
+            # unavailable private artifact cannot turn it into success.
+            pass
+        raise
     finally:
         try:
             if "reopened" in locals() or not locals().get("runtime_closed", False):
