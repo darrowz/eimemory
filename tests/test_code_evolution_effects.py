@@ -913,6 +913,15 @@ def test_system_observation_rejects_silently_defaulted_provenance():
     assert _l5_observation_semantics(report, transaction)[0] is False
 
 
+@pytest.mark.parametrize("fault",["encoding-without-proof","v4-extra-domain","evidence-proof-without-source"])
+def test_observation_cannot_downgrade_or_mix_a_managed_envelope_into_legacy(fault):
+    report=_pending_observation_report();transaction=_observation_transaction()
+    if fault=="encoding-without-proof":transaction["transaction_schema_version"]="code_evolution_transaction.v4"
+    elif fault=="v4-extra-domain":report["qualification_domain"]="registered_code_defect_knowledge.v1"
+    else:report["transaction_evidence"]["managed_incident_proof"]={"untrusted":True}
+    assert _l5_observation_semantics(report,transaction)[0] is False
+
+
 def test_managed_observation_uses_actual_hmac_readback_and_preserves_late_unknown(tmp_path,monkeypatch):
     """Run the real issuer/readback fixture; only its root transport is doubled.
 

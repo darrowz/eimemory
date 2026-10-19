@@ -1445,7 +1445,11 @@ def _l5_observation_semantics(
     provenance = _observation_provenance(transaction)
     reported_provenance = _observation_provenance(evidence)
     effective_provenance = provenance
-    managed_required = "managed_incident_proof" in transaction or report.get("schema") == "l5.reader.v5"
+    managed_required = ("managed_incident_proof" in transaction or "managed_incident_proof" in evidence
+        or transaction.get("schema_version", transaction.get("transaction_schema_version")) == "code_evolution_transaction.v4"
+        or report.get("schema") == "l5.reader.v5"
+        or any(field in report for field in ("qualification_domain", "qualification_key_semantics",
+            "global_provenance", "managed_provenance")))
     managed_verified = not managed_required
     if managed_required:
         try:
@@ -1466,7 +1470,7 @@ def _l5_observation_semantics(
                 and all(field in evidence and field in transaction
                     and evidence[field] == transaction[field] for field in FIELDS)
                 and all(field in transaction and evidence.get(field) == transaction[field]
-                    for field in (*SCOPE_FIELDS, "incident_id", "incident_digest"))
+                    for field in (*SCOPE_FIELDS, "incident_id", "incident_digest", "detector"))
                 and provenance is not None
                 and {field: provenance[field] for field in FIELDS} == qualified["global_facts"]
             )
