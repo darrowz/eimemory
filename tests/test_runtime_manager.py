@@ -1092,3 +1092,15 @@ def test_deployment_quiesce_refuses_fused_context_without_loading_a_fake_job(mon
     persist({'context':'fused_closure','job_key':'f'*64,'complete':False})
     with pytest.raises(ValueError,match='another_transition_active'):b.transition(r,key,'quiesce',42,1001)
     assert calls==[]
+
+
+@pytest.mark.parametrize('pointer',[{'context':'deployment','job_key':'a'*64,'complete':False},
+    {'context':'fused_closure','job_key':'b'*64,'complete':True}])
+def test_fused_stop_hook_does_not_reenter_deployment_lifecycle_lock(monkeypatch,pointer):
+    m=standalone('runtime_manager_launch')
+    monkeypatch.setattr(m,'protected_cache',lambda:[])
+    monkeypatch.setattr(m.os,'getuid',lambda:1001,raising=False);monkeypatch.setattr(m.os,'geteuid',lambda:1001,raising=False)
+    monkeypatch.setattr(m,'read_root',lambda path:registry() if Path(path)==m.REGISTRY else pointer)
+    monkeypatch.setattr(m.Path,'exists',lambda _:True)
+    monkeypatch.setattr(m.socket,'socket',lambda *_args:pytest.fail('must not call a locked bridge for a nonpending fused context'))
+    m.recover_fused()

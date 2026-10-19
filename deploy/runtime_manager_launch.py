@@ -52,6 +52,17 @@ def recover_fused():
     protected_cache();registry=read_root(REGISTRY)
     if os.getuid()!=registry['runtime_uid'] or os.geteuid()!=registry['runtime_uid'] or os.geteuid()==0:
         raise ValueError('manager_launcher_runtime_uid_required')
+    active=Path('/var/lib/eimemory-manager/active-transition.json')
+    if not active.exists() and not active.is_symlink():
+        print(json.dumps({'restored':True,'phase':'no_pending_context'}));return
+    context=read_root(active)
+    if not isinstance(context,dict):raise ValueError('manager_launcher_context_invalid')
+    if context.get('context')!='fused_closure' or context.get('complete') is True:
+        # A deployment may synchronously stop this service while holding the
+        # lifecycle lock. Its StopPost must not call back into that lock for an
+        # unrelated context. Only the root-owned pending fused pointer needs
+        # recovery; that pointer itself prevents deployment quiesce admission.
+        print(json.dumps({'restored':True,'phase':'no_pending_context'}));return
     path=Path('/run/eimemory-manager/bridge.sock')
     for parent in (path.parent,*path.parent.parents):
         st=parent.lstat()
