@@ -91,8 +91,13 @@ def build_controlled_memory_benchmark(
     if not callable(getattr(store, "list_records", None)):
         return _dataset(scope_ref, sources, [], skipped, 0, False, "controlled_memory_store_unavailable",
                         stable_before=cutoff_text)
-    records = store.list_records(kinds=list(_KINDS), scope=scope_ref, status="active",
-                                 source_ids=list(sources), limit=scan_limit + 1)
+    candidate_reader = getattr(store, "list_controlled_memory_candidates", None)
+    if callable(candidate_reader):
+        records = candidate_reader(kinds=list(_KINDS), scope=scope_ref,
+            source_ids=list(sources), limit=scan_limit + 1, created_before=cutoff_text)
+    else:
+        records = store.list_records(kinds=list(_KINDS), scope=scope_ref, status="active",
+                                     source_ids=list(sources), limit=scan_limit + 1)
     cases = []
     scanned = 0
     for record in records[:scan_limit]:

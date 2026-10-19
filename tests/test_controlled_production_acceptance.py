@@ -767,3 +767,70 @@ def test_historical_authorized_source_still_rejects_acceptance_generated_memory(
         origin_source=record.source)
     result = run(setup)
     assert not result['accepted'] and not result['business_qualification']['accepted']
+
+
+def ingest_after_grant(setup,*,count=80):
+    for index in range(count):
+        r=RecordEnvelope.create(kind='memory',title=f'New raw host turn {index}',
+            content={'text':f'User: New ordinary discussion {index}.\nAssistant: New ordinary response.',
+                     'memory_type':'conversation'},source='hermes.memory',source_id='hermes',scope=SCOPES[0],
+            meta={'memory_type':'conversation','capture_origin':'turn_sync'})
+        setup.runtime.store.append(r)
+
+
+def test_historical_grants_remain_measured_after_new_host_history_fills_the_scan_window(historical_business_setup):
+    setup=historical_business_setup;policy_before=deepcopy(setup.policy)
+    ingest_after_grant(setup)
+    result=run(setup)
+    assert result['accepted'] and result['business_qualification']['pass_count']==12,result
+    assert setup.policy==policy_before and len(setup.calls)==12
+    assert verified(setup,record_id=result['record_id'])['accepted']
+    assert len(setup.calls)==12
+
+
+def test_historical_grants_use_actual_native_recall_after_new_host_history(historical_business_setup):
+    setup=historical_business_setup;ingest_after_grant(setup)
+    memory=setup.runtime.memory;actual=type(memory).recall.__get__(memory,type(memory));calls=[]
+    def recall(**kwargs):
+        calls.append(kwargs)
+        return actual(**kwargs)
+    setup.monkeypatch.setattr(memory,'recall',recall)
+    result=run(setup)
+    assert result['accepted'] and result['business_qualification']['pass_count']==12,result
+    assert len(calls)==12 and verified(setup,record_id=result['record_id'])['accepted']
+    assert len(calls)==12
+
+
+@pytest.mark.parametrize('damage',['missing','archived','payload','sql_version','later_than_cutoff'])
+def test_historical_grants_never_replace_a_missing_or_changed_authorized_source(historical_business_setup,damage):
+    setup=historical_business_setup;previous=run(setup);assert previous['accepted']
+    target=setup.memories['hongrui'][0]
+    if damage=='missing':
+        setup.runtime.store.run_locked(lambda sql:(sql.execute('DELETE FROM records WHERE record_id=?',(target.record_id,)),sql.commit()))
+    elif damage=='sql_version':
+        setup.runtime.store.run_locked(lambda sql:(sql.execute('UPDATE records SET updated_at=? WHERE record_id=?',('2099-01-01T00:00:00Z',target.record_id)),sql.commit()))
+    else:
+        if damage=='archived':target.status='archived'
+        if damage=='payload':target.content['text']+=' Corrected later.'
+        if damage=='later_than_cutoff':target.time.created_at='2099-01-01T00:00:00Z'
+        setup.runtime.store.append(target)
+    ingest_after_grant(setup)
+    result=run(setup)
+    assert not result['accepted'] and result['persisted']
+    assert not next(a for a in result['agents'] if a['agent_id']=='hongrui')['accepted']
+    assert not verified(setup,record_id=previous['record_id'])['accepted']
+    assert result['record_id']!=previous['record_id']
+
+
+def test_historical_grant_does_not_select_an_unlisted_old_fact(historical_business_setup):
+    setup=historical_business_setup;before=deepcopy(setup.policy)
+    for index in range(80):
+        record=RecordEnvelope.create(kind='memory',title=f'Another legitimate old fact {index}',
+            content={'text':'An unrelated existing business fact.','memory_type':'fact'},
+            source='hermes.memory',source_id='hermes',scope=SCOPES[0],meta={'memory_type':'fact'})
+        record.time.created_at='2020-01-01T00:00:00Z';setup.runtime.store.append(record)
+    result=run(setup)
+    assert result['accepted'] and len(setup.calls)==12 and setup.policy==before
+    expected={entry['source_binding']['record_id'] for entry in before['business_sources']}
+    packet=setup.runtime.store.get_by_exact_ref(result['record_id'],scope=OWNER,source_id='default')
+    assert {sample['source_binding']['record_id'] for agent in packet.content['agents'] for sample in agent['samples']}==expected

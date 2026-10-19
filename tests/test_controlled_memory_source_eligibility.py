@@ -83,7 +83,12 @@ def test_default_recall_refuses_ineligible_source_and_generation_records_exact_s
         assert record.record_id not in [item.record_id for item in bundle.items]
         dataset = build(runtime)
         assert dataset["cases"] == []
-        assert dataset["dataset_generation"]["skipped_reason_counts"] == {REASONS[mode]:1}
+        # Raw and evidence lanes are excluded before the bounded native
+        # candidate hydration. Capture quality is still checked on the actual
+        # payload; scan counters must not invent rows removed by SQL.
+        expected = {REASONS[mode]:1} if mode == "capture_reject" else {}
+        assert dataset["dataset_generation"]["skipped_reason_counts"] == expected
+        assert dataset["dataset_generation"]["scanned_count"] == (1 if mode == "capture_reject" else 0)
         report = run(runtime, dataset)
         assert report["memory_benchmark_status"] == "not_run"
         assert report["passed_threshold"] is False

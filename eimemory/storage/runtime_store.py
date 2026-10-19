@@ -1811,6 +1811,17 @@ class RuntimeStore:
                 source_ids=source_ids,
             )
 
+    def list_controlled_memory_candidates(
+        self, *, kinds: list[str], scope: ScopeRef | dict,
+        source_ids: list[str] | tuple[str, ...], limit: int,
+        created_before: str = "",
+    ) -> list[RecordEnvelope]:
+        scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        with self.borrow_reader() as slot:
+            return slot.store.list_controlled_memory_candidates(kinds=kinds,
+                scope=scope_ref, source_ids=source_ids, limit=limit,
+                created_before=created_before)
+
     def list_records_by_sources_exact_scope(
         self,
         *,

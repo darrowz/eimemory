@@ -20,6 +20,76 @@ from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
 SCOPE = ScopeRef(agent_id="benchmark-member", workspace_id="benchmark-workspace", user_id="benchmark-user")
 
 
+def _old_candidate(runtime, *, title, created='2020-01-01T00:00:00Z', memory_type='fact', scope=SCOPE, source_id='hermes'):
+    record=RecordEnvelope.create(kind='memory',title=title,content={'text':title,'memory_type':memory_type},
+        scope=scope,source='operator.memory',source_id=source_id,meta={'memory_type':memory_type})
+    record.time.created_at=created
+    runtime.store.append(record)
+    return record
+
+
+def test_native_candidate_prefilter_preserves_ten_cases_beyond_raw_and_evidence_ingestion(tmp_path):
+    with Runtime.create(root=tmp_path) as runtime:
+        expected=[_old_candidate(runtime,title=f'Established project fact {i}') for i in range(10)]
+        for i in range(530):
+            _old_candidate(runtime,title=f'Historical operational material {i}',
+                memory_type='conversation' if i%2 else 'deployment_evidence')
+        dataset=_build(runtime,limit=10,stable_before='2026-10-18T00:00:00Z')
+        assert {c['source_binding']['record_id'] for c in dataset['cases']}=={r.record_id for r in expected}
+        generation=dataset['dataset_generation']
+        assert generation['case_count']==generation['scanned_count']==10
+        assert generation['scan_truncated'] is False
+        assert generation['skipped_reason_counts']=={}
+        report=_run(runtime,dataset)
+        assert report['sample_count']==report['pass_count']==10 and report['fail_count']==0
+
+
+@pytest.mark.parametrize('created,expected',[
+    ('2026-10-18T06:36:52.856428Z',True),
+    ('2026-10-18T14:36:52.856428+08:00',True),
+    ('2026-10-18T06:36:52.856427+00:00',True),
+    ('2026-10-18T06:36:52.856429Z',False),
+    ('2026-10-18T14:36:52.856429+08:00',False),
+    ('2026-10-18T06:36:52.856428',True),
+    ('2026-10-18T14:36:52.856428+0800',True),
+    ('2026-10-18T14:36:52.856428+08:00:01',True),
+    ('invalid-creation-time',False),
+])
+def test_native_created_cutoff_keeps_timezone_and_microsecond_semantics(tmp_path,created,expected):
+    with Runtime.create(root=tmp_path) as runtime:
+        source=_old_candidate(runtime,title='A source updated after the cutoff',created=created)
+        dataset=_build(runtime,stable_before='2026-10-18T06:36:52.856428Z')
+        assert bool(dataset['cases']) is expected
+        if expected:assert dataset['cases'][0]['source_binding']['record_id']==source.record_id
+
+
+def test_native_candidate_limit_cannot_be_filled_by_foreign_owner_source_or_new_records(tmp_path):
+    cutoff='2026-10-18T00:00:00Z'
+    with Runtime.create(root=tmp_path) as runtime:
+        expected=_old_candidate(runtime,title='Old authorized business source')
+        for i in range(85):
+            _old_candidate(runtime,title=f'New unrelated source {i}',created='2026-10-19T00:00:00Z')
+            _old_candidate(runtime,title=f'Other user source {i}',scope=ScopeRef(agent_id=SCOPE.agent_id,workspace_id=SCOPE.workspace_id,user_id='other'))
+            _old_candidate(runtime,title=f'Other source partition {i}',source_id='private')
+        dataset=_build(runtime,limit=3,stable_before=cutoff)
+        assert [c['source_binding']['record_id'] for c in dataset['cases']]==[expected.record_id]
+        assert dataset['dataset_generation']['scanned_count']==1
+
+
+def test_native_index_hints_cannot_authorize_raw_payload_or_changed_exact_read(tmp_path,monkeypatch):
+    with Runtime.create(root=tmp_path) as runtime:
+        raw=_old_candidate(runtime,title='User: raw transcript. Assistant: raw response.',memory_type='conversation')
+        runtime.store.run_locked(lambda sql:(sql.execute("UPDATE recall_index SET lane='primary',visibility='default',memory_type='fact' WHERE record_id=?",(raw.record_id,)),sql.commit()))
+        dataset=_build(runtime,stable_before='2026-10-18T00:00:00Z')
+        assert dataset['cases']==[]
+        assert dataset['dataset_generation']['skipped_reason_counts']=={'source_record_episode_evidence':1}
+        source=_old_candidate(runtime,title='Exact physical source')
+        monkeypatch.setattr(runtime.store,'get_by_exact_ref',lambda *args,**kwargs:None)
+        dataset=_build(runtime,stable_before='2026-10-18T00:00:00Z')
+        assert dataset['cases']==[]
+        assert dataset['dataset_generation']['skipped_reason_counts']['source_record_missing']==1
+
+
 def _memory(runtime, *, title="Atlas project notebooks", text="The Atlas project uses green notebooks.",
             scope=SCOPE, source_id="hermes", status="active", meta=None):
     record = RecordEnvelope.create(kind="memory", title=title, summary=text,
@@ -270,11 +340,13 @@ def test_stable_cutoff_includes_boundary_and_skips_later_source_records(tmp_path
             before.record_id, boundary.record_id}
         generation = dataset["dataset_generation"]
         assert generation["stable_before"] == cutoff
-        assert generation["same_run_skipped_count"] == 1
-        assert generation["skipped_reason_counts"] == {"source_not_stable_before_cutoff": 1}
+        # The native SQL prefilter excludes this later creation before the
+        # bounded hydrated scan; counters describe only records actually read.
+        assert generation["same_run_skipped_count"] == 0
+        assert generation["skipped_reason_counts"] == {}
         report = _run(runtime, dataset)
         assert report["dataset_generation"]["stable_before"] == cutoff
-        assert report["dataset_generation"]["same_run_skipped_count"] == 1
+        assert report["dataset_generation"]["same_run_skipped_count"] == 0
 
 
 @pytest.mark.parametrize("cutoff", ["private-invalid-date", "2026-99-99T00:00:00Z", 12345])

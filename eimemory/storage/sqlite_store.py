@@ -41,7 +41,8 @@ from typing import Any, Iterable
 from hashlib import sha256
 from time import perf_counter
 from eimemory.core.record_ids import validate_record_id
-from eimemory.contracts.recall_boundary import RECALL_LANE_MEMORY_TYPE_ALIASES, exact_ref, record_recall_memory_type
+from eimemory.contracts.recall_boundary import (DEFAULT_BLOCKED_RECALL_LANES,
+    RECALL_LANE_MEMORY_TYPE_ALIASES, exact_ref, record_recall_memory_type)
 from eimemory.events import (
     DEFAULT_INTENT_PATTERNS,
     ensure_event_payload,
@@ -6246,6 +6247,56 @@ class SqliteRecordStore:
             for row in rows
             if (record := self._record_from_storage_row(row, hydrate=True)) is not None
         ]
+
+    def list_controlled_memory_candidates(
+        self, *, kinds: list[str], scope: ScopeRef,
+        source_ids: list[str] | tuple[str, ...], limit: int,
+        created_before: str = "",
+    ) -> list[RecordEnvelope]:
+        """Bound candidate hydration after native default-use index filters.
+
+        Index labels select candidates only. The caller must recheck hydrated
+        eligibility, the exact physical source and the precise creation time.
+        """
+        self.assert_connection_lock_held()
+        if not isinstance(scope, ScopeRef):
+            raise ValueError("exact_scope_requires_scope")
+        sources = normalize_source_ids(source_ids)
+        if not sources:
+            return []
+        bounded = self._normalize_limit(limit)
+        filters = {"_exact_scope": True, "_source_ids": sources,
+                   "blocked_recall_lanes": DEFAULT_BLOCKED_RECALL_LANES}
+        where, params = self._recall_index_where(kinds=kinds, scope=scope,
+            recall_filters=filters, alias="i")
+        where.extend(["i.status = 'active'", "r.status = 'active'",
+            "r.source_id = i.source_id", "r.kind = i.kind"])
+        # Independently constrain the authority row, even if an index hint is
+        # stale or has the wrong owner. Hydration grants no index authority.
+        self._apply_exact_scope_filters(where, params, scope, alias="r")
+        if created_before:
+            # julianday normalizes Z/offset timestamps before LIMIT. Its rounded
+            # precision is only a conservative prefilter; Python rechecks every
+            # actual envelope's creation instant at full precision afterward.
+            # Python accepts some ISO forms SQLite cannot parse. Keep such
+            # hints for the authoritative Python check rather than exclude a
+            # legitimate old source; malformed instants still cannot qualify.
+            where.append("(julianday(r.created_at) IS NULL OR "
+                         "julianday(r.created_at) <= julianday(?))")
+            params.append(created_before)
+        rows = self.conn.execute(
+            "WITH selected_controlled AS ("
+            "SELECT r.storage_key,r.updated_at,r.record_id FROM recall_index i "
+            "JOIN records r USING(storage_key) WHERE " + " AND ".join(where)
+            + " ORDER BY r.updated_at DESC,r.record_id DESC LIMIT ?) "
+            "SELECT selected_controlled.storage_key,records.source_id,"
+            "records.payload_json,records.payload_pointer_json,records.payload_digest "
+            "FROM selected_controlled JOIN records USING(storage_key) "
+            "ORDER BY selected_controlled.updated_at DESC,selected_controlled.record_id DESC",
+            [*params, bounded],
+        ).fetchall()
+        return [record for row in rows
+                if (record := self._record_from_storage_row(row, hydrate=True)) is not None]
 
     def list_records_by_sources_exact_scope(
         self,

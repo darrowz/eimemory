@@ -425,9 +425,28 @@ def _requires_candidate_barrier(release):
 
 def _evaluate_agent(runtime, entry, policy, cutoff):
     scope, sources = _scope(entry['scope']), tuple(sorted(entry['source_ids']))
-    dataset = benchmark.build_controlled_memory_benchmark(runtime, scope=scope, source_ids=sources,
-        stable_before=cutoff, limit=policy['max_cases_per_scope'])
-    cases = dataset.get('cases', [])
+    if policy.get('purpose') == historical.PURPOSE:
+        # The protected grant already bounds the exact historical targets.
+        # Unrelated newer memories must not displace them from a latest-N page.
+        # Every target still passes the physical, temporal and origin checks
+        # below; a missing or changed grant never falls back to another memory.
+        cases = []
+        for allowed in policy['business_sources']:
+            binding = allowed['source_binding']
+            if binding['scope'] != entry['scope'] or binding['source_id'] not in sources:
+                continue
+            record = runtime.store.get_by_exact_ref(binding['record_id'], scope=scope,
+                source_id=binding['source_id'])
+            if record is None or benchmark._binding(record) != binding:
+                _error('source_version_changed')
+            case = benchmark._case(record)
+            if case is None:
+                _error('source_query_material_empty')
+            cases.append(case)
+    else:
+        dataset = benchmark.build_controlled_memory_benchmark(runtime, scope=scope, source_ids=sources,
+            stable_before=cutoff, limit=policy['max_cases_per_scope'])
+        cases = dataset.get('cases', [])
     if len(cases) < policy['minimum_cases_per_scope']:
         _error('insufficient_existing_records')
     before = {case['case_id']: _physical(runtime, case['source_binding'], scope, sources, cutoff) for case in cases}
