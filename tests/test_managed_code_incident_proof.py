@@ -859,9 +859,25 @@ def test_restored_sqlite_cannot_requalify_by_numerically_reattaining_old_waterma
             source_record_id=original['source_record_id'],source_digest=original['source_digest'],
             after=anchor['sequence'],cursor_anchor=anchor)
         assert rewound['cursor_anchor_verified'] is False and rewound['high_water']<anchor['sequence']
-        while restored.sqlite.conn.execute(f'SELECT coalesce(max(sequence),0) FROM {JOURNAL}').fetchone()[0] < anchor['sequence']+later_rows:
-            restored.append(RecordEnvelope.create(kind='reflection',source='managed.restore.fixture',
-                scope=ScopeRef.from_dict(SCOPE),title='actual replacement after old SQLite snapshot'))
+        target_sequence=anchor['sequence']+later_rows
+        previous_sequence=restored.sqlite.conn.execute(
+            f'SELECT coalesce(max(sequence),0) FROM {JOURNAL}').fetchone()[0]
+        replacements=target_sequence-previous_sequence
+        assert 0<replacements<=100, 'isolated fixture replacement prefix must be bounded'
+        for index in range(replacements):
+            # These are distinct real writes, not retries of the same
+            # reflection that RuntimeStore correctly deduplicates.
+            replacement=RecordEnvelope.create(kind='reflection',source='managed.restore.fixture',
+                scope=ScopeRef.from_dict(SCOPE),
+                title=f'actual replacement after old SQLite snapshot {index}',
+                content={'fixture_replacement_index':index,'target_sequence':target_sequence})
+            appended=restored.append(replacement)
+            assert appended.record_id==replacement.record_id
+            next_sequence=restored.sqlite.conn.execute(
+                f'SELECT coalesce(max(sequence),0) FROM {JOURNAL}').fetchone()[0]
+            assert next_sequence==previous_sequence+1, 'each physical INSERT must advance the original journal'
+            previous_sequence=next_sequence
+        assert previous_sequence==target_sequence
         assert restored.sqlite.conn.execute('SELECT 1 FROM records WHERE record_id=?',
             (original['source_record_id'],)).fetchone() is None
         changes=restored.sqlite.conn.total_changes
