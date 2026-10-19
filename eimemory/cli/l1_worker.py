@@ -211,9 +211,9 @@ def main() -> int:
         try:
             service = AgentRuntimeMemoryService(runtime)
             scope = {
-                "tenant_id": os.environ.get("EIMEMORY_DEPLOY_SCOPE_TENANT") or "default",
+                "tenant_id": os.environ.get("EIMEMORY_DEPLOY_SCOPE_TENANT") or os.environ.get("EIMEMORY_TENANT_ID") or "default",
                 "agent_id": os.environ.get("EIMEMORY_DEPLOY_SCOPE_AGENT") or __import__("eimemory.identity", fromlist=["x"]).HONGTU_AGENT_ID,
-                "workspace_id": "embodied",
+                "workspace_id": os.environ.get("EIMEMORY_DEPLOY_SCOPE_WORKSPACE") or os.environ.get("EIMEMORY_WORKSPACE_ID") or "embodied",
                 "user_id": os.environ.get("EIMEMORY_DEPLOY_SCOPE_USER")
                 or os.environ.get("EIMEMORY_USER_ID")
                 or os.environ.get("USER")

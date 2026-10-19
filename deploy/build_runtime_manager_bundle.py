@@ -34,6 +34,7 @@ def build(root,commit):
         if not source.exists():continue
         text=source.read_text(encoding='utf-8')
         text=text.replace('WantedBy=default.target','WantedBy=multi-user.target').replace('%h','/home/darrow')
+        text=re.sub(r'^Environment=USER=%u$', 'Environment=USER=darrow', text, flags=re.M)
         text=text.replace('/home/darrow/.config/systemd/user/eimemory-l5-effect-review.sh','/opt/eimemory/current/deploy/systemd/eimemory-l5-effect-review.sh')
         if unit.endswith('.service'):
             # Explicit argv is necessary: -I ignores PYTHONPYCACHEPREFIX.
@@ -48,6 +49,10 @@ def build(root,commit):
                 lines.append(line)
             text='\n'.join(lines)+'\n'
             text+='\n[Service]\nUser=darrow\nGroup=darrow\nEnvironment=HOME=/home/darrow\nEnvironment=XDG_RUNTIME_DIR=/run/user/1001\nEnvironment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus\nPrivateUsers=self\nNoNewPrivileges=yes\nCapabilityBoundingSet=\nAmbientCapabilities=\n'
+            if unit=='eimemory-l5-fused-closure.service':
+                text+='KillMode=control-group\nSendSIGKILL=yes\n'
+                hook='/usr/bin/python3'+cache+' /usr/libexec/eimemory-manager/runtime_manager_launch.py --recover-fused'
+                text+='ExecStartPre='+hook+'\nExecStopPost='+hook+'\n'
         files['templates/'+unit]=text.encode()
     files['templates/eimemory-code-deployment-job@.service']=b"""[Unit]
 Description=eimemory registered independent deployment job %i

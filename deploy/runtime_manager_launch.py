@@ -7,6 +7,8 @@ from pathlib import Path
 import re
 import stat
 import sys
+import socket
+import struct
 from hashlib import sha256
 
 
@@ -29,6 +31,7 @@ def read_root(path):
 
 
 EMPTY_PYCACHE=Path('/var/lib/eimemory-manager/empty-pycache')
+REGISTRY=Path('/etc/eimemory-code-automation-authority/runtime-manager.v1.json')
 
 
 def protected_cache():
@@ -41,6 +44,42 @@ def protected_cache():
     os.environ['PYTHONPYCACHEPREFIX']=str(EMPTY_PYCACHE)
     os.environ['PYTHONDONTWRITEBYTECODE']='1'
     return ['-I','-B','-X','pycache_prefix='+str(EMPTY_PYCACHE)]
+
+
+def recover_fused():
+    # Fixed native pre-start/post-stop hook. No product imports or caller unit,
+    # command, scope or invocation arguments cross the root boundary.
+    protected_cache();registry=read_root(REGISTRY)
+    if os.getuid()!=registry['runtime_uid'] or os.geteuid()!=registry['runtime_uid'] or os.geteuid()==0:
+        raise ValueError('manager_launcher_runtime_uid_required')
+    path=Path('/run/eimemory-manager/bridge.sock')
+    for parent in (path.parent,*path.parent.parents):
+        st=parent.lstat()
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or st.st_mode&0o022:raise ValueError('manager_launcher_socket_parent_untrusted')
+    st=path.lstat()
+    if not stat.S_ISSOCK(st.st_mode) or st.st_uid!=0 or stat.S_IMODE(st.st_mode)!=0o660 or st.st_nlink!=1:
+        raise ValueError('manager_launcher_socket_untrusted')
+    value={'schema':'eimemory.runtime_manager_request.v1','operation':'recover_fused_closure','registry_generation':registry['generation']}
+    raw=json.dumps(value,sort_keys=True,separators=(',',':')).encode()
+    def receive(stream,length):
+        result=b''
+        while len(result)<length:
+            chunk=stream.recv(length-len(result))
+            if not chunk:raise ValueError('manager_launcher_response_truncated')
+            result+=chunk
+        return result
+    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as stream:
+        stream.settimeout(610);stream.connect(str(path))
+        if struct.unpack('3i',stream.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))[1]!=0:
+            raise ValueError('manager_launcher_host_root_peer_required')
+        stream.sendall(struct.pack('>I',len(raw))+raw)
+        size=struct.unpack('>I',receive(stream,4))[0]
+        if size>65536:raise ValueError('manager_launcher_response_too_large')
+        result=json.loads(receive(stream,size))
+    if (result.get('schema')!='eimemory.runtime_manager_response.v1' or result.get('operation')!=value['operation']
+            or result.get('registry_generation')!=registry['generation'] or result.get('ok') is not True):
+        raise ValueError('manager_launcher_fused_recovery_failed')
+    print(json.dumps(result))
 
 
 def validate(key,operation):
@@ -96,7 +135,8 @@ def launch(key,*,preflight=False):
 
 
 if __name__=='__main__':
-    if len(sys.argv)==2:launch(sys.argv[1])
+    if len(sys.argv)==2 and sys.argv[1]=='--recover-fused':recover_fused()
+    elif len(sys.argv)==2:launch(sys.argv[1])
     elif len(sys.argv)==3 and sys.argv[1]=='--preflight':launch(sys.argv[2],preflight=True)
     elif len(sys.argv)==4 and sys.argv[1]=='--validation':validate(sys.argv[2],sys.argv[3])
     else:raise SystemExit('exact_job_key_required')

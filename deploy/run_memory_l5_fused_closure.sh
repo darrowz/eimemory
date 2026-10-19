@@ -9,9 +9,7 @@ CURRENT="${EIMEMORY_DEPLOYMENT_CURRENT_LINK:-/opt/eimemory/current}"
 BIN="${CURRENT}/.venv/bin/python"
 REPO="${EIMEMORY_TRUSTED_REPOSITORY_ROOT:-${EIMEMORY_DEPLOYMENT_REPO_ROOT:-}}"
 HEALTH="${EIMEMORY_DEPLOYMENT_HEALTH_URL:-http://127.0.0.1:8091/health}"
-SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-${EIMEMORY_AGENT_ID:-main}}"
-SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-${EIMEMORY_WORKSPACE_ID:-default}}"
-SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-${EIMEMORY_USER_ID:-$(id -un)}}"
+SCOPE_TENANT="${EIMEMORY_DEPLOY_SCOPE_TENANT:-${EIMEMORY_TENANT_ID:-default}}"
 PRIOR="${EIMEMORY_PRIOR_COMMIT:-}"
 LOG=${EIMEMORY_L5_FUSED_LOG:-${HOME}/.hermes/logs/eimemory-l5-fused-closure.log}
 STATUS_JSON=${EIMEMORY_L5_QUERY_STATUS_JSON:-${HOME}/.hermes/logs/eimemory-l5-production-query-status.json}
@@ -36,55 +34,41 @@ if [ ! -d "$REPO" ] || [ ! -x "$BIN" ]; then
   exit 2
 fi
 
-# Capture both resources before changing either. An invocation with invalid
-# configuration or an unreadable state must not start a previously idle timer.
-L1_UNITS=(eimemory-l1-extract.timer eimemory-l1-extract.service)
-L1_STATES=()
-L1_PAUSED=()
-for unit in "${L1_UNITS[@]}"; do
-  if ! state="$(systemctl --user show --property=ActiveState --value "$unit")"; then
-    echo "error=l1_state_unavailable unit=$unit"
-    exit 2
-  fi
-  case "$state" in
-    active|activating|reloading|inactive|failed) L1_STATES+=("$state") ;;
-    *) echo "error=l1_state_unavailable unit=$unit"; exit 2 ;;
-  esac
-done
-
+# Root selects the fixed L1 pair and saves its original active set. A runtime
+# shell has no generic unit-control permission and cannot choose another owner.
+CONTROL="$CURRENT/deploy/runtime_manager_control.py"
+CACHE=/var/lib/eimemory-manager/empty-pycache
+mapfile -t coordinates < <("$BIN" -I -B -X "pycache_prefix=$CACHE" "$CONTROL" fused-scope)
+if [ "${#coordinates[@]}" != 4 ]; then
+  echo "error=fused_owner_scope_unavailable"
+  exit 2
+fi
+SCOPE_TENANT="${coordinates[0]}"
+SCOPE_AGENT="${coordinates[1]}"
+SCOPE_WORKSPACE="${coordinates[2]}"
+SCOPE_USER="${coordinates[3]}"
+context_key="$("$BIN" -I -B -X "pycache_prefix=$CACHE" "$CONTROL" fused-begin)" || {
+  echo "error=l1_managed_pause_failed"
+  exit 2
+}
+if ! printf '%s' "$context_key" | grep -Eq '^[0-9a-f]{64}$'; then
+  echo "error=l1_managed_context_invalid"
+  exit 2
+fi
 restore_l1() {
-  local exit_status=$? restore_failed=0 index
+  local exit_status=$?
   trap - EXIT
-  # Restore the service before its timer. A successful stop is owned even if
-  # its following state probe fails; do not strand an originally active unit.
-  for ((index=${#L1_PAUSED[@]}-1; index>=0; index--)); do
-    if ! systemctl --user start "${L1_PAUSED[index]}"; then
-      echo "error=l1_restore_failed unit=${L1_PAUSED[index]}"
-      restore_failed=1
-    fi
-  done
-  if [ "$restore_failed" = 1 ] && [ "$exit_status" = 0 ]; then
-    exit_status=2
+  if ! "$BIN" -I -B -X "pycache_prefix=$CACHE" "$CONTROL" fused-end "$context_key"; then
+    echo "error=l1_managed_restore_failed"
+    if [ "$exit_status" = 0 ]; then exit_status=2; fi
   fi
   exit "$exit_status"
 }
 trap restore_l1 EXIT
-
-for index in "${!L1_UNITS[@]}"; do
-  unit="${L1_UNITS[index]}"
-  stop_status=0
-  systemctl --user stop "$unit" || stop_status=$?
-  state="$(systemctl --user show --property=ActiveState --value "$unit")" || state=unknown
-  if [ "$stop_status" = 0 ] || [ "$state" = inactive ]; then
-    case "${L1_STATES[index]}" in
-      active|activating|reloading) L1_PAUSED+=("$unit") ;;
-    esac
-  fi
-  if [ "$stop_status" != 0 ] || [ "$state" != inactive ]; then
-    echo "error=l1_stop_failed unit=$unit"
-    exit 2
-  fi
-done
+export EIMEMORY_DEPLOY_SCOPE_TENANT="$SCOPE_TENANT"
+export EIMEMORY_DEPLOY_SCOPE_AGENT="$SCOPE_AGENT"
+export EIMEMORY_DEPLOY_SCOPE_WORKSPACE="$SCOPE_WORKSPACE"
+export EIMEMORY_DEPLOY_SCOPE_USER="$SCOPE_USER"
 
 echo "stage=memory_plane_eval"
 EIMEMORY_L1_WORKER_ACTION=eval "$BIN" -m eimemory.cli.l1_worker
@@ -92,6 +76,7 @@ echo "stage=memory_plane_eval ok"
 
 echo "stage=production_query_collect"
 "$BIN" -m eimemory.cli.main eval production-query collect \
+  --scope-tenant "$SCOPE_TENANT" \
   --scope-agent "$SCOPE_AGENT" \
   --scope-workspace "$SCOPE_WORKSPACE" \
   --scope-user "$SCOPE_USER" \
@@ -100,6 +85,7 @@ echo "stage=production_query_collect ok"
 
 echo "stage=production_query_status"
 "$BIN" -m eimemory.cli.main eval production-query status \
+  --scope-tenant "$SCOPE_TENANT" \
   --scope-agent "$SCOPE_AGENT" \
   --scope-workspace "$SCOPE_WORKSPACE" \
   --scope-user "$SCOPE_USER" | tee "$STATUS_JSON"
@@ -119,6 +105,7 @@ echo "stage=release_closure"
   --current-link "$CURRENT" \
   --health-url "$HEALTH" \
   --prior-commit "$PRIOR" \
+  --scope-tenant "$SCOPE_TENANT" \
   --scope-agent "$SCOPE_AGENT" \
   --scope-workspace "$SCOPE_WORKSPACE" \
   --scope-user "$SCOPE_USER" \

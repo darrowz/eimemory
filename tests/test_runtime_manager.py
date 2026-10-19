@@ -967,3 +967,128 @@ def test_actual_registry_rejects_runtime_parent_without_changing_configuration_o
     finally:
         assert base.resolve().parent==Path('/run') and base.name.startswith('eimemory-manager-registry-parent-')
         shutil.rmtree(base)
+
+def fused_fixture(monkeypatch,tmp_path,*,initial=('active','active')):
+    from types import SimpleNamespace
+    m,b,r,calls=bridge_fixture(monkeypatch);b.state=tmp_path;b.proc=tmp_path/'proc'
+    process=b.proc/'42';process.mkdir(parents=True)
+    (process/'status').write_text('Uid: 1001 1001 1001 1001\nNoNewPrivs: 1\nCapEff: 0000000000000000\nCapPrm: 0000000000000000\nCapAmb: 0000000000000000\n')
+    (process/'cgroup').write_text('0::/system.slice/'+c.FUSED_UNIT+'\n')
+    states={u:dict(LoadState='loaded',ActiveState=v,Result='exit-code' if v=='failed' else 'success') for u,v in zip(c.FUSED_L1_UNITS,initial)}
+    native=dict(LoadState='loaded',ActiveState='active',InvocationID='a'*32,MainPID='50',
+        ControlGroup='/system.slice/'+c.FUSED_UNIT,KillMode='control-group',SendSIGKILL='yes')
+    for unit in (c.FUSED_UNIT,*c.FUSED_L1_UNITS):r['units'][unit]['installed']=True
+    releases=tmp_path/'releases';target=releases/r['runtime_commit'];target.mkdir(parents=True)
+    monkeypatch.setattr(m,'CURRENT',SimpleNamespace(resolve=lambda **_:target));monkeypatch.setattr(m,'RELEASES',releases)
+    monkeypatch.setattr(m,'trusted_directory',lambda *_args,**_kwargs:None)
+    monkeypatch.setattr(m.os,'chown',lambda *_args:None,raising=False)
+    monkeypatch.setattr(m,'read_file',lambda path,**_:Path(path).read_bytes())
+    def save(path,value,**kwargs):
+        path=Path(path)
+        if kwargs.get('exclusive') and path.exists():raise FileExistsError(path)
+        path.write_bytes(c.canonical(value))
+    monkeypatch.setattr(m,'atomic_json',save)
+    monkeypatch.setattr(b,'unit_state',lambda reg,unit,props:{p:(native if unit==c.FUSED_UNIT else states[unit])[p] for p in props})
+    def command(reg,unit,*args):
+        calls.append((unit,args))
+        if args[0]=='stop':states[unit]['ActiveState']='inactive'
+        elif args[0]=='start':states[unit]['ActiveState']='active';states[unit]['Result']='success'
+    monkeypatch.setattr(b,'systemctl',command)
+    return m,b,r,calls,states,native,process,target
+
+
+@pytest.mark.parametrize('initial',[('active','active'),('inactive','failed'),('active','inactive'),('activating','reloading')])
+def test_fused_context_pauses_only_fixed_active_units_and_restores_service_before_timer(monkeypatch,tmp_path,initial):
+    _m,b,r,calls,states,_native,_process,_target=fused_fixture(monkeypatch,tmp_path,initial=initial)
+    result=b.fused_closure(r,'begin',42,1001);key=result['context_key']
+    active=[u for u,s in zip(c.FUSED_L1_UNITS,initial) if s in {'active','activating','reloading'}]
+    assert result['active_before']==active
+    assert [u for u,args in calls if args[0]=='stop']==active
+    before=list(calls);assert b.fused_closure(r,'begin',42,1001)['idempotent'] is True
+    assert calls==before
+    assert b.fused_closure(r,'end',42,1001,key)['restored'] is True
+    assert [u for u,args in calls if args[0]=='start']==list(reversed(active))
+    assert states[c.FUSED_L1_UNITS[1]]['ActiveState']==('active' if c.FUSED_L1_UNITS[1] in active else initial[1])
+    assert c.strict_json((tmp_path/'active-transition.json').read_bytes())['complete'] is True
+    assert b.fused_record(key)['active_before']==active
+
+
+@pytest.mark.parametrize('fault',['wrong_cgroup','wrong_invocation','no_nnp','caps','uid','third_release','foreign_transition','unknown_l1'])
+def test_fused_admission_has_no_arbitrary_unit_or_identity_authority(monkeypatch,tmp_path,fault):
+    from types import SimpleNamespace
+    m,b,r,calls,states,native,process,target=fused_fixture(monkeypatch,tmp_path)
+    uid=1001
+    if fault=='wrong_cgroup':(process/'cgroup').write_text('0::/system.slice/eimemory-nightly.service\n')
+    elif fault=='wrong_invocation':native['InvocationID']=''
+    elif fault=='no_nnp':(process/'status').write_text((process/'status').read_text().replace('NoNewPrivs: 1','NoNewPrivs: 0'))
+    elif fault=='caps':(process/'status').write_text((process/'status').read_text().replace('CapPrm: 0000000000000000','CapPrm: 0000000000000001'))
+    elif fault=='uid':uid=65534
+    elif fault=='third_release':monkeypatch.setattr(m,'CURRENT',SimpleNamespace(resolve=lambda **_:target.parent/('b'*40)))
+    elif fault=='foreign_transition':(tmp_path/'active-transition.json').write_bytes(c.canonical({'job_key':'b'*64,'complete':False}))
+    elif fault=='unknown_l1':states[c.FUSED_L1_UNITS[0]]['ActiveState']='deactivating'
+    with pytest.raises(ValueError):b.fused_closure(r,'begin',42,uid)
+    assert calls==[]
+
+
+@pytest.mark.parametrize('failed_unit',c.FUSED_L1_UNITS)
+def test_fused_partial_pause_failure_restores_original_set_without_resetting_prior_failed(monkeypatch,tmp_path,failed_unit):
+    _m,b,r,calls,states,_native,_process,_target=fused_fixture(monkeypatch,tmp_path)
+    original=b.systemctl
+    def command(reg,unit,*args):
+        original(reg,unit,*args)
+        if unit==failed_unit and args[0]=='stop':raise ValueError('manager_command_failed')
+    monkeypatch.setattr(b,'systemctl',command)
+    with pytest.raises(ValueError,match='command_failed'):b.fused_closure(r,'begin',42,1001)
+    assert all(states[u]['ActiveState']=='active' for u in c.FUSED_L1_UNITS)
+    pointer=c.strict_json((tmp_path/'active-transition.json').read_bytes())
+    assert pointer['complete'] is True and b.fused_record(pointer['job_key'])['pause_failed'] is True
+
+
+@pytest.mark.parametrize('new_invocation',[False,True])
+def test_native_stoppost_or_next_prestart_recovers_durable_context_after_bridge_restart(monkeypatch,tmp_path,new_invocation):
+    _m,b,r,calls,states,native,_process,_target=fused_fixture(monkeypatch,tmp_path)
+    original=b.fused_closure(r,'begin',42,1001);old=b.fused_record(original['context_key'])
+    native.update(ActiveState='activating' if new_invocation else 'deactivating',MainPID='0')
+    if new_invocation:native['InvocationID']='b'*32
+    # The root bytes, not a process-local active-set cache, are sufficient.
+    restored=b.fused_closure(r,'recover',42,1001)
+    assert restored['restored'] is True and all(states[u]['ActiveState']=='active' for u in c.FUSED_L1_UNITS)
+    assert b.fused_record(original['context_key'])['invocation']==old['invocation']
+    assert b.fused_closure(r,'recover',42,1001)['phase']=='no_pending_context'
+
+
+def test_fused_recovery_refuses_running_main_and_deploy_refuses_active_fused(monkeypatch,tmp_path):
+    _m,b,r,_calls,_states,native,_process,_target=fused_fixture(monkeypatch,tmp_path)
+    begun=b.fused_closure(r,'begin',42,1001)
+    with pytest.raises(ValueError,match='requires_native_hook'):b.fused_closure(r,'recover',42,1001)
+    native['InvocationID']='b'*32
+    with pytest.raises(ValueError,match='original_invocation'):b.fused_closure(r,'end',42,1001,begun['context_key'])
+
+
+def test_fused_template_identity_and_hooks_are_fixed_root_reviewed_commands():
+    files=standalone('build_runtime_manager_bundle').build(ROOT,'a'*40)
+    text=files['templates/'+c.FUSED_UNIT].decode()
+    assert 'Environment=USER=darrow' in text and 'USER=%u' not in text
+    assert 'KillMode=control-group' in text and 'SendSIGKILL=yes' in text
+    assert text.count('runtime_manager_launch.py --recover-fused')==2
+
+
+def test_fused_restore_failure_retains_capture_and_failed_invocation_until_native_recovery(monkeypatch,tmp_path):
+    _m,b,r,calls,states,native,_process,_target=fused_fixture(monkeypatch,tmp_path)
+    original=b.fused_closure(r,'begin',42,1001);real=b.systemctl
+    def command(reg,unit,*args):
+        if args[0]=='start' and unit.endswith('.timer'):raise ValueError('manager_start_failed')
+        return real(reg,unit,*args)
+    monkeypatch.setattr(b,'systemctl',command)
+    with pytest.raises(ValueError,match='start_failed'):b.fused_closure(r,'end',42,1001,original['context_key'])
+    assert b.fused_record(original['context_key'])['active_before']==list(c.FUSED_L1_UNITS)
+    assert c.strict_json((tmp_path/'active-transition.json').read_bytes())['complete'] is False
+    native.update(ActiveState='deactivating',MainPID='0');monkeypatch.setattr(b,'systemctl',real)
+    assert b.fused_closure(r,'recover',42,1001)['restored'] is True
+
+
+def test_deployment_quiesce_refuses_fused_context_without_loading_a_fake_job(monkeypatch,tmp_path):
+    _m,b,r,_req,key,_records,_stored,_target,calls,persist=lifecycle_fixture(monkeypatch,tmp_path)
+    persist({'context':'fused_closure','job_key':'f'*64,'complete':False})
+    with pytest.raises(ValueError,match='another_transition_active'):b.transition(r,key,'quiesce',42,1001)
+    assert calls==[]

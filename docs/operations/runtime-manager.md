@@ -128,6 +128,17 @@ stopped/active observations; it is never silently overwritten or retried.
 
 ## Evidence boundaries
 
+The optional fused closure is also a registered PID1 owner. Its USER is the
+runtime account, not PID1's manager user. It acquires a narrow root context for
+the fixed L1 service/timer pair, preserving their original active set under the
+same global transition mutex as deployment. The shell cannot select units or
+use user-manager mutations. Its normal exit trap restores that context; fixed
+root-reviewed ExecStopPost and next ExecStartPre hooks recover it after an
+interrupted invocation. A changed serving release, another active transition
+or unknown native identity leaves the durable context held. Failed/inactive L1
+units are never started or reset. All four configured scope coordinates are
+passed identically to L1 eval and production-query/release-closure commands.
+
 The current source is a reviewable boundary candidate. Unit/contract tests do
 not prove PID1 namespace behavior. Release integration still requires isolated
 native SO_PEERCRED/NNP/cgroup-survival tests, both full CI workflows and actual

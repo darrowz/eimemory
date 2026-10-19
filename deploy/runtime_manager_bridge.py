@@ -562,6 +562,126 @@ class Bridge:
         if record.get('original_invocation') is None:
             record['original_invocation']=state['InvocationID'];self.save(registry,record)
 
+    def fused_peer(self,registry,pid,uid):
+        unit=self.c.FUSED_UNIT
+        if registry['units'][unit]!={'manager':'system','installed':True}:
+            raise ValueError('manager_fused_unit_not_registered')
+        process=self.proc/str(pid)
+        values=dict(line.split(':',1) for line in (process/'status').read_text().splitlines() if ':' in line)
+        if (uid!=registry['runtime_uid'] or values.get('Uid','').split()!=[str(uid)]*4
+                or values.get('NoNewPrivs','').strip()!='1'
+                or any(re.fullmatch('0+',values.get(name,'').strip()) is None for name in ('CapEff','CapPrm','CapAmb'))):
+            raise ValueError('manager_fused_peer_identity_invalid')
+        state=self.unit_state(registry,unit,['LoadState','ActiveState','InvocationID','MainPID','ControlGroup','KillMode','SendSIGKILL'])
+        cg=state['ControlGroup']
+        if (state['LoadState']!='loaded' or not cg.startswith('/system.slice/') or cg.rsplit('/',1)[-1]!=unit
+                or not any(line.startswith('0::') and (line[3:]==cg or line[3:].startswith(cg+'/'))
+                    for line in (process/'cgroup').read_text().splitlines())
+                or state['KillMode']!='control-group' or state['SendSIGKILL']!='yes'):
+            raise ValueError('manager_fused_peer_cgroup_invalid')
+        self.c.hex_value(state['InvocationID'],32,'manager_fused_invocation_invalid')
+        return state
+
+    def fused_record(self,key):
+        self.c.hex_value(key,64,'manager_fused_key_invalid')
+        path=self.state/'fused-closures'/(key+'.json');trusted_directory(path.parent,mode=0o750)
+        record=self.c.strict_json(read_file(path))
+        if not isinstance(record,dict):raise ValueError('manager_fused_record_invalid')
+        fields={'schema','context_key','unit','invocation','runtime_commit','unit_states','active_before','phase'}
+        identity={name:record.get(name) for name in ('unit','invocation','runtime_commit')}
+        if (not isinstance(record,dict) or not fields<=set(record)<=fields|{'pause_failed'}
+                or record.get('context_key')!=key or self.c.digest(identity)!=key
+                or record.get('schema')!='eimemory.fused_closure_context.v1'
+                or record.get('phase') not in {'pause_intent','paused','restore_intent','completed'}
+                or set(record.get('unit_states',{}))!=set(self.c.FUSED_L1_UNITS)
+                or any(v not in {'active','activating','reloading','inactive','failed'} for v in record['unit_states'].values())
+                or record.get('unit')!=self.c.FUSED_UNIT or record.get('active_before')!=[
+                    unit for unit in self.c.FUSED_L1_UNITS if record.get('unit_states',{}).get(unit) in {'active','activating','reloading'}]):
+            raise ValueError('manager_fused_record_invalid')
+        self.c.hex_value(record['runtime_commit'],40,'manager_fused_runtime_commit_invalid')
+        self.c.hex_value(record['invocation'],32,'manager_fused_invocation_invalid')
+        return record
+
+    def save_fused(self,registry,record,*,exclusive=False):
+        directory=self.state/'fused-closures'
+        if not directory.exists():directory.mkdir(mode=0o750);os.chown(directory,0,registry['runtime_gid'])
+        trusted_directory(directory,mode=0o750)
+        atomic_json(directory/(record['context_key']+'.json'),record,gid=registry['runtime_gid'],exclusive=exclusive)
+
+    def restore_fused(self,registry,record):
+        # Restoring only the root-captured active set is safe after partial stop
+        # failure too: start is idempotent and never restarts an active unit.
+        if CURRENT.resolve(strict=True)!=RELEASES/record['runtime_commit'] or registry['runtime_commit']!=record['runtime_commit']:
+            raise ValueError('manager_fused_restore_release_changed')
+        active=self.state/'active-transition.json'
+        pointer=self.c.strict_json(read_file(active))
+        if pointer.get('context')!='fused_closure' or pointer.get('job_key')!=record['context_key']:
+            raise ValueError('manager_fused_restore_context_changed')
+        record['phase']='restore_intent';self.save_fused(registry,record)
+        for unit in reversed(self.c.FUSED_L1_UNITS):
+            if unit not in record['active_before']:continue
+            self.systemctl(registry,unit,'start',*(['--no-block'] if unit.endswith('.service') else []))
+            state=self.unit_state(registry,unit,['LoadState','ActiveState','Result'])
+            if (state['LoadState']!='loaded' or state['ActiveState'] not in {'active','activating','reloading'}
+                    and not (unit.endswith('.service') and state['ActiveState']=='inactive' and state['Result']=='success')):
+                raise ValueError('manager_fused_restore_not_observed')
+        record['phase']='completed';self.save_fused(registry,record)
+        atomic_json(active,{'context':'fused_closure','job_key':record['context_key'],'complete':True},gid=registry['runtime_gid'])
+        return {'context_key':record['context_key'],'restored':True,'phase':'completed','active_before':record['active_before']}
+
+    def fused_closure(self,registry,action,pid,uid,key=None):
+        state=self.fused_peer(registry,pid,uid);active=self.state/'active-transition.json'
+        pointer=self.c.strict_json(read_file(active)) if active.exists() else None
+        existing=None
+        if pointer and pointer.get('context')=='fused_closure':existing=self.fused_record(pointer.get('job_key'))
+        if action=='recover':
+            if existing is None or existing['phase']=='completed':return {'restored':True,'phase':'no_pending_context'}
+            # Only the fixed service's pre-start/post-stop hooks run with no
+            # MainPID. A different CLI, or its still-running main, cannot end a
+            # context on behalf of the service. New invocation recovery covers
+            # a prior boot without rewriting that invocation's original record.
+            if state['ActiveState'] not in {'activating','deactivating','inactive','failed'} or state['MainPID']!='0':
+                raise ValueError('manager_fused_recovery_requires_native_hook')
+            return self.restore_fused(registry,existing)
+        if state['ActiveState'] not in {'active','activating'}:raise ValueError('manager_fused_service_not_running')
+        if action=='end':
+            record=self.fused_record(key)
+            if record['invocation']!=state['InvocationID']:raise ValueError('manager_fused_original_invocation_mismatch')
+            if record['phase']=='completed':return {'context_key':key,'restored':True,'phase':'completed','idempotent':True}
+            return self.restore_fused(registry,record)
+        if pointer and pointer.get('complete') is not True:
+            if existing is None:raise ValueError('manager_another_transition_active')
+            if existing['invocation']!=state['InvocationID']:raise ValueError('manager_fused_prior_context_requires_recovery')
+            record=existing
+        else:
+            if pointer and pointer.get('held') is True:raise ValueError('manager_held_runtime_requires_manual_upgrade')
+            if CURRENT.resolve(strict=True)!=RELEASES/registry['runtime_commit']:raise ValueError('manager_fused_current_release_changed')
+            states={}
+            for unit in self.c.FUSED_L1_UNITS:
+                if registry['units'][unit]!={'manager':'system','installed':True}:raise ValueError('manager_fused_l1_unit_not_registered')
+                value=self.unit_state(registry,unit,['LoadState','ActiveState'])
+                if value['LoadState']!='loaded' or value['ActiveState'] not in {'active','activating','reloading','inactive','failed'}:
+                    raise ValueError('manager_fused_l1_state_unknown')
+                states[unit]=value['ActiveState']
+            identity={'unit':self.c.FUSED_UNIT,'invocation':state['InvocationID'],'runtime_commit':registry['runtime_commit']}
+            key=self.c.digest(identity)
+            record={'schema':'eimemory.fused_closure_context.v1','context_key':key,**identity,
+                'unit_states':states,'active_before':[u for u in self.c.FUSED_L1_UNITS if states[u] in {'active','activating','reloading'}],'phase':'pause_intent'}
+            self.save_fused(registry,record,exclusive=True)
+            atomic_json(active,{'context':'fused_closure','job_key':key,'complete':False},gid=registry['runtime_gid'])
+        if record['phase']=='paused':return {'context_key':record['context_key'],'phase':'paused','active_before':record['active_before'],'idempotent':True}
+        try:
+            for unit in self.c.FUSED_L1_UNITS:
+                if unit in record['active_before']:self.systemctl(registry,unit,'stop')
+                value=self.unit_state(registry,unit,['ActiveState'])
+                if value['ActiveState'] not in {'inactive','failed'}:raise ValueError('manager_fused_l1_not_quiesced')
+        except Exception:
+            record['pause_failed']=True;self.save_fused(registry,record)
+            self.restore_fused(registry,record)
+            raise
+        record['phase']='paused';self.save_fused(registry,record)
+        return {'context_key':record['context_key'],'phase':'paused','active_before':record['active_before']}
+
     def writers(self,registry):
         excluded={'eimemory-console.service'}
         return [u for u,v in registry['units'].items() if v['installed'] and u not in excluded]
@@ -581,6 +701,7 @@ class Bridge:
             if active_path.exists():
                 existing=self.c.strict_json(read_file(active_path))
                 if existing.get('job_key')!=key and existing.get('complete') is not True:
+                    if existing.get('context')=='fused_closure':raise ValueError('manager_another_transition_active')
                     prior=self.record(existing.get('job_key',''))
                     before=prior['request'];after=record['request']
                     same_rollback=(before.get('operation')=='deploy' and after.get('operation')=='rollback'
@@ -792,6 +913,7 @@ class Bridge:
             raise ValueError('manager_request_registry_mismatch')
         op=value.get('operation');base={'schema','operation','registry_generation'}
         fields={'unit_state':{'unit','properties'},'unit_journal':{'unit','invocation','limit'},
+            'begin_fused_closure':set(),'end_fused_closure':{'context_key'},'recover_fused_closure':set(),
             'issue_managed_incident_proof':{'source_record_id','source_digest'},'verify_managed_incident_proof':{'receipt_id','digest'},'checkpoint_managed_incident_knowledge':set(),
             'runtime_identity':{'unit'},'activation_attestation':set(),'verify_activation_attestation':{'receipt_id','digest'},'error_window':set(),'single_rpc_owner':set(),'readonly_probe':{'job_key'},'submit_job':{'job_key'},'job_status':{'job_key'},
             'job_journal':{'job_key','invocation'},'validate_deployment_job':{'job_key','validation_operation'},'seal_deployment_validation_result':{'job_key','validation_operation','invocation','artifact_digest'},'deployment_validation_status':{'job_key','validation_operation'},'finalize_job':{'job_key'},'complete_job':{'job_key'},'transition':{'job_key','phase'}}
@@ -831,6 +953,9 @@ class Bridge:
             return {'runtime_commit':values[0]}
         # Serialize durable transitions. Reads never cause a lifecycle action.
         with self.mutex,self.lifecycle_lock():
+            if op=='begin_fused_closure':return self.fused_closure(registry,'begin',pid,uid)
+            if op=='end_fused_closure':return self.fused_closure(registry,'end',pid,uid,value['context_key'])
+            if op=='recover_fused_closure':return self.fused_closure(registry,'recover',pid,uid)
             if op=='seal_deployment_validation_result':return {'validation':self.seal_validation(registry,value['job_key'],value['validation_operation'],value['invocation'],value['artifact_digest'],pid,uid)}
             if op=='validate_deployment_job':return {'validation':self.validate_job(registry,value['job_key'],value['validation_operation'],pid,uid)}
             if op=='deployment_validation_status':return {'validation':self.validation_status(registry,value['job_key'],value['validation_operation'])}

@@ -12,6 +12,16 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from eimemory.core.runtime_manager import read_registry, unit_state, request, transition
 
 
+def fused_scope():
+    from eimemory.identity import HONGTU_AGENT_ID,HONGTU_WORKSPACE_ID,default_operator_user_id
+    from eimemory.contracts.runtime_manager import validate_scope
+    return validate_scope({
+        'tenant_id':os.environ.get('EIMEMORY_DEPLOY_SCOPE_TENANT') or os.environ.get('EIMEMORY_TENANT_ID') or 'default',
+        'agent_id':os.environ.get('EIMEMORY_DEPLOY_SCOPE_AGENT') or os.environ.get('EIMEMORY_AGENT_ID') or HONGTU_AGENT_ID,
+        'workspace_id':os.environ.get('EIMEMORY_DEPLOY_SCOPE_WORKSPACE') or os.environ.get('EIMEMORY_WORKSPACE_ID') or HONGTU_WORKSPACE_ID,
+        'user_id':os.environ.get('EIMEMORY_DEPLOY_SCOPE_USER') or os.environ.get('EIMEMORY_USER_ID') or default_operator_user_id()})
+
+
 def systemctl(args):
     args=list(args)
     props=[];units=[];value=False;quiet=False;verb=None;i=0
@@ -68,6 +78,21 @@ def main(argv=None):
         print(json.dumps(request('readonly_probe',job_key=os.environ.get('EIMEMORY_RUNTIME_TRANSITION_JOB',''))));return 0
     if argv[0]=='single-owner' and len(argv)==1:
         print(json.dumps(request('single_rpc_owner')));return 0
+    if argv==['fused-scope']:
+        scope=fused_scope()
+        for name in ('tenant_id','agent_id','workspace_id','user_id'):print(scope[name])
+        return 0
+    if argv==['fused-begin']:
+        result=request('begin_fused_closure')
+        if result.get('phase')!='paused':raise ValueError('manager_fused_pause_not_confirmed')
+        key=result.get('context_key','')
+        if len(key)!=64 or any(c not in '0123456789abcdef' for c in key):raise ValueError('manager_fused_context_invalid')
+        print(key);return 0
+    if len(argv)==2 and argv[0]=='fused-end':
+        from eimemory.core.runtime_manager import end_fused_closure
+        result=end_fused_closure(argv[1])
+        if result.get('restored') is not True:raise ValueError('manager_fused_restore_not_confirmed')
+        print(json.dumps(result));return 0
     raise ValueError('manager_control_action_forbidden')
 
 
