@@ -129,11 +129,8 @@ def _quality_gate(report: dict[str, Any]) -> dict[str, Any]:
     """
     for key in ("quality_gate", "threshold_gate"):
         gate = report.get(key)
-        if not isinstance(gate, dict) or "recall_quality_evidence" not in gate and "ok" not in gate:
-            continue
-        if gate.get("ok") is True and not isinstance(gate.get("recall_quality_evidence"), dict):
-            continue
-        return gate
+        if isinstance(gate, dict) and ("ok" in gate or "recall_quality_evidence" in gate):
+            return gate
     return {}
 
 

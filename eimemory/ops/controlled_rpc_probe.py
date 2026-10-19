@@ -130,5 +130,5 @@ def run_controlled_rpc_probe(runtime, *, scope, expected_commit):
     except (ValueError, RuntimeError, TypeError, KeyError, AttributeError, OSError) as exc:
         report.update(error="controlled_rpc_probe_unavailable", error_type=type(exc).__name__)
     report["sample_count"] = len(report["cases"])
-    report["pass_count"] = sum(row["passed"] for row in report["cases"])
+    report["pass_count"] = sum(bool(row.get("passed")) for row in report["cases"])
     return report
