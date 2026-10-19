@@ -18,6 +18,7 @@ import stat
 import subprocess
 import time
 import urllib.request
+from urllib.error import HTTPError, URLError
 import zipfile
 from contextlib import contextmanager
 
@@ -39,6 +40,14 @@ def directory(path,*,gid=0,mode=0o750):
         s=item.lstat()
         if not stat.S_ISDIR(s.st_mode) or s.st_uid!=0 or stat.S_IMODE(s.st_mode)&0o022:
             raise ValueError('bootstrap_directory_untrusted')
+    return path
+
+
+def exact_directory(path,*,gid,mode):
+    path=directory(path,gid=gid,mode=mode)
+    metadata=path.lstat()
+    if metadata.st_gid!=gid or stat.S_IMODE(metadata.st_mode)!=mode:
+        raise ValueError('bootstrap_directory_identity_or_mode_invalid')
     return path
 
 
@@ -129,16 +138,17 @@ def lifecycle_lock():
 
 
 def load_contract():
-    path=ROOT/'runtime_manager_contract.py';read(path)
+    path=ROOT/'runtime_manager_contract.py';raw=read(path)
     spec=importlib.util.spec_from_file_location('reviewed_runtime_contract',path)
-    c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
+    c=importlib.util.module_from_spec(spec);exec(compile(raw,str(path),'exec'),c.__dict__)
     return c
 
 
 def owner_files(account,operation,value):
     # Fixed reviewed helper, product source is never imported in root.
     path=ROOT/'runtime_manager_owner_files.py';read(path)
-    done=subprocess.run(['/usr/sbin/runuser','-u',account.pw_name,'--','/usr/bin/python3','-I','-B',str(path),operation],
+    done=subprocess.run(['/usr/sbin/runuser','-u',account.pw_name,'--','/usr/bin/python3','-I','-B','-X',
+        'pycache_prefix=/var/lib/eimemory-manager/empty-pycache',str(path),operation],
         input=json.dumps(value,sort_keys=True,separators=(',',':')),capture_output=True,text=True,timeout=30,
         env={'PATH':'/usr/bin:/bin','LC_ALL':'C','PYTHONDONTWRITEBYTECODE':'1'})
     if done.returncode or done.stderr or len(done.stdout.encode())>4*1024*1024:raise ValueError('bootstrap_user_owner_files_failed')
@@ -152,16 +162,47 @@ def storage_clean():
 
 
 def healthy_original(commit):
-    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open('http://127.0.0.1:8091/health',timeout=10) as response:
-        raw=response.read(1048577)
-    if len(raw)>1048576:raise ValueError('bootstrap_health_output_limit')
-    health=json.loads(raw)
-    if (not isinstance(health,dict) or health.get('ok') is not True or health.get('commit')!=commit
-            or not isinstance(health.get('checks'),dict) or not health['checks']
-            or any(v is not True for v in health['checks'].values())):
-        raise ValueError('bootstrap_original_health_identity_failed')
-    return {'commit':commit,'ok':True,'checks':health['checks']}
+    # Public /health deliberately omits deploy identity. Read one fixed local
+    # credential as data only; do not source it, export it, archive it or follow
+    # an HTTP redirect carrying that credential.
+    lines=read('/etc/eimemory/rpc.env',limit=65536,root=False).decode('utf-8').splitlines()
+    tokens=[line.strip().partition('=')[2].strip() for line in lines
+        if line.strip().startswith('EIMEMORY_RPC_AUTH_TOKEN=')]
+    if len(tokens)!=1 or not tokens[0] or len(tokens[0])>4096 or any(c in tokens[0] for c in '\r\n\0'):
+        raise ValueError('bootstrap_original_health_auth_unavailable')
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self,*_args,**_kwargs):return None
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
+    request=urllib.request.Request('http://127.0.0.1:8091/health',headers={'Authorization':'Bearer '+tokens[0]})
+    release=RELEASES/commit
+    deadline=time.monotonic()+120;last_error=None
+    while time.monotonic()<deadline:
+        try:
+            with opener.open(request,timeout=min(10,max(0.1,deadline-time.monotonic()))) as response:
+                raw=response.read(1048577)
+        except HTTPError as exc:
+            if exc.code<500:raise ValueError('bootstrap_original_health_http_rejected') from exc
+            last_error=exc
+        except (URLError,OSError,TimeoutError) as exc:
+            last_error=exc
+        else:
+            if len(raw)>1048576:raise ValueError('bootstrap_health_output_limit')
+            health=json.loads(raw)
+            # An observed wrong identity is rejected immediately. Only genuine
+            # readiness/transport startup delay is polled; no owner is restarted.
+            if (not isinstance(health,dict) or health.get('commit')!=commit
+                    or health.get('service')!='eimemory-rpc' or health.get('configured_runtime_commit')!=commit
+                    or health.get('import_root')!=str(release/'eimemory')
+                    or not isinstance(health.get('paths'),dict) or health['paths'].get('release')!=str(release)
+                    or not isinstance(health.get('checks'),dict)
+                    or not {'process','store','runtime_identity','ready'}<=set(health['checks'])):
+                raise ValueError('bootstrap_original_health_identity_failed')
+            if health.get('ok') is True and all(v is True for v in health['checks'].values()):
+                return {'commit':commit,'ok':True,'checks':health['checks']}
+            last_error=ValueError('bootstrap_original_health_not_ready')
+        remaining=deadline-time.monotonic()
+        if remaining>0:time.sleep(min(1,remaining))
+    raise ValueError('bootstrap_original_health_readiness_timeout') from last_error
 
 
 def root_snapshot(files):
@@ -206,6 +247,32 @@ def restore_root_files(snapshot):
             finally:os.close(directory_fd)
 
 
+def exited_job_state(c,key,record):
+    properties=('LoadState','ActiveState','SubState','Result','InvocationID','ExecMainStatus',
+        'MainPID','ControlGroup','ExecMainExitTimestampMonotonic')
+    state=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',c.job_unit(key),
+        '--property='+','.join(properties)]).splitlines() if '=' in line)
+    if set(state)!=set(properties):raise ValueError('bootstrap_job_native_state_incomplete')
+    original=record.get('original_invocation');actual=state['InvocationID']
+    if actual and original not in {None,actual}:raise ValueError('bootstrap_job_invocation_changed')
+    mono=state['ExecMainExitTimestampMonotonic']
+    genuine_exit=(state['LoadState']=='loaded' and actual and mono.isdigit() and int(mono)>0
+        and state['MainPID']=='0'
+        and ((state['ActiveState']=='active' and state['SubState']=='exited' and state['Result']=='success' and state['ExecMainStatus']=='0')
+            or (state['ActiveState'] in {'inactive','failed'} and state['Result'] in {'exit-code','signal','timeout','core-dump','watchdog'})))
+    if genuine_exit:
+        c.hex_value(actual,32,'bootstrap_job_invocation_invalid')
+        old=record.get('terminal_state')
+        if old and any(old.get(name)!=state[name] for name in ('InvocationID','Result','ExecMainStatus','ExecMainExitTimestampMonotonic')):
+            raise ValueError('bootstrap_job_terminal_state_changed')
+        record['original_invocation']=actual
+        if old is None:record['terminal_state']=state
+        write(STATE/'jobs'/(key+'.json'),c.canonical(record),gid=record['registry']['runtime_gid'])
+    ended=(genuine_exit or (state['ActiveState'] in {'inactive','failed'} and state['MainPID'] in {'0',''}
+        and state['LoadState'] in {'loaded','not-found'} and record.get('terminal_state') is not None))
+    return state,bool(ended)
+
+
 def restore_owner(args):
     import pwd
     account=pwd.getpwnam('darrow');c=load_contract()
@@ -230,8 +297,12 @@ def restore_owner(args):
         if transition.get('complete') is not True:
             key=transition.get('job_key');c.hex_value(key,64,'bootstrap_active_job_invalid')
             if args.abandon_failed_job_key!=key:raise ValueError('bootstrap_active_job_requires_review')
-            state=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',c.job_unit(key),'--property=LoadState,ActiveState,Result,ExecMainStatus']).splitlines() if '=' in line)
-            if state.get('LoadState')!='loaded' or state.get('ActiveState') not in {'inactive','failed'} or state.get('Result') in {None,'','success'}:
+            record_path=STATE/'jobs'/(key+'.json')
+            if not record_path.exists():raise ValueError('bootstrap_active_job_record_missing')
+            record=c.strict_json(read(record_path))
+            state,ended=exited_job_state(c,key,record)
+            held=record.get('phase') in {'held_incompatible_runtime','completed_held'}
+            if not ended or (state.get('Result')=='success' and not held):
                 raise ValueError('bootstrap_active_or_unknown_job_cannot_be_abandoned')
             abandoned=key
     jobs=STATE/'jobs'
@@ -242,11 +313,31 @@ def restore_owner(args):
             key=path.stem;c.hex_value(key,64,'bootstrap_job_record_name_invalid')
             record=c.strict_json(read(path))
             if record.get('job_key')!=key:raise ValueError('bootstrap_job_record_binding_invalid')
-            status=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',c.job_unit(key),'--property=LoadState,ActiveState,Result,InvocationID']).splitlines() if '=' in line)
-            if status.get('ActiveState') not in {'inactive','failed'} or status.get('LoadState') not in {'loaded','not-found'}:
+            status,ended=exited_job_state(c,key,record)
+            if not ended:
                 raise ValueError('bootstrap_owner_restore_job_still_running_or_unknown')
             if (record.get('phase')=='submitted' and record.get('original_invocation') is None
                     and args.abandon_failed_job_key!=key):raise ValueError('bootstrap_owner_restore_ambiguous_submission')
+            for operation in c.VALIDATION_PREFIXES:
+                path=STATE/'validations'/(key+'-'+operation+'.json')
+                if not path.exists():continue
+                child=c.strict_json(read(path));unit=c.validation_unit(key,operation)
+                if child.get('unit')!=unit or child.get('job_key')!=key:raise ValueError('bootstrap_validation_binding_invalid')
+                native=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',unit,
+                    '--property=LoadState,ActiveState,InvocationID,MainPID,ControlGroup']).splitlines() if '=' in line)
+                if native.get('InvocationID') and native['InvocationID']!=child.get('original_invocation'):
+                    raise ValueError('bootstrap_validation_invocation_unknown')
+                if native.get('ActiveState') in {'active','activating','reloading','deactivating'}:
+                    retained=(native.get('MainPID')=='0' and child.get('terminal_state') is not None)
+                    if not retained and args.abandon_failed_job_key!=key:
+                        raise ValueError('bootstrap_validation_still_running')
+                    if (not native.get('InvocationID') or native.get('ControlGroup')!='/system.slice/'+unit):
+                        raise ValueError('bootstrap_validation_cgroup_unknown')
+                    call(['/usr/bin/systemctl','stop',unit])
+                    after=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',unit,
+                        '--property=ActiveState,InvocationID,MainPID']).splitlines() if '=' in line)
+                    if after.get('ActiveState') not in {'inactive','failed'} or after.get('MainPID') not in {'0',''} or after.get('InvocationID') not in {'',child['original_invocation']}:
+                        raise ValueError('bootstrap_validation_not_fenced')
     prior=original['prior_user_state'];prior_system=original['prior_system_state']
     if set(prior_system)!=c.REGISTERED_UNITS|{'eimemory-runtime-manager.service'}:raise ValueError('bootstrap_prior_system_inventory_invalid')
     if set(prior)!=c.REGISTERED_UNITS:raise ValueError('bootstrap_prior_owner_inventory_invalid')
@@ -268,7 +359,16 @@ def restore_owner(args):
             call(['/usr/bin/systemctl','stop',unit])
         after=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',unit,'--property=ActiveState']).splitlines() if '=' in line)
         if after.get('ActiveState') not in {'inactive','failed'}:raise ValueError('bootstrap_new_owner_still_active')
-    call(['/usr/bin/systemctl','disable','--now','eimemory-runtime-manager.service'])
+    manager_state=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show','eimemory-runtime-manager.service',
+        '--property=LoadState,ActiveState']).splitlines() if '=' in line)
+    if manager_state.get('LoadState')=='loaded':
+        call(['/usr/bin/systemctl','disable','eimemory-runtime-manager.service'])
+        if manager_state.get('ActiveState') in {'active','activating','reloading','deactivating'}:
+            call(['/usr/bin/systemctl','stop','eimemory-runtime-manager.service'])
+        after=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show','eimemory-runtime-manager.service',
+            '--property=ActiveState']).splitlines() if '=' in line)
+        if after.get('ActiveState') not in {'inactive','failed'}:raise ValueError('bootstrap_new_manager_still_active')
+    elif manager_state.get('LoadState')!='not-found':raise ValueError('bootstrap_new_manager_state_unknown')
     for unit in sorted(c.USER_COMPAT_UNITS):
         if prior[unit]['LoadState']=='loaded':call(user_command(account,'stop',unit))
     owner_files(account,'restore',original['user_files'])
@@ -278,7 +378,7 @@ def restore_owner(args):
     # action and no root execution of a user-owned program occurs here.
     for unit,state in sorted(prior.items()):
         enabled=state['UnitFileState']
-        if enabled in {'enabled','enabled-runtime'}:call(user_command(account,'enable',unit))
+        if enabled in {'enabled','enabled-runtime'}:call(user_command(account,'enable',*(['--runtime'] if enabled=='enabled-runtime' else []),unit))
         elif enabled in {'disabled','masked','not-found','static','indirect','generated','alias',''}:pass
         else:raise ValueError('bootstrap_prior_enablement_unknown')
     active_states={'active','activating','reloading','deactivating'}
@@ -287,7 +387,7 @@ def restore_owner(args):
     if user_rpc==system_rpc:raise ValueError('bootstrap_original_rpc_owner_not_unique')
     for unit,state in sorted(prior_system.items()):
         if state['UnitFileState'] in {'enabled','enabled-runtime'}:
-            call(['/usr/bin/systemctl','enable',unit])
+            call(['/usr/bin/systemctl','enable',*(['--runtime'] if state['UnitFileState']=='enabled-runtime' else []),unit])
     manager='user' if user_rpc else 'system'
     rpc_start=user_command(account,'start','eimemory-rpc.service') if user_rpc else ['/usr/bin/systemctl','start','eimemory-rpc.service']
     call(rpc_start)
@@ -348,7 +448,7 @@ def configure_managed_authority(args,registry,history,c,account):
             'manifest_sha256':authority_digest,'receipt_directory':str(receipts),'key_path':str(secret)}
         spec=importlib.util.spec_from_file_location('reviewed_managed_configuration',ROOT/'managed_incident_proof_authority.py')
         read(ROOT/'managed_incident_proof_authority.py')
-        authority=importlib.util.module_from_spec(spec);spec.loader.exec_module(authority)
+        authority=importlib.util.module_from_spec(spec);exec(compile(read(ROOT/'managed_incident_proof_authority.py'),str(ROOT/'managed_incident_proof_authority.py'),'exec'),authority.__dict__)
         authority.validate_configuration(registry=registry)
     return registry
 
@@ -409,7 +509,8 @@ def install(args):
     if set(scopes)!={'schema','units'} or scopes['schema']!='eimemory.runtime_unit_scopes.v1':raise ValueError('bootstrap_unit_scope_manifest_invalid')
     if CURRENT.resolve(strict=True)!=RELEASES/commit:
         raise ValueError('bootstrap_controller_must_be_current')
-    directory(ROOT,gid=account.pw_gid);directory(STATE,gid=account.pw_gid);directory(STATE/'jobs',gid=account.pw_gid);directory(STATE/'validations',gid=account.pw_gid);directory(STATE/'validation-results',gid=account.pw_gid)
+    for path in (ROOT,STATE,STATE/'jobs',STATE/'validations',STATE/'validation-results'):
+        exact_directory(path,gid=account.pw_gid,mode=0o750)
     lock=os.open(STATE/'bootstrap.lock',os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600)
     import fcntl
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -423,7 +524,7 @@ def install(args):
         if name=='eimemory-runtime-manager.service':continue
         write(ROOT/name,raw,gid=account.pw_gid)
     spec=importlib.util.spec_from_file_location('reviewed_runtime_contract',ROOT/'runtime_manager_contract.py')
-    c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
+    c=importlib.util.module_from_spec(spec);exec(compile(read(ROOT/'runtime_manager_contract.py'),str(ROOT/'runtime_manager_contract.py'),'exec'),c.__dict__)
     if not isinstance(scopes['units'],dict) or not set(scopes['units'])<=set(c.PRODUCT_SERVICES):raise ValueError('bootstrap_unit_scope_manifest_invalid')
     for scope in scopes['units'].values():c.validate_scope(scope)
     units={}
@@ -457,7 +558,7 @@ def install(args):
     for name,raw in files.items():
         if not name.startswith('templates/'):continue
         unit=name.split('/')[-1]
-        if unit not in {'eimemory-code-deployment-job@.service','eimemory-code-validation-receipt@.service','eimemory-code-validation-post-resume@.service'} and unit not in c.REGISTERED_UNITS:raise ValueError('bootstrap_unit_not_registered')
+        if unit not in {'eimemory-code-deployment-job@.service',*(prefix+'.service' for prefix in c.VALIDATION_PREFIXES.values())} and unit not in c.REGISTERED_UNITS:raise ValueError('bootstrap_unit_not_registered')
         # Every product command must remain non-root, including ExecStartPre.
         if unit.endswith('.service'):
             text=raw.decode()
@@ -525,10 +626,20 @@ def stage(args):
     if re.fullmatch('[0-9a-f]{40}',args.target_commit) is None:raise ValueError('bootstrap_full_target_required')
     if re.fullmatch('[0-9a-f]{32}',args.attempt_id) is None:raise ValueError('bootstrap_reviewed_attempt_id_required')
     c=load_contract();registry=c.validate_registry(c.strict_json(read(REGISTRY)))
+    scope_path=Path(args.scope_manifest)
+    directory(scope_path.parent)
+    scope_raw=read(scope_path,limit=65536)
+    if stat.S_IMODE(scope_path.stat().st_mode)!=0o640 or sha256(scope_raw).hexdigest()!=args.expected_scope_sha256:
+        raise ValueError('bootstrap_manual_scope_review_digest_mismatch')
+    scope_manifest=c.strict_json(scope_raw)
+    if not isinstance(scope_manifest,dict) or set(scope_manifest)!={'schema','scope'} or scope_manifest['schema']!='eimemory.manual_release_scope.v1':
+        raise ValueError('bootstrap_manual_scope_manifest_invalid')
+    scope=c.validate_scope(scope_manifest['scope'])
     if CURRENT.resolve(strict=True)!=RELEASES/registry['runtime_commit']:raise ValueError('bootstrap_current_registry_mismatch')
     if args.target_commit==registry['runtime_commit']:raise ValueError('bootstrap_target_already_current')
     storage_clean()
-    pair={'base_commit':registry['runtime_commit'],'candidate_commit':args.target_commit,'controller_commit':registry['controller_commit']}
+    pair={'base_commit':registry['runtime_commit'],'candidate_commit':args.target_commit,'controller_commit':registry['controller_commit'],
+        'validation_controller_commit':args.target_commit,'scope':scope}
     pointer=STATE/('manual-release-'+c.digest(pair)+'.json')
     approved_retry=None
     if pointer.exists():
@@ -550,9 +661,10 @@ def stage(args):
         transition=c.strict_json(read(active))
         if transition.get('complete') is not True and transition.get('job_key')!=approved_retry:
             raise ValueError('bootstrap_another_transition_active')
-    request={'schema':'eimemory.manual_release_permit.v1','operation':'deploy',**pair,
+    request={'schema':'eimemory.manual_release_permit.v2','operation':'deploy',**pair,
         'target_commit':args.target_commit,'reviewed_attempt_id':args.attempt_id}
     key=c.digest(request)
+    c.validate_manual_permit(request,key)
     record={'job_key':key,'request':request,'registry':registry,'manual_release':True,
         'phase':'submitted','unit':c.job_unit(key),'active_before':None,'quiesced':False,'resumed':False,
         'approved_retry_of':approved_retry}
@@ -570,7 +682,7 @@ def main():
     p=argparse.ArgumentParser();sub=p.add_subparsers(dest='operation',required=True)
     q=sub.add_parser('install');q.add_argument('--bundle',type=Path,required=True);q.add_argument('--expected-bundle-sha256',required=True);q.add_argument('--repository-root',type=Path,required=True);q.add_argument('--unit-scope-manifest',type=Path,required=True);q.add_argument('--expected-unit-scope-sha256',required=True);q.add_argument('--expected-registry-sha256');q.add_argument('--managed-incident-manifest',type=Path);q.add_argument('--expected-managed-incident-manifest-sha256')
     q=sub.add_parser('enable-managed-authority');q.add_argument('--managed-incident-manifest',type=Path,required=True);q.add_argument('--expected-managed-incident-manifest-sha256',required=True);q.add_argument('--expected-registry-sha256',required=True)
-    q=sub.add_parser('stage-release');q.add_argument('--target-commit',required=True);q.add_argument('--attempt-id',required=True);q.add_argument('--prior-job-key')
+    q=sub.add_parser('stage-release');q.add_argument('--target-commit',required=True);q.add_argument('--attempt-id',required=True);q.add_argument('--prior-job-key');q.add_argument('--scope-manifest',type=Path,required=True);q.add_argument('--expected-scope-sha256',required=True)
     q=sub.add_parser('restore-owner');q.add_argument('--history-id',required=True);q.add_argument('--expected-history-sha256',required=True);q.add_argument('--expected-current-commit',required=True);q.add_argument('--expected-registry-sha256',required=True);q.add_argument('--abandon-failed-job-key')
     a=p.parse_args()
     with lifecycle_lock():

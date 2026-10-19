@@ -16,7 +16,7 @@ def build(root,commit):
     if re.fullmatch('[0-9a-f]{40}',commit) is None:raise ValueError('full_controller_commit_required')
     # Importing this pure contract here is as the runtime/operator user only.
     sys.path.insert(0,str(root))
-    from eimemory.contracts.runtime_manager import PRODUCT_SERVICES,PRODUCT_TIMERS,PRODUCT_PATHS,COMPATIBILITY_PATHS
+    from eimemory.contracts.runtime_manager import PRODUCT_SERVICES,PRODUCT_TIMERS,PRODUCT_PATHS,COMPATIBILITY_PATHS,VALIDATION_PREFIXES,VALIDATION_RUNTIME_SECONDS
     files={}
     entry=root/'deploy/run_code_deployment_job.py'
     validation_entry=root/'deploy/run_code_deployment_validation.py'
@@ -24,7 +24,7 @@ def build(root,commit):
         'validation_entry':'deploy/run_code_deployment_validation.py','validation_sha256':sha256(validation_entry.read_bytes()).hexdigest() if validation_entry.is_file() else None},sort_keys=True,separators=(',',':')).encode()
     files['compatibility.json']=json.dumps({name:sha256((root/name).read_bytes()).hexdigest() for name in COMPATIBILITY_PATHS},sort_keys=True,separators=(',',':')).encode()
     files['runtime_manager_contract.py']=(root/'eimemory/contracts/runtime_manager.py').read_bytes()
-    for name in ('runtime_manager_bridge.py','runtime_manager_launch.py','runtime_manager_user_policy.py','runtime_manager_owner_files.py'):
+    for name in ('runtime_manager_bridge.py','runtime_manager_launch.py','runtime_manager_user_policy.py','runtime_manager_owner_files.py','storage_release_transaction.py'):
         files[name]=(root/'deploy'/name).read_bytes()
     authority=root/'eimemory/core/managed_incident_proof_authority.py'
     if authority.is_file():
@@ -63,6 +63,7 @@ After=network-online.target eimemory-runtime-manager.service
 Requires=eimemory-runtime-manager.service
 [Service]
 Type=exec
+RemainAfterExit=yes
 User=darrow
 Group=darrow
 Environment=HOME=/home/darrow
@@ -84,16 +85,18 @@ AmbientCapabilities=
 PrivateTmp=yes
 KillMode=control-group
 TimeoutStartSec=7200
+RuntimeMaxSec=14400
 TimeoutStopSec=90
 ExecStart=/usr/bin/python3 -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache /usr/libexec/eimemory-manager/runtime_manager_launch.py %i
 ReadOnlyPaths=/usr/libexec/eimemory-manager /etc/eimemory-code-automation-authority /etc/eimemory-controlled-production-acceptance
 """
-    for operation,stem in [('receipt','eimemory-code-validation-receipt'),('post_resume','eimemory-code-validation-post-resume')]:
-        files['templates/'+stem+'@.service']=files['templates/eimemory-code-deployment-job@.service'].replace(
+    for operation,prefix in VALIDATION_PREFIXES.items():
+        files['templates/'+prefix+'.service']=files['templates/eimemory-code-deployment-job@.service'].replace(
             b'Description=eimemory registered independent deployment job %i',
             ('Description=eimemory fixed readonly deployment validation '+operation+' %i').encode()).replace(
             b'runtime_manager_launch.py %i',('runtime_manager_launch.py --validation %i '+operation).encode()).replace(
-            b'ReadOnlyPaths=/usr/libexec/eimemory-manager ',b'ReadOnlyPaths=/opt/eimemory/releases /usr/libexec/eimemory-manager ')
+            b'ReadOnlyPaths=/usr/libexec/eimemory-manager ',b'ReadOnlyPaths=/opt/eimemory/releases /usr/libexec/eimemory-manager ').replace(
+            b'RuntimeMaxSec=14400',('RuntimeMaxSec='+str(VALIDATION_RUNTIME_SECONDS[operation])).encode())
     files['job-runtime-policy.conf']=b"""[Service]
 User=darrow
 Group=darrow
@@ -132,7 +135,7 @@ NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 ReadOnlyPaths=/opt/eimemory/releases/@COMMIT@ /etc/eimemory-code-automation-authority /etc/eimemory-controlled-production-acceptance
-ExecCondition=/usr/bin/python3 -I -B /opt/eimemory/libexec/storage-release-transaction.py guard --marker /var/lib/eimemory/state/storage-release-transaction.json
+ExecCondition=/usr/bin/python3 -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache /usr/libexec/eimemory-manager/storage_release_transaction.py guard --marker /var/lib/eimemory/state/storage-release-transaction.json
 ExecStartPre=/opt/eimemory/releases/@COMMIT@/.venv/bin/python -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c "import os,sys; sys.exit(0 if os.statvfs(sys.argv[1]).f_flag & os.ST_RDONLY else 'immutable_release_mount_not_readonly')" /opt/eimemory/releases/@COMMIT@
 """
     # The root daemon has no product Python imports. It is the sole privileged

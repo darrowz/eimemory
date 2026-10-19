@@ -85,6 +85,11 @@ def submit_deployment_job(job_key: str) -> dict:
 def deployment_job_status(job_key: str) -> dict:
  job_unit(job_key);return request('job_status',job_key=job_key)
 
+
+def release_deployment_job(job_key: str) -> dict:
+ """Release only an already root-pinned completed parent invocation."""
+ job_unit(job_key);return request('release_job',job_key=job_key)
+
 def deployment_job_journal(job_key: str, invocation: str) -> dict:
  job_unit(job_key);hex_value(invocation,32,'manager_invocation_invalid')
  return request('job_journal',job_key=job_key,invocation=invocation)

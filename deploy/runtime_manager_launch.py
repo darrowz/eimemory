@@ -29,7 +29,14 @@ def read_root(path,*,raw=False):
         raw=os.read(fd,65537);b=os.fstat(fd);c=path.lstat()
         coordinates=lambda s:(s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns,s.st_mode,s.st_uid,s.st_gid,s.st_nlink)
         if coordinates(a)!=coordinates(b) or coordinates(a)!=coordinates(c):raise ValueError('manager_launcher_record_changed')
-        return raw if return_raw else json.loads(raw)
+        if return_raw:return raw
+        def pairs(items):
+            value={}
+            for key,item in items:
+                if key in value:raise ValueError('manager_launcher_duplicate_json_key')
+                value[key]=item
+            return value
+        return json.loads(raw,object_pairs_hook=pairs,parse_constant=lambda _:(_ for _ in ()).throw(ValueError('manager_launcher_nonfinite_json')))
     finally:os.close(fd)
 
 
@@ -40,6 +47,14 @@ RELEASES=Path('/opt/eimemory/releases')
 PRODUCT_MODULES=frozenset({'eimemory.cli.main','eimemory.cli.l1_worker',
     'eimemory.governance.serve_console','eimemory.governance.safety.audit_verifier',
     'eimemory.retrieval.vector_sync_worker'})
+
+
+def root_contract():
+    path=Path(__file__).parent/'runtime_manager_contract.py'
+    raw=read_root(path,raw=True)
+    spec=importlib.util.spec_from_file_location('reviewed_launcher_contract',path)
+    module=importlib.util.module_from_spec(spec);exec(compile(raw,str(path),'exec'),module.__dict__)
+    return module
 
 
 def assert_product_origins(release):
@@ -70,7 +85,7 @@ def prepare_product_module(module):
     # Only reviewed root-owned launcher bytes run here; no root process imports
     # a runtime package. The actual current link is authoritative for serving
     # even during publish -> activate, when the registry still names its prior.
-    read_root(__file__,raw=True);registry=read_root(REGISTRY)
+    read_root(__file__,raw=True);registry=root_contract().validate_registry(read_root(REGISTRY))
     if os.getuid()!=registry['runtime_uid'] or os.geteuid()!=registry['runtime_uid'] or os.geteuid()==0:
         raise ValueError('manager_launcher_runtime_uid_required')
     flags=protected_cache()
@@ -123,7 +138,7 @@ def protected_cache():
 def recover_fused():
     # Fixed native pre-start/post-stop hook. No product imports or caller unit,
     # command, scope or invocation arguments cross the root boundary.
-    protected_cache();registry=read_root(REGISTRY)
+    protected_cache();registry=root_contract().validate_registry(read_root(REGISTRY))
     if os.getuid()!=registry['runtime_uid'] or os.geteuid()!=registry['runtime_uid'] or os.geteuid()==0:
         raise ValueError('manager_launcher_runtime_uid_required')
     active=Path('/var/lib/eimemory-manager/active-transition.json')
@@ -168,14 +183,20 @@ def recover_fused():
 
 
 def validate(key,operation):
-    if re.fullmatch('[0-9a-f]{64}',key) is None or operation not in {'receipt','post_resume'}:
+    if re.fullmatch('[0-9a-f]{64}',key) is None or operation not in {'receipt','pre_observation','post_resume'}:
         raise ValueError('manager_launcher_validation_identity_invalid')
     record=read_root('/var/lib/eimemory-manager/validations/'+key+'-'+operation+'.json')
     parent=read_root('/var/lib/eimemory-manager/jobs/'+key+'.json')
-    registry=record['registry'];uid=registry['runtime_uid']
+    c=root_contract();registry=c.validate_registry(record['registry']);uid=registry['runtime_uid']
+    request=parent['request'];manual=parent.get('manual_release') is True
+    if manual:c.validate_manual_permit(request,key)
+    else:c.validate_job(request,key)
+    controller=request.get('validation_controller_commit',request['controller_commit'])
     if os.getuid()!=uid or os.geteuid()!=uid or uid==0:raise ValueError('manager_launcher_runtime_uid_required')
     if (record['job_key']!=key or record['operation']!=operation or record['parent_original_invocation']!=parent.get('original_invocation')
-            or record['target_commit']!=parent['request']['target_commit'] or record['controller_commit']!=parent['request']['controller_commit']):
+            or record.get('manual_release') is not manual or record['launch_controller_commit']!=request['controller_commit']
+            or record['target_commit'] not in ({request['base_commit'],request['candidate_commit']} if manual else {request['target_commit']})
+            or record['controller_commit']!=controller):
         raise ValueError('manager_launcher_validation_record_mismatch')
     releases=Path('/opt/eimemory/releases');target=releases/record['target_commit'];controller=releases/record['controller_commit']
     for path in (target,controller):
@@ -199,6 +220,9 @@ def launch(key,*,preflight=False):
     if os.getuid()!=registry['runtime_uid'] or os.geteuid()!=registry['runtime_uid'] or os.geteuid()==0:
         raise ValueError('manager_launcher_runtime_uid_required')
     request=record['request'];commit=request['controller_commit']
+    c=root_contract();c.validate_registry(registry)
+    if record.get('manual_release') is True:c.validate_manual_permit(request,key)
+    else:c.validate_job(request,key)
     if re.fullmatch('[0-9a-f]{40}',commit) is None or record['job_key']!=key:raise ValueError('manager_launcher_record_identity_invalid')
     release=Path('/opt/eimemory/releases')/commit
     if release.is_symlink() or not release.is_dir():raise ValueError('manager_launcher_controller_missing')
@@ -213,6 +237,8 @@ def launch(key,*,preflight=False):
         if repository.resolve(strict=True)!=repository:raise ValueError('manager_launcher_repository_changed')
         os.environ['REPO_DIR']=str(repository)
         os.environ['EIMEMORY_TRUSTED_REPOSITORY_ROOT']=str(repository)
+        for coordinate,suffix in (('tenant_id','TENANT'),('agent_id','AGENT'),('workspace_id','WORKSPACE'),('user_id','USER')):
+            os.environ['EIMEMORY_DEPLOY_SCOPE_'+suffix]=request['scope'][coordinate]
         worker=repository/'deploy/eimemory-deploy-worker'
         os.execv(str(worker),[str(worker),'deploy',request['target_commit']])
     os.execv(str(release/'.venv/bin/python'),

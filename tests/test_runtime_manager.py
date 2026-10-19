@@ -191,7 +191,7 @@ def test_cgroup_and_nnp_required_for_lifecycle(monkeypatch,tmp_path):
     key='1'*64;record={'job_key':key,'unit':c.job_unit(key),'registry':value}
     monkeypatch.setattr(bridge,'save',lambda *_:None)
     monkeypatch.setattr(bridge,'unit_state',lambda *_:{'ActiveState':'activating','InvocationID':'a'*32,'ControlGroup':'/system.slice/'+record['unit']})
-    (process/'status').write_text('Uid:\t1001 1001 1001 1001\nNoNewPrivs:\t1\n')
+    (process/'status').write_text('Uid:\t1001 1001 1001 1001\nNoNewPrivs:\t1\nCapEff: 0000000000000000\nCapPrm: 0000000000000000\nCapAmb: 0000000000000000\n')
     (process/'cgroup').write_text('0::/system.slice/'+record['unit']+'\n')
     bridge.verify_job_peer(value,record,42,1001)
     (process/'cgroup').write_text('0::/user.slice/user@1001.service/app.slice/'+record['unit']+'\n')
@@ -332,6 +332,7 @@ def lifecycle_fixture(monkeypatch,tmp_path):
     from types import SimpleNamespace
     module,bridge,value,calls=bridge_fixture(monkeypatch)
     request=job();key=c.digest(request)
+    value['runtime_commit']=request['candidate_commit']
     record=dict(job_key=key,request=request,registry=value,unit=c.job_unit(key),
         phase='submitted',active_before=None,quiesced=False,resumed=False)
     records={key:record};stored={}
@@ -352,8 +353,14 @@ def lifecycle_fixture(monkeypatch,tmp_path):
     def persist_active(data):
         path=tmp_path/'active-transition.json';path.touch();stored[str(path)]=deepcopy(data)
     def state(reg,unit,props):
-        return {p:('loaded' if p=='LoadState' else 'inactive') for p in props}
+        native=dict(LoadState='loaded',ActiveState='inactive',SubState='dead',Result='success',InvocationID='',
+            MainPID='0',ExecMainStatus='0',ControlGroup='/system.slice/'+unit,ExecMainExitTimestampMonotonic='0')
+        return {p:native[p] for p in props}
     monkeypatch.setattr(bridge,'unit_state',state)
+    # Lifecycle ordering tests use a separate, already validated child proof;
+    # validation codec/identity/exit failures are exercised below without this
+    # fixture replacement, and in the integrated native job path.
+    monkeypatch.setattr(bridge,'verify_completed_validation',lambda *_:None)
     return module,bridge,value,request,key,records,stored,target,calls,persist_active
 
 
@@ -447,7 +454,7 @@ def test_complete_cannot_claim_business_before_resume(monkeypatch,tmp_path):
 def test_gc_unit_retains_durable_original_invocation(monkeypatch):
     _m,b,r,_calls=bridge_fixture(monkeypatch)
     record=dict(job_key='1'*64,unit=c.job_unit('1'*64),registry=r,phase='completed',
-        original_invocation='a'*32,finalized=True,resumed=True)
+        original_invocation='a'*32,finalized=True,resumed=True,request=job())
     monkeypatch.setattr(b,'record',lambda *_:record)
     monkeypatch.setattr(b,'unit_state',lambda *_:{'InvocationID':'','ActiveState':'inactive','LoadState':'not-found'})
     actual=b.job_status(r,'1'*64)
@@ -528,7 +535,12 @@ def test_reviewed_manual_attempt_nonce_never_replays_unknown_job(monkeypatch,tmp
         calls.append(args)
         return actual['state'] if args[1]=='show' else ''
     monkeypatch.setattr(m,'call',call)
-    args=SimpleNamespace(target_commit='b'*40,attempt_id='1'*32,prior_job_key=None)
+    scope_path=tmp_path/'scope.json'
+    scope_path.write_bytes(c.canonical({'schema':'eimemory.manual_release_scope.v1','scope':job()['scope']}))
+    monkeypatch.setattr(m,'directory',lambda path,**_:Path(path))
+    monkeypatch.setattr(m.stat,'S_IMODE',lambda _:0o640)
+    args=SimpleNamespace(target_commit='b'*40,attempt_id='1'*32,prior_job_key=None,
+        scope_manifest=scope_path,expected_scope_sha256=sha256(scope_path.read_bytes()).hexdigest())
     m.stage(args)
     first=next((tmp_path/'jobs').iterdir());first_bytes=first.read_bytes();firstkey=first.stem
     with pytest.raises(ValueError,match='prior_attempt_review_required'):m.stage(args)
@@ -710,17 +722,21 @@ def validation_fixture(monkeypatch,tmp_path):
     target=releases/req['target_commit'];target.mkdir()
     entry=controller/c.VALIDATION_ENTRY;entry.parent.mkdir();entry.write_bytes(b'fixed reviewed validation entry')
     r['validation_entry_digest']=sha256(entry.read_bytes()).hexdigest()
+    for relative in c.COMPATIBILITY_PATHS:
+        path=controller/relative;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'reviewed compatible controller bytes')
+        r['compatibility_hashes'][relative]=sha256(path.read_bytes()).hexdigest()
     parent=dict(job_key=key,request=req,registry=r,unit=c.job_unit(key),original_invocation='a'*32,
         phase='activate',quiesced=True,resumed=False)
     b.state=tmp_path;(tmp_path/'validations').mkdir();(tmp_path/'validation-results').mkdir()
     store={};artifact={'raw':None};state={'LoadState':'loaded','ActiveState':'activating','SubState':'start',
         'Result':'success','InvocationID':'b'*32,'ExecMainStatus':'0','MainPID':'123',
-        'ControlGroup':'/system.slice/'+c.validation_unit(key,'receipt')}
+        'ControlGroup':'/system.slice/'+c.validation_unit(key,'receipt'),'ExecMainExitTimestampMonotonic':'0'}
     monkeypatch.setattr(module,'RELEASES',releases)
     monkeypatch.setattr(module,'CURRENT',SimpleNamespace(resolve=lambda **_:target))
     monkeypatch.setattr(module,'trusted_directory',lambda *_a,**_k:None)
     monkeypatch.setattr(b,'record',lambda _:deepcopy(parent))
     monkeypatch.setattr(b,'verify_job_peer',lambda *_:None)
+    monkeypatch.setattr(b,'storage_guard',lambda *_:None)
     monkeypatch.setattr(b,'unit_state',lambda *_:deepcopy(state))
     monkeypatch.setattr(b,'validation_artifact',lambda *_:artifact['raw'])
     monkeypatch.setattr(module,'read_file',lambda path,**_:c.canonical(store[str(path)]) if str(path) in store else Path(path).read_bytes())
@@ -733,7 +749,7 @@ def validation_fixture(monkeypatch,tmp_path):
         Path(path).touch();store[str(path)]=c.strict_json(raw,max_bytes=9*1024*1024)
     monkeypatch.setattr(b,'write_root_bytes',copy)
     b.proc=tmp_path/'proc';process=b.proc/'42';process.mkdir(parents=True)
-    (process/'status').write_text('Uid: 1001 1001 1001 1001\nNoNewPrivs: 1\nCapEff: 0000000000000000\n')
+    (process/'status').write_text('Uid: 1001 1001 1001 1001\nNoNewPrivs: 1\nCapEff: 0000000000000000\nCapPrm: 0000000000000000\nCapAmb: 0000000000000000\n')
     (process/'cgroup').write_text('0::/system.slice/'+c.validation_unit(key,'receipt')+'\n')
     return module,b,r,req,key,parent,store,state,artifact,calls
 
@@ -795,11 +811,11 @@ def test_terminal_validation_seals_original_artifact_and_survives_unit_gc(monkey
     before=sha256(artifact['raw']).hexdigest()
     original=b.seal_validation(r,key,'receipt','b'*32,before,42,1001)
     assert original['sealed_artifact']['artifact_sha256']==before
-    state.update(ActiveState='inactive',SubState='dead',MainPID='0')
+    state.update(ActiveState='active',SubState='exited',MainPID='0',ExecMainExitTimestampMonotonic='123456')
     sealed=b.validation_status(r,key,'receipt')
     assert sealed['artifact_sha256']==sha256(artifact['raw']).hexdigest()
     assert sealed['terminal_state']['InvocationID']=='b'*32
-    state.update(ControlGroup='')
+    state.update(ActiveState='inactive',SubState='dead',ControlGroup='')
     assert b.validation_status(r,key,'receipt')['terminal_state']==sealed['terminal_state']
     state.update(LoadState='not-found',InvocationID='')
     old=b.validation_status(r,key,'receipt')
@@ -813,7 +829,7 @@ def test_terminal_validation_seals_original_artifact_and_survives_unit_gc(monkey
 def test_native_success_without_result_cannot_be_sealed(monkeypatch,tmp_path):
     _m,b,r,_req,key,_parent,_store,state,_artifact,_calls=validation_fixture(monkeypatch,tmp_path)
     b.validate_job(r,key,'receipt',42,1001)
-    state.update(ActiveState='inactive',SubState='dead',MainPID='0')
+    state.update(ActiveState='active',SubState='exited',MainPID='0',ExecMainExitTimestampMonotonic='123456')
     with pytest.raises(ValueError,match='success_artifact_not_sealed'):b.validation_status(r,key,'receipt')
 
 
@@ -878,6 +894,7 @@ def test_root_reviewed_templates_apply_explicit_pyc_flags_and_real_readonly_vali
         assert 'ReadOnlyPaths=/opt/eimemory/releases /usr/libexec/eimemory-manager' in source
         assert 'runtime_manager_launch.py --validation %i '+op in source
         assert 'User=darrow' in source and 'PrivateUsers=self' in source and 'NoNewPrivileges=yes' in source
+        assert 'RemainAfterExit=yes' in source
     assert 'ExecCondition=' not in files['validation-runtime-policy.conf'].decode()
 
 
@@ -896,15 +913,17 @@ def test_validation_root_seal_requires_actual_child_identity_and_its_exact_bytes
     assert not (tmp_path/'validation-results'/(key+'-receipt.json')).exists()
 
 
-def test_manual_resume_of_legacy_target_holds_background_and_keeps_original_set(monkeypatch,tmp_path):
+def test_manual_resume_defers_business_and_legacy_finalize_keeps_original_set(monkeypatch,tmp_path):
     _m,b,r,_req,key,records,stored,_target,calls,persist=lifecycle_fixture(monkeypatch,tmp_path)
     original=['eimemory-rpc.service','eimemory-learn-watch.timer']
     records[key].update(manual_release=True,quiesced=True,active_before=original)
     result=b.transition(r,key,'resume',42,1001)
-    assert result['phase']=='completed_held' and result['resumed'] is False
+    assert result['phase']=='resume_deferred_until_terminal' and result['resumed'] is False
+    assert records[key].get('finalized') is not True and calls==[]
+    result=b.finalize(r,key,42,1001)
+    assert result['resumed'] is False and records[key]['phase']=='held_incompatible_runtime'
     assert result['held_background']==['eimemory-learn-watch.timer'] and calls==[]
-    assert records[key]['active_before']==original and records[key]['finalized'] is True
-    assert stored[str(tmp_path/'active-transition.json')]['held'] is True
+    assert records[key]['active_before']==original and records[key].get('finalized') is not True
 
 
 
@@ -974,7 +993,8 @@ def fused_fixture(monkeypatch,tmp_path,*,initial=('active','active')):
     process=b.proc/'42';process.mkdir(parents=True)
     (process/'status').write_text('Uid: 1001 1001 1001 1001\nNoNewPrivs: 1\nCapEff: 0000000000000000\nCapPrm: 0000000000000000\nCapAmb: 0000000000000000\n')
     (process/'cgroup').write_text('0::/system.slice/'+c.FUSED_UNIT+'\n')
-    states={u:dict(LoadState='loaded',ActiveState=v,Result='exit-code' if v=='failed' else 'success') for u,v in zip(c.FUSED_L1_UNITS,initial)}
+    states={u:dict(LoadState='loaded',ActiveState=v,Result='exit-code' if v=='failed' else 'success',
+        InvocationID='c'*32,MainPID='0',ExecMainExitTimestampMonotonic='123') for u,v in zip(c.FUSED_L1_UNITS,initial)}
     native=dict(LoadState='loaded',ActiveState='active',InvocationID='a'*32,MainPID='50',
         ControlGroup='/system.slice/'+c.FUSED_UNIT,KillMode='control-group',SendSIGKILL='yes')
     for unit in (c.FUSED_UNIT,*c.FUSED_L1_UNITS):r['units'][unit]['installed']=True
@@ -992,7 +1012,7 @@ def fused_fixture(monkeypatch,tmp_path,*,initial=('active','active')):
     def command(reg,unit,*args):
         calls.append((unit,args))
         if args[0]=='stop':states[unit]['ActiveState']='inactive'
-        elif args[0]=='start':states[unit]['ActiveState']='active';states[unit]['Result']='success'
+        elif args[0]=='start':states[unit]['ActiveState']='active';states[unit]['Result']='success';states[unit]['InvocationID']='d'*32
     monkeypatch.setattr(b,'systemctl',command)
     return m,b,r,calls,states,native,process,target
 
@@ -1099,6 +1119,7 @@ def test_deployment_quiesce_refuses_fused_context_without_loading_a_fake_job(mon
 def test_fused_stop_hook_does_not_reenter_deployment_lifecycle_lock(monkeypatch,pointer):
     m=standalone('runtime_manager_launch')
     monkeypatch.setattr(m,'protected_cache',lambda:[])
+    monkeypatch.setattr(m,'root_contract',lambda:c)
     monkeypatch.setattr(m.os,'getuid',lambda:1001,raising=False);monkeypatch.setattr(m.os,'geteuid',lambda:1001,raising=False)
     monkeypatch.setattr(m,'read_root',lambda path:registry() if Path(path)==m.REGISTRY else pointer)
     monkeypatch.setattr(m.Path,'exists',lambda _:True)
@@ -1119,3 +1140,193 @@ def test_source_launcher_rejects_unregistered_module_before_loading_product(monk
     m=standalone('runtime_manager_launch')
     monkeypatch.setattr(m,'read_root',lambda *_args,**_kwargs:pytest.fail('unregistered modules never read authority/source'))
     with pytest.raises(ValueError,match='module_not_registered'):m.prepare_product_module(module)
+
+
+@pytest.mark.parametrize('fault',['live_pid','zero_exit_clock','inactive_without_pin','empty_invocation'])
+def test_validation_seal_alone_never_proves_native_process_exit(monkeypatch,tmp_path,fault):
+    _m,b,r,_req,key,_parent,_store,state,artifact,_calls=validation_fixture(monkeypatch,tmp_path)
+    b.validate_job(r,key,'receipt',42,1001)
+    artifact['raw']=c.canonical({'real':'sealed but no native exit yet'})
+    b.seal_validation(r,key,'receipt','b'*32,sha256(artifact['raw']).hexdigest(),42,1001)
+    state.update(ActiveState='active',SubState='exited',MainPID='0',ExecMainExitTimestampMonotonic='123456')
+    if fault=='live_pid':state['MainPID']='42'
+    elif fault=='zero_exit_clock':state['ExecMainExitTimestampMonotonic']='0'
+    elif fault=='inactive_without_pin':state.update(ActiveState='inactive',SubState='dead')
+    elif fault=='empty_invocation':state['InvocationID']=''
+    assert b.validation_status(r,key,'receipt')['terminal_state'] is None
+
+
+def test_only_root_pinned_retained_child_is_stopped_after_completion(monkeypatch,tmp_path):
+    _m,b,r,_req,key,_parent,_store,state,artifact,calls=validation_fixture(monkeypatch,tmp_path)
+    b.validate_job(r,key,'receipt',42,1001)
+    with pytest.raises(ValueError,match='completion_unproven'):b.cleanup_validation_units(r,key)
+    artifact['raw']=c.canonical({'real':'finished bytes'})
+    b.seal_validation(r,key,'receipt','b'*32,sha256(artifact['raw']).hexdigest(),42,1001)
+    state.update(ActiveState='active',SubState='exited',MainPID='0',ExecMainExitTimestampMonotonic='123456')
+    actual=b.validation_status(r,key,'receipt')
+    b.cleanup_validation_units(r,key)
+    assert calls[-1][1:3]==['stop','--no-block'] and calls[-1][-1]==c.validation_unit(key,'receipt')
+    state.update(ActiveState='inactive',SubState='dead',ControlGroup='')
+    assert b.validation_status(r,key,'receipt')['terminal_state']==actual['terminal_state']
+
+
+def manual_permit():
+    request=job()
+    return dict(schema='eimemory.manual_release_permit.v2',operation='deploy',
+        controller_commit=request['controller_commit'],validation_controller_commit=request['candidate_commit'],
+        base_commit=request['base_commit'],candidate_commit=request['candidate_commit'],target_commit=request['candidate_commit'],
+        reviewed_attempt_id='1'*32,scope=request['scope'])
+
+
+@pytest.mark.parametrize('fault',[None,'legacy','missing_scope','missing_validation_controller','wrong_validation_controller','wrong_target'])
+def test_manual_permit_binds_reviewed_business_scope_and_both_controller_roles(fault):
+    value=manual_permit()
+    if fault=='legacy':value['schema']='eimemory.manual_release_permit.v1'
+    elif fault=='missing_scope':value.pop('scope')
+    elif fault=='missing_validation_controller':value.pop('validation_controller_commit')
+    elif fault=='wrong_validation_controller':value['validation_controller_commit']=value['base_commit']
+    elif fault=='wrong_target':value['target_commit']=value['base_commit']
+    if fault:
+        with pytest.raises(ValueError):c.validate_manual_permit(value,c.digest(value))
+    else:
+        actual=c.validate_manual_permit(value,c.digest(value))
+        assert actual['scope']['user_id']=='ou_fixture' and actual['controller_commit']!=actual['validation_controller_commit']
+
+
+@pytest.mark.parametrize('fault',[None,'live','no_exit_clock','inactive_default','no_invocation'])
+def test_parent_terminal_requires_real_retained_exit_before_gc_or_release(monkeypatch,fault):
+    _m,b,r,calls=bridge_fixture(monkeypatch)
+    request=job();key=c.digest(request)
+    record=dict(job_key=key,request=request,registry=r,unit=c.job_unit(key),phase='completed',
+        original_invocation='a'*32,finalized=True,resumed=True)
+    state=dict(LoadState='loaded',ActiveState='active',SubState='exited',Result='success',InvocationID='a'*32,
+        ExecMainStatus='0',MainPID='0',ControlGroup='/system.slice/'+c.job_unit(key),ExecMainExitTimestampMonotonic='1234')
+    if fault=='live':state['MainPID']='11'
+    elif fault=='no_exit_clock':state['ExecMainExitTimestampMonotonic']='0'
+    elif fault=='inactive_default':state.update(ActiveState='inactive',SubState='dead',ExecMainExitTimestampMonotonic='0')
+    elif fault=='no_invocation':state['InvocationID']=''
+    monkeypatch.setattr(b,'record',lambda _:record)
+    monkeypatch.setattr(b,'save',lambda *_:None)
+    monkeypatch.setattr(b,'unit_state',lambda *_:dict(state))
+    result=b.job_status(r,key)
+    if fault:
+        assert result['terminal_state'] is None
+        with pytest.raises(ValueError,match='release_without_verified_completion'):b.release_job(r,key)
+        assert calls==[]
+    else:
+        pinned=result['terminal_state'];assert pinned['InvocationID']=='a'*32
+        assert calls==[]  # Status pins facts without stopping or restarting.
+        b.release_job(r,key)
+        assert calls[-1][1:3]==['stop','--no-block']
+        state.update(LoadState='not-found',ActiveState='inactive',SubState='dead',InvocationID='',MainPID='0')
+        assert b.job_status(r,key)['terminal_state']==pinned
+        state.update(LoadState='loaded',InvocationID='b'*32)
+        with pytest.raises(ValueError,match='invocation_changed'):b.job_status(r,key)
+
+
+def test_all_fixed_validation_operations_have_real_runtime_deadlines_and_retained_parent():
+    files=standalone('build_runtime_manager_bundle').build(ROOT,'a'*40)
+    parent=files['templates/eimemory-code-deployment-job@.service'].decode()
+    assert 'RuntimeMaxSec=14400\n' in parent and 'RemainAfterExit=yes\n' in parent
+    assert set(c.VALIDATION_PREFIXES)=={'receipt','pre_observation','post_resume'}
+    for operation,prefix in c.VALIDATION_PREFIXES.items():
+        text=files['templates/'+prefix+'.service'].decode()
+        assert 'RuntimeMaxSec='+str(c.VALIDATION_RUNTIME_SECONDS[operation])+'\n' in text
+        assert 'RemainAfterExit=yes\n' in text and '--validation %i '+operation in text
+
+
+def test_pre_observation_uses_original_storage_guard_and_never_a_caller_path(monkeypatch,tmp_path):
+    _m,b,r,_req,key,_parent,_store,_state,_artifact,calls=validation_fixture(monkeypatch,tmp_path)
+    guards=[];monkeypatch.setattr(b,'storage_guard',lambda registry:guards.append(registry))
+    result=b.validate_job(r,key,'pre_observation',42,1001)
+    assert result['operation']=='pre_observation' and result['manual_release'] is False
+    assert guards==[r] and calls[-1][-1]==c.validation_unit(key,'pre_observation')
+
+
+@pytest.mark.parametrize('fault',[None,'wrong_child_invocation','still_running'])
+def test_rollback_fences_fixed_dynamic_sqlite_writers_before_snapshot_effect(monkeypatch,tmp_path,fault):
+    m,b,r,_req,key,parent,store,state,_artifact,calls=validation_fixture(monkeypatch,tmp_path)
+    b.validate_job(r,key,'receipt',42,1001);calls.clear()
+    state.update(ActiveState='active',MainPID='77',ExecMainExitTimestampMonotonic='0')
+    if fault=='wrong_child_invocation':state['InvocationID']='c'*32
+    saved=[];monkeypatch.setattr(b,'save',lambda reg,record:saved.append(deepcopy(record)))
+    def stop(reg,unit,*args):
+        calls.append((unit,args))
+        if fault!='still_running':state.update(ActiveState='inactive',MainPID='0')
+    monkeypatch.setattr(b,'systemctl',stop)
+    if fault:
+        with pytest.raises(ValueError):b.fence_job_processes(r,parent,include_parent=False)
+        if fault=='wrong_child_invocation':assert calls==[]
+    else:
+        b.fence_job_processes(r,parent,include_parent=False)
+        assert calls==[(c.validation_unit(key,'receipt'),('stop',))]
+        assert saved[-1]['writer_fences']['receipt']['phase']=='inactive_verified'
+
+
+@pytest.mark.parametrize('manual',[False,True])
+def test_completion_requires_real_post_resume_not_only_technical_install(monkeypatch,tmp_path,manual):
+    _m,b,r,_req,key,records,stored,_target,_calls,persist=lifecycle_fixture(monkeypatch,tmp_path)
+    records[key].update(manual_release=manual,resumed=True,phase='resumed_awaiting_business',active_before=[])
+    persist({'job_key':key,'complete':False})
+    operations=[]
+    def verified(registry,record,operation,target):
+        operations.append(operation)
+        if operation=='post_resume':raise ValueError('manager_complete_validation_unproven')
+    monkeypatch.setattr(b,'verify_completed_validation',verified)
+    with pytest.raises(ValueError,match='validation_unproven'):b.complete(r,key,42,1001)
+    assert operations==['receipt','post_resume']
+    assert records[key].get('finalized') is not True and stored[str(tmp_path/'active-transition.json')]['complete'] is False
+
+
+@pytest.mark.parametrize('fault',[None,'wrong_scope','old_schema','wrong_controller','unknown_exit','missing_seal','transport_failed','wrong_receipt'])
+def test_complete_validates_v2_root_sealed_context_and_actual_exit(monkeypatch,tmp_path,fault):
+    m,b,r,request,key,parent,store,state,artifact,_calls=validation_fixture(monkeypatch,tmp_path)
+    operation='receipt';b.validate_job(r,key,operation,42,1001)
+    body=dict(schema='managed_code_deployment_validation.v2',job_key=key,operation=operation,
+        parent_invocation='a'*32,invocation='b'*32,target_commit=request['target_commit'],controller_commit=request['controller_commit'],
+        scope=deepcopy(request['scope']),source_readonly=True,manual_release=False,launch_controller_commit=request['controller_commit'],
+        report={'ok':True,'report_type':'deployment_receipt','commit':request['target_commit'],'promotion_request_id':'rec_fixture'},
+        target_transport={'exit_status':0,'timed_out':False,'stdout_digest':'1'*64,'stderr_digest':'2'*64,'executed':True,
+            'physical_receipt_readback':{'current_deployment_receipt_verified':True,'commit':request['target_commit'],'receipt_id':'rec_fixture'},
+            'closure_capture':None})
+    if fault=='wrong_scope':body['scope']['user_id']='darrow'
+    elif fault=='old_schema':body['schema']='managed_code_deployment_validation.v1'
+    elif fault=='wrong_controller':body['launch_controller_commit']='c'*40
+    elif fault=='transport_failed':body['target_transport']['exit_status']=1
+    elif fault=='wrong_receipt':body['target_transport']['physical_receipt_readback']['receipt_id']='rec_other'
+    artifact['raw']=c.canonical(body)
+    if fault!='missing_seal':b.seal_validation(r,key,operation,'b'*32,sha256(artifact['raw']).hexdigest(),42,1001)
+    if fault!='unknown_exit':state.update(ActiveState='active',SubState='exited',MainPID='0',ExecMainExitTimestampMonotonic='2345')
+    if fault:
+        with pytest.raises(ValueError):b.verify_completed_validation(r,parent,operation,request['target_commit'])
+    else:b.verify_completed_validation(r,parent,operation,request['target_commit'])
+
+
+def test_fused_restore_progress_never_replays_a_completed_oneshot_after_partial_restore(monkeypatch,tmp_path):
+    _m,b,r,calls,states,native,_process,_target=fused_fixture(monkeypatch,tmp_path)
+    original=b.fused_closure(r,'begin',42,1001);real=b.systemctl
+    def pause_timer(reg,unit,*args):
+        if unit.endswith('.timer') and args[0]=='start':raise ValueError('lost_start_response')
+        real(reg,unit,*args)
+    monkeypatch.setattr(b,'systemctl',pause_timer)
+    with pytest.raises(ValueError):b.fused_closure(r,'end',42,1001,original['context_key'])
+    service=c.FUSED_L1_UNITS[1]
+    states[service].update(ActiveState='inactive',MainPID='0',Result='success',ExecMainExitTimestampMonotonic='2345')
+    native.update(ActiveState='deactivating',MainPID='0')
+    # The timer's original dispatch is still ambiguous, so recovery rejects it;
+    # the already completed service must not be started again to hide that.
+    with pytest.raises(ValueError,match='submission_unknown'):b.fused_closure(r,'recover',42,1001)
+    assert sum(unit==service and args[0]=='start' for unit,args in calls)==1
+
+
+def test_pid1_backup_cli_ignores_mutable_console_script_override(monkeypatch):
+    module=standalone('eimemory_backup');seen=[]
+    original=module.Path.read_text
+    monkeypatch.setattr(module.Path,'read_text',lambda path,*args,**kwargs:
+        '0::/system.slice/eimemory-backup.service\n' if str(path)=='/proc/self/cgroup' else original(path,*args,**kwargs))
+    from types import SimpleNamespace
+    monkeypatch.setattr(module.subprocess,'run',lambda command,**kwargs:seen.append(command) or SimpleNamespace(returncode=0,stdout='{}'))
+    if os.name=='posix':
+        module._run_cli('/tmp/unreviewed-eimemory',['backup','verify','fixture'],{},30)
+        assert seen[0][1:6]==['-I','-B','-X','pycache_prefix=/var/lib/eimemory-manager/empty-pycache','/usr/libexec/eimemory-manager/runtime_manager_launch.py']
+        assert '--product-module' in seen[0] and '/tmp/unreviewed-eimemory' not in seen[0]

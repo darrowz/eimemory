@@ -60,10 +60,10 @@ def read_file(path, *, uid=0, mode=0o640, maximum=65536):
 def load_contract():
     trusted_directory(ROOT, mode=0o750)
     path = ROOT / 'runtime_manager_contract.py'
-    read_file(path)
+    raw=read_file(path)
     spec = importlib.util.spec_from_file_location('runtime_manager_contract', path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    exec(compile(raw,str(path),'exec'),module.__dict__)
     return module
 
 
@@ -340,9 +340,9 @@ class Bridge:
         # Only the bootstrap-reviewed root copy is imported. No product path,
         # source module, key location or manifest is chosen by the request.
         trusted_directory(ROOT,mode=0o750)
-        path=ROOT/'managed_incident_proof_authority.py';read_file(path,maximum=1048576)
+        path=ROOT/'managed_incident_proof_authority.py';raw=read_file(path,maximum=1048576)
         spec=importlib.util.spec_from_file_location('reviewed_managed_incident_authority',path)
-        authority=importlib.util.module_from_spec(spec);spec.loader.exec_module(authority)
+        authority=importlib.util.module_from_spec(spec);exec(compile(raw,str(path),'exec'),authority.__dict__)
         return authority
 
     def record_path(self,key):
@@ -354,6 +354,10 @@ class Bridge:
         trusted_directory(path.parent,mode=0o750)
         value=self.c.strict_json(read_file(path))
         if not isinstance(value,dict) or value.get('job_key')!=key:raise ValueError('manager_job_record_invalid')
+        if value.get('manual_release') is True:self.c.validate_manual_permit(value.get('request'),key)
+        else:self.c.validate_job(value.get('request'),key)
+        self.c.validate_registry(value.get('registry'))
+        if value.get('unit')!=self.c.job_unit(key):raise ValueError('manager_job_record_unit_invalid')
         return value
 
     def save(self,registry,record,*,exclusive=False):
@@ -379,7 +383,7 @@ class Bridge:
         pin=registry.get('controller_entry_digest')
         if pin is None:raise ValueError('manager_controller_entry_not_reviewed')
         path=RELEASES/commit/self.c.CONTROLLER_ENTRY
-        if path.is_symlink() or not path.is_file():raise ValueError('manager_controller_entry_missing')
+        if path.is_symlink() or not path.is_file() or path.resolve(strict=True)!=path:raise ValueError('manager_controller_entry_missing')
         raw=read_file(path,uid=registry['runtime_uid'],mode=stat.S_IMODE(path.stat().st_mode),maximum=65536)
         if sha256(raw).hexdigest()!=pin:raise ValueError('manager_controller_entry_digest_mismatch')
 
@@ -398,16 +402,59 @@ class Bridge:
 
     def job_status(self,registry,key):
         record=self.record(key)
-        state=self.unit_state(record['registry'],record['unit'],['LoadState','ActiveState','SubState','Result','InvocationID','ExecMainStatus','MainPID'])
+        state=self.unit_state(record['registry'],record['unit'],['LoadState','ActiveState','SubState','Result','InvocationID','ExecMainStatus','MainPID','ControlGroup','ExecMainExitTimestampMonotonic'])
         invocation=state.get('InvocationID')
         if invocation:
             self.c.hex_value(invocation,32,'manager_job_invocation_invalid')
             if record.get('original_invocation') not in {None,invocation}:raise ValueError('manager_job_invocation_changed')
             if record.get('original_invocation') is None:
                 record['original_invocation']=invocation;self.save(registry,record)
+        if self.pin_terminal(record,state,'job'):self.save(registry,record)
         return {'manager':'system','unit':record['unit'],'state':state,'phase':record['phase'],'job_key':key,
             'original_invocation':record.get('original_invocation'),'resumed':record.get('resumed') is True,
+            'terminal_state':record.get('terminal_state'),'request':record['request'],
+            'manual_release':record.get('manual_release') is True,
+            'launch_controller_commit':record['request']['controller_commit'],
+            'validation_controller_commit':record['request'].get('validation_controller_commit',record['request']['controller_commit']),
             'complete':record.get('finalized') is True,'held_background':record.get('held_background',[])}
+
+    @staticmethod
+    def pin_terminal(record,state,label):
+        """An actual native exit is independent of a receipt or sealed bytes."""
+        old=record.get('terminal_state');actual=state.get('InvocationID')
+        if actual and actual!=record.get('original_invocation'):
+            raise ValueError('manager_'+label+'_invocation_changed')
+        if old is not None:
+            if state.get('LoadState')=='loaded':
+                if state.get('MainPID') not in {'0',''}:raise ValueError('manager_'+label+'_terminal_process_changed')
+                if state.get('ActiveState') not in {'inactive','failed'} and any(
+                        state.get(name)!=old.get(name) for name in old):
+                    raise ValueError('manager_'+label+'_terminal_state_changed')
+                if actual and any(state.get(name)!=old.get(name) for name in ('Result','ExecMainStatus','ExecMainExitTimestampMonotonic')):
+                    raise ValueError('manager_'+label+'_terminal_state_changed')
+            elif state.get('LoadState')!='not-found':raise ValueError('manager_'+label+'_terminal_state_unknown')
+            return False
+        mono=state.get('ExecMainExitTimestampMonotonic','')
+        exited=(state.get('LoadState')=='loaded' and actual and str(mono).isdigit()
+            and int(mono)>0 and state.get('MainPID')=='0')
+        success=(state.get('ActiveState')=='active' and state.get('SubState')=='exited'
+            and state.get('Result')=='success' and state.get('ExecMainStatus')=='0')
+        failed=(state.get('ActiveState') in {'inactive','failed'}
+            and state.get('Result') in {'exit-code','signal','timeout','core-dump','watchdog'})
+        if exited and (success or failed):record['terminal_state']=dict(state);return True
+        return False
+
+    def release_job(self,registry,key):
+        result=self.job_status(registry,key);record=self.record(key)
+        terminal=result.get('terminal_state')
+        if (record.get('finalized') is not True or terminal is None or terminal.get('Result')!='success'
+                or terminal.get('ExecMainStatus')!='0' or record.get('phase')!='completed'):
+            raise ValueError('manager_job_release_without_verified_completion')
+        state=result['state']
+        if state.get('ActiveState')=='active' and state.get('SubState')=='exited':
+            record['release_requested']=True;self.save(registry,record)
+            self.systemctl(record['registry'],record['unit'],'stop','--no-block')
+        return {**result,'release_requested':True}
 
     def validation_record_path(self,key,operation):
         self.c.validation_unit(key,operation)
@@ -433,7 +480,7 @@ class Bridge:
                 or record.get('unit')!=self.c.validation_unit(key,operation)
                 or record.get('parent_original_invocation')!=parent.get('original_invocation')):
             raise ValueError('manager_validation_record_binding_invalid')
-        state=self.unit_state(record['registry'],record['unit'],['LoadState','ActiveState','SubState','Result','InvocationID','ExecMainStatus','MainPID','ControlGroup'])
+        state=self.unit_state(record['registry'],record['unit'],['LoadState','ActiveState','SubState','Result','InvocationID','ExecMainStatus','MainPID','ControlGroup','ExecMainExitTimestampMonotonic'])
         actual=state.get('InvocationID')
         if actual:
             self.c.hex_value(actual,32,'manager_validation_invocation_invalid')
@@ -441,27 +488,15 @@ class Bridge:
             if record.get('original_invocation') is None:
                 record['original_invocation']=actual;atomic_json(path,record,gid=registry['runtime_gid'])
         seal=self.validation_seal(registry,key,operation,record)
-        terminal=(state.get('LoadState')=='loaded' and state.get('ActiveState') in {'inactive','failed'}
-            and actual and state.get('Result') in {'success','exit-code','signal','timeout','core-dump','watchdog','start-limit-hit'})
-        if terminal:
+        if self.pin_terminal(record,state,'validation'):
             if seal is None and state['Result']=='success' and state.get('ExecMainStatus')=='0':
                 raise ValueError('manager_validation_success_artifact_not_sealed')
-            if record.get('terminal_state') is not None:
-                old=record['terminal_state']
-                # PID1 may release the exited cgroup before garbage collecting
-                # the unit. Preserve the original exit identity; transient PID
-                # and cgroup disappearance cannot replace that sealed outcome.
-                stable=('LoadState','ActiveState','SubState','Result','InvocationID','ExecMainStatus')
-                if any(old.get(name)!=state.get(name) for name in stable):
-                    raise ValueError('manager_validation_terminal_state_changed')
-                if state.get('ControlGroup') not in {'',old.get('ControlGroup')} or state.get('MainPID') not in {'0',old.get('MainPID')}:
-                    raise ValueError('manager_validation_terminal_process_changed')
-            if record.get('terminal_state') is None:
-                record['terminal_state']=state;atomic_json(path,record,gid=registry['runtime_gid'])
+            atomic_json(path,record,gid=registry['runtime_gid'])
         return {'job_key':key,'operation':operation,'manager':'system','unit':record['unit'],'state':state,
             'artifact_sha256':seal['artifact_sha256'] if seal else None,'sealed_artifact':seal['reference'] if seal else None,'terminal_state':record.get('terminal_state'),
             'original_invocation':record.get('original_invocation'),'parent_original_invocation':record['parent_original_invocation'],
             'target_commit':record['target_commit'],'controller_commit':record['controller_commit'],
+            'launch_controller_commit':record['launch_controller_commit'],'manual_release':record['manual_release'],
             'phase':parent['phase'],'artifact_basename':'validation-'+operation+'-result.json'}
 
     def validation_seal(self,registry,key,operation,record):
@@ -492,7 +527,8 @@ class Bridge:
         process=self.proc/str(pid)
         values=dict(line.split(':',1) for line in (process/'status').read_text().splitlines() if ':' in line)
         if (uid!=registry['runtime_uid'] or values.get('Uid','').split()!=[str(uid)]*4
-                or values.get('NoNewPrivs','').strip()!='1' or re.fullmatch('0+',values.get('CapEff','').strip()) is None):
+                or values.get('NoNewPrivs','').strip()!='1'
+                or any(re.fullmatch('0+',values.get(name,'').strip()) is None for name in ('CapEff','CapPrm','CapAmb'))):
             raise ValueError('manager_validation_seal_peer_invalid')
         state=self.unit_state(record['registry'],record['unit'],['ActiveState','InvocationID','ControlGroup'])
         cg=state['ControlGroup']
@@ -523,32 +559,54 @@ class Bridge:
         if path.exists():return self.validation_status(registry,key,operation)
         parent=self.record(key);self.verify_job_peer(registry,parent,pid,uid)
         if parent.get('superseded_by') or parent.get('finalized') is True:raise ValueError('manager_validation_parent_not_current')
-        target=parent['request']['target_commit']
+        manual=parent.get('manual_release') is True
+        target=CURRENT.resolve(strict=True).name if manual else parent['request']['target_commit']
+        if target not in {parent['request']['base_commit'],parent['request']['candidate_commit']}:
+            raise ValueError('manager_validation_target_unbound')
         if CURRENT.resolve(strict=True)!=RELEASES/target or registry['runtime_commit']!=target:
             raise ValueError('manager_validation_target_not_current')
         if operation=='post_resume':
             if parent['request']['operation']!='deploy' or parent.get('resumed') is not True or parent['phase']!='resumed_awaiting_business':
                 raise ValueError('manager_validation_business_before_resume')
-        elif parent.get('quiesced') is not True:
-            raise ValueError('manager_validation_receipt_before_quiesce')
+        else:
+            if parent.get('quiesced') is not True or parent.get('resumed') is True:
+                raise ValueError('manager_validation_receipt_before_quiesce')
+            self.storage_guard(registry)
         pin=registry['validation_entry_digest']
         if pin is None:raise ValueError('manager_validation_entry_not_reviewed')
-        source=RELEASES/parent['request']['controller_commit']/self.c.VALIDATION_ENTRY
+        controller=parent['request'].get('validation_controller_commit',parent['request']['controller_commit'])
+        source=RELEASES/controller/self.c.VALIDATION_ENTRY
+        if source.is_symlink() or source.resolve(strict=True)!=source:raise ValueError('manager_validation_entry_untrusted')
+        if not self.runtime_compatible(registry,RELEASES/controller):raise ValueError('manager_validation_controller_incompatible')
         raw=read_file(source,uid=registry['runtime_uid'],mode=stat.S_IMODE(source.stat().st_mode),maximum=1048576)
         if sha256(raw).hexdigest()!=pin:raise ValueError('manager_validation_entry_digest_mismatch')
         record={'job_key':key,'operation':operation,'unit':self.c.validation_unit(key,operation),'registry':registry,
             'parent_original_invocation':parent['original_invocation'],'target_commit':target,
-            'controller_commit':parent['request']['controller_commit'],'entry_digest':pin}
+            'controller_commit':controller,'launch_controller_commit':parent['request']['controller_commit'],
+            'manual_release':manual,'entry_digest':pin}
         trusted_directory(path.parent,mode=0o750)
         atomic_json(path,record,gid=registry['runtime_gid'],exclusive=True)
         self.systemctl(registry,record['unit'],'start','--no-block')
         return self.validation_status(registry,key,operation)
+
+    def storage_guard(self,registry):
+        # The original native marker reader checks current release plus the two
+        # held kernel flocks. It runs as UID1001 so its own marker lock never
+        # becomes a root-owned runtime DB/state file.
+        path=ROOT/'storage_release_transaction.py';read_file(path,maximum=1048576)
+        result=subprocess.run(['/usr/sbin/runuser','-u',registry['runtime_user'],'--','/usr/bin/python3',
+            '-I','-B','-X','pycache_prefix='+self.c.EMPTY_PYCACHE,str(path),'guard',
+            '--marker','/var/lib/eimemory/state/storage-release-transaction.json'],
+            capture_output=True,timeout=10,env={'PATH':'/usr/bin:/bin','LC_ALL':'C','TZ':'UTC'})
+        if result.returncode!=0:raise ValueError('manager_validation_storage_guard_denied')
 
     def verify_job_peer(self,registry,record,pid,uid):
         if uid!=registry['runtime_uid']:raise ValueError('manager_peer_uid_denied')
         status=(self.proc/str(pid)/'status').read_text()
         values=dict(line.split(':',1) for line in status.splitlines() if ':' in line)
         if values.get('NoNewPrivs','').strip()!='1':raise ValueError('manager_peer_nnp_required')
+        if any(re.fullmatch('0+',values.get(name,'').strip()) is None for name in ('CapEff','CapPrm','CapAmb')):
+            raise ValueError('manager_peer_capabilities_forbidden')
         realuids=values.get('Uid','').split()
         if len(realuids)!=4 or any(int(x)!=uid for x in realuids):raise ValueError('manager_peer_identity_changed')
         groups=(self.proc/str(pid)/'cgroup').read_text().splitlines()
@@ -589,7 +647,7 @@ class Bridge:
         if not isinstance(record,dict):raise ValueError('manager_fused_record_invalid')
         fields={'schema','context_key','unit','invocation','runtime_commit','unit_states','active_before','phase'}
         identity={name:record.get(name) for name in ('unit','invocation','runtime_commit')}
-        if (not isinstance(record,dict) or not fields<=set(record)<=fields|{'pause_failed'}
+        if (not isinstance(record,dict) or not fields<=set(record)<=fields|{'pause_failed','restore_units'}
                 or record.get('context_key')!=key or self.c.digest(identity)!=key
                 or record.get('schema')!='eimemory.fused_closure_context.v1'
                 or record.get('phase') not in {'pause_intent','paused','restore_intent','completed'}
@@ -600,6 +658,11 @@ class Bridge:
             raise ValueError('manager_fused_record_invalid')
         self.c.hex_value(record['runtime_commit'],40,'manager_fused_runtime_commit_invalid')
         self.c.hex_value(record['invocation'],32,'manager_fused_invocation_invalid')
+        restored=record.get('restore_units',{})
+        if not isinstance(restored,dict) or not set(restored)<=set(self.c.FUSED_L1_UNITS):raise ValueError('manager_fused_restore_progress_invalid')
+        for progress in restored.values():
+            if (not isinstance(progress,dict) or set(progress)!={'phase','previous_invocation','invocation'}
+                    or progress['phase'] not in {'dispatch_intent','restored'}):raise ValueError('manager_fused_restore_progress_invalid')
         return record
 
     def save_fused(self,registry,record,*,exclusive=False):
@@ -609,8 +672,8 @@ class Bridge:
         atomic_json(directory/(record['context_key']+'.json'),record,gid=registry['runtime_gid'],exclusive=exclusive)
 
     def restore_fused(self,registry,record):
-        # Restoring only the root-captured active set is safe after partial stop
-        # failure too: start is idempotent and never restarts an active unit.
+        # A completed oneshot must not be started twice after a daemon crash.
+        # Persist each submission before calling PID1 and retain ambiguity.
         if CURRENT.resolve(strict=True)!=RELEASES/record['runtime_commit'] or registry['runtime_commit']!=record['runtime_commit']:
             raise ValueError('manager_fused_restore_release_changed')
         active=self.state/'active-transition.json'
@@ -618,13 +681,35 @@ class Bridge:
         if pointer.get('context')!='fused_closure' or pointer.get('job_key')!=record['context_key']:
             raise ValueError('manager_fused_restore_context_changed')
         record['phase']='restore_intent';self.save_fused(registry,record)
+        progress=record.setdefault('restore_units',{})
         for unit in reversed(self.c.FUSED_L1_UNITS):
             if unit not in record['active_before']:continue
+            state=self.unit_state(registry,unit,['LoadState','ActiveState','Result','InvocationID','MainPID','ExecMainExitTimestampMonotonic'])
+            saved=progress.get(unit)
+            if saved is not None and saved['phase']=='restored':continue
+            if saved is not None:
+                fresh=(state['InvocationID'] and state['InvocationID']!=saved['previous_invocation'])
+                ended=(str(state['ExecMainExitTimestampMonotonic']).isdigit() and int(state['ExecMainExitTimestampMonotonic'])>0
+                    and state['MainPID']=='0' and state['Result']=='success')
+                if state['LoadState']=='loaded' and fresh and (state['ActiveState'] in {'active','activating','reloading'} or ended):
+                    saved.update(phase='restored',invocation=state['InvocationID']);self.save_fused(registry,record);continue
+                raise ValueError('manager_fused_restore_submission_unknown')
+            if state['LoadState']!='loaded':raise ValueError('manager_fused_restore_unit_unknown')
+            if state['ActiveState'] in {'active','activating','reloading'}:
+                progress[unit]={'phase':'restored','previous_invocation':state['InvocationID'],'invocation':state['InvocationID']}
+                self.save_fused(registry,record);continue
+            progress[unit]={'phase':'dispatch_intent','previous_invocation':state['InvocationID'],'invocation':None}
+            self.save_fused(registry,record)
             self.systemctl(registry,unit,'start',*(['--no-block'] if unit.endswith('.service') else []))
-            state=self.unit_state(registry,unit,['LoadState','ActiveState','Result'])
+            state=self.unit_state(registry,unit,['LoadState','ActiveState','Result','InvocationID','MainPID','ExecMainExitTimestampMonotonic'])
+            completed=(unit.endswith('.service') and state['ActiveState']=='inactive' and state['Result']=='success'
+                and state['InvocationID'] and state['InvocationID']!=progress[unit]['previous_invocation']
+                and state['MainPID']=='0' and str(state['ExecMainExitTimestampMonotonic']).isdigit()
+                and int(state['ExecMainExitTimestampMonotonic'])>0)
             if (state['LoadState']!='loaded' or state['ActiveState'] not in {'active','activating','reloading'}
-                    and not (unit.endswith('.service') and state['ActiveState']=='inactive' and state['Result']=='success')):
+                    and not completed):
                 raise ValueError('manager_fused_restore_not_observed')
+            progress[unit].update(phase='restored',invocation=state['InvocationID']);self.save_fused(registry,record)
         record['phase']='completed';self.save_fused(registry,record)
         atomic_json(active,{'context':'fused_closure','job_key':record['context_key'],'complete':True},gid=registry['runtime_gid'])
         return {'context_key':record['context_key'],'restored':True,'phase':'completed','active_before':record['active_before']}
@@ -713,6 +798,10 @@ class Bridge:
                     inherited=((same_rollback or reviewed_retry) and prior.get('finalized') is not True
                         and (prior.get('active_before') is not None or (reviewed_retry and prior.get('phase')=='submitted')))
                     if not inherited:raise ValueError('manager_another_transition_active')
+                    # A previous validation process is a dynamic SQLite writer,
+                    # even when its parent failed or timed out. Fence its exact
+                    # invocation before a new rollback can restore a snapshot.
+                    self.fence_job_processes(registry,prior)
                     if prior.get('active_before') is not None:
                         record['active_before']=list(prior['active_before']);record['inherited_capture_from']=prior['job_key']
                     prior['superseded_by']=key;self.save(registry,prior)
@@ -731,6 +820,7 @@ class Bridge:
                     record['inherited_held_capture_from']=prior['job_key']
             atomic_json(active_path,{'job_key':key,'complete':False},gid=registry['runtime_gid'])
             if record['resumed']:raise ValueError('manager_transition_already_resumed')
+            self.fence_job_processes(registry,record,include_parent=False)
             if record['active_before'] is None:
                 active=[]
                 for unit in self.writers(record['registry']):
@@ -769,34 +859,46 @@ class Bridge:
                 self.systemctl(record['registry'],'eimemory-release-closure.path','start')
         else:
             if record['active_before'] is None:raise ValueError('manager_restore_set_missing')
-            if record.get('manual_release') is not True:
-                record['resume_requested']=True;record['phase']='resume_deferred_until_terminal';self.save(registry,record)
-                return {'job_key':key,'phase':record['phase'],'resumed':False,'deferred':True}
-            target=CURRENT.resolve(strict=True)
-            if target.parent!=RELEASES or target.name not in {record['request']['base_commit'],record['request']['candidate_commit']}:
-                raise ValueError('manager_finalize_current_unbound')
-            if not self.runtime_compatible(registry,target):
-                record['held_background']=[unit for unit in record['active_before'] if unit not in {'eimemory-rpc.service','hermes-gateway.service','openclaw-gateway.service'}]
-                record['phase']='completed_held';record['finalized']=True;record['resume_requested']=True
-                self.save(registry,record)
-                atomic_json(self.state/'active-transition.json',{'job_key':key,'complete':True,'held':True},gid=registry['runtime_gid'])
-                return {'job_key':key,'phase':record['phase'],'resumed':False,'held_background':record['held_background'],
-                    'serving_commit':target.name,'controller_commit':registry['controller_commit'],
-                    'reason':'manager_legacy_runtime_requires_reviewed_controller_upgrade'}
-            self.resume(registry,record)
-            record['resumed']=True
-            migration=self.state/'migration-prior-active.json'
-            if record.get('manual_release') is True and migration.exists():
-                original=self.c.strict_json(read_file(migration));original['restored']=True
-                atomic_json(migration,original,gid=registry['runtime_gid'])
-            atomic_json(self.state/'active-transition.json',{'job_key':key,'complete':True},gid=registry['runtime_gid'])
+            record['resume_requested']=True;record['phase']='resume_deferred_until_terminal';self.save(registry,record)
+            return {'job_key':key,'phase':record['phase'],'resumed':False,'deferred':True}
         record['phase']=phase;self.save(registry,record)
         return {'job_key':key,'phase':phase,'active_before':record['active_before'],'resumed':record['resumed']}
+
+    def fence_job_processes(self,registry,prior,*,include_parent=True):
+        key=prior['job_key'];fences=prior.setdefault('writer_fences',{})
+        units=[(operation,self.c.validation_unit(key,operation)) for operation in self.c.VALIDATION_PREFIXES
+            if self.validation_record_path(key,operation).exists()]
+        if include_parent:units.append(('parent',prior['unit']))
+        for operation,unit in units:
+            path=self.record_path(key) if operation=='parent' else self.validation_record_path(key,operation)
+            bound=prior if operation=='parent' else self.c.strict_json(read_file(path))
+            state=self.unit_state(bound['registry'],unit,['LoadState','ActiveState','InvocationID','ControlGroup','MainPID'])
+            actual=state.get('InvocationID');original=bound.get('original_invocation')
+            if actual and original not in {None,actual}:raise ValueError('manager_predecessor_invocation_changed')
+            if state['ActiveState'] in {'active','activating','reloading','deactivating'}:
+                cg=state['ControlGroup'];self.c.hex_value(actual,32,'manager_predecessor_invocation_unknown')
+                if not cg.startswith('/system.slice/') or cg.rsplit('/',1)[-1]!=unit:
+                    raise ValueError('manager_predecessor_cgroup_invalid')
+                if original is None:
+                    bound['original_invocation']=actual
+                    if operation=='parent':self.save(registry,bound)
+                    else:atomic_json(path,bound,gid=registry['runtime_gid'])
+                fences[operation]={'unit':unit,'invocation':actual,'before':state,'phase':'stop_intent'}
+                self.save(registry,prior)
+                self.systemctl(bound['registry'],unit,'stop')
+                after=self.unit_state(bound['registry'],unit,['LoadState','ActiveState','InvocationID','ControlGroup','MainPID'])
+                if after.get('InvocationID') not in {'',actual} or after.get('MainPID') not in {'','0'}:
+                    raise ValueError('manager_predecessor_stop_identity_changed')
+                state=after
+            if state['LoadState'] not in {'loaded','not-found'} or state['ActiveState'] not in {'inactive','failed'} or state['MainPID'] not in {'0',''}:
+                raise ValueError('manager_predecessor_writer_not_fenced')
+            fences[operation]={**fences.get(operation,{}),'unit':unit,'invocation':actual or original,'after':state,'phase':'inactive_verified'}
+            self.save(registry,prior)
 
     def runtime_compatible(self,registry,target):
         for path,pin in registry['compatibility_hashes'].items():
             source=target/path
-            if source.is_symlink() or not source.is_file():return False
+            if source.is_symlink() or not source.is_file() or source.resolve(strict=True)!=source:return False
             if sha256(read_file(source,uid=registry['runtime_uid'],mode=stat.S_IMODE(source.stat().st_mode),maximum=4*1024*1024)).hexdigest()!=pin:
                 return False
         return True
@@ -821,15 +923,102 @@ class Bridge:
         self.save(registry,record)
         return {'job_key':key,'resumed':True,'phase':record['phase'],'serving_commit':target.name,'controller_commit':registry['controller_commit']}
 
+    def cleanup_validation_units(self,registry,key):
+        for operation in self.c.VALIDATION_PREFIXES:
+            path=self.validation_record_path(key,operation)
+            if not path.exists() and not path.is_symlink():continue
+            value=self.validation_status(registry,key,operation)
+            terminal=value.get('terminal_state')
+            if terminal is None:raise ValueError('manager_validation_completion_unproven')
+            state=value['state']
+            # Stop only a retained, already proven successful exit. A failed or
+            # unknown invocation is preserved, never reset to appear healthy.
+            if state.get('ActiveState')=='active' and state.get('SubState')=='exited':
+                if terminal.get('Result')!='success' or terminal.get('MainPID')!='0':
+                    raise ValueError('manager_validation_cleanup_not_terminal')
+                self.systemctl(registry,value['unit'],'stop','--no-block')
+
+    def verify_completed_validation(self,registry,record,operation,target_commit):
+        key=record['job_key']
+        proof=self.validation_status(registry,key,operation);terminal=proof.get('terminal_state')
+        if (terminal is None or terminal.get('LoadState')!='loaded'
+                or terminal.get('InvocationID')!=proof.get('original_invocation')
+                or terminal.get('Result')!='success' or terminal.get('ExecMainStatus')!='0'
+                or not proof.get('sealed_artifact') or proof['target_commit']!=target_commit
+                or proof['parent_original_invocation']!=record.get('original_invocation')):
+            raise ValueError('manager_complete_validation_unproven')
+        validation_record=self.c.strict_json(read_file(self.validation_record_path(key,operation)))
+        seal=self.validation_seal(registry,key,operation,validation_record)
+        raw=bytes.fromhex(seal['raw_hex']);artifact=self.c.strict_json(raw,max_bytes=4*1024*1024)
+        expected={'schema':'managed_code_deployment_validation.v2','job_key':key,'operation':operation,
+            'parent_invocation':record['original_invocation'],'invocation':proof['original_invocation'],
+            'target_commit':target_commit,'controller_commit':record['request'].get('validation_controller_commit',record['request']['controller_commit']),
+            'scope':record['request']['scope'],'source_readonly':True,
+            'manual_release':record.get('manual_release') is True,'launch_controller_commit':record['request']['controller_commit']}
+        if (not isinstance(artifact,dict) or set(artifact)!=set(expected)|{'report','target_transport'}
+                or any(artifact.get(name)!=value for name,value in expected.items())
+                or not isinstance(artifact.get('report'),dict) or artifact['report'].get('ok') is not True
+                or self.c.canonical(artifact)!=raw):
+            raise ValueError('manager_complete_sealed_context_invalid')
+        transport=artifact['target_transport'];report=artifact['report']
+        fields={'exit_status','timed_out','stdout_digest','stderr_digest','executed','physical_receipt_readback','closure_capture'}
+        if (not isinstance(transport,dict) or set(transport)!=fields or transport.get('executed') is not True
+                or type(transport.get('exit_status')) is not int or transport['exit_status']!=0 or transport.get('timed_out') is not False):
+            raise ValueError('manager_complete_target_execution_unproven')
+        for name in ('stdout_digest','stderr_digest'):self.c.hex_value(transport[name],64,'manager_complete_target_digest_invalid')
+        if operation=='receipt':
+            receipt=report.get('promotion_request_id')
+            if (report.get('report_type')!='deployment_receipt' or report.get('commit')!=target_commit
+                    or not isinstance(receipt,str) or not receipt or len(receipt)>256
+                    or transport['physical_receipt_readback']!={'current_deployment_receipt_verified':True,'commit':target_commit,'receipt_id':receipt}):
+                raise ValueError('manager_complete_receipt_readback_invalid')
+        else:
+            capture=transport['closure_capture']
+            if (not isinstance(capture,dict) or capture.get('capture_saved') is not True or capture.get('recording_ok') is not True
+                    or type(capture.get('exit_code')) is not int or capture['exit_code']!=0
+                    or not isinstance(capture.get('capture'),dict) or capture['capture'].get('scope')!=record['request']['scope']
+                    or capture['capture'].get('expected_commit')!=target_commit
+                    or report.get('observation_started') is not False):
+                raise ValueError('manager_complete_closure_capture_invalid')
+            if operation=='pre_observation':
+                if (report.get('report_type')!='code_evolution_pre_observation' or report.get('schema_version')!='1'
+                        or report.get('status')!='ready_for_observation' or report.get('closure_complete') is not False):
+                    raise ValueError('manager_complete_pre_observation_invalid')
+            else:
+                if (report.get('report_type')!='controlled_production_release_closure' or report.get('business_qualified') is not True
+                        or report.get('closure_complete') is not True or report.get('l5_certification')!='not_certified'):
+                    raise ValueError('manager_complete_business_unqualified')
+                receipt_path=self.validation_record_path(key,'receipt')
+                receipt_record=self.c.strict_json(read_file(receipt_path))
+                receipt_seal=self.validation_seal(registry,key,'receipt',receipt_record)
+                receipt_artifact=self.c.strict_json(bytes.fromhex(receipt_seal['raw_hex']),max_bytes=4*1024*1024)
+                if (not isinstance(report.get('record_ids'),dict)
+                        or report['record_ids'].get('deployment_receipt')!=receipt_artifact['report'].get('promotion_request_id')):
+                    raise ValueError('manager_complete_business_receipt_mismatch')
+
     def complete(self,registry,key,pid,uid):
         record=self.record(key);self.verify_job_peer(registry,record,pid,uid)
         if record.get('superseded_by'):raise ValueError('manager_job_superseded')
         if record.get('finalized') is True:
+            self.cleanup_validation_units(registry,key)
             return {'job_key':key,'complete':True,'resumed':record['resumed'],'phase':record['phase'],'operational_complete':record['phase']=='completed','held_background':record.get('held_background',[]),'idempotent':True}
         held=record.get('phase')=='held_incompatible_runtime'
         if not record.get('resumed') and not held:raise ValueError('manager_complete_before_resume')
+        target=CURRENT.resolve(strict=True)
+        if target.parent!=RELEASES or registry['runtime_commit']!=target.name:
+            raise ValueError('manager_complete_current_unbound')
+        operations=['receipt']
+        if record['request']['operation']=='deploy':
+            operations.append('post_resume')
+            if record.get('manual_release') is not True:operations.append('pre_observation')
+        for operation in operations:self.verify_completed_validation(registry,record,operation,target.name)
+        self.cleanup_validation_units(registry,key)
         record['finalized']=True;record['phase']='completed_held' if held else 'completed'
         self.save(registry,record)
+        migration=self.state/'migration-prior-active.json'
+        if not held and record.get('manual_release') is True and migration.exists():
+            original=self.c.strict_json(read_file(migration));original['restored']=True
+            atomic_json(migration,original,gid=registry['runtime_gid'])
         atomic_json(self.state/'active-transition.json',{'job_key':key,'complete':True,'held':held},gid=registry['runtime_gid'])
         return {'job_key':key,'complete':True,'resumed':record['resumed'],'phase':record['phase'],
             'held_background':record.get('held_background',[]),'operational_complete':not held}
@@ -842,7 +1031,7 @@ class Bridge:
         if target not in {record['request']['base_commit'],record['request']['candidate_commit']}:
             raise ValueError('manager_target_not_authorized')
         release=RELEASES/target
-        if release.is_symlink() or not release.is_dir():raise ValueError('manager_target_release_missing')
+        if release.is_symlink() or not release.is_dir() or release.resolve(strict=True)!=release:raise ValueError('manager_target_release_missing')
         if activate and CURRENT.resolve(strict=True)!=release:
             raise ValueError('manager_current_target_mismatch')
         for unit,pin in registry['template_hashes'].items():
@@ -875,7 +1064,7 @@ class Bridge:
                 # Do not resume a legacy controller lacking the worker contract.
                 for path,pin in registry['compatibility_hashes'].items():
                     source=release/path
-                    if source.is_symlink() or not source.is_file() or sha256(read_file(source,uid=registry['runtime_uid'],mode=stat.S_IMODE(source.stat().st_mode),maximum=4*1024*1024)).hexdigest()!=pin:
+                    if source.is_symlink() or not source.is_file() or source.resolve(strict=True)!=source or sha256(read_file(source,uid=registry['runtime_uid'],mode=stat.S_IMODE(source.stat().st_mode),maximum=4*1024*1024)).hexdigest()!=pin:
                         raise ValueError('manager_manual_controller_compatibility_mismatch')
                 fresh['controller_commit']=target
             fresh['generation']=self.c.digest({k:v for k,v in fresh.items() if k!='generation'})
@@ -886,7 +1075,9 @@ class Bridge:
         temporary=path.with_name(path.name+'.tmp.'+str(os.getpid()))
         fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o640)
         try:
-            os.fchown(fd,0,gid);os.write(fd,raw);os.fsync(fd)
+            os.fchown(fd,0,gid)
+            with os.fdopen(fd,'wb',closefd=False) as stream:
+                stream.write(raw);stream.flush();os.fsync(fd)
             if path.exists():read_file(path)
             if exclusive:os.link(temporary,path,follow_symlinks=False)
             else:os.replace(temporary,path)
@@ -915,7 +1106,7 @@ class Bridge:
         fields={'unit_state':{'unit','properties'},'unit_journal':{'unit','invocation','limit'},
             'begin_fused_closure':set(),'end_fused_closure':{'context_key'},'recover_fused_closure':set(),
             'issue_managed_incident_proof':{'source_record_id','source_digest'},'verify_managed_incident_proof':{'receipt_id','digest'},'checkpoint_managed_incident_knowledge':set(),
-            'runtime_identity':{'unit'},'activation_attestation':set(),'verify_activation_attestation':{'receipt_id','digest'},'error_window':set(),'single_rpc_owner':set(),'readonly_probe':{'job_key'},'submit_job':{'job_key'},'job_status':{'job_key'},
+            'runtime_identity':{'unit'},'activation_attestation':set(),'verify_activation_attestation':{'receipt_id','digest'},'error_window':set(),'single_rpc_owner':set(),'readonly_probe':{'job_key'},'submit_job':{'job_key'},'job_status':{'job_key'},'release_job':{'job_key'},
             'job_journal':{'job_key','invocation'},'validate_deployment_job':{'job_key','validation_operation'},'seal_deployment_validation_result':{'job_key','validation_operation','invocation','artifact_digest'},'deployment_validation_status':{'job_key','validation_operation'},'finalize_job':{'job_key'},'complete_job':{'job_key'},'transition':{'job_key','phase'}}
         if op not in fields or set(value)!=base|fields[op]:raise ValueError('manager_request_shape_invalid')
         if op=='issue_managed_incident_proof':
@@ -953,6 +1144,10 @@ class Bridge:
             return {'runtime_commit':values[0]}
         # Serialize durable transitions. Reads never cause a lifecycle action.
         with self.mutex,self.lifecycle_lock():
+            # A different thread may have activated a release while this caller
+            # waited for the lifecycle lock. Never mutate using stale authority.
+            if self.registry()['generation']!=registry['generation']:
+                raise ValueError('manager_request_registry_mismatch')
             if op=='begin_fused_closure':return self.fused_closure(registry,'begin',pid,uid)
             if op=='end_fused_closure':return self.fused_closure(registry,'end',pid,uid,value['context_key'])
             if op=='recover_fused_closure':return self.fused_closure(registry,'recover',pid,uid)
@@ -976,6 +1171,7 @@ class Bridge:
                 return {'readonly':True,'target_commit':target}
             if op=='submit_job':return self.submit(registry,value['job_key'])
             if op=='job_status':return self.job_status(registry,value['job_key'])
+            if op=='release_job':return self.release_job(registry,value['job_key'])
             if op=='job_journal':
                 record=self.record(value['job_key'])
                 return self.journal(record['registry'],record['unit'],value['invocation'],5000)

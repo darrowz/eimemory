@@ -22,7 +22,11 @@ VALIDATION_ENTRY = 'deploy/run_code_deployment_validation.py'
 EMPTY_PYCACHE = '/var/lib/eimemory-manager/empty-pycache'
 FUSED_UNIT = 'eimemory-l5-fused-closure.service'
 FUSED_L1_UNITS = ('eimemory-l1-extract.timer','eimemory-l1-extract.service')
-VALIDATION_PREFIXES = {'receipt':'eimemory-code-validation-receipt@','post_resume':'eimemory-code-validation-post-resume@'}
+VALIDATION_PREFIXES = {'receipt':'eimemory-code-validation-receipt@',
+ 'pre_observation':'eimemory-code-validation-pre-observation@','post_resume':'eimemory-code-validation-post-resume@'}
+VALIDATION_RUNTIME_SECONDS = {'receipt':420,'pre_observation':1860,'post_resume':1860}
+MANUAL_FIELDS = frozenset({'schema','operation','controller_commit','validation_controller_commit',
+ 'base_commit','candidate_commit','target_commit','reviewed_attempt_id','scope'})
 MAX_REQUEST_BYTES = 65536
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 READ_PROPERTIES = frozenset({'ActiveState','SubState','Result','InvocationID','MainPID','ExecMainStatus',
@@ -116,7 +120,7 @@ def validate_registry(value: Any) -> dict:
  for name,item in units.items():
   if not isinstance(item,dict) or set(item)!={'manager','installed'} or type(item['installed']) is not bool or item['manager'] not in {'system','user'}:raise ValueError('manager_registry_unit_invalid')
   if item['manager']!=('user' if name in USER_COMPAT_UNITS else 'system'):raise ValueError('manager_registry_unit_manager_mismatch')
- if not isinstance(value['template_hashes'],dict) or any(name not in REGISTERED_UNITS and name not in {'eimemory-code-deployment-job@.service','eimemory-code-validation-receipt@.service','eimemory-code-validation-post-resume@.service'} for name in value['template_hashes']):raise ValueError('manager_registry_template_invalid')
+ if not isinstance(value['template_hashes'],dict) or any(name not in REGISTERED_UNITS and name not in {'eimemory-code-deployment-job@.service',*(prefix+'.service' for prefix in VALIDATION_PREFIXES.values())} for name in value['template_hashes']):raise ValueError('manager_registry_template_invalid')
  for item in value['template_hashes'].values():hex_value(item,64,'manager_registry_template_digest_invalid')
  if not isinstance(value['compatibility_hashes'],dict) or set(value['compatibility_hashes'])!=set(COMPATIBILITY_PATHS):raise ValueError('manager_registry_compatibility_invalid')
  for item in value['compatibility_hashes'].values():hex_value(item,64,'manager_registry_compatibility_digest_invalid')
@@ -138,6 +142,20 @@ JOURNAL_ERROR_PATTERNS = (
 
 def validate_scope(value: Any) -> dict:
  if not isinstance(value,dict) or set(value)!={'tenant_id','agent_id','workspace_id','user_id'} or any(not isinstance(v,str) or not v or v!=v.strip() or len(v)>256 or any(c in v for c in '\r\n\0') for v in value.values()):raise ValueError('manager_scope_invalid')
+ return value
+
+
+def validate_manual_permit(value: Any, job_key: str) -> dict:
+ if not isinstance(value,dict) or set(value)!=MANUAL_FIELDS or value.get('schema')!='eimemory.manual_release_permit.v2':
+  raise ValueError('manager_manual_permit_schema_invalid')
+ if value['operation']!='deploy':raise ValueError('manager_manual_permit_operation_invalid')
+ for name in ('controller_commit','validation_controller_commit','base_commit','candidate_commit','target_commit'):
+  hex_value(value[name],40,'manager_manual_permit_commit_invalid')
+ if value['target_commit']!=value['candidate_commit'] or value['validation_controller_commit']!=value['candidate_commit']:
+  raise ValueError('manager_manual_permit_target_invalid')
+ hex_value(value['reviewed_attempt_id'],32,'manager_manual_permit_attempt_invalid')
+ validate_scope(value['scope'])
+ if digest(value)!=hex_value(job_key,64,'manager_job_key_invalid'):raise ValueError('manager_manual_permit_digest_mismatch')
  return value
 
 

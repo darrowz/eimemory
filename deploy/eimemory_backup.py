@@ -211,8 +211,23 @@ def _sync_backup_tree(root: Path) -> None:
 
 
 def _run_cli(eimemory_bin: str, args: list[str], env: dict[str, str], timeout: int) -> dict[str, Any]:
+    # A registered PID1 backup may never fall back to its non-editable wheel's
+    # console script (or an environment supplied executable). Manual callers
+    # retain their explicit CLI contract.
+    managed = False
+    if os.name == "posix":
+        managed = any(
+            line == "0::/system.slice/eimemory-backup.service"
+            or line.startswith("0::/system.slice/eimemory-backup.service/")
+            for line in Path("/proc/self/cgroup").read_text().splitlines()
+        )
+    command = (
+        [sys.executable, "-I", "-B", "-X", "pycache_prefix=/var/lib/eimemory-manager/empty-pycache",
+         "/usr/libexec/eimemory-manager/runtime_manager_launch.py", "--product-module", "eimemory.cli.main", *args]
+        if managed else [eimemory_bin, *args]
+    )
     completed = subprocess.run(
-        [eimemory_bin, *args],
+        command,
         env=env,
         capture_output=True,
         text=True,
