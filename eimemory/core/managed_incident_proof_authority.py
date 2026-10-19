@@ -266,7 +266,7 @@ def _runtime_producer_guard(manifest,registry):
     runtime=_hex(registry['runtime_commit'],40)
     controller=_hex(registry.get('controller_commit',runtime),40)
     root=Path(manifest['source_directory']) if runtime==controller else Path(RELEASES_DIRECTORY)/runtime
-    identities={};deadline=time.monotonic()+10
+    identities={};deadline=time.monotonic()+10;prefix_modules=set()
     for name in RUNTIME_PRODUCER_FILES:
         shadow=(Path(name[:-3])/'__init__.py').as_posix()
         if not name.endswith('/__init__.py') and shadow not in manifest['producer_files'] and os.path.lexists(root/shadow):
@@ -274,9 +274,15 @@ def _runtime_producer_guard(manifest,registry):
         for parent in Path(name).parents:
             if str(parent)=='.':continue
             initializer=(parent/'__init__.py').as_posix()
-            if initializer not in manifest['producer_files'] and os.path.lexists(root/initializer):
-                raise ValueError('managed_authority_runtime_namespace_injected')
-    for name in RUNTIME_PRODUCER_FILES:
+            if initializer not in manifest['producer_files']:
+                if os.path.lexists(root/initializer):
+                    raise ValueError('managed_authority_runtime_namespace_injected')
+                module=parent.as_posix()+'.py'
+                if module in manifest['producer_files']:
+                    prefix_modules.add(module)
+                elif os.path.lexists(root/module):
+                    raise ValueError('managed_authority_runtime_namespace_shadowed')
+    for name in (*RUNTIME_PRODUCER_FILES,*sorted(prefix_modules)):
         if name not in manifest['producer_files']:raise ValueError('managed_authority_runtime_contract_incomplete')
         if time.monotonic()>deadline:raise ValueError('managed_authority_runtime_guard_budget_exhausted')
         raw,identity=_read(root/name,owners=(0,registry['runtime_uid']),gid=registry['runtime_gid'],

@@ -366,6 +366,58 @@ def test_runtime_allowed_business_changes_keep_producer_contract_but_native_chan
     with pytest.raises(FileNotFoundError):authority._runtime_producer_guard(manifest,registry)
 
 
+@pytest.mark.parametrize('attack',['module_package','namespace_module'])
+def test_actual_python_protected_import_replacement_is_rejected(tmp_path,monkeypatch,attack):
+    """Actual isolated interpreter imports, no authority/Runtime/DB involved."""
+    controller=tmp_path/'controller';candidate=tmp_path/('d'*40)
+    expected={}
+    for directory in (controller,candidate):
+        for name in authority.RUNTIME_PRODUCER_FILES:
+            path=directory/name;path.parent.mkdir(parents=True,exist_ok=True)
+            raw=b'VALUE = "protected"\n' if name=='eimemory/core/clock.py' else b'# protected fixture\n'
+            path.write_bytes(raw);expected[name]=authority.sha256(raw).hexdigest()
+    manifest=dict(source_directory=str(controller),producer_files=expected,release_commit=COMMIT)
+    registry=dict(runtime_commit='d'*40,controller_commit=COMMIT,runtime_uid=1001,runtime_gid=1001)
+    monkeypatch.setattr(authority,'RELEASES_DIRECTORY',str(tmp_path))
+    monkeypatch.setattr(authority,'_read',lambda path,**_: (Path(path).read_bytes(),authority._identity(Path(path).stat())))
+    assert authority._runtime_producer_guard(manifest,registry)
+    snippet='import sys;sys.path.insert(0,sys.argv[1]);from eimemory.core import clock;print(clock.VALUE)'
+    argv=[sys.executable,'-I','-S','-B','-c',snippet,str(candidate)]
+    assert subprocess.check_output(argv).strip()==b'protected'
+    if attack=='module_package':
+        path=candidate/'eimemory/core/clock/__init__.py';path.parent.mkdir()
+        path.write_text('VALUE = "injected"\n')
+        reason='runtime_import_shadowed'
+    else:
+        redirected=candidate/'injected';redirected.mkdir()
+        (redirected/'clock.py').write_text('VALUE = "injected"\n')
+        (candidate/'eimemory/core.py').write_text('__path__ = '+repr([str(redirected)])+'\n')
+        reason='runtime_namespace_shadowed'
+    assert subprocess.check_output(argv).strip()==b'injected'
+    with pytest.raises(ValueError,match=reason):authority._runtime_producer_guard(manifest,registry)
+
+
+def test_all_protected_namespace_import_prefixes_reject_new_module_files(tmp_path,monkeypatch):
+    source=Path(__file__).resolve().parents[1]
+    expected={name:authority.sha256((source/name).read_bytes()).hexdigest() for name in authority.RUNTIME_PRODUCER_FILES}
+    candidate=tmp_path/('d'*40)
+    for name in expected:
+        path=candidate/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes((source/name).read_bytes())
+    manifest=dict(source_directory=str(source),producer_files=expected,release_commit=COMMIT)
+    registry=dict(runtime_commit='d'*40,controller_commit=COMMIT,runtime_uid=1001,runtime_gid=1001)
+    monkeypatch.setattr(authority,'RELEASES_DIRECTORY',str(tmp_path))
+    monkeypatch.setattr(authority,'_read',lambda path,**_: (Path(path).read_bytes(),authority._identity(Path(path).stat())))
+    prefixes={parent.as_posix() for name in authority.RUNTIME_PRODUCER_FILES for parent in Path(name).parents
+        if str(parent)!='.' and (parent/'__init__.py').as_posix() not in expected}
+    assert {'eimemory/core','eimemory/models','eimemory/storage'}<=prefixes
+    for prefix in prefixes:
+        injected=candidate/(prefix+'.py');injected.write_text('# replaces a reviewed namespace import\n')
+        with pytest.raises(ValueError,match='runtime_namespace_shadowed'):
+            authority._runtime_producer_guard(manifest,registry)
+        injected.unlink()
+    assert authority._runtime_producer_guard(manifest,registry)
+
+
 def test_configuration_binds_frozen_controller_not_serving_candidate(tmp_path,monkeypatch):
     source=Path(__file__).resolve().parents[1]
     manifest=dict(schema='managed_code_incident_manifest.v1',qualification_domain=DOMAIN,
