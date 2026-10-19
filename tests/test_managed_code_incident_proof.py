@@ -250,6 +250,35 @@ def proof_fixture():
     return {**material,'digest':digest(material)}
 
 
+@pytest.mark.parametrize('adverse',FIELDS)
+def test_managed_root_readback_cannot_erase_original_global_adverse_fact(monkeypatch,adverse):
+    """Contradictory authority boundary fixture, not an actual issuer claim."""
+    from types import ModuleType
+    from eimemory.governance.evolution.managed_code_incident_proof import qualification_evidence
+    from eimemory.governance.evolution.code_evolution_transaction import qualification_report
+    from eimemory.governance.l5.l5_product_completion import build_product_completion
+    proof=proof_fixture();proof['global_facts'][adverse]=True
+    proof['digest']=digest({key:value for key,value in proof.items() if key!='digest'})
+    client=ModuleType('eimemory.core.runtime_manager')
+    client.verify_managed_incident_proof=lambda *_:dict(schema='managed_code_incident_proof_verification.v1',
+        snapshot=proof,qualification_current=True,current_managed_facts={key:False for key in FIELDS},
+        current_watermark=1,reason='')
+    monkeypatch.setitem(sys.modules,'eimemory.core.runtime_manager',client)
+    transaction=dict(transaction_id='contradictory-boundary-fixture',transaction_schema_version=TRANSACTION_SCHEMA,
+        incident_id=proof['incident_id'],incident_digest=proof['incident_digest'],**SCOPE,
+        origin='system_detector',detector='eimemory.release_closure_failure.v1',**proof['global_facts'],
+        managed_incident_proof=proof,terminal_receipt_digest='9'*64,
+        qualifying_terminal_outcome='succeeded_sedimented',evidence_verified=True,observation_valid=True)
+    checked=qualification_evidence(transaction)
+    assert checked['facts'][adverse] is True and checked['global_facts'][adverse] is True
+    lineage=dict(ok=True,compatible=True)
+    assert not qualification_report(transaction,current_lineage=lineage)['qualifies_for_product_completion']
+    complete=build_product_completion(dict(ok=True,status='ready'),
+        provider=dict(ready=True,catalog_ready=True,advertisement_fresh=True),transaction=transaction,current_lineage=lineage)
+    assert complete['global_provenance'][adverse] is True
+    assert not complete['product_l5_complete'] and not complete['code_evolution']['transaction_verified']
+
+
 def managed_payload():
     proof=proof_fixture()
     return dict(transaction_id='managed-sqlite',idempotency_key='managed-sqlite',scope=SCOPE,

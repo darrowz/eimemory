@@ -54,7 +54,8 @@ def build_product_completion(
         managed_error=True;provenance={'qualification_domain':'registered_code_defect_knowledge.v1',
             'facts':{key:None for key in ('known_before_detection','prior_user_reported','manual_bootstrap')},
             'global_facts':{key:transaction_data.get(key) for key in ('known_before_detection','prior_user_reported','manual_bootstrap')}}
-    provenance_facts=provenance['facts']
+    provenance_facts={key:True if transaction_data.get(key) is True else value
+        for key,value in provenance['facts'].items()}
     lineage = _mapping(current_lineage)
     control_plane_ok = _bool(raw.get("ok")) and str(raw.get("status") or "") not in {"blocked", "degraded"}
     control_plane_status = "ready" if control_plane_ok else str(raw.get("status") or "blocked")
@@ -149,6 +150,8 @@ def build_product_completion(
         and terminal_receipt_bound
         and transaction_evidence_verified
         and not managed_error
+        and not any(transaction_data.get(key) is True
+            for key in ("known_before_detection", "prior_user_reported", "manual_bootstrap"))
         and _explicit_false(provenance_facts.get('manual_bootstrap'))
         and _explicit_false(provenance_facts.get("known_before_detection"))
         and _explicit_false(provenance_facts.get("prior_user_reported"))

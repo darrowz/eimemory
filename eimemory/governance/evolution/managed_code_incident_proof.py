@@ -119,6 +119,8 @@ def qualification_evidence(transaction):
     facts=current['current_managed_facts']
     if not current['qualification_current'] and all(item is False for item in facts.values()):
         facts={key:None for key in FIELDS}
+    # A bounded-domain negative can never erase an original adverse fact.
+    facts={key:True if global_facts[key] is True else facts[key] for key in FIELDS}
     return {'qualification_domain':DOMAIN,'facts':facts,
             'global_facts':global_facts,'snapshot':snapshot}
 
