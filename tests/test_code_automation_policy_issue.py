@@ -110,3 +110,106 @@ def test_issue_commit_push_only_and_full_modes(tmp_path: Path, monkeypatch: pyte
     )
     assert full["ok"] is True
     assert all(full["policy"]["effects"].values())
+
+
+def test_real_parallel_empty_policy_lock_initializes_only_after_acquisition(tmp_path, monkeypatch):
+    import inspect
+    import linecache
+    import threading
+    from eimemory.governance.evolution import code_automation_policy_issue as product
+    original_fstat, original_write = os.fstat, os.write
+    snapshots = threading.Barrier(2)
+    acquired, contended, release = threading.Event(), threading.Event(), threading.Event()
+    local = threading.local()
+    errors, entered = [], []
+    def checked_fstat(fd):
+        info = original_fstat(fd)
+        caller = inspect.currentframe().f_back
+        if caller.f_code.co_name == '_policy_lock':
+            line = linecache.getline(caller.f_code.co_filename, caller.f_lineno)
+            if 'info = os.fstat' in line:
+                local.initial = info
+                snapshots.wait(4)
+            elif 'os.fstat(descriptor).st_size' in line:
+                return local.initial  # Both real openers observed the empty version.
+        return info
+    def checked_write(fd, raw):
+        if inspect.currentframe().f_back.f_code.co_name == '_policy_lock':
+            assert getattr(local, 'holds_lock', False), 'marker_write_before_real_lock'
+        return original_write(fd, raw)
+    if os.name == 'nt':
+        import msvcrt
+        real_lock = msvcrt.locking
+        def checked_lock(fd, operation, length):
+            try:
+                result = real_lock(fd, operation, length)
+            except OSError:
+                contended.set()
+                raise
+            local.holds_lock = operation != msvcrt.LK_UNLCK
+            return result
+        monkeypatch.setattr(msvcrt, 'locking', checked_lock)
+    elif os.name == 'posix':
+        import fcntl
+        real_lock = fcntl.flock
+        def checked_lock(fd, operation):
+            try:
+                result = real_lock(fd, operation)
+            except OSError:
+                contended.set()
+                raise
+            local.holds_lock = operation != fcntl.LOCK_UN
+            return result
+        monkeypatch.setattr(fcntl, 'flock', checked_lock)
+    else:
+        pytest.skip('No supported native file-lock platform')
+    monkeypatch.setattr(os, 'fstat', checked_fstat)
+    monkeypatch.setattr(os, 'write', checked_write)
+    path = tmp_path / 'real-empty-owner.lock'
+    def owner():
+        try:
+            with product._policy_lock(path):
+                entered.append(threading.current_thread().name)
+                if len(entered) == 1:
+                    acquired.set()
+                    assert release.wait(4)
+        except BaseException as error:
+            errors.append(error)
+    threads = [threading.Thread(target=owner, name='owner-'+str(index)) for index in range(2)]
+    try:
+        for thread in threads:
+            thread.start()
+        assert acquired.wait(4), errors
+        assert contended.wait(4), errors
+        assert len(entered) == 1  # The second real kernel lock is still blocked.
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(5)
+    assert not any(thread.is_alive() for thread in threads)
+    assert not errors and len(entered) == 2, errors
+    assert path.read_bytes() == b'0'
+
+
+def test_contended_policy_lock_keeps_bounded_timeout_and_existing_marker(tmp_path, monkeypatch):
+    import threading
+    from eimemory.governance.evolution import code_automation_policy_issue as product
+    path = tmp_path / 'existing-owner.lock'
+    path.write_bytes(b'existing-original-marker')
+    path.chmod(0o600)
+    errors = []
+    with product._policy_lock(path):
+        ticks = iter([0.0, 6.0])
+        monkeypatch.setattr(product.time, 'monotonic', lambda: next(ticks))
+        def contender():
+            try:
+                with product._policy_lock(path):
+                    errors.append(AssertionError('contender_bypassed_real_lock'))
+            except BaseException as error:
+                errors.append(error)
+        thread = threading.Thread(target=contender)
+        thread.start(); thread.join(3)
+        assert not thread.is_alive()
+    assert len(errors) == 1 and isinstance(errors[0], ValueError)
+    assert str(errors[0]) == 'policy_owner_busy'
+    assert path.read_bytes() == b'existing-original-marker'

@@ -261,8 +261,6 @@ def _policy_lock(path: Path):
                 or (os.name == "posix" and (info.st_uid != os.geteuid()
                                              or stat.S_IMODE(info.st_mode) & 0o077))):
             raise ValueError("policy_lock_authority_invalid")
-        if os.fstat(descriptor).st_size == 0:
-            os.write(descriptor, b"0")
         deadline = time.monotonic() + 5
         while not acquired:
             try:
@@ -280,6 +278,11 @@ def _policy_lock(path: Path):
                 if time.monotonic() >= deadline:
                     raise ValueError("policy_owner_busy") from None
                 time.sleep(.05)
+        # Windows can lock byte zero beyond EOF. Initialize only after owning
+        # that lock: another opener may already hold it after both observed an
+        # empty file, and an earlier marker write would raise PermissionError.
+        if os.fstat(descriptor).st_size == 0:
+            os.write(descriptor, b"0")
         yield
     finally:
         if acquired:
