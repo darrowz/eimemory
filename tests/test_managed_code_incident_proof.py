@@ -356,6 +356,11 @@ def test_runtime_allowed_business_changes_keep_producer_contract_but_native_chan
     with pytest.raises(ValueError,match='runtime_namespace_injected'):
         authority._runtime_producer_guard(manifest,registry)
     injected.unlink()
+    shadow=candidate/'eimemory/ops/release_closure_failure/__init__.py';shadow.parent.mkdir()
+    shadow.write_text('# new package shadows a pinned module on Python import')
+    with pytest.raises(ValueError,match='runtime_import_shadowed'):
+        authority._runtime_producer_guard(manifest,registry)
+    shadow.unlink();shadow.parent.rmdir()
     # It cannot borrow the frozen controller when actual candidate is missing.
     registry['runtime_commit']='e'*40
     with pytest.raises(FileNotFoundError):authority._runtime_producer_guard(manifest,registry)
@@ -433,14 +438,14 @@ def test_posix_empty_source_and_changed_then_restored_identity_are_strict(tmp_pa
         assert before==authority._producer_guard(manifest,registry)
         sibling.rmdir()
         import pwd
-        account=pwd.getpwnam('darrow');mutable=tmp_path/'mutable';mutable.mkdir()
+        account=pwd.getpwnam('darrow');mutable=tmp_path.parent/(tmp_path.name+'-mutable');mutable.mkdir()
         source=mutable/'producer.py';source.write_bytes(b'same source')
         os.chown(mutable,account.pw_uid,account.pw_gid)
         mutable_manifest={**manifest,'source_directory':str(mutable),
             'producer_files':{'producer.py':authority.sha256(source.read_bytes()).hexdigest()}}
         mutable_registry={**registry,'runtime_uid':account.pw_uid,'runtime_gid':account.pw_gid}
         original_parent=authority._producer_guard(mutable_manifest,mutable_registry)
-        moved=tmp_path/'moved';mutable.rename(moved);moved.rename(mutable)
+        moved=tmp_path.parent/(tmp_path.name+'-moved');mutable.rename(moved);moved.rename(mutable)
         assert original_parent!=authority._producer_guard(mutable_manifest,mutable_registry)
     path.write_bytes(b'value = 2\n');path.write_bytes(b'value = 1\n')
     after=authority._producer_guard(manifest,registry)

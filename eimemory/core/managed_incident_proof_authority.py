@@ -268,6 +268,9 @@ def _runtime_producer_guard(manifest,registry):
     root=Path(manifest['source_directory']) if runtime==controller else Path(RELEASES_DIRECTORY)/runtime
     identities={};deadline=time.monotonic()+10
     for name in RUNTIME_PRODUCER_FILES:
+        shadow=(Path(name[:-3])/'__init__.py').as_posix()
+        if not name.endswith('/__init__.py') and shadow not in manifest['producer_files'] and os.path.lexists(root/shadow):
+            raise ValueError('managed_authority_runtime_import_shadowed')
         for parent in Path(name).parents:
             if str(parent)=='.':continue
             initializer=(parent/'__init__.py').as_posix()
