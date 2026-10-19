@@ -21,6 +21,21 @@ from .contracts import CandidateBatch, CandidateHit, CandidateRef, CandidateRequ
 
 MAX_SQL_IN_PARAMS = 500
 
+
+def require_existing_vector_authority(sqlite) -> None:
+    """Verify an attached authority without seeding or repairing its schema."""
+    required = [("table", "vector_sync_revision", "vector_sync_revision")]
+    required.extend(("trigger", f"trg_records_vector_sync_{operation}", "records")
+                    for operation in ("insert", "update", "delete"))
+    for kind, name, table in required:
+        row = sqlite.execute("SELECT type,tbl_name FROM sqlite_master WHERE name=?", (name,)).fetchone()
+        if row is None or row["type"] != kind or row["tbl_name"] != table:
+            raise RuntimeError("existing_vector_authority_schema_required")
+    row = sqlite.execute("SELECT revision FROM vector_sync_revision WHERE singleton=1").fetchone()
+    if row is None or type(row["revision"]) is not int or row["revision"] < 0:
+        raise RuntimeError("existing_vector_authority_revision_required")
+
+
 class SQLiteCandidateSource:
     """Adapter over the existing SQLite scorer that exposes ID-only hits."""
 
@@ -29,6 +44,7 @@ class SQLiteCandidateSource:
 
     def __init__(self, store: RuntimeStore, *, projection_memory_only: bool = False) -> None:
         self.store = store
+        self._attached_authority_verified = False
         self._ensure_authority_revision()
         self._memory_authority = None
         if projection_memory_only:
@@ -36,6 +52,11 @@ class SQLiteCandidateSource:
             self._memory_authority = MemoryProjectionAuthority(store)
 
     def _ensure_authority_revision(self) -> None:
+        if not getattr(self.store, "bootstrap_schema", True):
+            # Ledger-only recovery does not need a retrieval projection. Its
+            # existing fence is verified lazily on actual authority use.
+            return
+
         def _bootstrap(sqlite):
             already_in_transaction = sqlite.in_transaction
             sqlite.execute(
@@ -56,11 +77,17 @@ class SQLiteCandidateSource:
 
         self.store.run_locked(_bootstrap)
 
+    def _require_attached_authority(self, sqlite) -> None:
+        if not getattr(self.store, "bootstrap_schema", True) and not self._attached_authority_verified:
+            require_existing_vector_authority(sqlite)
+            self._attached_authority_verified = True
+
     def authority_head(self) -> tuple[str, str]:
         """Return the exact keyset head used by the optional projection sync."""
         if self._memory_authority is not None:
             return self._memory_authority.head()
         def _read(sqlite):
+            self._require_attached_authority(sqlite)
             return sqlite.execute(
                 "SELECT updated_at, storage_key FROM records "
                 "ORDER BY updated_at DESC, storage_key DESC LIMIT 1"
@@ -75,6 +102,7 @@ class SQLiteCandidateSource:
         if self._memory_authority is not None:
             return self._memory_authority.revision()
         def _read(sqlite):
+            self._require_attached_authority(sqlite)
             exists = sqlite.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vector_sync_revision'"
             ).fetchone()
@@ -102,6 +130,14 @@ class SQLiteCandidateSource:
                 if started:
                     sqlite.execute('BEGIN')
                 try:
+                    # First-use validation shares this deadline-bound reader
+                    # snapshot. Never acquire an unbounded writer lock before
+                    # the caller's existing recall budget takes effect.
+                    if not getattr(self.store, 'bootstrap_schema', True):
+                        if self._memory_authority is not None:
+                            self._memory_authority._verify_attached_contract(sqlite)
+                        else:
+                            self._require_attached_authority(sqlite)
                     memory_only = self._memory_authority is not None
                     condition = " WHERE kind='memory' AND status='active'" if memory_only else ''
                     row = sqlite.execute('SELECT updated_at,storage_key FROM records' + condition

@@ -149,3 +149,89 @@ def test_fresh_reader_keeps_snapshot_and_delta_entry_points_working(tmp_path):
         assert [row['record_id'] for row in result['rows']] == [added.record_id]
         assert result['revision'] == result['current_revision'] == fresh_reader.snapshot_token()
         assert not store.sqlite.in_transaction
+
+
+@pytest.mark.parametrize('memory_only', [False, True])
+def test_existing_only_reader_preserves_real_caller_transaction_without_bootstrap(tmp_path, memory_only):
+    root = tmp_path / 'authority'
+    with seeded_store(root) as (original, record):
+        SQLiteProjectionReader(original, projection_memory_only=memory_only).page(ProjectionCursor(), limit=10)
+    attached = RuntimeStore(root, bootstrap_schema=False)
+    try:
+        with attached.locked() as sqlite:
+            version = sqlite.execute('PRAGMA schema_version').fetchone()[0]
+            sqlite.execute('BEGIN')
+            sqlite.execute('UPDATE records SET title=? WHERE record_id=?', ('caller pending', record.record_id))
+            sqlite.execute('SAVEPOINT caller_work')
+            reader = SQLiteProjectionReader(attached, projection_memory_only=memory_only)
+            assert reader.page(ProjectionCursor(), limit=10)[0]['title'] == 'caller pending'
+            assert reader.snapshot_token().isdigit() and sqlite.in_transaction
+            sqlite.execute('ROLLBACK TO SAVEPOINT caller_work')
+            sqlite.execute('RELEASE SAVEPOINT caller_work')
+            sqlite.rollback()
+            assert title(sqlite, record) == 'committed'
+            assert sqlite.execute('PRAGMA schema_version').fetchone()[0] == version
+        assert reader.page(ProjectionCursor(), limit=10)[0]['record_id'] == record.record_id
+    finally:
+        attached.close()
+
+
+def test_existing_reader_missing_projection_contract_refuses_without_repair_or_caller_commit(tmp_path):
+    root = tmp_path / 'authority'
+    with seeded_store(root) as (original, record):
+        SQLiteProjectionReader(original).page(ProjectionCursor(), limit=10)
+        with original.locked() as sqlite:
+            sqlite.execute('DROP INDEX idx_records_vector_sync_cursor')
+            sqlite.commit()
+    attached = RuntimeStore(root, bootstrap_schema=False)
+    try:
+        with attached.locked() as sqlite:
+            version = sqlite.execute('PRAGMA schema_version').fetchone()[0]
+            sqlite.execute('BEGIN')
+            sqlite.execute('UPDATE records SET title=? WHERE record_id=?', ('caller pending', record.record_id))
+            reader = SQLiteProjectionReader(attached)
+            with pytest.raises(RuntimeError, match='existing_vector_projection_cursor_required'):
+                reader.page(ProjectionCursor(), limit=10)
+            assert not reader._index_ready and sqlite.in_transaction
+            assert title(sqlite, record) == 'caller pending'
+            assert sqlite.execute("SELECT 1 FROM sqlite_master WHERE name='idx_records_vector_sync_cursor'").fetchone() is None
+            assert sqlite.execute('PRAGMA schema_version').fetchone()[0] == version
+            sqlite.rollback()
+    finally:
+        attached.close()
+
+
+@pytest.mark.parametrize('memory_only', [False, True])
+def test_attached_authority_first_snapshot_uses_bounded_reader_without_waiting_for_writer(tmp_path, memory_only, monkeypatch):
+    from threading import Event, Thread
+    from time import perf_counter
+    from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
+
+    root = tmp_path / 'authority'
+    with seeded_store(root) as (original, _record):
+        SQLiteCandidateSource(original, projection_memory_only=memory_only)
+    attached = RuntimeStore(root, bootstrap_schema=False)
+    monkeypatch.setattr(attached, '_reader_count', lambda: 1)
+    acquired, release = Event(), Event()
+    def writer():
+        with attached.locked():
+            acquired.set()
+            release.wait(5)
+    thread = Thread(target=writer)
+    try:
+        # Initialize a real query-only pool before holding the writer lock.
+        with attached.borrow_reader():
+            pass
+        source = SQLiteCandidateSource(attached, projection_memory_only=memory_only)
+        thread.start()
+        assert acquired.wait(2)
+        started = perf_counter()
+        head, revision = source.authority_snapshot(deadline_at=started + 1)
+        assert head[1] and revision.isdigit()
+        assert perf_counter() - started < 1
+    finally:
+        release.set()
+        if thread.ident is not None:
+            thread.join(2)
+            assert not thread.is_alive()
+        attached.close()

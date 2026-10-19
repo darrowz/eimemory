@@ -90,7 +90,7 @@ class SQLiteProjectionReader:
             # Its constructor also bootstraps derived tables and triggers. Do
             # not retain an authority whose schema a caller could roll back.
             with store.locked() as sqlite:
-                if sqlite.in_transaction:
+                if sqlite.in_transaction and getattr(store, "bootstrap_schema", True):
                     raise RuntimeError("projection_reader_bootstrap_requires_own_transaction")
                 self._memory_authority = MemoryProjectionAuthority(store)
         self.max_text_chars = max(1, min(64_000, int(max_text_chars)))
@@ -200,6 +200,10 @@ class SQLiteProjectionReader:
         if self._index_ready:
             return
         sqlite = self.store.sqlite
+        if not getattr(self.store, "bootstrap_schema", True):
+            self._require_existing_contract_locked()
+            self._index_ready = True
+            return
         # Only initialization owns a transaction. Once initialized, reads may
         # safely use the caller's transaction/savepoint without completing it.
         if sqlite.in_transaction:
@@ -213,6 +217,29 @@ class SQLiteProjectionReader:
             raise
         # Never cache schema that is still pending or was rolled back.
         self._index_ready = True
+
+    def _require_existing_contract_locked(self) -> None:
+        from .sqlite_source import require_existing_vector_authority
+
+        sqlite = self.store.sqlite
+        if self._memory_authority is not None:
+            self._memory_authority.require_existing_contract()
+        require_existing_vector_authority(sqlite)
+        columns = [str(row['name'] or '') for row in sqlite.execute(
+            'PRAGMA index_info(idx_records_vector_sync_cursor)').fetchall()]
+        if columns != ['updated_at', 'storage_key']:
+            raise RuntimeError('existing_vector_projection_cursor_required')
+        row = sqlite.execute("SELECT type,tbl_name FROM sqlite_master WHERE name='vector_sync_alias_guard'").fetchone()
+        if row is None or row['type'] != 'table' or row['tbl_name'] != 'vector_sync_alias_guard':
+            raise RuntimeError('existing_vector_projection_alias_guard_required')
+        row = sqlite.execute('SELECT suppress_revision FROM vector_sync_alias_guard WHERE singleton=1').fetchone()
+        if row is None or type(row['suppress_revision']) is not int or row['suppress_revision'] not in (0, 1):
+            raise RuntimeError('existing_vector_projection_alias_guard_required')
+        for operation in ('insert', 'update', 'delete'):
+            row = sqlite.execute('SELECT type,tbl_name FROM sqlite_master WHERE name=?',
+                ('trg_recall_alias_vector_sync_' + operation,)).fetchone()
+            if row is None or row['type'] != 'trigger' or row['tbl_name'] != 'recall_alias_index':
+                raise RuntimeError('existing_vector_projection_alias_trigger_required')
 
     def _bootstrap_contract_locked(self) -> None:
         columns = [

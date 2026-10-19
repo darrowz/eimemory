@@ -144,12 +144,15 @@ class MemoryAPI:
         engine_store = getattr(recall_engine, "store", store)
         if recall_engine is not None and engine_store is not store:
             raise ValueError("recall engine and MemoryAPI must use the same store")
-        source = candidate_source or SQLiteCandidateSource(store)
-        self.recall_engine = recall_engine or GovernedRecallEngine(
-            store=store,
-            candidate_source=source,
-            callbacks=self,
-        )
+        if recall_engine is not None:
+            self.recall_engine = recall_engine
+        else:
+            source = candidate_source or SQLiteCandidateSource(store)
+            self.recall_engine = GovernedRecallEngine(
+                store=store,
+                candidate_source=source,
+                callbacks=self,
+            )
         bind = getattr(self.recall_engine, "bind", None)
         if callable(bind):
             bind(self)
