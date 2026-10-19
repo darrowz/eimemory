@@ -179,3 +179,57 @@ def is_dynamic_unit(unit: str) -> bool:
  for operation,prefix in VALIDATION_PREFIXES.items():
   if unit.startswith(prefix):return unit==validation_unit(unit[len(prefix):-8],operation)
  return False
+
+
+NATIVE_EXIT_PROPERTIES = ('LoadState','ActiveState','SubState','Result','InvocationID',
+ 'ExecMainStatus','MainPID','ControlGroup','ExecMainExitTimestampMonotonic')
+
+
+def fixed_system_unit_cgroup(value: Any, unit: str) -> bool:
+ """Only the reviewed flat/static or exact PID1 template slice is admissible."""
+ if not isinstance(unit,str) or not isinstance(value,str):return False
+ flat='/system.slice/'+unit
+ if unit in REGISTERED_UNITS:
+  return unit not in USER_COMPAT_UNITS and value==flat
+ try:
+  dynamic=is_dynamic_unit(unit)
+ except (TypeError,ValueError):
+  return False
+ if not dynamic:return False
+ template=unit.partition('@')[0].replace('-',r'\x2d')
+ return value in {flat,'/system.slice/system-'+template+'.slice/'+unit}
+
+
+def native_terminal_exit(state: Any, invocation: Any, unit: str) -> bool:
+ """A native process exit; empty cgroup is valid only after positive exit proof."""
+ if not isinstance(state,dict) or not set(NATIVE_EXIT_PROPERTIES)<=set(state):return False
+ actual=state['InvocationID'];mono=state['ExecMainExitTimestampMonotonic']
+ if (not isinstance(actual,str) or re.fullmatch('[0-9a-f]{32}',actual) is None
+     or (invocation is not None and invocation!=actual) or state['LoadState']!='loaded' or state['MainPID']!='0'
+     or not isinstance(mono,str) or not mono.isdigit() or int(mono)<=0):return False
+ cg=state['ControlGroup']
+ if cg!='' and not fixed_system_unit_cgroup(cg,unit):return False
+ success=(state['ActiveState']=='active' and state['SubState']=='exited'
+     and state['Result']=='success' and state['ExecMainStatus']=='0')
+ failed=(state['ActiveState'] in {'inactive','failed'}
+     and state['Result'] in {'exit-code','signal','timeout','core-dump','watchdog'})
+ return success or failed
+
+
+def native_terminal_readback(pinned: Any, state: Any, invocation: Any, unit: str) -> bool:
+ """Keep an authentic pinned exit across cgroup release/stop/GC, never a new run."""
+ if not isinstance(invocation,str) or re.fullmatch('[0-9a-f]{32}',invocation) is None:return False
+ if not native_terminal_exit(pinned,invocation,unit) or not isinstance(state,dict):return False
+ if not set(NATIVE_EXIT_PROPERTIES)<=set(state):return False
+ actual=state['InvocationID']
+ if not isinstance(actual,str) or actual not in {'',invocation} or state['MainPID'] not in {'0',''}:return False
+ if state['LoadState']=='not-found':
+  return state['ActiveState'] in {'inactive','failed'} and state['ControlGroup']==''
+ if state['LoadState']!='loaded':return False
+ if state['ControlGroup']!='' and not fixed_system_unit_cgroup(state['ControlGroup'],unit):return False
+ if not actual:
+  return state['ActiveState'] in {'inactive','failed'}
+ stable=('InvocationID','Result','ExecMainStatus','ExecMainExitTimestampMonotonic')
+ if state['MainPID']!='0' or any(state[name]!=pinned[name] for name in stable):return False
+ if state['ActiveState'] in {'inactive','failed'}:return True
+ return native_terminal_exit(state,invocation,unit)

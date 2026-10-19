@@ -513,7 +513,8 @@ def test_managed_issuer_is_disabled_by_default_and_has_no_request_paths(monkeypa
     assert b.dispatch(wire(r,'checkpoint_managed_incident_knowledge'),pid=42,uid=1001)['checkpoint']['ready'] is False
 
 
-def test_reviewed_manual_attempt_nonce_never_replays_unknown_job(monkeypatch,tmp_path):
+@pytest.mark.parametrize('failed_gc',[False,True])
+def test_reviewed_manual_attempt_nonce_never_replays_unknown_job(monkeypatch,tmp_path,failed_gc):
     from types import SimpleNamespace
     m=standalone('bootstrap_runtime_manager');r=registry();calls=[]
     releases=tmp_path/'releases';releases.mkdir()
@@ -530,10 +531,12 @@ def test_reviewed_manual_attempt_nonce_never_replays_unknown_job(monkeypatch,tmp
         if kwargs.get('exclusive') and path.exists():raise FileExistsError(path)
         path.write_bytes(raw)
     monkeypatch.setattr(m,'write',write)
-    actual={'state':'LoadState=not-found\nActiveState=inactive\nResult=success\nInvocationID=\n'}
+    gc_state=dict(LoadState='not-found',ActiveState='inactive',SubState='dead',Result='success',
+        InvocationID='',ExecMainStatus='0',MainPID='0',ControlGroup='',ExecMainExitTimestampMonotonic='0')
+    actual={'state':dict(gc_state)}
     def call(args):
         calls.append(args)
-        return actual['state'] if args[1]=='show' else ''
+        return '\n'.join(name+'='+value for name,value in actual['state'].items()) if args[1]=='show' else ''
     monkeypatch.setattr(m,'call',call)
     scope_path=tmp_path/'scope.json'
     scope_path.write_bytes(c.canonical({'schema':'eimemory.manual_release_scope.v1','scope':job()['scope']}))
@@ -547,9 +550,17 @@ def test_reviewed_manual_attempt_nonce_never_replays_unknown_job(monkeypatch,tmp
     args.prior_job_key=firstkey;args.attempt_id='2'*32
     with pytest.raises(ValueError,match='active_or_unknown'):m.stage(args)
     assert len([x for x in calls if x[1]=='start'])==1
-    actual['state']='LoadState=loaded\nActiveState=failed\nResult=exit-code\nInvocationID='+('a'*32)+'\n'
+    failure=dict(LoadState='loaded',ActiveState='failed',SubState='failed',Result='exit-code',
+        InvocationID='a'*32,ExecMainStatus='1',MainPID='0',ControlGroup='',ExecMainExitTimestampMonotonic='4567')
+    if failed_gc:
+        pinned=c.strict_json(first.read_bytes());pinned.update(original_invocation='a'*32,terminal_state=failure)
+        first.write_bytes(c.canonical(pinned));actual['state']=dict(gc_state)
+    else:actual['state']=failure
     m.stage(args)
-    assert len(list((tmp_path/'jobs').iterdir()))==2 and first.read_bytes()==first_bytes
+    assert len(list((tmp_path/'jobs').iterdir()))==2
+    prior=c.strict_json(first.read_bytes())
+    assert prior['request']==c.strict_json(first_bytes)['request']
+    assert prior['original_invocation']=='a'*32 and prior['terminal_state']==failure
     new=next(json.loads(p.read_bytes()) for p in (tmp_path/'jobs').iterdir() if p!=first)
     assert new['approved_retry_of']==firstkey
     assert new['request']['reviewed_attempt_id']=='2'*32
@@ -639,7 +650,7 @@ def test_managed_already_current_uses_bound_protocol_without_rebuilding(tmp_path
         assert not any('rebuild' in line or 'stage_built' in line for line in lines)
 
 
-@pytest.mark.parametrize('fault',[None,'serving_changed','storage_pending','active_job_unknown','bad_history_digest'])
+@pytest.mark.parametrize('fault',[None,'failed_gc','serving_changed','storage_pending','active_job_unknown','bad_history_digest'])
 def test_restore_owner_requires_clean_original_release_and_stops_new_rpc_first(monkeypatch,tmp_path,fault):
     from types import SimpleNamespace
     m=standalone('bootstrap_runtime_manager');r=registry();calls=[]
@@ -685,7 +696,11 @@ def test_restore_owner_requires_clean_original_release_and_stops_new_rpc_first(m
         action=args[1];unit=args[2]
         if action=='stop':system_stopped.add(args[-1])
         if action=='show':
-            if unit.startswith(c.JOB_UNIT_PREFIX):return 'LoadState=loaded\nActiveState=active\nResult=success\nExecMainStatus=0\n'
+            if unit.startswith(c.JOB_UNIT_PREFIX):
+                if fault=='failed_gc':return '\n'.join(name+'='+value for name,value in dict(
+                    LoadState='not-found',ActiveState='inactive',SubState='dead',Result='success',InvocationID='',
+                    ExecMainStatus='0',MainPID='0',ControlGroup='',ExecMainExitTimestampMonotonic='0').items())
+                return 'LoadState=loaded\nActiveState=active\nResult=success\nExecMainStatus=0\n'
             if '--property=LoadState,ActiveState' in args:return 'LoadState=loaded\nActiveState='+('inactive' if unit in system_stopped else 'active')+'\n'
             return 'ActiveState=inactive\n'
         return ''
@@ -701,7 +716,15 @@ def test_restore_owner_requires_clean_original_release_and_stops_new_rpc_first(m
     if fault=='active_job_unknown':
         key='f'*64;(tmp_path/'active-transition.json').write_bytes(c.canonical({'job_key':key,'complete':False}))
         args.abandon_failed_job_key=key
-    if fault:
+    if fault=='failed_gc':
+        key='f'*64;(tmp_path/'active-transition.json').write_bytes(c.canonical({'job_key':key,'complete':False}))
+        (tmp_path/'jobs').mkdir()
+        terminal=dict(LoadState='loaded',ActiveState='failed',SubState='failed',Result='exit-code',
+            InvocationID='a'*32,ExecMainStatus='1',MainPID='0',ControlGroup='',ExecMainExitTimestampMonotonic='4567')
+        (tmp_path/'jobs'/(key+'.json')).write_bytes(c.canonical(dict(job_key=key,unit=c.job_unit(key),
+            registry=r,original_invocation='a'*32,terminal_state=terminal,phase='failed')))
+        args.abandon_failed_job_key=key
+    if fault not in {None,'failed_gc'}:
         with pytest.raises(ValueError):m.restore_owner(args)
         assert not legacy_active and not system_stopped
     else:
@@ -1288,6 +1311,120 @@ def test_rollback_fences_fixed_dynamic_sqlite_writers_before_snapshot_effect(mon
         b.fence_job_processes(r,parent,include_parent=False)
         assert calls==[(c.validation_unit(key,'receipt'),('stop',))]
         assert saved[-1]['writer_fences']['receipt']['phase']=='inactive_verified'
+
+
+def _retained_template_state(unit,*,invocation='b'*32):
+    return dict(LoadState='loaded',ActiveState='active',SubState='exited',Result='success',
+        InvocationID=invocation,ExecMainStatus='0',MainPID='0',ExecMainExitTimestampMonotonic='4567',
+        ControlGroup='/system.slice/system-eimemory\\x2dcode\\x2dvalidation\\x2dreceipt.slice/'+unit)
+
+
+@pytest.mark.parametrize('shape',['flat','exact_template','other_slice','extra_slice','wrong_template','double_escape'])
+def test_dynamic_unit_cgroup_has_only_its_exact_registered_template_parent(shape):
+    unit=c.validation_unit('a'*64,'receipt');exact=_retained_template_state(unit)['ControlGroup']
+    # Raw text contains precisely one backslash before each literal x2d.
+    assert exact.count(r'\x2d')==3 and r'\\x2d' not in exact
+    paths={'flat':'/system.slice/'+unit,'exact_template':exact,
+        'other_slice':'/system.slice/unreviewed.slice/'+unit,
+        'extra_slice':exact.replace('/system.slice/','/system.slice/extra.slice/'),
+        'wrong_template':exact.replace('receipt.slice','post-resume.slice'),
+        'double_escape':exact.replace(r'\x2d',r'\\x2d')}
+    assert c.fixed_system_unit_cgroup(paths[shape],unit) is (shape in {'flat','exact_template'})
+    assert c.fixed_system_unit_cgroup('/system.slice/eimemory-rpc.service','eimemory-rpc.service') is True
+    assert c.fixed_system_unit_cgroup('/system.slice/extra.slice/eimemory-rpc.service','eimemory-rpc.service') is False
+
+
+@pytest.mark.parametrize('fault',[None,'empty_group','live_pid','zero_clock','running','wrong_invocation','wrong_unit_group','user_manager_group'])
+def test_template_terminal_uses_native_exit_identity_not_flat_cgroup(fault):
+    unit=c.validation_unit('a'*64,'receipt');state=_retained_template_state(unit)
+    if fault=='empty_group':state['ControlGroup']=''
+    elif fault=='live_pid':state['MainPID']='44'
+    elif fault=='zero_clock':state['ExecMainExitTimestampMonotonic']='0'
+    elif fault=='running':state['SubState']='running'
+    elif fault=='wrong_invocation':state['InvocationID']='c'*32
+    elif fault=='wrong_unit_group':state['ControlGroup']='/system.slice/'+c.job_unit('a'*64)
+    elif fault=='user_manager_group':state['ControlGroup']='/user.slice/'+unit
+    assert c.native_terminal_exit(state,'b'*32,unit) is (fault in {None,'empty_group'})
+
+
+@pytest.mark.parametrize('fault',[None,'gc','live_pid','new_invocation','running_empty_group','missing_pin','pin_zero_clock','exit_clock_changed'])
+def test_root_pinned_terminal_survives_group_release_and_gc_without_default_exit_success(fault):
+    unit=c.validation_unit('a'*64,'receipt');pinned=_retained_template_state(unit)
+    state={**pinned,'ControlGroup':''};before=deepcopy(pinned)
+    if fault=='gc':state.update(LoadState='not-found',ActiveState='inactive',SubState='dead',
+        InvocationID='',ExecMainExitTimestampMonotonic='0')
+    elif fault=='live_pid':state['MainPID']='44'
+    elif fault=='new_invocation':state['InvocationID']='c'*32
+    elif fault=='running_empty_group':state['SubState']='running'
+    elif fault=='missing_pin':pinned=None
+    elif fault=='pin_zero_clock':pinned['ExecMainExitTimestampMonotonic']='0'
+    elif fault=='exit_clock_changed':state['ExecMainExitTimestampMonotonic']='4568'
+    assert c.native_terminal_readback(pinned,state,'b'*32,unit) is (fault in {None,'gc'})
+    if fault not in {'missing_pin','pin_zero_clock'}:assert pinned==before
+
+
+def test_bridge_preserves_original_terminal_when_pid1_releases_retained_cgroup(monkeypatch):
+    _m,b,_r,_calls=bridge_fixture(monkeypatch)
+    unit=c.validation_unit('a'*64,'receipt');record={'unit':unit,'original_invocation':'b'*32}
+    state=_retained_template_state(unit)
+    assert b.pin_terminal(record,state,'validation') is True
+    original=deepcopy(record['terminal_state']);state['ControlGroup']=''
+    assert b.pin_terminal(record,state,'validation') is False
+    assert record['terminal_state']==original
+    state['SubState']='running'
+    with pytest.raises(ValueError,match='terminal_state_changed'):b.pin_terminal(record,state,'validation')
+
+
+@pytest.mark.parametrize('group',['nested','empty'])
+def test_rollback_fences_genuine_retained_child_after_its_cgroup_disappears(monkeypatch,tmp_path,group):
+    _m,b,r,_req,key,parent,store,state,_artifact,calls=validation_fixture(monkeypatch,tmp_path)
+    b.validate_job(r,key,'receipt',42,1001);calls.clear();unit=c.validation_unit(key,'receipt')
+    state.update(_retained_template_state(unit))
+    if group=='empty':state['ControlGroup']=''
+    def stop(registry,actual,*args):
+        calls.append((actual,args));state.update(ActiveState='inactive',SubState='dead',ControlGroup='')
+    monkeypatch.setattr(b,'systemctl',stop)
+    b.fence_job_processes(r,parent,include_parent=False)
+    assert calls==[(unit,('stop',))]
+    assert parent['writer_fences']['receipt']['phase']=='inactive_verified'
+    child=c.strict_json(_m.read_file(b.validation_record_path(key,'receipt')))
+    assert child['terminal_state']['InvocationID']=='b'*32
+    assert int(child['terminal_state']['ExecMainExitTimestampMonotonic'])>0
+
+
+@pytest.mark.parametrize('fault',[None,'live_reviewed','live_unreviewed','live_empty_group','zero_clock_empty_group','wrong_invocation','weak_root_pin','wrong_parent','missing_parent','invalid_parent'])
+def test_owner_restore_fences_only_root_bound_terminal_or_reviewed_live_child(monkeypatch,tmp_path,fault):
+    m=standalone('bootstrap_runtime_manager');monkeypatch.setattr(m,'STATE',tmp_path)
+    key='a'*64;operation='receipt';unit=c.validation_unit(key,operation)
+    child=dict(job_key=key,operation=operation,unit=unit,registry=registry(),
+        original_invocation='b'*32,parent_original_invocation='a'*32)
+    parent={'original_invocation':'a'*32};state=_retained_template_state(unit);calls=[];writes=[]
+    if fault in {'live_reviewed','live_unreviewed','live_empty_group'}:
+        state.update(SubState='running',MainPID='44',ExecMainExitTimestampMonotonic='0')
+    if fault in {'live_empty_group','zero_clock_empty_group'}:state['ControlGroup']=''
+    if fault=='zero_clock_empty_group':state['ExecMainExitTimestampMonotonic']='0'
+    if fault=='wrong_invocation':state['InvocationID']='c'*32
+    if fault=='weak_root_pin':child['terminal_state']={**state,'ExecMainExitTimestampMonotonic':'0'}
+    if fault=='wrong_parent':child['parent_original_invocation']='c'*32
+    if fault=='missing_parent':parent['original_invocation']=child['parent_original_invocation']=None
+    if fault=='invalid_parent':parent['original_invocation']=child['parent_original_invocation']='g'*32
+    allow_running=fault!='live_unreviewed'
+    def call(args):
+        if args[1]=='show':return '\n'.join(name+'='+state[name] for name in c.NATIVE_EXIT_PROPERTIES)
+        assert args==['/usr/bin/systemctl','stop',unit];calls.append(args)
+        state.update(ActiveState='inactive',SubState='dead',MainPID='0',ControlGroup='')
+        return ''
+    monkeypatch.setattr(m,'call',call)
+    monkeypatch.setattr(m,'write',lambda path,raw,**kwargs:writes.append(c.strict_json(raw)))
+    if fault not in {None,'live_reviewed'}:
+        with pytest.raises(ValueError):m.fence_owner_validation(c,key,operation,child,parent,allow_running=allow_running)
+        assert calls==[]
+    else:
+        m.fence_owner_validation(c,key,operation,child,parent,allow_running=allow_running)
+        assert calls==[['/usr/bin/systemctl','stop',unit]]
+        if fault is None:
+            assert writes[0]['terminal_state']['InvocationID']=='b'*32
+            assert int(writes[0]['terminal_state']['ExecMainExitTimestampMonotonic'])>0
 
 
 @pytest.mark.parametrize('manual',[False,True])

@@ -2940,7 +2940,7 @@ touch {_bash_path(core_switch)}
     assert expected_marker in result.stdout + result.stderr
     assert core_switch.is_file()
     arguments=(tmp_path / "bootstrap-arguments.txt").read_text().splitlines()
-    assert arguments[arguments.index("--scope-tenant")+1]=="bootstrap-tenant-fixture"
+    assert arguments[arguments.index("--tenant")+1]=="bootstrap-tenant-fixture"
     assert not snapshot.exists()
 
 

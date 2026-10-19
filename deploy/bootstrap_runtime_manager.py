@@ -248,29 +248,69 @@ def restore_root_files(snapshot):
 
 
 def exited_job_state(c,key,record):
-    properties=('LoadState','ActiveState','SubState','Result','InvocationID','ExecMainStatus',
-        'MainPID','ControlGroup','ExecMainExitTimestampMonotonic')
+    if record.get('job_key')!=key or record.get('unit')!=c.job_unit(key):
+        raise ValueError('bootstrap_job_record_binding_invalid')
+    properties=c.NATIVE_EXIT_PROPERTIES
     state=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',c.job_unit(key),
         '--property='+','.join(properties)]).splitlines() if '=' in line)
     if set(state)!=set(properties):raise ValueError('bootstrap_job_native_state_incomplete')
     original=record.get('original_invocation');actual=state['InvocationID']
     if actual and original not in {None,actual}:raise ValueError('bootstrap_job_invocation_changed')
-    mono=state['ExecMainExitTimestampMonotonic']
-    genuine_exit=(state['LoadState']=='loaded' and actual and mono.isdigit() and int(mono)>0
-        and state['MainPID']=='0'
-        and ((state['ActiveState']=='active' and state['SubState']=='exited' and state['Result']=='success' and state['ExecMainStatus']=='0')
-            or (state['ActiveState'] in {'inactive','failed'} and state['Result'] in {'exit-code','signal','timeout','core-dump','watchdog'})))
+    old=record.get('terminal_state')
+    if old is not None and not c.native_terminal_readback(old,state,original,c.job_unit(key)):
+        raise ValueError('bootstrap_job_terminal_state_changed')
+    genuine_exit=c.native_terminal_exit(state,original,c.job_unit(key))
     if genuine_exit:
         c.hex_value(actual,32,'bootstrap_job_invocation_invalid')
-        old=record.get('terminal_state')
-        if old and any(old.get(name)!=state[name] for name in ('InvocationID','Result','ExecMainStatus','ExecMainExitTimestampMonotonic')):
-            raise ValueError('bootstrap_job_terminal_state_changed')
         record['original_invocation']=actual
         if old is None:record['terminal_state']=state
         write(STATE/'jobs'/(key+'.json'),c.canonical(record),gid=record['registry']['runtime_gid'])
-    ended=(genuine_exit or (state['ActiveState'] in {'inactive','failed'} and state['MainPID'] in {'0',''}
-        and state['LoadState'] in {'loaded','not-found'} and record.get('terminal_state') is not None))
+    ended=(genuine_exit or (old is not None and c.native_terminal_readback(old,state,original,c.job_unit(key))))
     return state,bool(ended)
+
+
+def fence_owner_validation(c,key,operation,child,parent,*,allow_running):
+    """Fence one root-recorded child; a released terminal cgroup is not a live peer."""
+    unit=c.validation_unit(key,operation);path=STATE/'validations'/(key+'-'+operation+'.json')
+    parent_invocation=c.hex_value(parent.get('original_invocation'),32,'bootstrap_validation_parent_invocation_unknown')
+    if (child.get('unit')!=unit or child.get('job_key')!=key or child.get('operation')!=operation
+            or child.get('parent_original_invocation')!=parent_invocation):
+        raise ValueError('bootstrap_validation_binding_invalid')
+    c.validate_registry(child['registry'])
+    properties=c.NATIVE_EXIT_PROPERTIES
+    def state():
+        value=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',unit,
+            '--property='+','.join(properties)]).splitlines() if '=' in line)
+        if set(value)!=set(properties):raise ValueError('bootstrap_validation_native_state_incomplete')
+        return value
+    native=state();actual=native['InvocationID'];original=child.get('original_invocation')
+    if actual and original not in {None,actual}:raise ValueError('bootstrap_validation_invocation_unknown')
+    old=child.get('terminal_state')
+    if old is not None and not c.native_terminal_readback(old,native,original,unit):
+        raise ValueError('bootstrap_validation_terminal_state_changed')
+    retained=c.native_terminal_exit(native,original,unit)
+    if retained:
+        child['original_invocation']=actual;original=actual
+        if old is None:
+            child['terminal_state']=dict(native)
+            write(path,c.canonical(child),gid=child['registry']['runtime_gid'])
+    if native['ActiveState'] in {'active','activating','reloading','deactivating'}:
+        if not retained:
+            if not allow_running:raise ValueError('bootstrap_validation_still_running')
+            c.hex_value(actual,32,'bootstrap_validation_invocation_unknown')
+            if native['LoadState']!='loaded' or not c.fixed_system_unit_cgroup(native['ControlGroup'],unit):
+                raise ValueError('bootstrap_validation_cgroup_unknown')
+            if original is None:
+                child['original_invocation']=actual;original=actual
+                write(path,c.canonical(child),gid=child['registry']['runtime_gid'])
+        # Retained exit proof was sealed in root state before stopping. A live
+        # process instead requires explicit reviewed abandonment and native CG.
+        call(['/usr/bin/systemctl','stop',unit]);native=state()
+        if native['InvocationID'] not in {'',actual}:raise ValueError('bootstrap_validation_not_fenced')
+    if (native['LoadState'] not in {'loaded','not-found'} or native['ActiveState'] not in {'inactive','failed'}
+            or native['MainPID'] not in {'0',''}):raise ValueError('bootstrap_validation_not_fenced')
+    if child.get('terminal_state') is not None and not c.native_terminal_readback(child['terminal_state'],native,original,unit):
+        raise ValueError('bootstrap_validation_terminal_state_changed')
 
 
 def restore_owner(args):
@@ -302,7 +342,8 @@ def restore_owner(args):
             record=c.strict_json(read(record_path))
             state,ended=exited_job_state(c,key,record)
             held=record.get('phase') in {'held_incompatible_runtime','completed_held'}
-            if not ended or (state.get('Result')=='success' and not held):
+            terminal=record.get('terminal_state') or {}
+            if not ended or (terminal.get('Result')=='success' and not held):
                 raise ValueError('bootstrap_active_or_unknown_job_cannot_be_abandoned')
             abandoned=key
     jobs=STATE/'jobs'
@@ -321,23 +362,8 @@ def restore_owner(args):
             for operation in c.VALIDATION_PREFIXES:
                 path=STATE/'validations'/(key+'-'+operation+'.json')
                 if not path.exists():continue
-                child=c.strict_json(read(path));unit=c.validation_unit(key,operation)
-                if child.get('unit')!=unit or child.get('job_key')!=key:raise ValueError('bootstrap_validation_binding_invalid')
-                native=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',unit,
-                    '--property=LoadState,ActiveState,InvocationID,MainPID,ControlGroup']).splitlines() if '=' in line)
-                if native.get('InvocationID') and native['InvocationID']!=child.get('original_invocation'):
-                    raise ValueError('bootstrap_validation_invocation_unknown')
-                if native.get('ActiveState') in {'active','activating','reloading','deactivating'}:
-                    retained=(native.get('MainPID')=='0' and child.get('terminal_state') is not None)
-                    if not retained and args.abandon_failed_job_key!=key:
-                        raise ValueError('bootstrap_validation_still_running')
-                    if (not native.get('InvocationID') or native.get('ControlGroup')!='/system.slice/'+unit):
-                        raise ValueError('bootstrap_validation_cgroup_unknown')
-                    call(['/usr/bin/systemctl','stop',unit])
-                    after=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',unit,
-                        '--property=ActiveState,InvocationID,MainPID']).splitlines() if '=' in line)
-                    if after.get('ActiveState') not in {'inactive','failed'} or after.get('MainPID') not in {'0',''} or after.get('InvocationID') not in {'',child['original_invocation']}:
-                        raise ValueError('bootstrap_validation_not_fenced')
+                child=c.strict_json(read(path))
+                fence_owner_validation(c,key,operation,child,record,allow_running=args.abandon_failed_job_key==key)
     prior=original['prior_user_state'];prior_system=original['prior_system_state']
     if set(prior_system)!=c.REGISTERED_UNITS|{'eimemory-runtime-manager.service'}:raise ValueError('bootstrap_prior_system_inventory_invalid')
     if set(prior)!=c.REGISTERED_UNITS:raise ValueError('bootstrap_prior_owner_inventory_invalid')
@@ -648,10 +674,10 @@ def stage(args):
         if args.prior_job_key!=key:raise ValueError('bootstrap_prior_attempt_review_required')
         record=c.strict_json(read(STATE/'jobs'/(key+'.json')))
         if record.get('manual_release') is not True or any(record['request'].get(k)!=v for k,v in pair.items()):raise ValueError('bootstrap_prior_attempt_binding_invalid')
-        state=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',c.job_unit(key),'--property=LoadState,ActiveState,Result,InvocationID']).splitlines() if '=' in line)
-        if (state.get('LoadState')!='loaded' or state.get('ActiveState') not in {'inactive','failed'}
-                or state.get('Result') in {None,'','success'} or not state.get('InvocationID')
-                or record.get('original_invocation') not in {None,state['InvocationID']}):
+        c.validate_manual_permit(record['request'],key)
+        state,ended=exited_job_state(c,key,record)
+        terminal=record.get('terminal_state') or {}
+        if not ended or terminal.get('Result') not in {'exit-code','signal','timeout','core-dump','watchdog'}:
             raise ValueError('bootstrap_prior_attempt_active_or_unknown')
         if previous.get('attempt_id')==args.attempt_id:raise ValueError('bootstrap_attempt_nonce_already_used')
         approved_retry=key

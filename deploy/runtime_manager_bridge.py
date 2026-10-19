@@ -418,30 +418,18 @@ class Bridge:
             'validation_controller_commit':record['request'].get('validation_controller_commit',record['request']['controller_commit']),
             'complete':record.get('finalized') is True,'held_background':record.get('held_background',[])}
 
-    @staticmethod
-    def pin_terminal(record,state,label):
+    def pin_terminal(self,record,state,label):
         """An actual native exit is independent of a receipt or sealed bytes."""
         old=record.get('terminal_state');actual=state.get('InvocationID')
         if actual and actual!=record.get('original_invocation'):
             raise ValueError('manager_'+label+'_invocation_changed')
         if old is not None:
-            if state.get('LoadState')=='loaded':
-                if state.get('MainPID') not in {'0',''}:raise ValueError('manager_'+label+'_terminal_process_changed')
-                if state.get('ActiveState') not in {'inactive','failed'} and any(
-                        state.get(name)!=old.get(name) for name in old):
-                    raise ValueError('manager_'+label+'_terminal_state_changed')
-                if actual and any(state.get(name)!=old.get(name) for name in ('Result','ExecMainStatus','ExecMainExitTimestampMonotonic')):
-                    raise ValueError('manager_'+label+'_terminal_state_changed')
-            elif state.get('LoadState')!='not-found':raise ValueError('manager_'+label+'_terminal_state_unknown')
+            if state.get('MainPID') not in {'0',''}:raise ValueError('manager_'+label+'_terminal_process_changed')
+            if not self.c.native_terminal_readback(old,state,record.get('original_invocation'),record['unit']):
+                raise ValueError('manager_'+label+'_terminal_state_changed')
             return False
-        mono=state.get('ExecMainExitTimestampMonotonic','')
-        exited=(state.get('LoadState')=='loaded' and actual and str(mono).isdigit()
-            and int(mono)>0 and state.get('MainPID')=='0')
-        success=(state.get('ActiveState')=='active' and state.get('SubState')=='exited'
-            and state.get('Result')=='success' and state.get('ExecMainStatus')=='0')
-        failed=(state.get('ActiveState') in {'inactive','failed'}
-            and state.get('Result') in {'exit-code','signal','timeout','core-dump','watchdog'})
-        if exited and (success or failed):record['terminal_state']=dict(state);return True
+        if self.c.native_terminal_exit(state,record.get('original_invocation'),record['unit']):
+            record['terminal_state']=dict(state);return True
         return False
 
     def release_job(self,registry,key):
@@ -872,12 +860,19 @@ class Bridge:
         for operation,unit in units:
             path=self.record_path(key) if operation=='parent' else self.validation_record_path(key,operation)
             bound=prior if operation=='parent' else self.c.strict_json(read_file(path))
-            state=self.unit_state(bound['registry'],unit,['LoadState','ActiveState','InvocationID','ControlGroup','MainPID'])
+            state=self.unit_state(bound['registry'],unit,list(self.c.NATIVE_EXIT_PROPERTIES))
             actual=state.get('InvocationID');original=bound.get('original_invocation')
             if actual and original not in {None,actual}:raise ValueError('manager_predecessor_invocation_changed')
+            if original is None and self.c.native_terminal_exit(state,None,unit):
+                bound['original_invocation']=actual;original=actual
+            if bound.get('terminal_state') is not None or self.c.native_terminal_exit(state,original,unit):
+                if self.pin_terminal(bound,state,'predecessor'):
+                    if operation=='parent':self.save(registry,bound)
+                    else:atomic_json(path,bound,gid=registry['runtime_gid'])
             if state['ActiveState'] in {'active','activating','reloading','deactivating'}:
+                retained=self.c.native_terminal_exit(state,original,unit)
                 cg=state['ControlGroup'];self.c.hex_value(actual,32,'manager_predecessor_invocation_unknown')
-                if not cg.startswith('/system.slice/') or cg.rsplit('/',1)[-1]!=unit:
+                if not retained and not self.c.fixed_system_unit_cgroup(cg,unit):
                     raise ValueError('manager_predecessor_cgroup_invalid')
                 if original is None:
                     bound['original_invocation']=actual
@@ -886,7 +881,7 @@ class Bridge:
                 fences[operation]={'unit':unit,'invocation':actual,'before':state,'phase':'stop_intent'}
                 self.save(registry,prior)
                 self.systemctl(bound['registry'],unit,'stop')
-                after=self.unit_state(bound['registry'],unit,['LoadState','ActiveState','InvocationID','ControlGroup','MainPID'])
+                after=self.unit_state(bound['registry'],unit,list(self.c.NATIVE_EXIT_PROPERTIES))
                 if after.get('InvocationID') not in {'',actual} or after.get('MainPID') not in {'','0'}:
                     raise ValueError('manager_predecessor_stop_identity_changed')
                 state=after
