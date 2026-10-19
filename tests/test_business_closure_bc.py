@@ -324,3 +324,30 @@ def test_bc11_publish_gate_requires_rollback_when_non_bootstrap() -> None:
         "rollback_evidence": {"commands": [], "prior_commit_sha": ""},
     }
     assert evaluate_publish_gate(side_effect=side_boot, bootstrap=True)["publishable"] is True
+
+
+@pytest.mark.parametrize("fault", [None, "missing_context", "wrong_prior", "wrong_source", "wrong_api", "extra_key", "stripped_markers"])
+def test_bc11_managed_rollback_plan_is_declarative_and_exact(fault) -> None:
+    from copy import deepcopy
+    import json
+    from eimemory.governance.release.deployment_receipt import (
+        managed_deployment_rollback_plan, valid_deployment_rollback_evidence,
+        MANAGED_ROLLBACK_SCHEMA, MANAGED_ROLLBACK_STRATEGY,
+    )
+    source = "a" * 40; prior = "b" * 40
+    plan = managed_deployment_rollback_plan(source_commit=source, prior_commit=prior)
+    rollback = dict(schema=MANAGED_ROLLBACK_SCHEMA, strategy=MANAGED_ROLLBACK_STRATEGY,
+        execution_mode="declarative_only", prior_commit_sha=prior, commands=[],
+        rollback_not_required=False, managed_job_plan=plan,
+        rollback_command=json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    if fault == "missing_context": plan.pop("requires_registered_job_context")
+    elif fault == "wrong_prior": plan["target_commit"] = "c" * 40
+    elif fault == "wrong_source": plan["source_commit"] = "c" * 40
+    elif fault == "wrong_api": plan["controller_api"] = "systemctl"
+    elif fault == "extra_key": plan["argv"] = ["sh"]
+    elif fault == "stripped_markers":
+        for key in ("schema", "strategy", "execution_mode", "managed_job_plan"):rollback.pop(key)
+    side = {"ok": True, "post_deploy_health": {"ok": True, "commit": source}, "rollback_evidence": rollback}
+    gate = evaluate_publish_gate(side_effect=deepcopy(side), bootstrap=False)
+    assert gate["publishable"] is (fault is None)
+    assert valid_deployment_rollback_evidence(rollback, deployed_commit=source) is (fault is None)

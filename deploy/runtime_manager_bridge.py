@@ -7,6 +7,8 @@ copy installed with this file; an editable checkout is never a root entrypoint.
 from __future__ import annotations
 from hashlib import sha256
 import importlib.util
+import hmac
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -17,12 +19,15 @@ import stat
 import struct
 import subprocess
 import threading
+from contextlib import contextmanager
 import time
 
 ROOT = Path('/usr/libexec/eimemory-manager')
 STATE = Path('/var/lib/eimemory-manager')
 REGISTRY = Path('/etc/eimemory/runtime-manager.v1.json')
 SOCKET = Path('/run/eimemory-manager/bridge.sock')
+CURRENT = Path('/opt/eimemory/current')
+RELEASES = Path('/opt/eimemory/releases')
 
 
 def trusted_directory(path, *, mode=None):
@@ -89,6 +94,29 @@ class Bridge:
         self.c=contract;self.registry_path=Path(registry);self.state=Path(state)
         self.proc=Path(proc);self.command=command or self._command
         self.mutex=threading.Lock()
+
+    @contextmanager
+    def lifecycle_lock(self):
+        # Shared with the root bootstrap/restore operation. A process restart
+        # releases only the kernel lock, never the durable transition record.
+        import fcntl
+        trusted_directory(self.state,mode=0o750)
+        path=self.state/'lifecycle.lock'
+        fd=os.open(path,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+        try:
+            meta=os.fstat(fd);named=path.lstat()
+            if (not stat.S_ISREG(meta.st_mode) or meta.st_uid!=0 or meta.st_nlink!=1
+                    or stat.S_IMODE(meta.st_mode)!=0o600 or (meta.st_dev,meta.st_ino)!=(named.st_dev,named.st_ino)):
+                raise ValueError('manager_lifecycle_lock_untrusted')
+            deadline=time.monotonic()+5
+            while True:
+                try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);break
+                except BlockingIOError:
+                    if time.monotonic()>=deadline:raise ValueError('manager_lifecycle_lock_timeout')
+                    time.sleep(0.025)
+            yield
+        finally:
+            os.close(fd)
 
     @staticmethod
     def _command(args):
@@ -192,6 +220,130 @@ class Bridge:
             'entries_observed':len(lines),'entry_selection':'native_error_pattern_matches',
             'native_database_counters_available':False,'observed_error_counts':counts}
 
+    def bus_property(self,path,interface,name):
+        if not isinstance(path,str) or not re.fullmatch(r'/org/freedesktop/systemd1/(?:unit/[A-Za-z0-9_]+|job/[0-9]+)',path):
+            raise ValueError('manager_bus_object_invalid')
+        raw=self.command(['/usr/bin/busctl','--json=short','--system','get-property',
+            'org.freedesktop.systemd1',path,interface,name])
+        value=self.c.strict_json(raw.encode())
+        if not isinstance(value,dict) or set(value)!={'type','data'}:raise ValueError('manager_bus_property_shape_invalid')
+        return value
+
+    def unit_bus_path(self,unit):
+        raw=self.command(['/usr/bin/busctl','--json=short','--system','call','org.freedesktop.systemd1',
+            '/org/freedesktop/systemd1','org.freedesktop.systemd1.Manager','GetUnit','s',unit])
+        value=self.c.strict_json(raw.encode())
+        if not isinstance(value,dict) or value.get('type')!='o' or not isinstance(value.get('data'),list) or len(value['data'])!=1:
+            raise ValueError('manager_bus_unit_shape_invalid')
+        return value['data'][0]
+
+    def activation_cause(self,registry,unit,state):
+        # Unit.ActivationDetails can describe a previous invocation. Only the
+        # immutable CURRENT running Job object's details may establish a cause.
+        unknown={'trigger_kind':'unknown','trigger_unit':'','job_id':0,'job_state':'',
+            'activation_details_digest':self.c.digest({'cause':'unknown'})}
+        try:
+            unitpath=self.unit_bus_path(unit)
+            current=self.bus_property(unitpath,'org.freedesktop.systemd1.Unit','Job')
+            pair=current.get('data')
+            if current.get('type')!='(uo)' or not isinstance(pair,list) or len(pair)!=2 or type(pair[0]) is not int or pair[0]<=0:
+                return unknown
+            jobid,jobpath=pair
+            if jobpath!='/org/freedesktop/systemd1/job/'+str(jobid):return unknown
+            fields={name:self.bus_property(jobpath,'org.freedesktop.systemd1.Job',name) for name in ('Id','Unit','JobType','State','ActivationDetails')}
+            if fields['Id']!={'type':'u','data':jobid} or fields['Unit']!={'type':'(so)','data':[unit,unitpath]} or fields['JobType']!={'type':'s','data':'start'} or fields['State']!={'type':'s','data':'running'}:
+                return unknown
+            details=fields['ActivationDetails']
+            if details.get('type')!='a(ss)' or not isinstance(details.get('data'),list):return unknown
+            pairs=details['data']
+            if any(not isinstance(item,list) or len(item)!=2 or any(not isinstance(v,str) for v in item) for item in pairs):return unknown
+            values=dict(pairs)
+            if len(values)!=len(pairs):return unknown
+            timer=values.get('trigger_unit','')
+            if not timer.endswith('.timer') or timer not in registry['units'] or registry['units'][timer]['manager']!='system' or not registry['units'][timer]['installed']:
+                return unknown
+            stamp=values.get('trigger_timer_monotonic_usec','')
+            if not stamp.isdigit() or int(stamp)<=0:return unknown
+            start=int(state['ExecMainStartTimestampMonotonic'])
+            if int(stamp)>start or start-int(stamp)>60000000:return unknown
+            timerpath=self.unit_bus_path(timer)
+            last=self.bus_property(timerpath,'org.freedesktop.systemd1.Timer','LastTriggerUSecMonotonic')
+            target=self.bus_property(timerpath,'org.freedesktop.systemd1.Timer','Unit')
+            if last!={'type':'t','data':int(stamp)} or target!={'type':'s','data':unit}:return unknown
+            # Reread the job reference and service identity around all property
+            # reads. Configuration or a near timestamp alone is never proof.
+            if self.bus_property(unitpath,'org.freedesktop.systemd1.Unit','Job')!=current:return unknown
+            again=self.unit_state(registry,unit,['InvocationID','ControlGroup','ExecMainStartTimestampMonotonic'])
+            if any(again[k]!=state[k] for k in again):return unknown
+            return {'trigger_kind':'scheduled_timer','trigger_unit':timer,'job_id':jobid,'job_state':'running',
+                'activation_details_digest':self.c.digest(fields)}
+        except (OSError,ValueError,RuntimeError,KeyError,TypeError):
+            return unknown
+
+    def activation_attestation(self,registry,pid,uid):
+        if uid!=registry['runtime_uid']:raise ValueError('manager_peer_uid_denied')
+        process=self.proc/str(pid)
+        status=dict(line.split(':',1) for line in (process/'status').read_text().splitlines() if ':' in line)
+        if status.get('NoNewPrivs','').strip()!='1' or status.get('Uid','').split()!=[str(uid)]*4:
+            raise ValueError('manager_activation_peer_identity_invalid')
+        start_ticks=int((process/'stat').read_text().rsplit(')',1)[1].split()[19])
+        groups=[line[3:] for line in (process/'cgroup').read_text().splitlines() if line.startswith('0::')]
+        if len(groups)!=1:raise ValueError('manager_activation_cgroup_invalid')
+        cgroup=groups[0];unit=cgroup.rsplit('/',1)[-1]
+        if unit.startswith(self.c.JOB_UNIT_PREFIX):
+            key=unit[len(self.c.JOB_UNIT_PREFIX):-8];record=self.record(key)
+            self.verify_job_peer(registry,record,pid,uid);scope=record['request'].get('scope')
+            if scope is None:raise ValueError('manager_activation_manual_release_has_no_incident_owner')
+        else:
+            if unit not in registry['unit_scopes'] or registry['units'][unit]['manager']!='system' or not registry['units'][unit]['installed']:
+                raise ValueError('manager_activation_unit_scope_not_reviewed')
+            scope=registry['unit_scopes'][unit]
+        state=self.unit_state(registry,unit,['InvocationID','ControlGroup','ExecMainStartTimestampMonotonic'])
+        self.c.hex_value(state['InvocationID'],32,'manager_activation_invocation_invalid')
+        if not cgroup.startswith('/system.slice/') or state['ControlGroup']!=cgroup:
+            raise ValueError('manager_activation_native_cgroup_mismatch')
+        boot=(self.proc/'sys/kernel/random/boot_id').read_text().strip()
+        if re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',boot) is None:raise ValueError('manager_activation_boot_invalid')
+        cause=self.activation_cause(registry,unit,state)
+        if int((process/'stat').read_text().rsplit(')',1)[1].split()[19])!=start_ticks:
+            raise ValueError('manager_activation_peer_changed')
+        payload={'schema':'eimemory.runtime_activation_attestation.v1','registry_generation':registry['generation'],
+            'scope':scope,'manager':'system','unit':unit,'invocation_id':state['InvocationID'],'boot_id':boot,
+            'observed_at':datetime.now(timezone.utc).isoformat(),'observed_monotonic_ns':time.monotonic_ns(),
+            'service_start_monotonic_usec':int(state['ExecMainStartTimestampMonotonic']),
+            'peer_pid':pid,'peer_uid':uid,'peer_start_ticks':start_ticks,'actual_unit_cgroup':cgroup,**cause}
+        key=read_file(self.state/'activation-signing.key',mode=0o600,maximum=32)
+        if len(key)!=32:raise ValueError('manager_activation_key_invalid')
+        receipt={'payload':payload,'signature':hmac.new(key,self.c.canonical(payload),'sha256').hexdigest()}
+        receipt_id=self.c.digest(payload);path=self.state/'activation-receipts'/(receipt_id+'.json')
+        trusted_directory(path.parent,mode=0o750)
+        atomic_json(path,receipt,gid=registry['runtime_gid'],exclusive=True)
+        return {'schema':'eimemory.runtime_activation_receipt_ref.v1','receipt_id':receipt_id,'digest':self.c.digest(receipt)}
+
+    def verify_activation(self,receipt_id,digest):
+        self.c.hex_value(receipt_id,64,'manager_activation_receipt_id_invalid');self.c.hex_value(digest,64,'manager_activation_receipt_digest_invalid')
+        path=self.state/'activation-receipts'/(receipt_id+'.json')
+        trusted_directory(path.parent,mode=0o750)
+        raw=read_file(path);value=self.c.strict_json(raw)
+        if self.c.canonical(value)!=raw or sha256(raw).hexdigest()!=digest or set(value)!={'payload','signature'} or self.c.digest(value['payload'])!=receipt_id:
+            raise ValueError('manager_activation_receipt_digest_mismatch')
+        key=read_file(self.state/'activation-signing.key',mode=0o600,maximum=32)
+        expected=hmac.new(key,self.c.canonical(value['payload']),'sha256').hexdigest()
+        if not hmac.compare_digest(expected,value['signature']):raise ValueError('manager_activation_receipt_signature_invalid')
+        return {**value['payload'],'signature_verified':True,
+            'reference':{'schema':'eimemory.runtime_activation_receipt_ref.v1','receipt_id':receipt_id,'digest':digest}}
+
+    def managed_authority(self,registry):
+        if registry['managed_incident_authority'].get('enabled') is not True:
+            raise ValueError('manager_managed_authority_not_enabled')
+        # Only the bootstrap-reviewed root copy is imported. No product path,
+        # source module, key location or manifest is chosen by the request.
+        trusted_directory(ROOT,mode=0o750)
+        path=ROOT/'managed_incident_proof_authority.py';read_file(path,maximum=1048576)
+        spec=importlib.util.spec_from_file_location('reviewed_managed_incident_authority',path)
+        authority=importlib.util.module_from_spec(spec);spec.loader.exec_module(authority)
+        return authority
+
     def record_path(self,key):
         self.c.hex_value(key,64,'manager_job_key_invalid')
         return self.state / 'jobs' / (key+'.json')
@@ -219,7 +371,16 @@ class Bridge:
         value=self.c.validate_job(self.c.strict_json(raw),key)
         if raw!=self.c.canonical(value):raise ValueError('manager_request_not_canonical')
         if value['controller_commit']!=registry['controller_commit']:raise ValueError('manager_controller_not_registered')
+        self.verify_controller_entry(registry,value['controller_commit'])
         return value
+
+    def verify_controller_entry(self,registry,commit):
+        pin=registry.get('controller_entry_digest')
+        if pin is None:raise ValueError('manager_controller_entry_not_reviewed')
+        path=RELEASES/commit/self.c.CONTROLLER_ENTRY
+        if path.is_symlink() or not path.is_file():raise ValueError('manager_controller_entry_missing')
+        raw=read_file(path,uid=registry['runtime_uid'],mode=stat.S_IMODE(path.stat().st_mode),maximum=65536)
+        if sha256(raw).hexdigest()!=pin:raise ValueError('manager_controller_entry_digest_mismatch')
 
     def submit(self,registry,key):
         path=self.record_path(key)
@@ -243,7 +404,9 @@ class Bridge:
             if record.get('original_invocation') not in {None,invocation}:raise ValueError('manager_job_invocation_changed')
             if record.get('original_invocation') is None:
                 record['original_invocation']=invocation;self.save(registry,record)
-        return {'manager':'system','unit':record['unit'],'state':state,'phase':record['phase'],'job_key':key}
+        return {'manager':'system','unit':record['unit'],'state':state,'phase':record['phase'],'job_key':key,
+            'original_invocation':record.get('original_invocation'),'resumed':record.get('resumed') is True,
+            'complete':record.get('finalized') is True,'held_background':record.get('held_background',[])}
 
     def verify_job_peer(self,registry,record,pid,uid):
         if uid!=registry['runtime_uid']:raise ValueError('manager_peer_uid_denied')
@@ -258,7 +421,10 @@ class Bridge:
         if not expected.startswith('/system.slice/') or expected.rsplit('/',1)[-1]!=record['unit'] or not any(line.startswith('0::') and (line[3:]==expected or line[3:].startswith(expected+'/')) for line in groups):
             raise ValueError('manager_peer_job_cgroup_required')
         if record.get('original_invocation') not in {None,state['InvocationID']}:raise ValueError('manager_job_invocation_changed')
+        self.c.hex_value(state['InvocationID'],32,'manager_job_invocation_invalid')
         if state['ActiveState'] not in {'active','activating'}:raise ValueError('manager_peer_job_not_running')
+        if record.get('original_invocation') is None:
+            record['original_invocation']=state['InvocationID'];self.save(registry,record)
 
     def writers(self,registry):
         excluded={'eimemory-console.service'}
@@ -267,20 +433,45 @@ class Bridge:
     def transition(self,registry,key,phase,pid,uid):
         record=self.record(key);self.verify_job_peer(registry,record,pid,uid)
         if phase not in {'quiesce','publish','activate','resume_watchers','resume','rollback'}:raise ValueError('manager_transition_phase_invalid')
+        if record.get('resumed') is True:
+            if phase not in {'resume','resume_watchers'}:raise ValueError('manager_transition_already_resumed')
+            return {'job_key':key,'phase':record['phase'],'resumed':True,'idempotent':True}
+        if record.get('finalized') is True:raise ValueError('manager_transition_already_complete')
         if phase=='quiesce':
+            current=CURRENT.resolve(strict=True)
+            if current.parent!=RELEASES or current.name not in {record['request']['base_commit'],record['request']['candidate_commit']}:
+                raise ValueError('manager_quiesce_current_unbound')
             active_path=self.state/'active-transition.json'
             if active_path.exists():
                 existing=self.c.strict_json(read_file(active_path))
                 if existing.get('job_key')!=key and existing.get('complete') is not True:
                     prior=self.record(existing.get('job_key',''))
                     before=prior['request'];after=record['request']
-                    inherited=(before.get('operation')=='deploy' and after.get('operation')=='rollback'
+                    same_rollback=(before.get('operation')=='deploy' and after.get('operation')=='rollback'
                         and set(before)==set(after)==self.c.JOB_FIELDS
-                        and all(before[k]==after[k] for k in self.c.JOB_FIELDS-{'operation','target_commit'})
-                        and prior.get('active_before') is not None and prior.get('finalized') is not True)
+                        and all(before[k]==after[k] for k in self.c.JOB_FIELDS-{'operation','target_commit'}))
+                    reviewed_retry=(record.get('manual_release') is True and prior.get('manual_release') is True
+                        and record.get('approved_retry_of')==prior['job_key']
+                        and all(before.get(k)==after.get(k) for k in ('base_commit','candidate_commit','target_commit','controller_commit')))
+                    inherited=((same_rollback or reviewed_retry) and prior.get('finalized') is not True
+                        and (prior.get('active_before') is not None or (reviewed_retry and prior.get('phase')=='submitted')))
                     if not inherited:raise ValueError('manager_another_transition_active')
-                    record['active_before']=list(prior['active_before']);record['inherited_capture_from']=prior['job_key']
+                    if prior.get('active_before') is not None:
+                        record['active_before']=list(prior['active_before']);record['inherited_capture_from']=prior['job_key']
                     prior['superseded_by']=key;self.save(registry,prior)
+                elif existing.get('job_key')!=key and existing.get('held') is True:
+                    # A legacy rollback retained stopped writers. Only an
+                    # explicit root-reviewed manual upgrade may recover them;
+                    # a new automatic repair must not inherit stale authority.
+                    if record.get('manual_release') is not True:
+                        raise ValueError('manager_held_runtime_requires_manual_upgrade')
+                    prior=self.record(existing.get('job_key',''))
+                    if prior.get('phase')!='completed_held' or prior.get('finalized') is not True or not isinstance(prior.get('active_before'),list):
+                        raise ValueError('manager_held_restore_capture_invalid')
+                    for unit in prior['active_before']:
+                        if unit not in record['registry']['units']:raise ValueError('manager_held_restore_unit_unknown')
+                    record['active_before']=list(prior['active_before'])
+                    record['inherited_held_capture_from']=prior['job_key']
             atomic_json(active_path,{'job_key':key,'complete':False},gid=registry['runtime_gid'])
             if record['resumed']:raise ValueError('manager_transition_already_resumed')
             if record['active_before'] is None:
@@ -298,6 +489,7 @@ class Bridge:
                             if unit not in record['registry']['units']:raise ValueError('manager_migration_unit_unknown')
                             if unit not in active:active.append(unit)
                 record['active_before']=active;record['phase']='quiesce_intent';self.save(registry,record)
+            record['phase']='quiesce_intent';self.save(registry,record)
             # Timers first; RPC/gateways last. A partial failure preserves the
             # original set and never resets it from the now-stopped inventory.
             ordered=sorted(record['active_before'],key=lambda x:(x.endswith('.service'),x in {'eimemory-rpc.service','hermes-gateway.service','openclaw-gateway.service'},x))
@@ -335,11 +527,13 @@ class Bridge:
 
     def finalize(self,registry,key,pid,uid):
         record=self.record(key);self.verify_job_peer(registry,record,pid,uid)
+        if record.get('resumed') is True:
+            return {'job_key':key,'resumed':True,'phase':record['phase'],'idempotent':True}
         if record.get('superseded_by'):raise ValueError('manager_job_superseded')
         if not record.get('quiesced') or not record.get('resume_requested'):
             raise ValueError('manager_finalize_without_restore_intent')
-        target=Path('/opt/eimemory/current').resolve(strict=True)
-        if target.parent!=Path('/opt/eimemory/releases') or target.name not in {record['request']['base_commit'],record['request']['candidate_commit']}:
+        target=CURRENT.resolve(strict=True)
+        if target.parent!=RELEASES or target.name not in {record['request']['base_commit'],record['request']['candidate_commit']}:
             raise ValueError('manager_finalize_current_unbound')
         compatible=True
         for path,pin in registry['compatibility_hashes'].items():
@@ -353,10 +547,22 @@ class Bridge:
             self.save(registry,record)
             return {'job_key':key,'resumed':False,'held_background':record['held_background'],
                 'serving_commit':target.name,'controller_commit':registry['controller_commit'],'reason':'manager_legacy_runtime_requires_reviewed_controller_upgrade'}
-        self.resume(registry,record);record['resumed']=True;record['finalized']=True;record['phase']='finalized'
+        self.resume(registry,record);record['resumed']=True;record['phase']='resumed_awaiting_business'
         self.save(registry,record)
-        atomic_json(self.state/'active-transition.json',{'job_key':key,'complete':True},gid=registry['runtime_gid'])
-        return {'job_key':key,'resumed':True,'serving_commit':target.name,'controller_commit':registry['controller_commit']}
+        return {'job_key':key,'resumed':True,'phase':record['phase'],'serving_commit':target.name,'controller_commit':registry['controller_commit']}
+
+    def complete(self,registry,key,pid,uid):
+        record=self.record(key);self.verify_job_peer(registry,record,pid,uid)
+        if record.get('superseded_by'):raise ValueError('manager_job_superseded')
+        if record.get('finalized') is True:
+            return {'job_key':key,'complete':True,'resumed':record['resumed'],'phase':record['phase'],'operational_complete':record['phase']=='completed','held_background':record.get('held_background',[]),'idempotent':True}
+        held=record.get('phase')=='held_incompatible_runtime'
+        if not record.get('resumed') and not held:raise ValueError('manager_complete_before_resume')
+        record['finalized']=True;record['phase']='completed_held' if held else 'completed'
+        self.save(registry,record)
+        atomic_json(self.state/'active-transition.json',{'job_key':key,'complete':True,'held':held},gid=registry['runtime_gid'])
+        return {'job_key':key,'complete':True,'resumed':record['resumed'],'phase':record['phase'],
+            'held_background':record.get('held_background',[]),'operational_complete':not held}
 
     def publish_runtime(self,registry,record,target,*,activate):
         # Only a reviewed immutable root template is rendered. Candidate unit
@@ -365,21 +571,21 @@ class Bridge:
         self.c.hex_value(target,40,'manager_target_invalid')
         if target not in {record['request']['base_commit'],record['request']['candidate_commit']}:
             raise ValueError('manager_target_not_authorized')
-        release=Path('/opt/eimemory/releases')/target
+        release=RELEASES/target
         if release.is_symlink() or not release.is_dir():raise ValueError('manager_target_release_missing')
-        if activate and Path('/opt/eimemory/current').resolve(strict=True)!=release:
+        if activate and CURRENT.resolve(strict=True)!=release:
             raise ValueError('manager_current_target_mismatch')
         for unit,pin in registry['template_hashes'].items():
             source=ROOT/'templates'/unit
             raw=read_file(source)
             if sha256(raw).hexdigest()!=pin:raise ValueError('manager_template_digest_mismatch')
             if unit.endswith('.service'):
-                rendered=raw.replace(b'@COMMIT@',target.encode())
                 destination=Path('/etc/systemd/system')/(unit+'.d')
                 trusted_directory(destination,mode=0o750)
                 # Root-reviewed policy is separate from the static Exec* unit.
                 if unit=='eimemory-code-deployment-job@.service':
-                    policy=read_file(ROOT/'job-runtime-policy.conf').replace(b'@COMMIT@',registry['controller_commit'].encode())
+                    controller=target if record.get('manual_release') is True and target==record['request']['candidate_commit'] else registry['controller_commit']
+                    policy=read_file(ROOT/'job-runtime-policy.conf').replace(b'@COMMIT@',controller.encode())
                 else:
                     policy=read_file(ROOT/'runtime-policy.conf').replace(b'@COMMIT@',target.encode())
                 if unit in {'eimemory-rpc.service','eimemory-console.service'}:
@@ -393,6 +599,12 @@ class Bridge:
         if activate:
             fresh=dict(registry);fresh['runtime_commit']=target
             if record.get('manual_release') is True and target==record['request']['candidate_commit']:
+                self.verify_controller_entry(registry,target)
+                # Do not resume a legacy controller lacking the worker contract.
+                for path,pin in registry['compatibility_hashes'].items():
+                    source=release/path
+                    if source.is_symlink() or not source.is_file() or sha256(read_file(source,uid=registry['runtime_uid'],mode=stat.S_IMODE(source.stat().st_mode),maximum=4*1024*1024)).hexdigest()!=pin:
+                        raise ValueError('manager_manual_controller_compatibility_mismatch')
                 fresh['controller_commit']=target
             fresh['generation']=self.c.digest({k:v for k,v in fresh.items() if k!='generation'})
             atomic_json(self.registry_path,fresh,gid=registry['runtime_gid'])
@@ -428,9 +640,19 @@ class Bridge:
             raise ValueError('manager_request_registry_mismatch')
         op=value.get('operation');base={'schema','operation','registry_generation'}
         fields={'unit_state':{'unit','properties'},'unit_journal':{'unit','invocation','limit'},
-            'runtime_identity':{'unit'},'error_window':set(),'single_rpc_owner':set(),'readonly_probe':{'job_key'},'submit_job':{'job_key'},'job_status':{'job_key'},
-            'job_journal':{'job_key','invocation'},'finalize_job':{'job_key'},'transition':{'job_key','phase'}}
+            'issue_managed_incident_proof':{'source_record_id','source_digest'},'verify_managed_incident_proof':{'receipt_id','digest'},'checkpoint_managed_incident_knowledge':set(),
+            'runtime_identity':{'unit'},'activation_attestation':set(),'verify_activation_attestation':{'receipt_id','digest'},'error_window':set(),'single_rpc_owner':set(),'readonly_probe':{'job_key'},'submit_job':{'job_key'},'job_status':{'job_key'},
+            'job_journal':{'job_key','invocation'},'finalize_job':{'job_key'},'complete_job':{'job_key'},'transition':{'job_key','phase'}}
         if op not in fields or set(value)!=base|fields[op]:raise ValueError('manager_request_shape_invalid')
+        if op=='issue_managed_incident_proof':
+            return {'reference':self.managed_authority(registry).issue(value['source_record_id'],value['source_digest'],
+                verified_activation_receipt=self.verify_activation,registry=registry,peer={'pid':pid,'uid':uid})}
+        if op=='verify_managed_incident_proof':
+            return {'proof':self.managed_authority(registry).verify(value['receipt_id'],value['digest'],registry=registry)}
+        if op=='checkpoint_managed_incident_knowledge':
+            return {'checkpoint':self.managed_authority(registry).checkpoint(registry=registry,peer={'pid':pid,'uid':uid})}
+        if op=='activation_attestation':return {'reference':self.activation_attestation(registry,pid,uid)}
+        if op=='verify_activation_attestation':return {'attestation':self.verify_activation(value['receipt_id'],value['digest'])}
         if op=='error_window':return {'report':self.error_window(registry)}
         if op=='single_rpc_owner':
             state=self.unit_state(registry,'eimemory-rpc.service',['ActiveState','UnitFileState'])
@@ -456,12 +678,13 @@ class Bridge:
             self.c.hex_value(values[0],40,'manager_identity_commit_invalid')
             return {'runtime_commit':values[0]}
         # Serialize durable transitions. Reads never cause a lifecycle action.
-        with self.mutex:
+        with self.mutex,self.lifecycle_lock():
+            if op=='complete_job':return self.complete(registry,value['job_key'],pid,uid)
             if op=='finalize_job':return self.finalize(registry,value['job_key'],pid,uid)
             if op=='readonly_probe':
                 record=self.record(value['job_key']);self.verify_job_peer(registry,record,pid,uid)
                 target=record['request']['target_commit'];self.c.hex_value(target,40,'manager_probe_target_invalid')
-                root=Path('/opt/eimemory/releases')/target
+                root=RELEASES/target
                 if root.is_symlink() or not root.is_dir():raise ValueError('manager_probe_release_missing')
                 self.command(['/usr/bin/systemd-run','--quiet','--wait','--collect','--pipe',
                     '--unit=eimemory-readonly-probe-'+value['job_key'],
@@ -513,7 +736,7 @@ def serve(bridge):
                         response={'ok':True,**result}
                     except Exception as exc:
                         # Only fixed machine codes, never exception text or env.
-                        code=str(exc) if isinstance(exc,ValueError) and re.fullmatch('manager_[a-z0-9_]+',str(exc)) else 'manager_operation_failed'
+                        code=str(exc) if isinstance(exc,ValueError) and re.fullmatch('(?:manager|managed_authority)_[a-z0-9_]+',str(exc)) else 'manager_operation_failed'
                         response={'ok':False,'reason':code}
                     response.update(schema=bridge.c.RESPONSE_SCHEMA,operation=value.get('operation'),registry_generation=value.get('registry_generation'))
                     raw=bridge.c.canonical(response)

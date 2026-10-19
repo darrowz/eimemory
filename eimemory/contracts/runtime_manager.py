@@ -81,9 +81,9 @@ def validate_job(value: Any, job_key: str) -> dict:
  from datetime import datetime
  if not isinstance(value,dict) or set(value)!=JOB_FIELDS or value.get('schema')!=JOB_SCHEMA:raise ValueError('manager_job_schema_invalid')
  if value['operation'] not in {'deploy','rollback'}:raise ValueError('manager_job_operation_invalid')
- if not isinstance(value['transaction_id'],str) or re.fullmatch('[A-Za-z0-9_.:-]{1,200}',value['transaction_id']) is None:raise ValueError('manager_job_transaction_invalid')
+ if not isinstance(value['transaction_id'],str) or re.fullmatch('[A-Za-z0-9_.:-]{1,160}',value['transaction_id']) is None:raise ValueError('manager_job_transaction_invalid')
  scope=value['scope']
- if not isinstance(scope,dict) or set(scope)!={'tenant_id','agent_id','workspace_id','user_id'} or any(not isinstance(v,str) or not v or v!=v.strip() or len(v)>512 or any(c in v for c in '\r\n\0') for v in scope.values()):raise ValueError('manager_job_scope_invalid')
+ if not isinstance(scope,dict) or set(scope)!={'tenant_id','agent_id','workspace_id','user_id'} or any(not isinstance(v,str) or not v or v!=v.strip() or len(v)>256 or any(c in v for c in '\r\n\0') for v in scope.values()):raise ValueError('manager_job_scope_invalid')
  for key in ('base_commit','candidate_commit','target_commit','controller_commit'):hex_value(value[key],40,'manager_job_commit_invalid')
  if value['target_commit']!=value['candidate_commit' if value['operation']=='deploy' else 'base_commit']:raise ValueError('manager_job_target_invalid')
  for key in ('installer_digest','policy_digest','authorization_digest','patch_digest','candidate_tree_digest'):hex_value(value[key],64,'manager_job_digest_invalid')
@@ -97,7 +97,7 @@ def validate_job(value: Any, job_key: str) -> dict:
  return value
 
 def validate_registry(value: Any) -> dict:
- fields={'schema','generation','runtime_user','runtime_uid','runtime_gid','controller_commit','runtime_commit','repository_root','units','template_hashes','compatibility_hashes'}
+ fields={'schema','generation','runtime_user','runtime_uid','runtime_gid','controller_commit','runtime_commit','repository_root','units','template_hashes','compatibility_hashes','unit_scopes','managed_incident_authority','controller_entry_digest'}
  if not isinstance(value,dict) or set(value)!=fields or value.get('schema')!=REGISTRY_SCHEMA:raise ValueError('manager_registry_schema_invalid')
  hex_value(value['generation'],64,'manager_registry_generation_invalid')
  hex_value(value['controller_commit'],40,'manager_registry_controller_invalid')
@@ -115,6 +115,11 @@ def validate_registry(value: Any) -> dict:
  for item in value['template_hashes'].values():hex_value(item,64,'manager_registry_template_digest_invalid')
  if not isinstance(value['compatibility_hashes'],dict) or set(value['compatibility_hashes'])!=set(COMPATIBILITY_PATHS):raise ValueError('manager_registry_compatibility_invalid')
  for item in value['compatibility_hashes'].values():hex_value(item,64,'manager_registry_compatibility_digest_invalid')
+ scopes=value['unit_scopes']
+ if not isinstance(scopes,dict) or not set(scopes)<=set(PRODUCT_SERVICES):raise ValueError('manager_registry_unit_scopes_invalid')
+ for scope in scopes.values():validate_scope(scope)
+ validate_managed_authority(value['managed_incident_authority'])
+ if value['controller_entry_digest'] is not None:hex_value(value['controller_entry_digest'],64,'manager_registry_controller_entry_digest_invalid')
  if value['generation']!=digest({k:v for k,v in value.items() if k!='generation'}):raise ValueError('manager_registry_digest_mismatch')
  return value
 
@@ -123,3 +128,16 @@ JOURNAL_ERROR_PATTERNS = (
  ('oom', r'oom-kill|out of memory|killed process'),
  ('database_read_write_failure', r'database is locked|database is read.only|attempt to write a readonly|disk i/o error|database or disk is full|sqlite.*(?:permission denied|operationalerror|databaseerror)'),
 )
+
+
+def validate_scope(value: Any) -> dict:
+ if not isinstance(value,dict) or set(value)!={'tenant_id','agent_id','workspace_id','user_id'} or any(not isinstance(v,str) or not v or v!=v.strip() or len(v)>256 or any(c in v for c in '\r\n\0') for v in value.values()):raise ValueError('manager_scope_invalid')
+ return value
+
+
+def validate_managed_authority(value: Any) -> dict:
+ if value=={'enabled':False}:return value
+ fixed={'database_path':'/var/lib/eimemory/state/eimemory.sqlite','manifest_path':'/etc/eimemory-code-automation-authority/managed-code-incident-manifest.v1.json','receipt_directory':'/var/lib/eimemory-manager/managed-incident-receipts','key_path':'/etc/eimemory-code-automation-authority/managed-incident-proof.key'}
+ if not isinstance(value,dict) or set(value)!={'enabled','manifest_sha256',*fixed} or value.get('enabled') is not True or any(value[k]!=v for k,v in fixed.items()):raise ValueError('manager_managed_authority_registry_invalid')
+ hex_value(value['manifest_sha256'],64,'manager_managed_authority_manifest_digest_invalid')
+ return value

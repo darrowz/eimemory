@@ -17,11 +17,17 @@ import re
 import stat
 import subprocess
 import time
+import urllib.request
 import zipfile
+from contextlib import contextmanager
 
 ROOT=Path('/usr/libexec/eimemory-manager')
 STATE=Path('/var/lib/eimemory-manager')
 REGISTRY=Path('/etc/eimemory/runtime-manager.v1.json')
+SYSTEM_UNITS=Path('/etc/systemd/system')
+CURRENT=Path('/opt/eimemory/current')
+RELEASES=Path('/opt/eimemory/releases')
+STORAGE_STATE=Path('/var/lib/eimemory/state')
 
 
 def directory(path,*,gid=0,mode=0o750):
@@ -101,15 +107,254 @@ def bundle(raw,expected):
     return files,manifest
 
 
+@contextmanager
+def lifecycle_lock():
+    import fcntl
+    directory(STATE,gid=1001,mode=0o750)
+    path=STATE/'lifecycle.lock'
+    fd=os.open(path,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+    try:
+        meta=os.fstat(fd);named=path.lstat()
+        if (not stat.S_ISREG(meta.st_mode) or meta.st_uid!=0 or meta.st_nlink!=1
+                or stat.S_IMODE(meta.st_mode)!=0o600 or (meta.st_dev,meta.st_ino)!=(named.st_dev,named.st_ino)):
+            raise ValueError('bootstrap_lifecycle_lock_untrusted')
+        deadline=time.monotonic()+5
+        while True:
+            try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);break
+            except BlockingIOError:
+                if time.monotonic()>=deadline:raise ValueError('bootstrap_lifecycle_lock_timeout')
+                time.sleep(0.025)
+        yield
+    finally:os.close(fd)
+
+
+def load_contract():
+    path=ROOT/'runtime_manager_contract.py';read(path)
+    spec=importlib.util.spec_from_file_location('reviewed_runtime_contract',path)
+    c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
+    return c
+
+
+def owner_files(account,operation,value):
+    # Fixed reviewed helper, product source is never imported in root.
+    path=ROOT/'runtime_manager_owner_files.py';read(path)
+    done=subprocess.run(['/usr/sbin/runuser','-u',account.pw_name,'--','/usr/bin/python3','-I','-B',str(path),operation],
+        input=json.dumps(value,sort_keys=True,separators=(',',':')),capture_output=True,text=True,timeout=30,
+        env={'PATH':'/usr/bin:/bin','LC_ALL':'C','PYTHONDONTWRITEBYTECODE':'1'})
+    if done.returncode or done.stderr or len(done.stdout.encode())>4*1024*1024:raise ValueError('bootstrap_user_owner_files_failed')
+    return json.loads(done.stdout)
+
+
+def storage_clean():
+    for name in ('storage-release-transaction.json','.storage-release-transaction.json.clearing','.storage-release-transaction.json.recovery'):
+        path=STORAGE_STATE/name
+        if path.exists() or path.is_symlink():raise ValueError('bootstrap_storage_recovery_not_clean')
+
+
+def healthy_original(commit):
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open('http://127.0.0.1:8091/health',timeout=10) as response:
+        raw=response.read(1048577)
+    if len(raw)>1048576:raise ValueError('bootstrap_health_output_limit')
+    health=json.loads(raw)
+    if (not isinstance(health,dict) or health.get('ok') is not True or health.get('commit')!=commit
+            or not isinstance(health.get('checks'),dict) or not health['checks']
+            or any(v is not True for v in health['checks'].values())):
+        raise ValueError('bootstrap_original_health_identity_failed')
+    return {'commit':commit,'ok':True,'checks':health['checks']}
+
+
+def root_snapshot(files):
+    paths={REGISTRY,SYSTEM_UNITS/'eimemory-runtime-manager.service'}
+    for name in files:
+        if name=='manifest.json':continue
+        paths.add(ROOT/name)
+        if name.startswith('templates/'):
+            unit=name.split('/')[-1];paths.add(SYSTEM_UNITS/unit)
+            if unit.endswith('.service'):paths.add(SYSTEM_UNITS/(unit+'.d')/'90-eimemory-runtime.conf')
+    result={}
+    for path in sorted(paths):
+        if path.exists() or path.is_symlink():
+            raw=read(path);st=path.stat()
+            result[str(path)]={'raw_hex':raw.hex(),'sha256':sha256(raw).hexdigest(),'mode':stat.S_IMODE(st.st_mode),'gid':st.st_gid}
+        else:result[str(path)]=None
+    return result
+
+
+def restore_root_files(snapshot):
+    if not isinstance(snapshot,dict) or len(snapshot)>250:raise ValueError('bootstrap_root_snapshot_invalid')
+    # All coordinates come from our original root-only history. Validate all
+    # names and original bytes before stopping an owner or replacing a file.
+    for name,value in snapshot.items():
+        path=Path(name)
+        if ('..' in path.parts or not path.is_absolute() or
+                not (path==REGISTRY or path.is_relative_to(ROOT) or path.is_relative_to(SYSTEM_UNITS))):
+            raise ValueError('bootstrap_root_snapshot_path_invalid')
+        if value is not None:
+            if not isinstance(value,dict) or set(value)!={'raw_hex','sha256','mode','gid'}:raise ValueError('bootstrap_root_snapshot_invalid')
+            raw=bytes.fromhex(value['raw_hex'])
+            if (sha256(raw).hexdigest()!=value['sha256'] or type(value['mode']) is not int or value['mode']&0o022
+                    or type(value['gid']) is not int or value['gid']<0):raise ValueError('bootstrap_root_snapshot_digest_invalid')
+    for name,value in snapshot.items():
+        path=Path(name)
+        if value is None:
+            if path.exists() or path.is_symlink():read(path);path.unlink()
+        else:write(path,bytes.fromhex(value['raw_hex']),gid=value['gid'],mode=value['mode'])
+        if path.parent.exists():
+            directory_fd=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            try:os.fsync(directory_fd)
+            finally:os.close(directory_fd)
+
+
+def restore_owner(args):
+    import pwd
+    account=pwd.getpwnam('darrow');c=load_contract()
+    if re.fullmatch(r'bootstrap-[0-9]{8}T[0-9]{6}Z-[0-9]+',args.history_id) is None:raise ValueError('bootstrap_history_id_invalid')
+    history=STATE/args.history_id
+    if not history.is_dir() or history.is_symlink() or stat.S_IMODE(history.stat().st_mode)!=0o700:raise ValueError('bootstrap_history_not_protected')
+    directory(history,gid=0,mode=0o700)
+    raw=read(history/'owner-snapshot.json')
+    if sha256(raw).hexdigest()!=args.expected_history_sha256:raise ValueError('bootstrap_history_review_digest_mismatch')
+    original=c.strict_json(raw,max_bytes=16*1024*1024)
+    if set(original)!={'schema','commit','root_files','user_files','prior_user_state','prior_system_state'} or original['schema']!='eimemory.runtime_owner_snapshot.v1':raise ValueError('bootstrap_owner_snapshot_invalid')
+    if CURRENT.resolve(strict=True)!=RELEASES/original['commit'] or args.expected_current_commit!=original['commit']:
+        raise ValueError('bootstrap_owner_restore_serving_release_changed')
+    current=read(REGISTRY) if REGISTRY.exists() else b''
+    if sha256(current).hexdigest()!=args.expected_registry_sha256:raise ValueError('bootstrap_owner_restore_registry_cas_mismatch')
+    storage_clean()
+    # A running or ambiguous effect cannot be invalidated by changing owners.
+    active=STATE/'active-transition.json'
+    abandoned=None
+    if active.exists():
+        transition=c.strict_json(read(active))
+        if transition.get('complete') is not True:
+            key=transition.get('job_key');c.hex_value(key,64,'bootstrap_active_job_invalid')
+            if args.abandon_failed_job_key!=key:raise ValueError('bootstrap_active_job_requires_review')
+            state=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',c.job_unit(key),'--property=LoadState,ActiveState,Result,ExecMainStatus']).splitlines() if '=' in line)
+            if state.get('LoadState')!='loaded' or state.get('ActiveState') not in {'inactive','failed'} or state.get('Result') in {None,'','success'}:
+                raise ValueError('bootstrap_active_or_unknown_job_cannot_be_abandoned')
+            abandoned=key
+    prior=original['prior_user_state'];prior_system=original['prior_system_state']
+    if set(prior_system)!=c.REGISTERED_UNITS|{'eimemory-runtime-manager.service'}:raise ValueError('bootstrap_prior_system_inventory_invalid')
+    if set(prior)!=c.REGISTERED_UNITS:raise ValueError('bootstrap_prior_owner_inventory_invalid')
+    # Validate user files without modifying anything. snapshot equality ignores
+    # only the one policy file this reviewed manager itself can replace.
+    now=owner_files(account,'snapshot',original['user_files']['units'])
+    for name in set(original['user_files']['files'])|set(now['files']):
+        if not name.endswith('.d/zzzz-eimemory-host-manager.conf') and now['files'].get(name)!=original['user_files']['files'].get(name):
+            raise ValueError('bootstrap_old_owner_configuration_changed')
+    write(history/'restore-intent.json',c.canonical({'expected_current_commit':original['commit'],'registry_sha256':sha256(current).hexdigest(),'abandoned_failed_job':abandoned}),gid=0,mode=0o600,exclusive=True)
+    # Stop every new product owner; do not start legacy RPC until PID1 RPC has
+    # been physically observed inactive. The bridge itself stops after callers.
+    for unit in sorted(set(c.REGISTERED_UNITS)-set(c.USER_COMPAT_UNITS),key=lambda u:(u=='eimemory-rpc.service',u)):
+        state=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',unit,'--property=LoadState,ActiveState']).splitlines() if '=' in line)
+        if state.get('LoadState')=='not-found':continue
+        if state.get('LoadState')!='loaded':raise ValueError('bootstrap_new_owner_state_unknown')
+        call(['/usr/bin/systemctl','disable','--now',unit])
+        after=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',unit,'--property=ActiveState']).splitlines() if '=' in line)
+        if after.get('ActiveState') not in {'inactive','failed'}:raise ValueError('bootstrap_new_owner_still_active')
+    call(['/usr/bin/systemctl','disable','--now','eimemory-runtime-manager.service'])
+    for unit in sorted(c.USER_COMPAT_UNITS):
+        if prior[unit]['LoadState']=='loaded':call(user_command(account,'stop',unit))
+    owner_files(account,'restore',original['user_files'])
+    restore_root_files(original['root_files'])
+    call(['/usr/bin/systemctl','daemon-reload']);call(user_command(account,'daemon-reload'))
+    # Restore only exact original enablement and activity. No wildcard service
+    # action and no root execution of a user-owned program occurs here.
+    for unit,state in sorted(prior.items()):
+        enabled=state['UnitFileState']
+        if enabled in {'enabled','enabled-runtime'}:call(user_command(account,'enable',unit))
+        elif enabled in {'disabled','masked','not-found','static','indirect','generated','alias',''}:pass
+        else:raise ValueError('bootstrap_prior_enablement_unknown')
+    active_states={'active','activating','reloading','deactivating'}
+    user_rpc=prior['eimemory-rpc.service']['ActiveState'] in active_states
+    system_rpc=prior_system['eimemory-rpc.service']['ActiveState'] in active_states
+    if user_rpc==system_rpc:raise ValueError('bootstrap_original_rpc_owner_not_unique')
+    for unit,state in sorted(prior_system.items()):
+        if state['UnitFileState'] in {'enabled','enabled-runtime'}:
+            call(['/usr/bin/systemctl','enable',unit])
+    manager='user' if user_rpc else 'system'
+    rpc_start=user_command(account,'start','eimemory-rpc.service') if user_rpc else ['/usr/bin/systemctl','start','eimemory-rpc.service']
+    call(rpc_start)
+    health=healthy_original(original['commit'])
+    storage_clean()
+    if CURRENT.resolve(strict=True)!=RELEASES/original['commit']:raise ValueError('bootstrap_owner_restore_current_changed')
+    active_before=[]
+    for namespace,inventory in [('user',prior),('system',prior_system)]:
+        for unit,state in sorted(inventory.items()):
+            if state['ActiveState'] in active_states:
+                if unit!='eimemory-rpc.service':
+                    call(user_command(account,'start',unit) if namespace=='user' else ['/usr/bin/systemctl','start',unit])
+                active_before.append({'manager':namespace,'unit':unit})
+    opposite=['/usr/bin/systemctl','show','eimemory-rpc.service','--property=ActiveState'] if user_rpc else user_command(account,'show','eimemory-rpc.service','--property=ActiveState')
+    other=dict(line.split('=',1) for line in call(opposite).splitlines() if '=' in line)
+    if other.get('ActiveState') not in {'inactive','failed'}:raise ValueError('bootstrap_rpc_dual_owner')
+    for item in active_before:
+        query=user_command(account,'show',item['unit'],'--property=ActiveState') if item['manager']=='user' else ['/usr/bin/systemctl','show',item['unit'],'--property=ActiveState']
+        state=dict(line.split('=',1) for line in call(query).splitlines() if '=' in line)
+        if state.get('ActiveState') not in {'active','activating'}:raise ValueError('bootstrap_legacy_active_set_not_restored')
+    write(history/'restore-complete.json',c.canonical({'ok':True,'manager':manager,'commit':original['commit'],'active_before':active_before,'health':health}),gid=0,mode=0o600,exclusive=True)
+    print(json.dumps({'ok':True,'manager':manager,'history_id':args.history_id,'commit':original['commit']}))
+
+
+def configure_managed_authority(args,registry,history,c,account):
+    authority_manifest=getattr(args,'managed_incident_manifest',None)
+    authority_digest=getattr(args,'expected_managed_incident_manifest_sha256',None)
+    if (authority_manifest is None)!=(authority_digest is None):raise ValueError('bootstrap_managed_manifest_review_required')
+    if authority_manifest is not None:
+        if not (ROOT/'managed_incident_proof_authority.py').is_file():raise ValueError('bootstrap_managed_authority_module_missing')
+        manifest_raw=read(authority_manifest,limit=1048576)
+        if sha256(manifest_raw).hexdigest()!=authority_digest:raise ValueError('bootstrap_managed_manifest_digest_mismatch')
+        manifest_value=c.strict_json(manifest_raw,max_bytes=1048576)
+        if not isinstance(manifest_value,dict) or manifest_value.get('schema')!='managed_code_incident_manifest.v1' or manifest_value.get('enabled') is not True:
+            raise ValueError('bootstrap_managed_manifest_invalid')
+        authority_directory=Path('/etc/eimemory-code-automation-authority')
+        directory(authority_directory,gid=account.pw_gid,mode=0o750)
+        installed=authority_directory/'managed-code-incident-manifest.v1.json'
+        # Changing issuer knowledge boundaries is a separate explicit review.
+        # Preserve all original bytes in this migration history first.
+        if installed.exists():write(history/'managed-manifest.original',read(installed),gid=0,mode=0o600,exclusive=True)
+        write(installed,manifest_raw,gid=account.pw_gid)
+        secret=authority_directory/'managed-incident-proof.key'
+        if not secret.exists():write(secret,os.urandom(32),gid=0,mode=0o600,exclusive=True)
+        elif len(read(secret))<32 or stat.S_IMODE(secret.stat().st_mode)!=0o600:raise ValueError('bootstrap_managed_key_invalid')
+        receipts=STATE/'managed-incident-receipts';directory(receipts,gid=0,mode=0o700)
+        if stat.S_IMODE(receipts.stat().st_mode)!=0o700:raise ValueError('bootstrap_managed_receipt_directory_invalid')
+        empty=receipts/'empty-pycache';directory(empty,gid=0,mode=0o700)
+        if stat.S_IMODE(empty.stat().st_mode)!=0o700 or any(empty.iterdir()):raise ValueError('bootstrap_managed_empty_pycache_invalid')
+        registry['managed_incident_authority']={'enabled':True,
+            'database_path':'/var/lib/eimemory/state/eimemory.sqlite','manifest_path':str(installed),
+            'manifest_sha256':authority_digest,'receipt_directory':str(receipts),'key_path':str(secret)}
+        spec=importlib.util.spec_from_file_location('reviewed_managed_configuration',ROOT/'managed_incident_proof_authority.py')
+        read(ROOT/'managed_incident_proof_authority.py')
+        authority=importlib.util.module_from_spec(spec);spec.loader.exec_module(authority)
+        authority.validate_configuration(registry=registry)
+    return registry
+
+
+
 def install(args):
     import pwd
     account=pwd.getpwnam('darrow')
     repository=Path(args.repository_root)
     if repository.resolve(strict=True)!=repository or not repository.is_dir():raise ValueError('bootstrap_repository_coordinate_invalid')
     if account.pw_uid!=1001 or account.pw_gid!=1001 or account.pw_dir!='/home/darrow':raise ValueError('bootstrap_actual_runtime_identity_mismatch')
+    if REGISTRY.exists():
+        original=read(REGISTRY)
+        if args.expected_registry_sha256 is None or sha256(original).hexdigest()!=args.expected_registry_sha256:
+            raise ValueError('bootstrap_existing_registry_cas_required')
+        active=STATE/'active-transition.json'
+        if active.exists() and json.loads(read(active)).get('complete') is not True:
+            raise ValueError('bootstrap_transition_still_active')
+    elif args.expected_registry_sha256 is not None:
+        raise ValueError('bootstrap_expected_registry_missing')
     files,manifest=bundle(read(args.bundle),args.expected_bundle_sha256)
     commit=manifest['controller_commit']
-    if Path('/opt/eimemory/current').resolve(strict=True)!=Path('/opt/eimemory/releases')/commit:
+    scope_raw=read(args.unit_scope_manifest)
+    if sha256(scope_raw).hexdigest()!=args.expected_unit_scope_sha256:raise ValueError('bootstrap_unit_scope_manifest_digest_mismatch')
+    scopes=json.loads(scope_raw)
+    if set(scopes)!={'schema','units'} or scopes['schema']!='eimemory.runtime_unit_scopes.v1':raise ValueError('bootstrap_unit_scope_manifest_invalid')
+    if CURRENT.resolve(strict=True)!=RELEASES/commit:
         raise ValueError('bootstrap_controller_must_be_current')
     directory(ROOT,gid=account.pw_gid);directory(STATE,gid=account.pw_gid);directory(STATE/'jobs',gid=account.pw_gid)
     lock=os.open(STATE/'bootstrap.lock',os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600)
@@ -117,13 +362,16 @@ def install(args):
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     history=directory(STATE/('bootstrap-'+time.strftime('%Y%m%dT%H%M%SZ')+'-'+str(os.getpid())),gid=0,mode=0o700)
     # Original root bytes are exclusive history, including a failed migration.
-    for path in [REGISTRY,*[Path('/etc/systemd/system')/n.split('/')[-1] for n in files if n.startswith('templates/')]]:
+    for path in [REGISTRY,*[SYSTEM_UNITS/n.split('/')[-1] for n in files if n.startswith('templates/')]]:
         if path.exists():write(history/(path.name+'.original'),read(path),gid=0,mode=0o600,exclusive=True)
+    before_root=root_snapshot(files)
     for name,raw in files.items():
         if name=='eimemory-runtime-manager.service':continue
         write(ROOT/name,raw,gid=account.pw_gid)
     spec=importlib.util.spec_from_file_location('reviewed_runtime_contract',ROOT/'runtime_manager_contract.py')
     c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
+    if not isinstance(scopes['units'],dict) or not set(scopes['units'])<=set(c.PRODUCT_SERVICES):raise ValueError('bootstrap_unit_scope_manifest_invalid')
+    for scope in scopes['units'].values():c.validate_scope(scope)
     units={}
     prior={}
     for unit in sorted(c.REGISTERED_UNITS):
@@ -134,6 +382,20 @@ def install(args):
         units[unit]={'manager':'user' if unit in c.USER_COMPAT_UNITS else 'system',
             'installed':values['LoadState']=='loaded' if unit in c.USER_COMPAT_UNITS else 'templates/'+unit in files}
     write(history/'prior-user-state.json',c.canonical(prior),gid=0,mode=0o600,exclusive=True)
+    prior_system={}
+    for unit in sorted(c.REGISTERED_UNITS|{'eimemory-runtime-manager.service'}):
+        state=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',unit,'--property=LoadState,ActiveState,UnitFileState']).splitlines() if '=' in line)
+        if not {'LoadState','ActiveState','UnitFileState'}<=set(state):raise ValueError('bootstrap_prior_system_state_unknown')
+        prior_system[unit]=state
+    active_states={'active','activating','reloading','deactivating'}
+    if (prior_system['eimemory-rpc.service']['ActiveState'] in active_states
+            and prior['eimemory-rpc.service']['ActiveState'] in active_states):raise ValueError('bootstrap_preexisting_dual_rpc_owner')
+    user_original=owner_files(account,'snapshot',sorted(c.REGISTERED_UNITS))
+    owner_original={'schema':'eimemory.runtime_owner_snapshot.v1','commit':commit,'root_files':before_root,
+        'user_files':user_original,'prior_user_state':prior,'prior_system_state':prior_system}
+    write(history/'owner-snapshot.json',c.canonical(owner_original),gid=0,mode=0o600,exclusive=True)
+    storage_clean()
+    authority_preview=configure_managed_authority(args,{'managed_incident_authority':{'enabled':False},'runtime_uid':account.pw_uid,'runtime_gid':account.pw_gid,'runtime_user':'darrow'},history,c,account)
     # Stop/disable the old product owner before publishing any system owner.
     # No parallel RPC owner is ever started as part of a migration.
     active=[]
@@ -154,19 +416,28 @@ def install(args):
             if 'User=darrow' not in text or 'PrivateUsers=self' not in text or 'NoNewPrivileges=yes' not in text:
                 raise ValueError('bootstrap_product_identity_missing')
             if re.search(r'^Exec[^=]*=[+!]',text,re.M):raise ValueError('bootstrap_product_privilege_prefix_forbidden')
-        write(Path('/etc/systemd/system')/unit,raw,gid=account.pw_gid)
+        write(SYSTEM_UNITS/unit,raw,gid=account.pw_gid)
         if unit.endswith('.service'):
             policy=files['job-runtime-policy.conf' if unit=='eimemory-code-deployment-job@.service' else 'runtime-policy.conf'].replace(b'@COMMIT@',commit.encode())
             # The independent installer needs candidate writes. Protect only
             # its registered controller; consumers protect the entire tree.
             if unit in {'eimemory-rpc.service','eimemory-console.service'}:
                 policy=policy.replace(('/opt/eimemory/releases/'+commit+' ').encode(),b'/opt/eimemory/releases ')
-            write(Path('/etc/systemd/system')/(unit+'.d')/'90-eimemory-runtime.conf',policy,gid=account.pw_gid)
+            write(SYSTEM_UNITS/(unit+'.d')/'90-eimemory-runtime.conf',policy,gid=account.pw_gid)
     registry={'schema':c.REGISTRY_SCHEMA,'runtime_user':'darrow','runtime_uid':account.pw_uid,'runtime_gid':account.pw_gid,
         'controller_commit':commit,'runtime_commit':commit,'repository_root':str(repository),'units':units,
         'template_hashes':{name.split('/')[-1]:sha256(raw).hexdigest() for name,raw in files.items() if name.startswith('templates/')},
-        'compatibility_hashes':json.loads(files['compatibility.json'])}
+        'compatibility_hashes':json.loads(files['compatibility.json']),
+        'controller_entry_digest':json.loads(files['controller-entry.json'])['sha256'],
+        'unit_scopes':scopes['units'],'managed_incident_authority':{'enabled':False}}
+    registry['managed_incident_authority']=authority_preview['managed_incident_authority']
     registry['generation']=c.digest(registry);c.validate_registry(registry)
+    directory(STATE/'activation-receipts',gid=account.pw_gid)
+    key=STATE/'activation-signing.key'
+    if not key.exists():write(key,os.urandom(32),gid=0,mode=0o600,exclusive=True)
+    else:
+        secret=read(key)
+        if len(secret)!=32 or stat.S_IMODE(key.stat().st_mode)!=0o600:raise ValueError('bootstrap_activation_key_invalid')
     write(REGISTRY,c.canonical(registry),gid=account.pw_gid)
     write('/etc/systemd/system/eimemory-runtime-manager.service',files['eimemory-runtime-manager.service'],gid=0)
     call(['/usr/bin/systemctl','daemon-reload'])
@@ -177,26 +448,69 @@ def install(args):
     if 'eimemory-rpc.service' in active:
         call(['/usr/bin/systemctl','start','eimemory-rpc.service'])
     write(history/'complete.json',c.canonical({'registry_generation':registry['generation'],'controller_commit':commit,'old_active_retained':active,'automatic_jobs_paused_until_release_transition':True}),gid=0,mode=0o600,exclusive=True)
-    print(json.dumps({'ok':True,'registry_generation':registry['generation'],'history':str(history)}))
+    print(json.dumps({'ok':True,'registry_generation':registry['generation'],'history':str(history),'owner_snapshot_sha256':sha256(c.canonical(owner_original)).hexdigest()}))
+
+
+def enable_managed(args):
+    import pwd
+    account=pwd.getpwnam('darrow');c=load_contract()
+    old=read(REGISTRY)
+    if sha256(old).hexdigest()!=args.expected_registry_sha256:raise ValueError('bootstrap_managed_registry_cas_mismatch')
+    registry=c.validate_registry(c.strict_json(old))
+    if CURRENT.resolve(strict=True)!=RELEASES/registry['runtime_commit']:raise ValueError('bootstrap_current_registry_mismatch')
+    history=directory(STATE/('authority-'+time.strftime('%Y%m%dT%H%M%SZ')+'-'+str(os.getpid())),gid=0,mode=0o700)
+    write(history/'registry.original',old,gid=0,mode=0o600,exclusive=True)
+    configured=configure_managed_authority(args,dict(registry),history,c,account)
+    configured['generation']=c.digest({k:v for k,v in configured.items() if k!='generation'})
+    c.validate_registry(configured)
+    if read(REGISTRY)!=old or CURRENT.resolve(strict=True)!=RELEASES/registry['runtime_commit']:
+        raise ValueError('bootstrap_managed_authority_current_changed')
+    write(REGISTRY,c.canonical(configured),gid=account.pw_gid)
+    write(history/'complete.json',c.canonical({'registry_generation':configured['generation'],'manifest_sha256':args.expected_managed_incident_manifest_sha256}),gid=0,mode=0o600,exclusive=True)
+    print(json.dumps({'ok':True,'registry_generation':configured['generation'],'history':str(history)}))
 
 
 def stage(args):
-    # This root-only explicit release permit is a reviewed manual deployment,
-    # separate from automatic code-evolution authorization/transaction facts.
+    # Every reviewed attempt is independently recorded. An ambiguous old start
+    # cannot be replayed under a fresh nonce or silently overwritten.
     if re.fullmatch('[0-9a-f]{40}',args.target_commit) is None:raise ValueError('bootstrap_full_target_required')
-    spec=importlib.util.spec_from_file_location('reviewed_runtime_contract',ROOT/'runtime_manager_contract.py')
-    read(ROOT/'runtime_manager_contract.py');c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
-    registry=c.validate_registry(c.strict_json(read(REGISTRY)))
-    if Path('/opt/eimemory/current').resolve(strict=True)!=Path('/opt/eimemory/releases')/registry['runtime_commit']:
-        raise ValueError('bootstrap_current_registry_mismatch')
-    request={'schema':'eimemory.manual_release_permit.v1','operation':'deploy','controller_commit':registry['controller_commit'],
-        'base_commit':registry['runtime_commit'],'candidate_commit':args.target_commit,'target_commit':args.target_commit}
+    if re.fullmatch('[0-9a-f]{32}',args.attempt_id) is None:raise ValueError('bootstrap_reviewed_attempt_id_required')
+    c=load_contract();registry=c.validate_registry(c.strict_json(read(REGISTRY)))
+    if CURRENT.resolve(strict=True)!=RELEASES/registry['runtime_commit']:raise ValueError('bootstrap_current_registry_mismatch')
+    if args.target_commit==registry['runtime_commit']:raise ValueError('bootstrap_target_already_current')
+    storage_clean()
+    pair={'base_commit':registry['runtime_commit'],'candidate_commit':args.target_commit,'controller_commit':registry['controller_commit']}
+    pointer=STATE/('manual-release-'+c.digest(pair)+'.json')
+    approved_retry=None
+    if pointer.exists():
+        previous=c.strict_json(read(pointer))
+        key=previous.get('job_key');c.hex_value(key,64,'bootstrap_prior_job_key_invalid')
+        if args.prior_job_key!=key:raise ValueError('bootstrap_prior_attempt_review_required')
+        record=c.strict_json(read(STATE/'jobs'/(key+'.json')))
+        if record.get('manual_release') is not True or any(record['request'].get(k)!=v for k,v in pair.items()):raise ValueError('bootstrap_prior_attempt_binding_invalid')
+        state=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',c.job_unit(key),'--property=LoadState,ActiveState,Result,InvocationID']).splitlines() if '=' in line)
+        if (state.get('LoadState')!='loaded' or state.get('ActiveState') not in {'inactive','failed'}
+                or state.get('Result') in {None,'','success'} or not state.get('InvocationID')
+                or record.get('original_invocation') not in {None,state['InvocationID']}):
+            raise ValueError('bootstrap_prior_attempt_active_or_unknown')
+        if previous.get('attempt_id')==args.attempt_id:raise ValueError('bootstrap_attempt_nonce_already_used')
+        approved_retry=key
+    elif args.prior_job_key is not None:raise ValueError('bootstrap_prior_attempt_missing')
+    active=STATE/'active-transition.json'
+    if active.exists():
+        transition=c.strict_json(read(active))
+        if transition.get('complete') is not True and transition.get('job_key')!=approved_retry:
+            raise ValueError('bootstrap_another_transition_active')
+    request={'schema':'eimemory.manual_release_permit.v1','operation':'deploy',**pair,
+        'target_commit':args.target_commit,'reviewed_attempt_id':args.attempt_id}
     key=c.digest(request)
     record={'job_key':key,'request':request,'registry':registry,'manual_release':True,
-        'phase':'submitted','unit':c.job_unit(key),'active_before':None,'quiesced':False,'resumed':False}
+        'phase':'submitted','unit':c.job_unit(key),'active_before':None,'quiesced':False,'resumed':False,
+        'approved_retry_of':approved_retry}
     write(STATE/'jobs'/(key+'.json'),c.canonical(record),gid=registry['runtime_gid'],exclusive=True)
+    write(pointer,c.canonical({'job_key':key,'attempt_id':args.attempt_id}),gid=registry['runtime_gid'])
     call(['/usr/bin/systemctl','start','--no-block',record['unit']])
-    print(json.dumps({'ok':True,'job_key':key,'unit':record['unit'],'state':'submitted'}))
+    print(json.dumps({'ok':True,'job_key':key,'unit':record['unit'],'state':'submitted','approved_retry_of':approved_retry}))
 
 
 def main():
@@ -205,9 +519,16 @@ def main():
     directory(Path(__file__).resolve().parent)
     read(__file__)
     p=argparse.ArgumentParser();sub=p.add_subparsers(dest='operation',required=True)
-    q=sub.add_parser('install');q.add_argument('--bundle',type=Path,required=True);q.add_argument('--expected-bundle-sha256',required=True);q.add_argument('--repository-root',type=Path,required=True)
-    q=sub.add_parser('stage-release');q.add_argument('--target-commit',required=True)
-    a=p.parse_args();install(a) if a.operation=='install' else stage(a)
+    q=sub.add_parser('install');q.add_argument('--bundle',type=Path,required=True);q.add_argument('--expected-bundle-sha256',required=True);q.add_argument('--repository-root',type=Path,required=True);q.add_argument('--unit-scope-manifest',type=Path,required=True);q.add_argument('--expected-unit-scope-sha256',required=True);q.add_argument('--expected-registry-sha256');q.add_argument('--managed-incident-manifest',type=Path);q.add_argument('--expected-managed-incident-manifest-sha256')
+    q=sub.add_parser('enable-managed-authority');q.add_argument('--managed-incident-manifest',type=Path,required=True);q.add_argument('--expected-managed-incident-manifest-sha256',required=True);q.add_argument('--expected-registry-sha256',required=True)
+    q=sub.add_parser('stage-release');q.add_argument('--target-commit',required=True);q.add_argument('--attempt-id',required=True);q.add_argument('--prior-job-key')
+    q=sub.add_parser('restore-owner');q.add_argument('--history-id',required=True);q.add_argument('--expected-history-sha256',required=True);q.add_argument('--expected-current-commit',required=True);q.add_argument('--expected-registry-sha256',required=True);q.add_argument('--abandon-failed-job-key')
+    a=p.parse_args()
+    with lifecycle_lock():
+        if a.operation=='install':install(a)
+        elif a.operation=='stage-release':stage(a)
+        elif a.operation=='enable-managed-authority':enable_managed(a)
+        else:restore_owner(a)
 
 
 if __name__=='__main__':main()

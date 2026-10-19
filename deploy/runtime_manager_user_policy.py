@@ -7,7 +7,21 @@ import re
 import stat
 import subprocess
 import sys
-from runtime_manager_launch import read_root
+import importlib.util
+
+
+def read_root(path):
+    source=Path('/usr/libexec/eimemory-manager/runtime_manager_launch.py')
+    for parent in (source.parent,*source.parent.parents):
+        meta=parent.lstat()
+        if not stat.S_ISDIR(meta.st_mode) or meta.st_uid!=0 or stat.S_IMODE(meta.st_mode)&0o022:
+            raise ValueError('manager_user_policy_helper_parent_untrusted')
+    meta=source.lstat()
+    if not stat.S_ISREG(meta.st_mode) or meta.st_uid!=0 or meta.st_nlink!=1 or stat.S_IMODE(meta.st_mode)!=0o640:
+        raise ValueError('manager_user_policy_helper_untrusted')
+    spec=importlib.util.spec_from_file_location('root_reviewed_manager_launch',source)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module.read_root(path)
 
 
 def apply(commit):

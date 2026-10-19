@@ -3022,6 +3022,36 @@ if [ "$DEPLOY_MODE" = "--recover-only" ]; then
 fi
 BASELINE_PRIOR_COMMIT="$(_select_baseline_prior_commit)"
 
+# The link can already name a rollback target because the forward installer
+# never switched it, or because its failure trap restored it. A bound job must
+# still capture/inherit the original writer set and request deferred restoration.
+# This path never rebuilds or overwrites the serving immutable directory.
+_run_managed_already_current() {
+  [ -n "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" ] || return 0
+  if [ -e "$STORAGE_TRANSACTION_MARKER" ] || [ -L "$STORAGE_TRANSACTION_MARKER" ] || \
+     [ -e "$STORAGE_TRANSACTION_CLEARING" ] || [ -L "$STORAGE_TRANSACTION_CLEARING" ] || \
+     [ -e "$STORAGE_TRANSACTION_RECOVERY" ] || [ -L "$STORAGE_TRANSACTION_RECOVERY" ]; then
+    echo "managed_already_current=failed storage_recovery_pending" >&2
+    return 2
+  fi
+  _stop_storage_writers || return $?
+  _runtime_manager_phase publish || return $?
+  _runtime_manager_phase activate || return $?
+}
+
+_finish_managed_already_current() {
+  [ -n "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" ] || return 0
+  _verify_release_health "$RELEASE_DIR" "$COMMIT" || return $?
+  _record_deployment_receipt || return $?
+  if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ]; then
+    _run_post_deploy_validation || return $?
+  fi
+  # This persists restore intent only. The independent worker, after physical
+  # receipt/ledger readback, is the only caller allowed to finalize the resume.
+  _restart_storage_writers || return $?
+  echo "managed_already_current=technical_verified_restore_deferred"
+}
+
 # Threat boundary: the deployment UID and its same-UID processes are trusted.
 # This transaction rejects pre-existing links, other-UID writes, and partial
 # failures. A hostile same-UID process requires a separate deployment account.
@@ -3031,6 +3061,7 @@ if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ];
    'from pathlib import Path; import sys; raise SystemExit(0 if Path(sys.argv[1]).resolve(strict=True) == Path(sys.argv[2]).resolve(strict=True) else 1)' \
   "$CURRENT_LINK" "$RELEASE_DIR"; then
   _clean_existing_release_and_validate_source
+  _run_managed_already_current
   if [ "$PREVIOUS_COMMIT" = "$COMMIT" ]; then
     BASELINE_PRIOR_COMMIT="$(_find_prior_release_commit)"
   fi
@@ -3045,6 +3076,7 @@ if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ];
   # immutable tree afterwards so bytecode or other runtime artifacts cannot
   # appear after the technical release check and before the receipt.
   _verify_release_health "$RELEASE_DIR" "$COMMIT"
+  _finish_managed_already_current
   echo "release=$RELEASE_DIR"
   echo "current=$CURRENT_LINK"
   echo "commit=$COMMIT"

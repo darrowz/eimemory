@@ -1257,7 +1257,7 @@ def _verified_code_patch_promotion(record: Any) -> bool:
         and str(health.get("version") or "") == version
         and _same_path(health.get("release_path"), release_path)
         and _same_path(deployment.get("release_path"), release_path)
-        and valid_deployment_rollback_evidence(rollback)
+        and valid_deployment_rollback_evidence(rollback, deployed_commit=commit_sha)
     )
 
 

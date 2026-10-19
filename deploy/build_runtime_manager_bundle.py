@@ -18,10 +18,15 @@ def build(root,commit):
     sys.path.insert(0,str(root))
     from eimemory.contracts.runtime_manager import PRODUCT_SERVICES,PRODUCT_TIMERS,PRODUCT_PATHS,COMPATIBILITY_PATHS
     files={}
+    entry=root/'deploy/run_code_deployment_job.py'
+    files['controller-entry.json']=json.dumps({'entry':'deploy/run_code_deployment_job.py','sha256':sha256(entry.read_bytes()).hexdigest() if entry.is_file() else None},sort_keys=True,separators=(',',':')).encode()
     files['compatibility.json']=json.dumps({name:sha256((root/name).read_bytes()).hexdigest() for name in COMPATIBILITY_PATHS},sort_keys=True,separators=(',',':')).encode()
     files['runtime_manager_contract.py']=(root/'eimemory/contracts/runtime_manager.py').read_bytes()
-    for name in ('runtime_manager_bridge.py','runtime_manager_launch.py','runtime_manager_user_policy.py'):
+    for name in ('runtime_manager_bridge.py','runtime_manager_launch.py','runtime_manager_user_policy.py','runtime_manager_owner_files.py'):
         files[name]=(root/'deploy'/name).read_bytes()
+    authority=root/'eimemory/core/managed_incident_proof_authority.py'
+    if authority.is_file():
+        files['managed_incident_proof_authority.py']=authority.read_bytes()
     for unit in (*PRODUCT_SERVICES,*PRODUCT_TIMERS,*PRODUCT_PATHS):
         source=root/'deploy/systemd'/unit
         if not source.exists():continue
@@ -70,6 +75,7 @@ NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 ReadOnlyPaths=/opt/eimemory/releases/@COMMIT@ /etc/eimemory-code-automation-authority /etc/eimemory-controlled-production-acceptance
+ExecStartPre=/usr/bin/python3 -I -B /usr/libexec/eimemory-manager/runtime_manager_launch.py --preflight %i
 """
     files['runtime-policy.conf']=b"""# Root-reviewed runtime authority; atomic directory replacements remain visible.
 [Service]
@@ -108,7 +114,8 @@ RuntimeDirectoryMode=0750
 UMask=0027
 NoNewPrivileges=yes
 PrivateTmp=yes
-ProtectHome=yes
+ProtectHome=read-only
+ReadWritePaths=/home/darrow/.config/systemd/user
 RestrictAddressFamilies=AF_UNIX
 Restart=on-failure
 [Install]

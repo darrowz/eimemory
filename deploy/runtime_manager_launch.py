@@ -27,7 +27,7 @@ def read_root(path):
     finally:os.close(fd)
 
 
-def launch(key):
+def launch(key,*,preflight=False):
     if re.fullmatch('[0-9a-f]{64}',key) is None:raise ValueError('manager_launcher_key_invalid')
     record=read_root('/var/lib/eimemory-manager/jobs/'+key+'.json')
     registry=record['registry']
@@ -37,6 +37,8 @@ def launch(key):
     if re.fullmatch('[0-9a-f]{40}',commit) is None or record['job_key']!=key:raise ValueError('manager_launcher_record_identity_invalid')
     release=Path('/opt/eimemory/releases')/commit
     if release.is_symlink() or not release.is_dir():raise ValueError('manager_launcher_controller_missing')
+    if not os.statvfs(release).f_flag & os.ST_RDONLY:raise ValueError('manager_launcher_controller_not_readonly')
+    if preflight:return
     os.environ['EIMEMORY_RUNTIME_TRANSITION_JOB']=key
     os.environ['EIMEMORY_RUNTIME_CONTROLLER_COMMIT']=commit
     os.environ['PYTHONDONTWRITEBYTECODE']='1'
@@ -53,5 +55,6 @@ def launch(key):
 
 
 if __name__=='__main__':
-    if len(sys.argv)!=2:raise SystemExit('exact_job_key_required')
-    launch(sys.argv[1])
+    if len(sys.argv)==2:launch(sys.argv[1])
+    elif len(sys.argv)==3 and sys.argv[1]=='--preflight':launch(sys.argv[2],preflight=True)
+    else:raise SystemExit('exact_job_key_required')

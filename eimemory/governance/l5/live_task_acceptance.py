@@ -155,7 +155,7 @@ def _valid_deployment_receipt(
         and _same_path(health.get("release_path"), release_path)
         and _same_path(health.get("import_root"), expected_import_root)
         and str(health.get("package_tree_digest") or "") == runtime_package_tree_digest()
-        and valid_deployment_rollback_evidence(rollback)
+        and valid_deployment_rollback_evidence(rollback, deployed_commit=commit)
     )
 
 

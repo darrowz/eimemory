@@ -456,15 +456,15 @@ def verify_and_record_deployment(
         if preserved is not None:
             return preserved
 
-    rollback_commands = [] if bootstrap else [
-        ["bash", str(repo / "deploy" / "install_immutable_release.sh"), rollback_commit],
-        ["python3", "-I", "-B", str(repo / "deploy" / "runtime_manager_control.py"), "transition", "rollback"],
-        ["curl", "-fsS", normalized_health_url],
-    ]
-    rollback_command = (
-        ""
-        if bootstrap
-        else json.dumps(rollback_commands, ensure_ascii=False, separators=(",", ":"))
+    # A receipt describes the rollback contract; it is not a shell escape from
+    # the authenticated deployment-job cgroup. The worker creates and verifies
+    # the exact rollback request before the host bridge can run any transition.
+    rollback_commands: list[list[str]] = []
+    rollback_plan = None if bootstrap else managed_deployment_rollback_plan(
+        source_commit=head, prior_commit=rollback_commit,
+    )
+    rollback_command = "" if bootstrap else json.dumps(
+        rollback_plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     )
     candidate_id = f"deployment:{head}"
     side_effect = {
@@ -505,8 +505,10 @@ def verify_and_record_deployment(
             "strategy": (
                 "initial_immutable_deployment"
                 if bootstrap
-                else "install_prior_immutable_release_restart_and_health_check"
+                else MANAGED_ROLLBACK_STRATEGY
             ),
+            **({"schema": MANAGED_ROLLBACK_SCHEMA, "execution_mode": "declarative_only",
+                "managed_job_plan": rollback_plan} if not bootstrap else {}),
             "verified_ancestor": bool(
                 rollback_commit and _is_rollback_ancestor(repo, rollback_commit, head)
             ),
@@ -642,7 +644,7 @@ def evaluate_publish_gate(
     side_effect: Mapping[str, Any],
     bootstrap: bool,
 ) -> dict[str, Any]:
-    """BC-11: receipt.ok + health identity + rollback_commands (non-bootstrap) for publish."""
+    """BC-11: verified health plus a typed managed plan or legacy rollback commands."""
     if not isinstance(side_effect, Mapping):
         return {"ok": False, "publishable": False, "blocked_reason": "side_effect_missing"}
     if side_effect.get("ok") is not True:
@@ -657,7 +659,10 @@ def evaluate_publish_gate(
         if not checks and not str(health.get("package_tree_digest") or "").strip():
             return {"ok": False, "publishable": False, "blocked_reason": "health_identity_incomplete"}
     rollback = side_effect.get("rollback_evidence") if isinstance(side_effect.get("rollback_evidence"), dict) else {}
-    if not bootstrap:
+    if not bootstrap and _has_managed_rollback_plan(rollback):
+        if not valid_deployment_rollback_evidence(rollback, deployed_commit=str(health.get("commit") or "")):
+            return {"ok": False, "publishable": False, "blocked_reason": "managed_rollback_plan_invalid"}
+    elif not bootstrap:
         commands = list(rollback.get("commands") or [])
         if not commands:
             return {"ok": False, "publishable": False, "blocked_reason": "rollback_commands_missing"}
@@ -808,11 +813,60 @@ def _is_initial_immutable_bootstrap(*, link: Path, head: str) -> bool:
     return commit_releases == {head.lower()}
 
 
-def valid_deployment_rollback_evidence(value: Any) -> bool:
+MANAGED_ROLLBACK_SCHEMA = "eimemory.managed_deployment_rollback_plan.v1"
+MANAGED_ROLLBACK_STRATEGY = "registered_deployment_job_receipt_verified_rollback"
+
+
+def managed_deployment_rollback_plan(*, source_commit: str, prior_commit: str) -> dict[str, Any]:
+    return {
+        "schema": MANAGED_ROLLBACK_SCHEMA,
+        "source_commit": source_commit,
+        "base_commit": prior_commit,
+        "target_commit": prior_commit,
+        "controller_api": "eimemory.core.runtime_manager.submit_deployment_job",
+        "request_schema": "eimemory.code_deployment_job.v1",
+        "requires_registered_job_context": True,
+        "requires_physical_receipt_readback": True,
+    }
+
+
+def _has_managed_rollback_plan(value: Mapping[str, Any]) -> bool:
+    # A typed plan cannot be stripped to a generic nonempty command string.
+    return bool(
+        {"schema", "execution_mode", "managed_job_plan"} & set(value)
+        or value.get("strategy") == MANAGED_ROLLBACK_STRATEGY
+        or str(value.get("rollback_command") or "").lstrip().startswith("{")
+    )
+
+
+def valid_deployment_rollback_evidence(value: Any, *, deployed_commit: str = "") -> bool:
     rollback = value if isinstance(value, dict) else {}
     prior_commit = str(rollback.get("prior_commit_sha") or "").strip()
     rollback_command = str(rollback.get("rollback_command") or "").strip()
+    if _has_managed_rollback_plan(rollback):
+        plan = rollback.get("managed_job_plan")
+        if not isinstance(plan, dict):
+            return False
+        source = plan.get("source_commit")
+        if not isinstance(source, str) or not re.fullmatch(r"[0-9a-f]{40}", source):
+            return False
+        if deployed_commit and source != deployed_commit:
+            return False
+        expected = managed_deployment_rollback_plan(source_commit=source, prior_commit=prior_commit)
+        return bool(
+            re.fullmatch(r"[0-9a-f]{40}", prior_commit)
+            and source != prior_commit
+            and rollback.get("schema") == MANAGED_ROLLBACK_SCHEMA
+            and rollback.get("strategy") == MANAGED_ROLLBACK_STRATEGY
+            and rollback.get("execution_mode") == "declarative_only"
+            and rollback.get("commands") == []
+            and plan == expected
+            and rollback_command == json.dumps(expected, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            and rollback.get("rollback_not_required") is False
+        )
     if prior_commit and rollback_command:
+        # Historical command receipts remain readable. They are never promoted
+        # to a new authenticated-job contract or dispatched by this reader.
         return True
     return bool(
         not prior_commit

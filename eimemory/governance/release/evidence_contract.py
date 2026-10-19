@@ -508,7 +508,7 @@ def _verified_receipt_identity(record: Any) -> ReleaseIdentity | None:
         and str(health.get("commit") or "").strip().lower() == commit
         and str(health.get("release_path") or "").replace("\\", "/").rstrip("/") == release_path
         and str(deployment.get("release_path") or "").replace("\\", "/").rstrip("/") == release_path
-        and valid_deployment_rollback_evidence(dict(rollback))
+        and valid_deployment_rollback_evidence(dict(rollback), deployed_commit=commit)
     ):
         return None
     record_id = str(getattr(record, "record_id", "") or "")

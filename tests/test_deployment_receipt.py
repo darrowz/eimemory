@@ -118,12 +118,17 @@ def test_deployment_receipt_reads_and_cross_checks_live_release_evidence(tmp_pat
     assert receipt.content["side_effect"]["post_deploy_health"]["commit"] == head_commit
     rollback = receipt.content["side_effect"]["rollback_evidence"]
     assert rollback["prior_commit_sha"] == prior_commit
-    assert rollback["strategy"] == "install_prior_immutable_release_restart_and_health_check"
-    assert rollback["commands"] == [
-        ["bash", str(repo / "deploy" / "install_immutable_release.sh"), prior_commit],
-        ["systemctl", "--user", "restart", "eimemory-rpc.service"],
-        ["curl", "-fsS", report["health_url"]],
-    ]
+    assert rollback["strategy"] == "registered_deployment_job_receipt_verified_rollback"
+    assert rollback["commands"] == []
+    plan = rollback["managed_job_plan"]
+    assert plan["source_commit"] == head_commit
+    assert plan["base_commit"] == plan["target_commit"] == prior_commit
+    assert plan["requires_registered_job_context"] is True
+    assert plan["requires_physical_receipt_readback"] is True
+    assert plan["controller_api"] == "eimemory.core.runtime_manager.submit_deployment_job"
+    assert json.loads(rollback["rollback_command"]) == plan
+    assert deployment_receipt_module.valid_deployment_rollback_evidence(rollback, deployed_commit=head_commit)
+
 
 
 def test_deployment_receipt_remains_idempotent_after_it_becomes_current_release(tmp_path) -> None:

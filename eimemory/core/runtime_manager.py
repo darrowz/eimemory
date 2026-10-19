@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import stat
@@ -55,7 +56,8 @@ def request(operation: str, **values: Any) -> dict:
   meta=socket_path.lstat()
   if not stat.S_ISSOCK(meta.st_mode) or meta.st_uid!=0 or meta.st_gid!=registry['runtime_gid'] or stat.S_IMODE(meta.st_mode)!=0o660 or meta.st_nlink!=1:raise RuntimeManagerError('manager_socket_untrusted')
   with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as stream:
-   stream.settimeout(610 if operation in {'transition','readonly_probe'} else 30);stream.connect(SOCKET_PATH)
+   stream.settimeout(610 if operation in {'transition','readonly_probe','finalize_job'} else
+       120 if operation in {'issue_managed_incident_proof','verify_managed_incident_proof','checkpoint_managed_incident_knowledge'} else 30);stream.connect(SOCKET_PATH)
    if not hasattr(socket,'SO_PEERCRED'):raise RuntimeManagerError('manager_peer_credentials_unavailable')
    _pid,uid,_gid=struct.unpack('3i',stream.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize('3i')))
    if uid!=0:raise RuntimeManagerError('manager_peer_is_not_host_root')
@@ -99,3 +101,32 @@ def runtime_commit(unit: str) -> str:
 
 def finalize_deployment_job(job_key: str) -> dict:
  job_unit(job_key);return request('finalize_job',job_key=job_key)
+
+
+def activation_attestation() -> dict:
+ return request('activation_attestation')['reference']
+
+
+def verify_activation_attestation(receipt_id: str, digest: str) -> dict:
+ hex_value(receipt_id,64,'manager_activation_receipt_id_invalid');hex_value(digest,64,'manager_activation_receipt_digest_invalid')
+ return request('verify_activation_attestation',receipt_id=receipt_id,digest=digest)['attestation']
+
+
+def complete_deployment_job(job_key: str) -> dict:
+ job_unit(job_key);return request('complete_job',job_key=job_key)
+
+
+def issue_managed_incident_proof(source_record_id: str, source_digest: str) -> dict:
+ if not isinstance(source_record_id,str) or re.fullmatch('[A-Za-z0-9_.:-]{1,256}',source_record_id) is None:
+  raise RuntimeManagerError('manager_managed_source_id_invalid')
+ hex_value(source_digest,64,'manager_managed_source_digest_invalid')
+ return request('issue_managed_incident_proof',source_record_id=source_record_id,source_digest=source_digest)['reference']
+
+
+def verify_managed_incident_proof(receipt_id: str, digest: str) -> dict:
+ hex_value(receipt_id,64,'manager_managed_receipt_id_invalid');hex_value(digest,64,'manager_managed_receipt_digest_invalid')
+ return request('verify_managed_incident_proof',receipt_id=receipt_id,digest=digest)['proof']
+
+
+def checkpoint_managed_incident_knowledge() -> dict:
+ return request('checkpoint_managed_incident_knowledge')['checkpoint']
