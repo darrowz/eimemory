@@ -188,6 +188,8 @@ def run_live_task_acceptance(
             "case_count": 0,
             "pass_count": 0,
             "cases": [],
+            **({"health_diagnostics": identity["health_diagnostics"]}
+               if isinstance(identity.get("health_diagnostics"), dict) else {}),
         }
 
     definitions = _case_definitions(

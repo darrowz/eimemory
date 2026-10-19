@@ -11,6 +11,15 @@ AIGC:
 
 # Changelog
 
+## [1.14.152] — 2026-10-19
+
+- Preserve explicit disabled/unconfigured vector bypass without weakening enabled PostgreSQL readiness. Keep genuine pre-152 signed business certificates verifiable, with the new readiness field mandatory from 152.
+- Repair fixture cleanup and current receipt contracts in deployment CI, use physically verified deployment receipts in lineage tests, and register those tests in both explicit workflow plans.
+- Wait for the actual current vector projection before controlled qualification and after memory-writing release gates. The separate, bounded settling phase retains the existing recall and readiness probe deadlines and cannot accept late or stale proofs.
+- Bind the listener health proof to the same authority revision and index watermark before live acceptance and the final stability sample; preserve every actual failed sample.
+- Retain native fallback diagnostics and sanitized health failure details without copying credentials or changing qualification gates.
+- Restore temporary health trust anchors before fixture teardown, and exercise the receipt readback and deferred timer-start contracts in deployment regressions.
+
 ## [1.14.151] — 2026-10-19
 
 - Pass the verified current deployment receipt into initial release lineage recording. Preserve exact scope, commit, receipt and session validation; governance and channel evidence remain independently required.

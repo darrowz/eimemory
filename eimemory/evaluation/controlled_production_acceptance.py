@@ -8,6 +8,7 @@ Authorization comes only from a protected root policy; reports cannot grant it.
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
+from math import isfinite
 import os
 from pathlib import Path
 import re
@@ -24,6 +25,11 @@ from eimemory.governance.release.evidence_contract import current_release_identi
 from eimemory.identity_ops import _repair_snapshot, _RepairSkipped
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import normalize_source_ids
+from eimemory.ops.candidate_readiness_barrier import (
+    candidate_readiness_barrier_ok, wait_for_candidate_readiness,
+)
+from eimemory.retrieval.diagnostics import STAGES
+from eimemory.retrieval.postgres_vector import PostgresVectorCandidateSource, _CANDIDATE_ERROR_CODES
 
 SCHEMA = 'controlled_production_acceptance.v1'
 POLICY_SCHEMA = 'controlled_production_acceptance_policy.v1'
@@ -364,6 +370,59 @@ def _complete(bundle):
     return state, lexical_complete and fallback_ok
 
 
+def _recall_diagnostics(bundle):
+    """Retain only measured, enumerated engine failure/timing diagnostics."""
+    explanation = bundle.explanation if isinstance(bundle.explanation, dict) else {}
+    engine = explanation.get('engine_diagnostics')
+    engine = engine if isinstance(engine, dict) else {}
+    result = dict(schema='controlled_recall_diagnostics.v1', measurement_origin='native_engine_bundle',
+                  fallback_error_codes={}, source_stages_ms={})
+    def number(value):
+        try:
+            return type(value) in (int, float) and isfinite(value) and value >= 0
+        except OverflowError:
+            return False
+    if number(engine.get('elapsed_ms')):
+        result['elapsed_ms'] = round(min(engine['elapsed_ms'], 1_000_000), 3)
+    stages = engine.get('source_stages_ms')
+    if isinstance(stages, dict):
+        result['source_stages_ms'] = {key: round(min(stages[key], 1_000_000), 3)
+            for key in STAGES if number(stages.get(key))}
+    codes = engine.get('fallback_error_codes')
+    if isinstance(codes, dict):
+        for key, value in list(codes.items())[:8]:
+            if type(value) is int and value >= 0:
+                code = key if key in _CANDIDATE_ERROR_CODES else 'unknown'
+                result['fallback_error_codes'][code] = min(1_000_000,
+                    result['fallback_error_codes'].get(code, 0) + value)
+    samples = engine.get('source_samples')
+    if isinstance(samples, list):
+        result['source_samples'] = []
+        for sample in samples[:4]:
+            if not isinstance(sample, dict):
+                continue
+            row = {}
+            if type(sample.get('search_index')) is int and 0 <= sample['search_index'] <= 1_000_000:
+                row['search_index'] = sample['search_index']
+            if number(sample.get('elapsed_ms')):
+                row['elapsed_ms'] = round(min(sample['elapsed_ms'], 1_000_000), 3)
+            if sample.get('failed_stage') in STAGES or sample.get('failed_stage') == '':
+                row['failed_stage'] = sample['failed_stage']
+            if type(sample.get('cache_hit')) is bool:
+                row['cache_hit'] = sample['cache_hit']
+            result['source_samples'].append(row)
+    return result
+
+
+def _requires_candidate_barrier(release):
+    # Published 1.14.150/151 producers did not emit this field. This unreleased
+    # feature must first ship in >=1.14.152. Preserve pre-152 signed contracts;
+    # an explicitly present barrier is still fully checked at every version.
+    version = release.get('release_version') if isinstance(release, dict) else None
+    match = re.fullmatch(r'(\d{1,6})\.(\d{1,6})\.(\d{1,6})', str(version or ''))
+    return match is None or tuple(int(part) for part in match.groups()) >= (1, 14, 152)
+
+
 def _evaluate_agent(runtime, entry, policy, cutoff):
     scope, sources = _scope(entry['scope']), tuple(sorted(entry['source_ids']))
     dataset = benchmark.build_controlled_memory_benchmark(runtime, scope=scope, source_ids=sources,
@@ -383,7 +442,7 @@ def _evaluate_agent(runtime, entry, policy, cutoff):
         try:
             bundle = runtime.memory.recall(**kwargs)
             state, complete = _complete(bundle)
-            observation.update(state=state, complete=complete)
+            observation.update(state=state, complete=complete, diagnostics=_recall_diagnostics(bundle))
             returned = [*bundle.items, *bundle.rules, *bundle.reflections]
             if any(record.scope != scope or record.source_id not in sources for record in returned):
                 _error('returned_boundary_invalid')
@@ -418,7 +477,7 @@ def _evaluate_agent(runtime, entry, policy, cutoff):
     for case in cases:
         # A failed native callback is still this case's failed observation.
         # Never lose alignment or erase all cases behind a length assertion.
-        observation = dict(state={}, complete=False, returned=[], returned_versions=[], compact_refs=[],
+        observation = dict(state={}, diagnostics={}, complete=False, returned=[], returned_versions=[], compact_refs=[],
                            cascade_evidence=[], compact_digest='', call_count=0, failure_reason='')
         sample = benchmark._run_case(proxy, case, scope, sources)
         binding = case['source_binding']
@@ -468,6 +527,7 @@ def _public(body, *, persisted=False):
         record_id=body.get('record_id', '') if persisted else '', persisted=persisted,
         certifies_natural_queries=False, certifies_no_answer=False, host_delivery_certified=False,
         memory_contribution_certified=False, natural_samples_created=0, agents=agents,
+        candidate_readiness_barrier=deepcopy(body.get('candidate_readiness_barrier', {})),
         blocked_reason=body.get('blocked_reason', ''))
 
 
@@ -485,15 +545,33 @@ def run_controlled_production_acceptance(runtime, *, scope, persist=True, stable
         return {**_unavailable('controlled_acceptance_not_configured'), 'status': 'not_configured'}
     try:
         release, receipt = _release(runtime, owner)
-        engine = _engine(runtime)
-        if digest(engine) != policy['engine_contract_digest']:
-            _error('production_engine_contract_mismatch')
         cutoff = policy['stable_before']
         if stable_before and _instant(stable_before) < _instant(cutoff):
             cutoff = stable_before
         started = now_iso()
+        barrier = wait_for_candidate_readiness(runtime, timeout_seconds=120)
+        barrier_ok = candidate_readiness_barrier_ok(barrier,
+            postgres=isinstance(runtime.memory.recall_engine.candidate_source, PostgresVectorCandidateSource),
+            source=runtime.memory.recall_engine.candidate_source)
+        if barrier_ok:
+            engine = _engine(runtime)
+            if digest(engine) != policy['engine_contract_digest']:
+                _error('production_engine_contract_mismatch')
+        else:
+            # A failed wait is a signed failed attempt, even while the current
+            # index contract cannot be read. Never invent an engine identity
+            # or let the previous successful attempt remain the high-water.
+            try:
+                engine = _engine(runtime)
+            except (ValueError, RuntimeError, TypeError):
+                engine = {}
         agents = []
         for entry in policy['agents']:
+            if not barrier_ok:
+                agents.append(dict(scope=entry['scope'], source_ids=entry['source_ids'], sample_count=0,
+                    pass_count=0, accepted=False, samples=[],
+                    blocked_reason='controlled_acceptance_candidate_readiness_unverified'))
+                continue
             try:
                 agents.append(_evaluate_agent(runtime, entry, policy, cutoff))
             except (ValueError, RuntimeError, TypeError) as exc:
@@ -503,16 +581,18 @@ def run_controlled_production_acceptance(runtime, *, scope, persist=True, stable
                     re.fullmatch(r'controlled_acceptance_[a-z_]+', code) else 'controlled_acceptance_native_run_failed'))
         if load_controlled_policy(runtime, owner) != policy or _release(runtime, owner) != (release, receipt):
             _error('authority_changed_during_run')
-        if _engine(runtime) != engine:
+        if barrier_ok and _engine(runtime) != engine:
             _error('engine_changed_during_run')
         accepted = all(entry['accepted'] for entry in agents)
         body = dict(schema=SCHEMA, mode=MODE, evidence_class=EVIDENCE_CLASS, source=SOURCE,
             record_id='cpa_' + uuid4().hex, scope=asdict(owner), policy_digest=digest(policy),
             request_digest=policy['request_digest'], release_identity=release, release_reference=receipt,
             engine_identity=engine, started_at=started, completed_at=now_iso(), stable_before=cutoff,
+            candidate_readiness_barrier=barrier,
             accepted=accepted, agents=agents, certifies_natural_queries=False, certifies_no_answer=False,
             host_delivery_certified=False, memory_contribution_certified=False, natural_samples_created=0,
-            blocked_reason='' if accepted else 'controlled_acceptance_case_failed')
+            blocked_reason='' if accepted else ('controlled_acceptance_candidate_readiness_unverified'
+                if not barrier_ok else 'controlled_acceptance_case_failed'))
         body['acceptance_purpose'] = policy.get('purpose', 'operational')
         body['business_qualification'] = historical.business_qualification(body)
         content = seal(body, SCHEMA)
@@ -590,6 +670,12 @@ def verify_controlled_production_acceptance(runtime, *, scope, release=None, rec
         if (body.get('acceptance_purpose', 'operational') != policy.get('purpose', 'operational')
                 or body.get('business_qualification', {}) != historical.business_qualification(body)):
             _error('business_qualification_invalid')
+        postgres = body['engine_identity']['candidate_source'].get('candidate_source_type') == 'PostgresVectorCandidateSource'
+        if 'candidate_readiness_barrier' in body or postgres and _requires_candidate_barrier(current):
+            if (postgres and not isinstance(runtime.memory.recall_engine.candidate_source, PostgresVectorCandidateSource)
+                    or not candidate_readiness_barrier_ok(body.get('candidate_readiness_barrier'), postgres=postgres,
+                        source=runtime.memory.recall_engine.candidate_source)):
+                _error('candidate_readiness_unverified')
         age = (datetime.now(timezone.utc) - _instant(body.get('completed_at'))).total_seconds()
         if age < 0 or age > policy['freshness_seconds'] or _instant(body['started_at']) > _instant(body['completed_at']):
             _error('report_expired')

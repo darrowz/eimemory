@@ -186,14 +186,17 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def _authenticated_health_payload() -> dict[str, Any]:
+def _authenticated_health_payload(*, timeout_seconds: float = 8.0) -> dict[str, Any]:
     from eimemory.core.rpc_probe_auth import rpc_probe_headers
 
+    if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
+            or not 0 < timeout_seconds <= 8):
+        raise ValueError("invalid_health_probe_timeout")
     headers = rpc_probe_headers()
     if not headers.get("Authorization"):
         raise ValueError("authenticated_health_required")
     request = Request("http://127.0.0.1:8091/health", headers=headers)
-    with build_opener(ProxyHandler({}), _NoRedirect).open(request, timeout=8) as response:
+    with build_opener(ProxyHandler({}), _NoRedirect).open(request, timeout=timeout_seconds) as response:
         raw = response.read(65537)
     value = strict_json_loads(raw, max_bytes=65536, max_depth=32)
     if not isinstance(value, dict):
@@ -234,9 +237,10 @@ def collect_controlled_endpoint_identity(*, expected_commit: str) -> dict[str, A
     return _endpoint_identity(_authenticated_health_payload(), _commit(expected_commit))
 
 
-def _health(expected_commit: str) -> dict[str, Any]:
+def _health(expected_commit: str, *, timeout_seconds: float | None = None) -> dict[str, Any]:
     from eimemory.retrieval.readiness_contract import readiness_ok, sanitize_readiness
-    value = _authenticated_health_payload()
+    value = (_authenticated_health_payload() if timeout_seconds is None
+             else _authenticated_health_payload(timeout_seconds=timeout_seconds))
     identity = _endpoint_identity(value, expected_commit)
     store = value.get("store", {})
     checks = value.get("checks", {})

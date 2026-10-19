@@ -132,8 +132,8 @@ _wait_openclaw_gateway_ready() { return 99; }
                                          'storage_writer_restart=complete restored=1']
 
 
-@pytest.mark.parametrize('stopped,strict,starts_now', [('1', '0', False), ('0', '1', False), ('0', '0', True)])
-def test_learning_metadata_does_not_start_quiesced_or_strict_timers(stopped, strict, starts_now):
+@pytest.mark.parametrize('stopped,strict', [('1', '0'), ('0', '1'), ('0', '0'), ('1', '1')])
+def test_learning_metadata_never_dispatches_timers_before_receipt(stopped, strict):
     setup = f'''
 STORAGE_WRITERS_STOPPED={stopped}
 EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE={strict}
@@ -156,7 +156,9 @@ _start_learning_runtime_timers() {{ printf 'deferred-policy-start\n'; }}
     ]
     immediate = any(line.startswith('enable --now ') or line.startswith('start ')
                     or line == 'deferred-policy-start' for line in commands)
-    assert immediate is starts_now
+    # Metadata installation precedes the first verified native receipt in
+    # every mode. Dispatch is a later, separately checked installation phase.
+    assert immediate is False
 
 
 @pytest.mark.parametrize('failure,strict', [('', '0'), ('rpc_start', '0'), ('rpc_health', '0'), ('current_missing', '0'), ('gateway_ready', '0'), ('hermes_start', '0'), ('', '1')])

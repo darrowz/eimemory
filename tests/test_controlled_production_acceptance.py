@@ -67,6 +67,28 @@ def verified(setup, **kwargs):
     return cpa.verify_controlled_production_acceptance(setup.runtime, scope=asdict(OWNER), **kwargs)
 
 
+def configured_pg(setup):
+    """Native source type with an isolated measured-readiness test boundary."""
+    from eimemory.retrieval.postgres_vector import IndexState, PostgresVectorCandidateSource
+    from test_candidate_readiness_barrier import ready_measurement
+    engine = setup.runtime.memory.recall_engine
+    raw = deepcopy(engine.effective_identity())
+    raw['candidate_source'].update(candidate_source_type='PostgresVectorCandidateSource',
+        enabled=True, configured=True, config_fingerprint='e' * 64, projection_fingerprint='f' * 64,
+        embedding={'provider_type': 'fixture', 'model': 'fixture', 'fingerprint': 'a' * 64},
+        postgres={'state': 'bypassed', 'committed_watermark': '', 'index_revision': '1',
+                  'circuit': 'closed', 'index_verified': False, 'query_valid': False, 'bypass_reason': 'cold'})
+    state = IndexState(ready=True, watermark='old-watermark', authority_revision='1',
+        embedding_fingerprint='a' * 64, projection_digest_schema='fixture.v1', projection_fingerprint='f' * 64)
+    source = PostgresVectorCandidateSource.__new__(PostgresVectorCandidateSource)
+    source.repository = SimpleNamespace(read_index_state=lambda: state)
+    setup.monkeypatch.setattr(source, 'readiness', lambda **kwargs: ready_measurement())
+    setup.monkeypatch.setattr(engine, 'effective_identity', lambda: deepcopy(raw))
+    setup.monkeypatch.setattr(engine, 'candidate_source', source)
+    setup.policy['engine_contract_digest'] = cpa.digest(cpa.controlled_retrieval_contract(setup.runtime))
+    return source, raw
+
+
 def test_native_seedless_all_four_scopes_signed_receipt_revalidates_without_natural_labels(setup):
     before = setup.runtime.store.count_records(kinds=['memory'])
     report = run(setup)
@@ -294,19 +316,7 @@ def test_verification_final_snapshot_catches_change_to_an_already_checked_source
 
 
 def test_postgres_cold_to_warm_state_and_watermark_do_not_change_configuration_certificate(setup):
-    from eimemory.retrieval.postgres_vector import IndexState
-    engine = setup.runtime.memory.recall_engine
-    raw = deepcopy(engine.effective_identity())
-    raw['candidate_source'].update(candidate_source_type='PostgresVectorCandidateSource',
-        enabled=True, configured=True, config_fingerprint='e' * 64, projection_fingerprint='f' * 64,
-        embedding={'provider_type': 'fixture', 'model': 'fixture', 'fingerprint': 'a' * 64},
-        postgres={'state': 'bypassed', 'committed_watermark': '', 'index_revision': '1',
-                  'circuit': 'closed', 'index_verified': False, 'query_valid': False, 'bypass_reason': 'cold'})
-    state = IndexState(ready=True, watermark='old-watermark', authority_revision='1',
-        embedding_fingerprint='a' * 64, projection_digest_schema='fixture.v1', projection_fingerprint='f' * 64)
-    setup.monkeypatch.setattr(engine, 'effective_identity', lambda: deepcopy(raw))
-    setup.monkeypatch.setattr(engine, 'candidate_source', SimpleNamespace(repository=SimpleNamespace(read_index_state=lambda:state)))
-    setup.policy['engine_contract_digest'] = cpa.digest(cpa.controlled_retrieval_contract(setup.runtime))
+    source, raw = configured_pg(setup)
     def recall(**kwargs):
         raw['candidate_source']['authority_revision'] = '3'
         raw['candidate_source']['postgres'].update(state='available', committed_watermark='new-watermark',
@@ -318,6 +328,199 @@ def test_postgres_cold_to_warm_state_and_watermark_do_not_change_configuration_c
     assert verified(setup, record_id=result['record_id'])['accepted']
     raw['candidate_source']['config_fingerprint'] = 'b' * 64
     assert not verified(setup, record_id=result['record_id'])['accepted']
+
+
+def test_projection_wait_finishes_before_native_business_sampling_without_changing_recall_budget(setup):
+    from eimemory.core.budgets import recall_budget_seconds
+    from eimemory.ops import candidate_readiness_barrier as barrier
+    from test_candidate_readiness_barrier import Clock, ready_measurement
+    source, _ = configured_pg(setup)
+    clock, probes = Clock(), []
+    setup.monkeypatch.setattr(barrier, 'monotonic', clock.monotonic)
+    setup.monkeypatch.setattr(barrier, 'sleep', clock.sleep)
+    setup.monkeypatch.setenv('EIMEMORY_RECALL_BUDGET_SECONDS', '8')
+    def probe(**kwargs):
+        assert not setup.calls
+        probes.append(kwargs)
+        return ready_measurement() if len(probes) == 2 else ready_measurement(
+            ready=False, error='authority_revision_changed', last_error='authority_revision_changed')
+    setup.monkeypatch.setattr(source, 'readiness', probe)
+    result = run(setup)
+    assert result['accepted'] and len(setup.calls) == 12
+    assert probes == [dict(force=True, timeout_seconds=.2)] * 2
+    assert recall_budget_seconds() == 8
+    assert result['candidate_readiness_barrier']['attempt_count'] == 2
+    assert verified(setup, record_id=result['record_id'])['accepted']
+    packet = setup.runtime.store.get_by_exact_ref(result['record_id'], scope=OWNER, source_id='default')
+    assert packet.content['candidate_readiness_barrier'] == result['candidate_readiness_barrier']
+
+
+def test_persistent_projection_lag_records_signed_infrastructure_failure_without_sampling_or_hiding_latest(setup):
+    from eimemory.ops import candidate_readiness_barrier as barrier
+    from test_candidate_readiness_barrier import Clock, ready_measurement
+    source, _ = configured_pg(setup)
+    prior = run(setup);assert prior['accepted']
+    setup.calls.clear()
+    clock = Clock()
+    setup.monkeypatch.setattr(barrier, 'monotonic', clock.monotonic)
+    setup.monkeypatch.setattr(barrier, 'sleep', clock.sleep)
+    setup.monkeypatch.setattr(source, 'readiness', lambda **kwargs: ready_measurement(
+        ready=False, error='authority_revision_changed', last_error='authority_revision_changed'))
+    result = run(setup)
+    assert not result['accepted'] and result['persisted'] and result['record_id']
+    assert result['blocked_reason'] == 'controlled_acceptance_candidate_readiness_unverified'
+    assert result['candidate_readiness_barrier']['elapsed_seconds'] == 120
+    assert not setup.calls and all(a['sample_count'] == a['pass_count'] == 0 for a in result['agents'])
+    packet = setup.runtime.store.get_by_exact_ref(result['record_id'], scope=OWNER, source_id='default')
+    assert cpa.verify(packet.content, cpa.SCHEMA) and not packet.content['accepted']
+    assert not verified(setup, record_id=prior['record_id'])['accepted']
+    assert not verified(setup, record_id=result['record_id'])['accepted']
+
+
+def test_index_not_ready_may_finish_building_before_engine_contract_and_sampling(setup):
+    from dataclasses import replace
+    from eimemory.ops import candidate_readiness_barrier as barrier
+    from test_candidate_readiness_barrier import Clock, ready_measurement
+    source, _ = configured_pg(setup)
+    original = source.repository.read_index_state()
+    state = [replace(original, ready=False)]
+    setup.monkeypatch.setattr(source.repository, 'read_index_state', lambda: state[0])
+    clock, probes = Clock(), []
+    setup.monkeypatch.setattr(barrier, 'monotonic', clock.monotonic)
+    setup.monkeypatch.setattr(barrier, 'sleep', clock.sleep)
+    def probe(**kwargs):
+        assert not setup.calls
+        probes.append(kwargs)
+        if len(probes) == 1:
+            return ready_measurement(ready=False, error='index_not_ready', last_error='index_not_ready')
+        state[0] = original
+        return ready_measurement()
+    setup.monkeypatch.setattr(source, 'readiness', probe)
+    result = run(setup)
+    assert result['accepted'] and len(probes) == 2 and len(setup.calls) == 12
+    assert verified(setup, record_id=result['record_id'])['accepted']
+
+
+def test_permanently_unreadable_index_contract_keeps_failed_signed_attempt_without_fabricating_identity(setup):
+    from eimemory.ops import candidate_readiness_barrier as barrier
+    from test_candidate_readiness_barrier import Clock, ready_measurement
+    source, _ = configured_pg(setup)
+    prior = run(setup);assert prior['accepted']
+    setup.calls.clear()
+    clock = Clock()
+    setup.monkeypatch.setattr(barrier, 'monotonic', clock.monotonic)
+    setup.monkeypatch.setattr(barrier, 'sleep', clock.sleep)
+    setup.monkeypatch.setattr(source, 'readiness', lambda **kwargs: ready_measurement(
+        ready=False, error='index_not_ready', last_error='index_not_ready'))
+    def unavailable(): raise RuntimeError('private backend details')
+    setup.monkeypatch.setattr(source.repository, 'read_index_state', unavailable)
+    result = run(setup)
+    assert not result['accepted'] and result['persisted'] and not setup.calls
+    packet = setup.runtime.store.get_by_exact_ref(result['record_id'], scope=OWNER, source_id='default')
+    assert cpa.verify(packet.content, cpa.SCHEMA) and packet.content['engine_identity'] == {}
+    assert 'private backend' not in cpa.canonical(packet.content)
+    assert not verified(setup, record_id=prior['record_id'])['accepted']
+
+
+def test_ready_projection_does_not_waive_later_native_fallback_and_retains_real_bounded_diagnostics(setup):
+    configured_pg(setup)
+    def recall(**kwargs):
+        bundle = setup.recall(**kwargs)
+        bundle.explanation['engine_diagnostics'].update(fallback=True,
+            fallback_error_codes={'authority_revision_changed': 1}, elapsed_ms=13.25,
+            source_stages_ms={'index_read': .75, 'embedding_wait': 2.5},
+            source_samples=[dict(search_index=0, elapsed_ms=3.25, failed_stage='index_recheck', cache_hit=False)])
+        return bundle
+    setup.monkeypatch.setattr(setup.runtime.memory, 'recall', recall)
+    result = run(setup)
+    assert not result['accepted'] and result['candidate_readiness_barrier']['ready']
+    assert len(setup.calls) == 12 and not verified(setup)['accepted']
+    packet = setup.runtime.store.get_by_exact_ref(result['record_id'], scope=OWNER, source_id='default')
+    sample = packet.content['agents'][0]['samples'][0]
+    assert sample['state']['fallback'] and not sample['complete']
+    assert sample['diagnostics']['fallback_error_codes'] == {'authority_revision_changed': 1}
+    assert sample['diagnostics']['source_stages_ms'] == {'index_read': .75, 'embedding_wait': 2.5}
+    assert sample['diagnostics']['source_samples'][0]['failed_stage'] == 'index_recheck'
+
+
+def test_unknown_configured_source_cannot_skip_the_formal_barrier(setup):
+    engine = setup.runtime.memory.recall_engine
+    identity = deepcopy(engine.effective_identity())
+    setup.monkeypatch.setattr(engine, 'candidate_source', SimpleNamespace(configured=True))
+    setup.monkeypatch.setattr(engine, 'effective_identity', lambda: deepcopy(identity))
+    result = run(setup)
+    assert not result['accepted'] and not setup.calls
+    assert result['candidate_readiness_barrier']['applicable'] is True
+    assert result['candidate_readiness_barrier']['blocked_reason'] == 'candidate_source_unsupported'
+
+
+@pytest.mark.parametrize('damage', ['missing', 'inapplicable', 'metadata', 'late', 'boolean_attempts'])
+def test_new_pg_signed_certificate_cannot_remove_or_downgrade_the_barrier(setup, damage):
+    configured_pg(setup)
+    current = {**RELEASE, 'release_version': '1.14.152'}
+    setup.monkeypatch.setattr(cpa, '_release', lambda runtime, scope: (deepcopy(current),
+        {'record_ref': 'receipt-fixture', 'record_digest': 'c' * 64}))
+    result = run(setup);assert result['accepted']
+    packet = setup.runtime.store.get_by_exact_ref(result['record_id'], scope=OWNER, source_id='default')
+    if damage == 'missing': packet.content.pop('candidate_readiness_barrier')
+    if damage == 'inapplicable': packet.content['candidate_readiness_barrier']['applicable'] = False
+    if damage == 'metadata': packet.content['candidate_readiness_barrier']['final_measurement']['measurement_origin'] = 'metadata'
+    if damage == 'late': packet.content['candidate_readiness_barrier']['elapsed_seconds'] = 121
+    if damage == 'boolean_attempts': packet.content['candidate_readiness_barrier']['attempt_count'] = True
+    packet.content = cpa.seal({k:v for k,v in packet.content.items() if k not in {'key_id','signature'}}, cpa.SCHEMA)
+    packet.meta['report_digest'] = cpa.digest(packet.content)
+    setup.runtime.store.append(packet)
+    assert not verified(setup, record_id=result['record_id'])['accepted']
+
+
+@pytest.mark.parametrize('version', ['1.14.147','1.14.148','1.14.149','1.14.150','1.14.151'])
+def test_older_signed_pg_contract_remains_verifiable_without_rewriting_its_missing_barrier(setup, version):
+    configured_pg(setup)
+    current = {**RELEASE, 'release_version': version}
+    setup.monkeypatch.setattr(cpa, '_release', lambda runtime, scope: (deepcopy(current),
+        {'record_ref': 'receipt-fixture', 'record_digest': 'c' * 64}))
+    result = run(setup);assert result['accepted']
+    packet = setup.runtime.store.get_by_exact_ref(result['record_id'], scope=OWNER, source_id='default')
+    packet.content.pop('candidate_readiness_barrier')
+    packet.content = cpa.seal({k:v for k,v in packet.content.items() if k not in {'key_id','signature'}}, cpa.SCHEMA)
+    packet.meta['report_digest'] = cpa.digest(packet.content)
+    setup.runtime.store.append(packet)
+    before = deepcopy(packet.content)
+    assert verified(setup, record_id=result['record_id'])['accepted']
+    assert setup.runtime.store.get_by_exact_ref(result['record_id'], scope=OWNER, source_id='default').content == before
+
+
+@pytest.mark.parametrize('version', ['1.14.150', '1.14.151'])
+@pytest.mark.parametrize('damage', ['empty', 'inapplicable', 'metadata', 'late', 'boolean_attempts'])
+def test_older_version_cannot_downgrade_an_explicit_signed_pg_barrier(setup, version, damage):
+    configured_pg(setup)
+    current = {**RELEASE, 'release_version': version}
+    setup.monkeypatch.setattr(cpa, '_release', lambda runtime, scope: (deepcopy(current),
+        {'record_ref': 'receipt-fixture', 'record_digest': 'c' * 64}))
+    result = run(setup);assert result['accepted']
+    packet = setup.runtime.store.get_by_exact_ref(result['record_id'], scope=OWNER, source_id='default')
+    if damage == 'empty': packet.content['candidate_readiness_barrier'] = {}
+    if damage == 'inapplicable': packet.content['candidate_readiness_barrier']['applicable'] = False
+    if damage == 'metadata': packet.content['candidate_readiness_barrier']['final_measurement']['measurement_origin'] = 'metadata'
+    if damage == 'late': packet.content['candidate_readiness_barrier']['elapsed_seconds'] = 121
+    if damage == 'boolean_attempts': packet.content['candidate_readiness_barrier']['attempt_count'] = True
+    packet.content = cpa.seal({k:v for k,v in packet.content.items() if k not in {'key_id','signature'}}, cpa.SCHEMA)
+    packet.meta['report_digest'] = cpa.digest(packet.content)
+    setup.runtime.store.append(packet)
+    assert not verified(setup, record_id=result['record_id'])['accepted']
+
+
+def test_native_recall_diagnostics_omit_private_names_and_malformed_numbers():
+    bundle = SimpleNamespace(explanation={'engine_diagnostics': dict(elapsed_ms=True,
+        fallback_error_codes={'private secret':3, 'authority_revision_changed':2, 'postgres_timeout':True},
+        source_stages_ms={'private secret':1, 'sqlite':float('nan'), 'index_read':-1, 'postgres_search':.75},
+        source_samples=[dict(search_index=False, elapsed_ms=float('inf'),failed_stage='private secret',cache_hit='yes')],
+        private_query='private secret')})
+    value = cpa._recall_diagnostics(bundle)
+    assert 'private secret' not in cpa.canonical(value) and 'elapsed_ms' not in value
+    assert value['fallback_error_codes'] == {'unknown':3, 'authority_revision_changed':2}
+    assert value['source_stages_ms'] == {'postgres_search':.75}
+    assert value['source_samples'] == [{}]
 
 
 def two_owner_policy(setup):

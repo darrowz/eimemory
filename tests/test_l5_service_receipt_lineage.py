@@ -91,11 +91,37 @@ def test_shared_receipt_with_wrong_service_anchor_is_not_reused(native_receipt, 
     assert evidence_contract.current_release_identity(runtime, report_owner) is not None
     from eimemory.governance.release import deployment_receipt
 
-    monkeypatch.setattr(deployment_receipt, "DEFAULT_DEPLOYMENT_HEALTH_URL", "http://127.0.0.1:1/health")
-    assert evidence_contract.current_release_identity(runtime, report_owner) is None
-    result = _lineage(runtime, report_owner, repo)
-    assert result["ok"] is False
-    assert result["reason"] == "current_release_identity_unavailable"
+    # Undo this override before native_receipt restores the original lazy
+    # anchors. A test-wide undo would otherwise restore the fixture's temporary
+    # URL after that teardown and contaminate the next policy evaluation.
+    with monkeypatch.context() as override:
+        override.setattr(deployment_receipt, "DEFAULT_DEPLOYMENT_HEALTH_URL", "http://127.0.0.1:1/health")
+        assert evidence_contract.current_release_identity(runtime, report_owner) is None
+        result = _lineage(runtime, report_owner, repo)
+        assert result["ok"] is False
+        assert result["reason"] == "current_release_identity_unavailable"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="shared service receipt uses POSIX immutable-release path anchors")
+def test_native_fixture_teardown_preserves_lazy_service_anchors(tmp_path):
+    from eimemory.governance.release import deployment_receipt
+
+    originals = {name: getattr(deployment_receipt, name) for name in (
+        "DEFAULT_DEPLOYMENT_REPO_ROOT", "DEFAULT_DEPLOYMENT_CURRENT_LINK", "DEFAULT_DEPLOYMENT_HEALTH_URL")}
+    original_health = str(originals["DEFAULT_DEPLOYMENT_HEALTH_URL"])
+    assert all(isinstance(anchor, deployment_receipt._LazyStr) for anchor in originals.values())
+    changes = pytest.MonkeyPatch()
+    fixture = native_receipt.__wrapped__(tmp_path, changes)
+    try:
+        receipt = next(fixture)
+        test_shared_receipt_with_wrong_service_anchor_is_not_reused(receipt, changes)
+    finally:
+        # Exercise pytest's real dependent-fixture order deterministically:
+        # generator cleanup first, shared monkeypatch cleanup afterwards.
+        fixture.close()
+        changes.undo()
+    assert all(getattr(deployment_receipt, name) is anchor for name, anchor in originals.items())
+    assert str(deployment_receipt.DEFAULT_DEPLOYMENT_HEALTH_URL) == original_health
 
 
 @pytest.mark.parametrize("field,value", [("session_id", "wrong-session"), ("commit", "f" * 40)])

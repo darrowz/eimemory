@@ -441,7 +441,8 @@ def verify_and_record_deployment(
         release_path=release,
     )
     if identity_error:
-        return {"ok": False, "error": identity_error}
+        return {"ok": False, "error": identity_error,
+                "health_diagnostics": _health_identity_diagnostics(health)}
 
     if not strict_transaction:
         # Closure/live acceptance rechecks must not replace the strict receipt
@@ -1116,6 +1117,23 @@ def _git_blob(repo: Path, *, head: str, relative_path: str) -> bytes | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return bytes(result.stdout) if result.returncode == 0 else None
+
+
+def _health_identity_diagnostics(health: dict[str, Any]) -> dict[str, Any]:
+    """Retain the observed failure cause without copying endpoint credentials."""
+    from eimemory.retrieval.readiness_contract import sanitize_readiness
+
+    paths = health.get("paths") if isinstance(health.get("paths"), dict) else {}
+    checks = health.get("checks") if isinstance(health.get("checks"), dict) else {}
+    retrieval = health.get("retrieval") if isinstance(health.get("retrieval"), dict) else {}
+    source = retrieval.get("candidate_source") if isinstance(retrieval.get("candidate_source"), dict) else {}
+    return {"schema": "deployment_health_identity_diagnostics.v1",
+        "health_ok": health.get("ok") is True, "checks_ready": checks.get("ready") is True,
+        "identity_fields_present": {key: bool(str(value or "").strip()) for key, value in (
+            ("commit", health.get("commit")), ("version", health.get("version")),
+            ("current", paths.get("current")), ("release", paths.get("release")),
+            ("import_root", health.get("import_root")), ("package_tree_digest", health.get("package_tree_digest")))},
+        "postgres_readiness": sanitize_readiness(source.get("current_readiness"))}
 
 
 def _health_identity_error(

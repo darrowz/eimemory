@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 
 from eimemory.evaluation.production_query_dataset import _empty_decision_reason
 from eimemory.scheduler import jobs
@@ -139,35 +140,93 @@ def test_live_acceptance_recorded_at_reads_record_envelope_time() -> None:
     assert out["recorded_at"] and out["recorded_at"] == record.time.created_at
 
 
-def _receipt_harness(tmp_path, outputs):
+RECEIPT_COMMIT = "a" * 40
+RECEIPT_ID = "rec_retry_fixture"
+
+
+def _receipt_success(*, receipt_id=RECEIPT_ID):
+    return "0|" + json.dumps({"ok": True, "report_type": "deployment_receipt",
+        "commit": RECEIPT_COMMIT, "promotion_request_id": receipt_id})
+
+
+def _receipt_harness(tmp_path, outputs, *, persisted="deployed"):
     import os
+    import shlex
     import shutil
     import subprocess
+    import sys
     from pathlib import Path
 
     import pytest
+    from eimemory.storage.runtime_store import RuntimeStore
+    from test_installer_receipt_before_maintenance import OWNER, _receipt
 
-    if shutil.which("bash") is None:
-        pytest.skip("bash is required")
+    if sys.platform != "linux" or shutil.which("bash") is None:
+        pytest.skip("native Linux Bash receipt and immutable import-path contract")
     script_text = (Path(__file__).resolve().parents[1] / "deploy" / "install_immutable_release.sh").read_text()
     marker = "_record_deployment_receipt() {"
     func = marker + script_text.split(marker, 1)[1].split("\n}", 1)[0] + "\n}\n"
-    release = tmp_path / "rel"
+    checker_marker = "_verify_current_deployment_receipt() {"
+    checker = checker_marker + script_text.split(checker_marker, 1)[1].split("\n}", 1)[0] + "\n}\n"
+    release = tmp_path / "releases" / RECEIPT_COMMIT
     (release / ".venv" / "bin").mkdir(parents=True)
+    # The separate native checker must derive its real immutable import-path
+    # identity. Copy the package into this isolated commit-named fixture;
+    # never monkeypatch current_release_identity or its runtime-commit reader.
+    shutil.copytree(Path(__file__).resolve().parents[1] / "eimemory", release / "eimemory",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    current = tmp_path / "current"
+    current.symlink_to(release, target_is_directory=True)
+    root = tmp_path / "runtime"
+    config = tmp_path / "config"
+    config.mkdir()
+    (config / "settings.json").write_text(json.dumps({"root": str(root)}), encoding="utf-8")
+    record = _receipt(commit=RECEIPT_COMMIT)
+    record.record_id = RECEIPT_ID
+    effect = record.content["side_effect"]
+    effect["release"]["release_path"] = str(release)
+    effect["deployment"].update(release_path=str(release), current_link=str(current))
+    effect["post_deploy_health"].update(release_path=str(release), current_link=str(current))
+    if persisted != "absent":
+        record.status = persisted
+    store = RuntimeStore(root)
+    try:
+        if persisted != "absent":
+            store.append(record)
+    finally:
+        store.close()
     counter = tmp_path / "n"
     counter.write_text("0")
     plan = tmp_path / "plan"
     plan.write_text("\n".join(outputs))
+    readback = tmp_path / "native-readback"
+    bootstrap = tmp_path / "checker.py"
+    bootstrap.write_text("import sys\n"
+        f"sys.path.insert(0, {str(release)!r})\n"
+        "exec(compile(sys.stdin.read(), 'installer-native-receipt-checker', 'exec'), {})\n", encoding="utf-8")
     fake = release / ".venv" / "bin" / "python"
     fake.write_text(f"""#!/usr/bin/env bash
-n=$(cat {counter}); n=$((n+1)); echo $n > {counter}
-line=$(sed -n "${{n}}p" {plan})
+if [ "$3" = - ]; then
+  printf '%s\\n' "$5" > {shlex.quote(str(readback))}
+  exec {shlex.quote(sys.executable)} -I -B {shlex.quote(str(bootstrap))} "${{@:4}}"
+fi
+n=$(cat {shlex.quote(str(counter))}); n=$((n+1)); echo $n > {shlex.quote(str(counter))}
+line=$(sed -n "${{n}}p" {shlex.quote(str(plan))})
 echo "${{line#*|}}"; exit "${{line%%|*}}"
-""")
+""", encoding="utf-8")
     fake.chmod(0o755)
-    setup = (f"USER_SYSTEMD_ENABLE_SERVICE=1\nRELEASE_DIR={release}\nREPO_DIR={tmp_path}\nCOMMIT=abc\n"
+    values = {"RELEASE_DIR": release, "REPO_DIR": tmp_path, "COMMIT": RECEIPT_COMMIT,
+              "CURRENT_LINK": current, "EIMEMORY_ROOT": root, "EIMEMORY_CONFIG_DIR": config,
+              "EVIDENCE_RECEIPT_ENV_FILE": tmp_path / "receipt.env",
+              "EIMEMORY_DEPLOY_SCOPE_AGENT": OWNER.agent_id,
+              "EIMEMORY_DEPLOY_SCOPE_WORKSPACE": OWNER.workspace_id,
+              "EIMEMORY_DEPLOY_SCOPE_USER": OWNER.user_id}
+    setup = ("USER_SYSTEMD_ENABLE_SERVICE=1\n" + "".join(f"{key}={shlex.quote(str(value))}\n" for key, value in values.items()) +
+             f"export EIMEMORY_DEPLOYMENT_RELEASES_ROOT={shlex.quote(str(release.parent))}\n"
+             f"export EIMEMORY_DEPLOYMENT_CURRENT_LINK={shlex.quote(str(current))}\n"
+             "export EIMEMORY_DEPLOYMENT_HEALTH_URL=http://127.0.0.1:8091/health\n"
              "EIMEMORY_RECEIPT_HEALTH_RETRY_SECONDS=0\n_prepare_release_receipt_source() { return 0; }\n")
-    result = subprocess.run(["bash", "-c", setup + func + "if _record_deployment_receipt; then exit 0; else exit $?; fi\n"],
+    result = subprocess.run(["bash", "-c", setup + checker + func + "if _record_deployment_receipt; then exit 0; else exit $?; fi\n"],
                             capture_output=True, text=True, timeout=30, env=dict(os.environ))
     return result, int(counter.read_text())
 
@@ -176,12 +235,34 @@ def test_receipt_retries_only_transient_health_verdicts(tmp_path) -> None:
     result, calls = _receipt_harness(tmp_path, [
         '1|{"ok": false, "error": "health_identity_missing"}',
         '1|{"ok": false, "error": "health_fetch_failed"}',
-        '0|{"ok": true}',
+        _receipt_success(),
     ])
     assert result.returncode == 0, result.stderr
     assert calls == 3 and "deployment_receipt_retry=transient_health attempt=2" in result.stderr
+    proofs = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+    assert {"current_deployment_receipt_verified": True, "commit": RECEIPT_COMMIT,
+            "receipt_id": RECEIPT_ID} in proofs
+    assert (tmp_path / "native-readback").read_text().strip() == RECEIPT_ID
 
 
 def test_receipt_does_not_retry_identity_mismatch(tmp_path) -> None:
-    result, calls = _receipt_harness(tmp_path, ['1|{"ok": false, "error": "health_commit_mismatch"}', '0|{"ok": true}'])
+    result, calls = _receipt_harness(tmp_path, ['1|{"ok": false, "error": "health_commit_mismatch"}', _receipt_success()])
     assert result.returncode == 1 and calls == 1
+    assert not (tmp_path / "native-readback").exists()
+
+
+def test_exit_zero_incomplete_receipt_never_reaches_native_readback(tmp_path) -> None:
+    result, calls = _receipt_harness(tmp_path, ['0|{"ok": true}'])
+    assert result.returncode == 2 and calls == 1
+    assert "recorder_contract_invalid" in result.stderr
+    assert not (tmp_path / "native-readback").exists()
+
+
+@pytest.mark.parametrize("invalid", ["absent", "revoked", "wrong_id"])
+def test_complete_recorder_output_cannot_replace_committed_native_authority(tmp_path, invalid) -> None:
+    result, calls = _receipt_harness(tmp_path,
+        [_receipt_success(receipt_id="rec_other" if invalid == "wrong_id" else RECEIPT_ID)],
+        persisted=invalid if invalid != "wrong_id" else "deployed")
+    assert result.returncode == 1 and calls == 1
+    assert "current_deployment_receipt_unavailable" in result.stderr
+    assert (tmp_path / "native-readback").is_file()

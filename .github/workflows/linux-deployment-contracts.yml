@@ -77,7 +77,10 @@ jobs:
           tests/test_postgres_vector_source.py
           tests/test_postgres_readiness_recovery.py
           tests/test_readiness_reader_pool_wait.py
+          tests/test_candidate_readiness_barrier.py
+          tests/test_controlled_projection_phase_readiness.py
           tests/test_l5_service_receipt_lineage.py
+          tests/test_record_release_lineage_cli.py
           tests/test_installer_receipt_before_maintenance.py
           tests/test_llm_command_client.py
           tests/test_caller_assistance.py

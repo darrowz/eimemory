@@ -441,6 +441,12 @@ def _run_controlled_operational_closure(
     report["replay_bootstrap"] = replay
     if not legacy_release_replay_ok(replay):
         return _blocked(report, "replay_bootstrap", _failure_reason(replay, "legacy_capability_replay_failed"))
+    pg_barrier_required = (verified.get("candidate_readiness_barrier", {}).get("applicable") is True)
+    if pg_barrier_required:
+        ready = _wait_for_controlled_projection(runtime, expected_commit=release.commit)
+        report.setdefault("projection_readiness", {})["after_replay"] = ready
+        if ready.get("ok") is not True:
+            return _blocked(report, "projection_readiness", "post_replay_projection_not_ready")
     live = runtime.run_live_task_acceptance(**identity_kwargs)
     report["live_acceptance"] = live
     if not _live_acceptance_ok(live, receipt=report["deployment_receipt"]):
@@ -462,6 +468,11 @@ def _run_controlled_operational_closure(
     # longer than the window themselves. Keep each sleep short and interruptible.
     started = time.monotonic()
     _wait_for_controlled_window(started)
+    if pg_barrier_required:
+        ready = _wait_for_controlled_projection(runtime, expected_commit=release.commit)
+        report.setdefault("projection_readiness", {})["before_final_sample"] = ready
+        if ready.get("ok") is not True:
+            return _blocked(report, "projection_readiness", "post_acceptance_projection_not_ready")
     last_sample = collect_controlled_stability_sample(
         expected_commit=release.commit, database_path=database_path,
     )
@@ -489,6 +500,75 @@ def _run_controlled_operational_closure(
     if not controlled_production_closure_report_ok(report):
         return _blocked(report, "controlled_report_contract", "controlled_production_closure_contract_invalid")
     return report
+
+
+def _wait_for_controlled_projection(runtime: Any, *, expected_commit: str,
+                                    timeout_seconds: float = 120.0) -> dict[str, Any]:
+    """Wait for actual projection and listener proof after memory-writing gates.
+
+    This is a separate maintenance phase. It never extends a recall deadline,
+    writes the index, embeds, or treats a cached pre-write health proof as ready.
+    """
+    from datetime import datetime, timezone
+    import math
+    import time
+    from eimemory.ops.candidate_readiness_barrier import wait_for_candidate_readiness
+    from eimemory.ops.controlled_stability import _health
+    from eimemory.retrieval.readiness_contract import readiness_ok
+
+    if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
+            or not 0 < timeout_seconds <= 120):
+        raise ValueError("invalid_projection_wait_budget")
+    started = time.monotonic(); deadline = started + timeout_seconds
+    source = getattr(getattr(getattr(runtime, "memory", None), "recall_engine", None), "candidate_source", None)
+    result: dict[str, Any] = {"schema": "controlled_projection_readiness_wait.v1", "ok": False,
+        "started_at": datetime.now(timezone.utc).isoformat(), "timeout_seconds": timeout_seconds,
+        "attempt_count": 0, "blocked_reason": "projection_wait_exhausted", "error_code_counts": {},
+        "read_only": True, "recall_budget_changed": False}
+
+    def finish(ok: bool, reason: str) -> dict[str, Any]:
+        result.update(ok=ok, blocked_reason=reason, elapsed_seconds=round(time.monotonic()-started, 6),
+                      completed_at=datetime.now(timezone.utc).isoformat())
+        return result
+
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        result["attempt_count"] += 1
+        barrier = wait_for_candidate_readiness(runtime, timeout_seconds=min(120.0, remaining))
+        result["candidate_readiness_barrier"] = barrier
+        if (source is not getattr(getattr(getattr(runtime, "memory", None), "recall_engine", None), "candidate_source", None)):
+            return finish(False, "candidate_source_changed")
+        if time.monotonic() >= deadline:
+            return finish(False, "projection_wait_exhausted")
+        if barrier.get("ok") is not True:
+            return finish(False, "candidate_projection_not_ready")
+        measurement = barrier.get("final_measurement")
+        if source is None or barrier.get("applicable") is not True or not readiness_ok(measurement):
+            return finish(False, "projection_barrier_contract_invalid")
+        try:
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                break
+            health = _health(expected_commit, timeout_seconds=min(8.0, remaining))
+        except Exception:
+            health = {"ok": False, "probe_error": "endpoint_health_unavailable"}
+        result["endpoint_health"] = health
+        if source is not getattr(getattr(getattr(runtime, "memory", None), "recall_engine", None), "candidate_source", None):
+            return finish(False, "candidate_source_changed")
+        if time.monotonic() >= deadline:
+            return finish(False, "projection_wait_exhausted")
+        endpoint = health.get("postgres_readiness")
+        if (health.get("ok") is True and readiness_ok(endpoint)
+                and all(endpoint.get(key) == measurement.get(key) for key in ("watermark", "authority_revision"))):
+            return finish(True, "")
+        code = "endpoint_projection_not_current"
+        result["error_code_counts"][code] = result["error_code_counts"].get(code, 0) + 1
+        remaining = deadline-time.monotonic()
+        if remaining > 0:
+            time.sleep(min(.25, remaining))
+    return finish(False, "projection_wait_exhausted")
 
 
 def _wait_for_controlled_health_refresh() -> None:
