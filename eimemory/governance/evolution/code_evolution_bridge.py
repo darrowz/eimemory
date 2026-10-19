@@ -57,6 +57,7 @@ def propose_code_patch_v2(
     manual_bootstrap: bool | None = True,
     repository_ref: str = "",
     capability_authority: Mapping[str, Any] | None = None,
+    managed_incident_proof: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Request a strict v2 proposal from the exact live Hermes provider.
 
@@ -129,6 +130,13 @@ def propose_code_patch_v2(
         return {**base_report, "status": "blocked", "reason": "source_file_unavailable"}
     if not isinstance(incident, Mapping):
         return {**base_report, "status": "blocked", "reason": "incident_invalid"}
+    if managed_incident_proof is not None:
+        from eimemory.governance.evolution.managed_code_incident_proof import verified_managed_snapshot
+        try:
+            verified_managed_snapshot(managed_incident_proof,scope=scope,
+                incident_id=incident.get('incident_id'),incident_digest=incident.get('incident_digest'))
+        except (ValueError,TypeError,RuntimeError,OSError):
+            return {**base_report,'status':'blocked','reason':'managed_incident_proof_unverified'}
     from eimemory.governance.evolution.code_evolution_test_plans import path_allowed_for_incident
 
     if plan.allowed_path_globs:
@@ -241,6 +249,12 @@ def propose_code_patch_v2(
         return {**base_report, "status": "blocked", "reason": "repository_remote_unavailable"}
     if not remote_url:
         return {**base_report, "status": "blocked", "reason": "repository_remote_unavailable"}
+    if managed_incident_proof is not None:
+        try:
+            verified_managed_snapshot(managed_incident_proof,scope=scope,
+                incident_id=incident['incident_id'],incident_digest=incident['incident_digest'])
+        except (ValueError,TypeError,RuntimeError,OSError):
+            return {**base_report,'status':'blocked','reason':'managed_incident_proof_changed_during_proposal'}
     return {
         **base_report,
         "ok": True,
@@ -263,6 +277,7 @@ def propose_code_patch_v2(
         "manual_bootstrap": manual_bootstrap,
         "profile_key": str(profile_key or ""),
         **({'capability_authority': dict(capability_authority)} if capability_authority is not None else {}),
+        **({'managed_incident_proof': dict(managed_incident_proof)} if managed_incident_proof is not None else {}),
         "incident": dict(incident),
         "repository": {
             "repository_root": repository_root,

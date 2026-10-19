@@ -493,6 +493,15 @@ class CodeEvolutionTransactionManager:
         if authority is not None:
             payload['capability_authority'] = authority
             payload['source_evidence'] = {'capability_authority': authority}
+        if 'managed_incident_proof' in proposal:
+            from eimemory.governance.evolution.managed_code_incident_proof import verified_managed_snapshot
+            try:
+                managed = verified_managed_snapshot(proposal['managed_incident_proof'],scope=scope,
+                    incident_id=incident['incident_id'],incident_digest=incident['incident_digest'])
+            except (TypeError,ValueError,RuntimeError,OSError) as exc:
+                raise CodeEvolutionTransactionError('managed incident proof invalid') from exc
+            payload['managed_incident_proof'] = managed
+            payload.setdefault('source_evidence',{})['managed_incident_proof'] = managed
         current = self.create_detected(payload)
         milestones = (
             ("DIAGNOSED", "diagnosis"),

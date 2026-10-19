@@ -283,6 +283,8 @@ def record_system_code_repair_failure(
                 },
                 )
                 record.record_id = incident["incident_id"]
+                from eimemory.governance.evolution.managed_code_incident_proof import bind_native_activation
+                bind_native_activation(record)
                 sqlite.upsert(record, commit=False)
                 changed.append(record)
         body = {"schema": CURRENT_SCHEMA, "scope": asdict(scope_ref), "release_commit": release.commit,
@@ -298,7 +300,12 @@ def record_system_code_repair_failure(
         changed.append(current)
         return {**report, "incident_record_id": record.record_id if record else "",
                 "current_observation_record_id": current.record_id}, changed, []
-    return runtime.store.mutate_records_atomically(persist)
+    result = runtime.store.mutate_records_atomically(persist)
+    if result.get('incident_record_id'):
+        from eimemory.governance.evolution.managed_code_incident_proof import observe_managed_incident
+        original = runtime.store.get_by_id(result['incident_record_id'], scope=scope_ref)
+        result['managed_incident_proof'] = observe_managed_incident(runtime, scope=scope_ref, record=original)
+    return result
 
 
 def _digest(value: object) -> str:

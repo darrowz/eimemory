@@ -145,6 +145,8 @@ def record_release_closure_failure(
               'report_digest': report['report_digest'], 'observation_valid': True},
     )
     record.record_id = incident['incident_id']
+    from eimemory.governance.evolution.managed_code_incident_proof import bind_native_activation, observe_managed_incident
+    bind_native_activation(record)
     # append(existing_match=...) performs exact-scope insert-once under the
     # store's own BEGIN IMMEDIATE. No racy list-then-random-ID insertion.
     def same(existing):
@@ -155,10 +157,12 @@ def record_release_closure_failure(
     stored = runtime.store.append(record, existing_match=same)
     if not same(stored):
         raise ValueError('closure_incident_identity_mismatch')
+    managed = observe_managed_incident(runtime, scope=scope_ref, record=stored)
     from eimemory.governance.evolution.code_evolution_incident_coverage import observe_native_incident
     coverage = observe_native_incident(runtime, scope=scope_ref, record_id=stored.record_id)
     return {**report, 'recording_ok': True, 'incident_record_id': stored.record_id,
             'incident_coverage': coverage,
+            'managed_incident_proof': managed,
             'repair_status': stored.content.get('repair_status') or 'registered'}
 
 

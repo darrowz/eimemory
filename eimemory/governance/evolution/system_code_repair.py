@@ -141,6 +141,8 @@ def process_system_code_incidents(
             continue
         allowed_files = allowed_files_for_incident(incident_class, test_plan_id=plan_id)
         try:
+            from eimemory.governance.evolution.managed_code_incident_proof import source_managed_snapshot
+            managed = source_managed_snapshot(runtime, record)
             proposal = propose_code_patch_v2(
                 runtime,
                 transaction_id=transaction_id,
@@ -162,6 +164,7 @@ def process_system_code_incidents(
                     "maximum_changed_lines": 400,
                 },
                 **({'capability_authority': dict(capability_authority)} if capability_authority is not None else {}),
+                **({'managed_incident_proof': managed} if managed is not None else {}),
                 **incident_source_facts(record),
             )
         except Exception as exc:

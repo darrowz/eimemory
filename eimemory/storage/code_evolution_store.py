@@ -26,6 +26,10 @@ from eimemory.contracts.code_provider_authority import (
     SOURCE_KEY as _PROVIDER_AUTHORITY_KEY, validate_provider_authority,
     transaction_provider_authority,
 )
+from eimemory.contracts.managed_code_incident_proof import (
+    SOURCE_KEY as _MANAGED_KEY, TRANSACTION_SCHEMA as MANAGED_TRANSACTION_SCHEMA,
+    validate_snapshot as validate_managed_snapshot, transaction_snapshot as managed_transaction_snapshot,
+)
 
 
 CODE_EVOLUTION_STORE_SCHEMA = "code_evolution_store.v1"
@@ -105,7 +109,7 @@ def _transaction_row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
         source = result.get('source_evidence')
         payload = result.get('payload')
         if (not isinstance(payload, Mapping) or payload.get('schema_version') != result.get('schema_version')
-                or result.get('schema_version') in {TYPED_TRANSACTION_SCHEMA, PROVIDER_TRANSACTION_SCHEMA} and (
+                or result.get('schema_version') in {TYPED_TRANSACTION_SCHEMA, PROVIDER_TRANSACTION_SCHEMA, MANAGED_TRANSACTION_SCHEMA} and (
                     not isinstance(source, Mapping) or _PROVENANCE_KEY not in source)):
             raise CodeEvolutionStoreError('incident provenance encoding missing')
         if isinstance(source, Mapping) and _PROVENANCE_KEY in source:
@@ -140,11 +144,16 @@ def _transaction_row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
         try:
             authority = transaction_provider_authority(result)
             if authority is not None:
-                if result['schema_version'] != PROVIDER_TRANSACTION_SCHEMA:
+                if result['schema_version'] not in {PROVIDER_TRANSACTION_SCHEMA, MANAGED_TRANSACTION_SCHEMA}:
                     raise ValueError('code_provider_authority_encoding_invalid')
                 result[_PROVIDER_AUTHORITY_KEY] = authority
         except (TypeError, ValueError, KeyError) as exc:
             raise CodeEvolutionStoreError('code provider authority evidence invalid') from exc
+        try:
+            managed = managed_transaction_snapshot(result)
+            if managed is not None: result[_MANAGED_KEY] = managed
+        except (TypeError, ValueError, KeyError) as exc:
+            raise CodeEvolutionStoreError('managed incident proof evidence invalid') from exc
     return result
 
 
@@ -170,6 +179,14 @@ def _exact_transaction_rows(rows: list[sqlite3.Row], owner: Mapping[str, Any]) -
 
 def _check_transaction_profile_update(row: sqlite3.Row, payload: Any) -> None:
     current = _transaction_row_dict(row) or {}
+    managed = current.get(_MANAGED_KEY)
+    if managed is not None:
+        nested = payload.get('payload') if isinstance(payload, Mapping) else None
+        if (not isinstance(payload, Mapping) or payload.get(_MANAGED_KEY) != managed
+                or not isinstance(payload.get('source_evidence'), Mapping)
+                or payload['source_evidence'].get(_MANAGED_KEY) != managed
+                or not isinstance(nested, Mapping) or nested.get(_MANAGED_KEY) != managed):
+            raise CodeEvolutionConflict('transaction managed incident proof is immutable')
     if _transaction_profile_key(payload) != current.get("profile_key"):
         raise CodeEvolutionConflict("transaction profile_key identity is immutable")
     authority = current.get(_PROVIDER_AUTHORITY_KEY)
@@ -503,6 +520,20 @@ class CodeEvolutionStore:
                 normalized['schema_version'] = PROVIDER_TRANSACTION_SCHEMA
             except (TypeError, ValueError, KeyError) as exc:
                 raise CodeEvolutionStoreError('code provider authority facts invalid') from exc
+        managed = normalized.get(_MANAGED_KEY)
+        if (managed is not None or _MANAGED_KEY in normalized or _MANAGED_KEY in source
+                or isinstance(proposal, Mapping) and _MANAGED_KEY in proposal):
+            try:
+                managed = validate_managed_snapshot(managed)
+                if (source.get(_MANAGED_KEY) != managed or not isinstance(proposal, Mapping)
+                        or proposal.get(_MANAGED_KEY) != managed or managed['scope'] != normalized['scope']
+                        or managed['incident_id'] != incident.get('incident_id')
+                        or managed['incident_digest'] != incident.get('incident_digest')
+                        or any(normalized.get(k) != managed['global_facts'][k] for k in _PROVENANCE_FIELDS)):
+                    raise ValueError('managed_incident_projection_mismatch')
+                normalized['schema_version'] = MANAGED_TRANSACTION_SCHEMA
+            except (TypeError, ValueError, KeyError) as exc:
+                raise CodeEvolutionStoreError('managed incident proof facts invalid') from exc
         incident_id = _text(incident.get("incident_id") or incident.get("id"), field="incident_id", required=True)
         repository_root = _text(repository.get("repository_root") or repository.get("root"), field="repository.root", required=True, max_chars=4096)
         repository_remote = _text(repository.get("repository_remote") or repository.get("remote") or "", field="repository.remote", max_chars=4096)
@@ -567,7 +598,7 @@ class CodeEvolutionStore:
                 "SELECT * FROM code_evolution_transactions WHERE transaction_id=? OR idempotency_key=?",
                 (transaction_id, idempotency_key),
             ).fetchone()
-            if existing is not None and existing['schema_version'] not in {TYPED_TRANSACTION_SCHEMA, PROVIDER_TRANSACTION_SCHEMA}:
+            if existing is not None and existing['schema_version'] not in {TYPED_TRANSACTION_SCHEMA, PROVIDER_TRANSACTION_SCHEMA, MANAGED_TRANSACTION_SCHEMA}:
                 # A retry of an authenticated legacy identity is a read, never
                 # a migration. Compare the original declarations rather than
                 # the new conservative SQL guards or added typed snapshot.
@@ -1518,6 +1549,10 @@ class CodeEvolutionStore:
         if current is None:
             raise CodeEvolutionStoreError('transaction not found')
         source = current.get('source_evidence')
+        if isinstance(source, Mapping) and _MANAGED_KEY in source:
+            if _MANAGED_KEY in receipt and receipt[_MANAGED_KEY] != source[_MANAGED_KEY]:
+                raise CodeEvolutionStoreError('terminal managed incident proof mismatch')
+            receipt = {**dict(receipt), _MANAGED_KEY: source[_MANAGED_KEY]}
         if isinstance(source, Mapping) and _PROVIDER_AUTHORITY_KEY in source:
             if _PROVIDER_AUTHORITY_KEY in receipt and receipt[_PROVIDER_AUTHORITY_KEY] != source[_PROVIDER_AUTHORITY_KEY]:
                 raise CodeEvolutionStoreError('terminal code provider authority mismatch')
@@ -1636,6 +1671,9 @@ class CodeEvolutionStore:
             tx = self.conn.execute('SELECT * FROM code_evolution_transactions WHERE transaction_id=?', (tx_id,)).fetchone()
             transaction = _transaction_row_dict(tx)
             source = transaction.get('source_evidence') if transaction is not None else None
+            if isinstance(source, Mapping) and _MANAGED_KEY in source:
+                if payload.get(_MANAGED_KEY) != source[_MANAGED_KEY]:
+                    raise CodeEvolutionStoreError('terminal managed incident proof mismatch')
             if isinstance(source, Mapping) and _PROVIDER_AUTHORITY_KEY in source:
                 if payload.get(_PROVIDER_AUTHORITY_KEY) != source[_PROVIDER_AUTHORITY_KEY]:
                     raise CodeEvolutionStoreError('terminal code provider authority mismatch')

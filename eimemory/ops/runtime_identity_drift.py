@@ -248,6 +248,8 @@ def inspect_live_runtime_identity(
                     },
                 )
                 record.record_id = str(incident["incident_id"])
+                from eimemory.governance.evolution.managed_code_incident_proof import bind_native_activation
+                bind_native_activation(record)
                 sqlite.upsert(record, commit=False)
                 changed.append(record)
         observation = RecordEnvelope.create(
@@ -265,7 +267,12 @@ def inspect_live_runtime_identity(
         return ({**report, "incident_record_id": incident["incident_id"] if incident else "",
                  "current_observation_record_id": current_id}, changed, [])
 
-    return runtime.store.mutate_records_atomically(persist)
+    result = runtime.store.mutate_records_atomically(persist)
+    if result.get('incident_record_id'):
+        from eimemory.governance.evolution.managed_code_incident_proof import observe_managed_incident
+        original = runtime.store.get_by_id(result['incident_record_id'], scope=scope_ref)
+        result['managed_incident_proof'] = observe_managed_incident(runtime, scope=scope_ref, record=original)
+    return result
 
 
 def runtime_identity_current_record_id(scope: ScopeRef | Mapping[str, Any], expected_commit: str) -> str:

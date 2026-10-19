@@ -178,6 +178,8 @@ def routing_harness(monkeypatch):
         },
     )
     calls = {"proposal": [], "evolution": [], "consumption_reads": []}
+    record.to_dict = lambda: dict(record_id=record.record_id,scope=SCOPE,source=record.source,
+        content=record.content,provenance=record.provenance,meta=record.meta)
 
     def consumption(digest):
         calls["consumption_reads"].append(digest)
@@ -202,7 +204,9 @@ def routing_harness(monkeypatch):
 
     runtime = SimpleNamespace(
         store=SimpleNamespace(
-            list_records_by_sources_exact_scope=lambda **_kwargs: [record],
+            list_records_by_sources_exact_scope=lambda **kwargs: [record]
+                if record.source in kwargs['sources'] and record.kind in kwargs['kinds']
+                and (kwargs.get('record_ids') is None or record.record_id in kwargs['record_ids']) else [],
             append=append,
         ),
         run_autonomous_evolution=evolve,

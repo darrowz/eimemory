@@ -39,6 +39,12 @@ DEFAULT_DENIED_PATH_GLOBS: tuple[str, ...] = (
 # paths now alias compatibility shims and the subpackage paths hold the real
 # implementations, and neither side may be patched by the evolution plane.
 DENY_SELF_PATH_GLOBS: tuple[str, ...] = (
+    "eimemory/contracts/managed_code_incident_proof.py",
+    "eimemory/core/managed_incident_proof_authority.py",
+    "eimemory/governance/evolution/managed_code_incident_proof.py",
+    "eimemory/ops/prepare_managed_incident_authority.py",
+    "eimemory/ops/runtime_identity_drift.py",
+    "eimemory/ops/release_closure_failure.py",
     "eimemory/governance/release/controlled_release_lineage.py",
     "eimemory/governance/release/release_lineage.py",
     "eimemory/governance/release_lineage.py",
