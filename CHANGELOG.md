@@ -17,6 +17,7 @@ AIGC:
 - Archive the actual nightly maintenance and native-assessment reports with exact run, scope and release bindings. Retain bounded failure stage/type/code diagnostics, verify physical readback, and carry safe references through supervisor and command archives.
 - Collect bounded SQLite incident-ingress chronology with append-only version metadata, incrementally signed checkpoints and explicit coverage gaps. Preserve unclassified, external, PostgreSQL and historical unknowns, and retain the original L5 qualification gates.
 - Initialize the native policy lock marker after acquiring the kernel lock, preventing concurrent Windows issuers from writing a byte already locked by another owner.
+- Preserve the original signed incident observation after safe later archives by revalidating its physical prefix and subsequent ingress. Record native detection and first archive writes at their actual subsecond UTC instants; retain unknown results for late input, changed incidents, epochs or capture contracts.
 
 ## [1.14.154] — 2026-10-19
 
