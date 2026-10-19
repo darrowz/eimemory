@@ -480,6 +480,44 @@ def test_managed_validation_unit_gc_preserves_original_root_sealed_exit(managed_
     assert transport["invocation"]=="d"*32
 
 
+def test_managed_validation_gc_default_success_never_substitutes_for_unobserved_native_exit(managed_validation_fixture):
+    f=managed_validation_fixture
+    f.native["terminal_state"]=None
+    # This is the actual PID1 shape after the successful child was collected:
+    # the displayed default zero is not evidence of the original invocation.
+    f.native["state"]={"LoadState":"not-found","ActiveState":"inactive","SubState":"dead",
+        "InvocationID":"","Result":"success","ExecMainStatus":"0","MainPID":"0","ControlGroup":""}
+    with pytest.raises(ValueError,match="terminal_state_unsealed"):
+        jobs.managed_validation_report(f.key,"receipt",heartbeat=lambda:None)
+    assert f.accepted=={(f.key,"receipt")}
+
+
+@pytest.mark.parametrize("current",["retained","collected"])
+def test_managed_validation_accepts_root_pinned_retained_native_exit(managed_validation_fixture,current):
+    f=managed_validation_fixture
+    f.native["terminal_state"].update(ActiveState="active",SubState="exited",MainPID="0",
+        ExecMainExitTimestampMonotonic="1987654321")
+    f.native["state"]=deepcopy(f.native["terminal_state"]) if current=="retained" else {
+        "LoadState":"not-found","ActiveState":"inactive","SubState":"dead","InvocationID":"",
+        "Result":"success","ExecMainStatus":"0","MainPID":"0","ControlGroup":""}
+    report,transport=jobs.managed_validation_report(f.key,"receipt",heartbeat=lambda:None)
+    assert report["ok"] is True and transport["native_state"]==f.native["terminal_state"]
+    assert transport["invocation"]=="d"*32
+
+
+@pytest.mark.parametrize("field,value",[("MainPID","123"),("ExecMainExitTimestampMonotonic","0"),
+    ("ExecMainExitTimestampMonotonic",None),("SubState","running"),("ExecMainStatus","1"),
+    ("Result","exit-code")])
+def test_managed_validation_retained_state_requires_real_exited_process(managed_validation_fixture,field,value):
+    f=managed_validation_fixture
+    f.native["terminal_state"].update(ActiveState="active",SubState="exited",MainPID="0",
+        ExecMainExitTimestampMonotonic="1987654321")
+    f.native["terminal_state"][field]=value
+    f.native["state"]=deepcopy(f.native["terminal_state"])
+    with pytest.raises(ValueError,match="terminal_seal_invalid"):
+        jobs.managed_validation_report(f.key,"receipt",heartbeat=lambda:None)
+
+
 @pytest.mark.parametrize("change",["replace","remove"])
 def test_managed_validation_uses_root_original_after_uid_artifact_tampering(managed_validation_fixture,change):
     f=managed_validation_fixture;path=f.root/f.key/"validation-receipt-result.json"

@@ -589,16 +589,28 @@ def managed_validation_report(key: str, operation: str, *, heartbeat) -> tuple[d
                 raise ValueError("deployment_validation_invocation_changed")
             sealed = native.get("terminal_state")
             if sealed is not None:
+                retained_exit = (isinstance(sealed, dict)
+                    and sealed.get("ActiveState") == "active" and sealed.get("SubState") == "exited"
+                    and sealed.get("MainPID") == "0"
+                    and re.fullmatch(r"[1-9][0-9]*", str(sealed.get("ExecMainExitTimestampMonotonic", ""))) is not None
+                    and sealed.get("Result") == "success" and sealed.get("ExecMainStatus") == "0")
                 if (not isinstance(sealed, dict) or sealed.get("InvocationID") != child
-                    or sealed.get("LoadState") != "loaded" or sealed.get("ActiveState") not in {"inactive", "failed"}
-                    or state.get("ActiveState") in {"active", "activating"}
+                    or sealed.get("LoadState") != "loaded"
+                    or (sealed.get("ActiveState") not in {"inactive", "failed"} and not retained_exit)
                     or re.fullmatch(r"[0-9a-f]{64}", str(native.get("artifact_sha256"))) is None):
                     raise ValueError("deployment_validation_terminal_seal_invalid")
+                if state.get("ActiveState") in {"active", "activating"}:
+                    fields = ("LoadState", "ActiveState", "SubState", "InvocationID", "MainPID",
+                        "ExecMainExitTimestampMonotonic", "Result", "ExecMainStatus")
+                    if not retained_exit or any(state.get(name) != sealed.get(name) for name in fields):
+                        raise ValueError("deployment_validation_terminal_seal_invalid")
                 state = sealed
-            terminal = state.get("ActiveState") in {"inactive", "failed"} or (
-                state.get("ActiveState") == "active" and state.get("SubState") == "exited")
-            if terminal:
                 break
+            # A collected unit reports inactive/default exit status zero even
+            # when PID1's original exit was never observed. Only the root's
+            # independently pinned native terminal state can complete a child.
+            if state.get("LoadState") == "not-found" or state.get("ActiveState") in {"inactive", "failed"}:
+                raise ValueError("deployment_validation_terminal_state_unsealed")
         elif time.monotonic() - begin >= 30:
             raise RuntimeError("deployment_validation_start_unknown")
         if time.monotonic() >= deadline:
