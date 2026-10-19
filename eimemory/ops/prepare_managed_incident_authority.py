@@ -17,7 +17,7 @@ def prepare_manifest(*,database_path,source_directory,scopes,release_commit,prev
     from eimemory.contracts.managed_code_incident_proof import (
         DOMAIN,KEY_SEMANTICS,REGISTERED_INGRESS,exact_scope,hex_value,digest,
     )
-    from eimemory.core.managed_incident_proof_authority import python_source_inventory,PRODUCER_FILES
+    from eimemory.core.managed_incident_proof_authority import python_source_inventory,RUNTIME_PRODUCER_FILES
     from eimemory.storage.migrations.code_incident_coverage import schema_ready
     hex_value(release_commit,40)
     if previous_manifest_digest:hex_value(previous_manifest_digest)
@@ -26,7 +26,7 @@ def prepare_manifest(*,database_path,source_directory,scopes,release_commit,prev
         raise ValueError('managed_manifest_scope_inventory_invalid')
     source=Path(source_directory).resolve()
     files=python_source_inventory(source)
-    if not set(PRODUCER_FILES)<=files:raise ValueError('managed_manifest_producer_inventory_incomplete')
+    if not set(RUNTIME_PRODUCER_FILES)<=files:raise ValueError('managed_manifest_producer_inventory_incomplete')
     producer_files={name:sha256((source/name).read_bytes()).hexdigest() for name in sorted(files)}
     conn=sqlite3.connect(Path(database_path).resolve().as_uri()+'?mode=ro',uri=True)
     try:

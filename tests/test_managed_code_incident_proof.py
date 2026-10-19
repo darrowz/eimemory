@@ -155,6 +155,7 @@ def test_issuer_real_hmac_original_bytes_and_readback_not_only_a_flag(tmp_path,m
     monkeypatch.setattr(authority,'_configuration',lambda _: (manifest,b'private-root-fixture-key-'*4))
     monkeypatch.setattr(authority,'_state',writable);monkeypatch.setattr(authority,'_readonly_state',readonly)
     monkeypatch.setattr(authority,'_worker',worker)
+    monkeypatch.setattr(authority,'_runtime_producer_guard',lambda *_:{'isolated':'fixture'})
     # Windows exercises signing/state bytes, not POSIX authority path permissions.
     monkeypatch.setattr(authority,'_read',lambda path,**_:Path(path).read_bytes())
     monkeypatch.setattr(authority,'_fsync_directory',lambda _:None)
@@ -318,6 +319,74 @@ def test_issuer_and_original_source_authority_are_deny_self(path):
     assert path_denied_by_self(path)
 
 
+@pytest.mark.parametrize('path',authority.RUNTIME_PRODUCER_FILES)
+def test_runtime_native_producer_compatibility_pins_are_deny_self(path):
+    from eimemory.governance.evolution.code_evolution_path_policy import path_denied_by_self
+    assert path_denied_by_self(path)
+
+
+def test_runtime_allowed_business_changes_keep_producer_contract_but_native_changes_fail(tmp_path,monkeypatch):
+    """Actual private files; POSIX descriptor boundary is covered separately."""
+    controller=tmp_path/'controller';candidate=tmp_path/('d'*40)
+    pins={name:digest(name) for name in authority.RUNTIME_PRODUCER_FILES}
+    # Raw identity equality is checked by the same helper even when product
+    # business/aggregation code legitimately differs between these releases.
+    expected={}
+    for directory in (controller,candidate):
+        for name in pins:
+            path=directory/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('# protected '+name)
+            expected[name]=authority.sha256(path.read_bytes()).hexdigest()
+        path=directory/'eimemory/governance/l5/l5_reader.py';path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_text('business_version = '+repr(directory.name))
+    manifest=dict(source_directory=str(controller),producer_files=expected,release_commit=COMMIT)
+    registry=dict(runtime_commit='d'*40,controller_commit=COMMIT,runtime_uid=1001,runtime_gid=1001)
+    monkeypatch.setattr(authority,'RELEASES_DIRECTORY',str(tmp_path))
+    def read(path,**_):
+        path=Path(path);return path.read_bytes(),authority._identity(path.stat())
+    monkeypatch.setattr(authority,'_read',read)
+    before=authority._runtime_producer_guard(manifest,registry)
+    assert len(before)==len(authority.RUNTIME_PRODUCER_FILES)
+    path=candidate/'eimemory/ops/release_closure_failure.py';original=path.read_bytes()
+    path.write_bytes(original+b'\n# modified actual producer')
+    with pytest.raises(ValueError,match='runtime_producer_changed'):
+        authority._runtime_producer_guard(manifest,registry)
+    path.write_bytes(original)
+    assert authority._runtime_producer_guard(manifest,registry)!=before
+    injected=candidate/'eimemory/core/__init__.py';injected.write_text('# injected import hook')
+    with pytest.raises(ValueError,match='runtime_namespace_injected'):
+        authority._runtime_producer_guard(manifest,registry)
+    injected.unlink()
+    # It cannot borrow the frozen controller when actual candidate is missing.
+    registry['runtime_commit']='e'*40
+    with pytest.raises(FileNotFoundError):authority._runtime_producer_guard(manifest,registry)
+
+
+def test_configuration_binds_frozen_controller_not_serving_candidate(tmp_path,monkeypatch):
+    source=Path(__file__).resolve().parents[1]
+    manifest=dict(schema='managed_code_incident_manifest.v1',qualification_domain=DOMAIN,
+        defect_key_semantics=authority.KEY_SEMANTICS,enabled=True,scopes=[SCOPE],source_directory=str(source),
+        producer_files={name:'1'*64 for name in authority.RUNTIME_PRODUCER_FILES},release_commit=COMMIT,
+        ingress_sources=list(authority.INGRESS),historical_domain='retained_typed_history_and_complete_registered_ingress',
+        schema_digest='2'*64,previous_manifest_digest='')
+    raw=authority.canonical(manifest)
+    registry=dict(runtime_commit='d'*40,controller_commit=COMMIT,managed_incident_authority=dict(enabled=True,
+        database_path=authority.DATABASE_PATH,manifest_path=authority.MANIFEST_PATH,
+        manifest_sha256=authority.sha256(raw).hexdigest(),receipt_directory=authority.RECEIPT_DIRECTORY,key_path=authority.KEY_PATH))
+    monkeypatch.setattr(authority.os,'geteuid',lambda:0,raising=False)
+    monkeypatch.setattr(authority,'_read',lambda path,**_:raw if str(path)==authority.MANIFEST_PATH else b'k'*32)
+    assert authority._configuration(registry)[0]==manifest
+    with pytest.raises(ValueError,match='manifest_invalid'):
+        authority._configuration({**registry,'controller_commit':'e'*40})
+
+
+def test_runtime_activation_cannot_borrow_frozen_controller_or_different_serving_identity():
+    facts=original_facts();registry=dict(generation='c'*64,runtime_uid=1001,runtime_commit='d'*40,controller_commit=COMMIT)
+    actual={**activation(facts),'runtime_commit':'d'*40,'controller_commit':COMMIT}
+    assert authority._activation_facts(facts,actual,registry,{'uid':1001})==(False,'')
+    for changed in ({'runtime_commit':COMMIT},{'controller_commit':'e'*40}):
+        assert authority._activation_facts(facts,{**actual,**changed},registry,{'uid':1001})==(None,'original_activation_release_unverified')
+
+
 def test_source_inventory_excludes_unsearched_venv_but_detects_package_injection(tmp_path):
     (tmp_path/'package').mkdir();(tmp_path/'package'/'__init__.py').write_bytes(b'')
     site=tmp_path/'.venv'/'lib'/'python3'/'site-packages';site.mkdir(parents=True)
@@ -462,7 +531,8 @@ def test_native_root_private_key_actual_uid_worker_and_receipt_readback(tmp_path
     activation_receipt=dict(schema='eimemory.runtime_activation_attestation.v1',signature_verified=True,
         reference=activation_reference,registry_generation=registry['generation'],scope=SCOPE,
         peer_pid=os.getpid(),peer_uid=account.pw_uid,manager='system',unit='eimemory-learn-watch.service',
-        observed_at=issued_at,trigger_kind='scheduled_timer',job_state='running',job_id=42)
+        observed_at=issued_at,trigger_kind='scheduled_timer',job_state='running',job_id=42,
+        runtime_commit=COMMIT,controller_commit=COMMIT)
     reference=authority.issue(record.record_id,digest(record.to_dict()),
         verified_activation_receipt=lambda *_:deepcopy(activation_receipt),registry=registry,peer={'uid':account.pw_uid,'pid':123})
     original=(receipts/(reference['receipt_id']+'.json')).read_bytes()
@@ -473,6 +543,37 @@ def test_native_root_private_key_actual_uid_worker_and_receipt_readback(tmp_path
     assert (receipts/'knowledge.sqlite').read_bytes()==state_before
     assert (receipts/(reference['receipt_id']+'.json')).read_bytes()==original
     assert list(cache.iterdir())==[]
+    # Actual serving157 may change an allowed aggregation file; the reviewed
+    # reader/controller156 and original signed proof remain the authority.
+    releases=tmp_path/'releases';releases.mkdir();candidate_commit='d'*40
+    candidate=releases/candidate_commit;shutil.copytree(fixture_source,candidate,symlinks=True)
+    (candidate/'eimemory/governance/l5/l5_reader.py').write_text('# allowed fixture aggregation repair\n')
+    monkeypatch.setattr(authority,'RELEASES_DIRECTORY',str(releases))
+    serving={**registry,'controller_commit':COMMIT,'runtime_commit':candidate_commit}
+    original_readback=authority.verify(reference['receipt_id'],reference['digest'],registry=serving)
+    assert original_readback['snapshot']==proof and original_readback['qualification_current']
+    assert (receipts/(reference['receipt_id']+'.json')).read_bytes()==original
+    checkpoint=authority.checkpoint(registry=serving,peer={'uid':account.pw_uid})
+    assert checkpoint['status']=='ready' and checkpoint['incident_created'] is False
+    next_issue_time=datetime.now(timezone.utc).isoformat()
+    next_report=record_release_closure_failure(physical,scope=ScopeRef.from_dict(SCOPE),
+        closure_report=dict(report_type='l5_release_closure',ok=False,closure_complete=False,data_accumulating=False,
+            blocked_stage='release_lineage',blocked_reason='release_lineage_not_compatible',
+            deployment=dict(commit=candidate_commit,version='1.14.157'),
+            release_lineage=dict(ok=True,compatible=False,unknown_production_paths=[])),
+        detected_at=datetime.now(timezone.utc).isoformat())
+    next_record=physical.store.get_by_id(next_report['incident_record_id'],scope=ScopeRef.from_dict(SCOPE))
+    next_activation={**activation_receipt,'observed_at':next_issue_time,'runtime_commit':candidate_commit,'controller_commit':COMMIT}
+    # Same symptom remains known; a compatible candidate does not reset novelty.
+    second=authority.issue(next_record.record_id,digest(next_record.to_dict()),
+        verified_activation_receipt=lambda *_:deepcopy(next_activation),registry=serving,peer={'uid':account.pw_uid,'pid':123})
+    second_proof=authority.verify(second['receipt_id'],second['digest'],registry=serving)['snapshot']
+    assert second_proof['status']=='adverse' and second_proof['managed_facts']['known_before_detection'] is True
+    (candidate/'eimemory/ops/release_closure_failure.py').write_text('# unauthorized producer change\n')
+    with pytest.raises(ValueError,match='runtime_producer_changed'):
+        authority.checkpoint(registry=serving,peer={'uid':account.pw_uid})
+    # Runtime incompatibility blocks new issuance, not historical authenticity.
+    assert authority.verify(reference['receipt_id'],reference['digest'],registry=serving)['snapshot']==proof
 
 
 @pytest.fixture

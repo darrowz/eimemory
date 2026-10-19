@@ -28,6 +28,7 @@ DATABASE_PATH = '/var/lib/eimemory/state/eimemory.sqlite'
 KEY_PATH = '/etc/eimemory-code-automation-authority/managed-incident-proof.key'
 RECEIPT_DIRECTORY = '/var/lib/eimemory-manager/managed-incident-receipts'
 PYCACHE_DIRECTORY = RECEIPT_DIRECTORY + '/empty-pycache'
+RELEASES_DIRECTORY = '/opt/eimemory/releases'
 FIELDS = ('known_before_detection', 'prior_user_reported', 'manual_bootstrap')
 SCOPE_FIELDS = ('tenant_id', 'agent_id', 'workspace_id', 'user_id')
 INGRESS = ('eimemory.release_closure_failure', 'eimemory.runtime_identity_drift',
@@ -46,6 +47,31 @@ PRODUCER_FILES = (
     'eimemory/storage/migrations/code_incident_coverage_archive.py',
     'eimemory/storage/payload_segments.py', 'eimemory/governance/learning/effect_policy.py',
 )
+
+
+# Runtime compatibility pins the immutable acquisition/serialization boundary,
+# not repairable business logic or the l5_reader aggregation implementation.
+# The independent readonly worker still pins the complete controller inventory.
+RUNTIME_PRODUCER_FILES = tuple(dict.fromkeys((*PRODUCER_FILES,
+    'eimemory/__init__.py', 'eimemory/contracts/__init__.py',
+    'eimemory/governance/__init__.py', 'eimemory/governance/evolution/__init__.py',
+    'eimemory/governance/learning/__init__.py', 'eimemory/governance/release/__init__.py',
+    'eimemory/ops/__init__.py',
+    'eimemory/contracts/code_incident_provenance.py',
+    'eimemory/contracts/code_incident_coverage.py',
+    'eimemory/models/records.py', 'eimemory/core/clock.py',
+    'eimemory/core/ids.py', 'eimemory/core/record_ids.py',
+    'eimemory/core/key_components.py',
+    'eimemory/models/source_partitions.py', 'eimemory/models/identity_aliases.py',
+    'eimemory/metadata.py', 'eimemory/storage/jsonl.py',
+    'eimemory/storage/sqlite_store.py', 'eimemory/storage/runtime_store.py',
+    'eimemory/storage/migrations/__init__.py',
+    'eimemory/governance/release/closure_verdict.py',
+    'eimemory/governance/release/closure_contracts.py',
+    'eimemory/governance/release/closure_blockers.py',
+    'eimemory/governance/release/release_pre_observation.py',
+    'eimemory/governance/release_pre_observation.py',
+)))
 
 
 def canonical(value):
@@ -154,13 +180,13 @@ def _configuration(registry):
     if (not isinstance(manifest, dict) or set(manifest) != fields
             or manifest['schema'] != 'managed_code_incident_manifest.v1' or manifest['qualification_domain'] != DOMAIN
             or manifest['defect_key_semantics'] != KEY_SEMANTICS
-            or manifest['release_commit'] != registry['runtime_commit']
+            or manifest['release_commit'] != registry.get('controller_commit',registry['runtime_commit'])
             or manifest['enabled'] is not True or manifest['ingress_sources'] != list(INGRESS)
             or manifest['historical_domain'] != 'retained_typed_history_and_complete_registered_ingress'
             or not isinstance(manifest['scopes'], list) or not 1 <= len(manifest['scopes']) <= 32
             or len({digest(_scope(scope)) for scope in manifest['scopes']}) != len(manifest['scopes'])
             or not isinstance(manifest['producer_files'], dict)
-            or not set(PRODUCER_FILES) <= set(manifest['producer_files'])
+            or not set(RUNTIME_PRODUCER_FILES) <= set(manifest['producer_files'])
             or not len(PRODUCER_FILES) <= len(manifest['producer_files']) <= 5000
             or any(not isinstance(name,str) or not name.endswith('.py') or name.startswith('/')
                 or '\\' in name or '..' in name.split('/') or any(c in name for c in '\r\n\0')
@@ -216,6 +242,34 @@ def _producer_guard(manifest, registry):
             owners=(0, registry['runtime_uid']), gid=registry['runtime_gid'], limit=4*1024*1024,
             allow_empty=True,with_identity=True)
         if sha256(raw).hexdigest() != expected: raise ValueError('managed_authority_producer_changed')
+        identities[name]=identity
+    return identities
+
+
+def _runtime_producer_guard(manifest,registry):
+    """No candidate path from the caller and no candidate imports as root.
+
+    A serving candidate may legitimately change repairable .py files. Only the
+    protected native acquisition contract must retain reviewed controller bytes.
+    Original proof readback intentionally uses _worker, not this new-issue gate.
+    """
+    runtime=_hex(registry['runtime_commit'],40)
+    controller=_hex(registry.get('controller_commit',runtime),40)
+    root=Path(manifest['source_directory']) if runtime==controller else Path(RELEASES_DIRECTORY)/runtime
+    identities={};deadline=time.monotonic()+10
+    for name in RUNTIME_PRODUCER_FILES:
+        for parent in Path(name).parents:
+            if str(parent)=='.':continue
+            initializer=(parent/'__init__.py').as_posix()
+            if initializer not in manifest['producer_files'] and os.path.lexists(root/initializer):
+                raise ValueError('managed_authority_runtime_namespace_injected')
+    for name in RUNTIME_PRODUCER_FILES:
+        if name not in manifest['producer_files']:raise ValueError('managed_authority_runtime_contract_incomplete')
+        if time.monotonic()>deadline:raise ValueError('managed_authority_runtime_guard_budget_exhausted')
+        raw,identity=_read(root/name,owners=(0,registry['runtime_uid']),gid=registry['runtime_gid'],
+            allow_empty=True,with_identity=True,limit=4*1024*1024)
+        if sha256(raw).hexdigest()!=manifest['producer_files'][name]:
+            raise ValueError('managed_authority_runtime_producer_changed')
         identities[name]=identity
     return identities
 
@@ -405,6 +459,9 @@ def _activation_facts(facts, activation, registry, peer):
             or peer.get('uid') != registry['runtime_uid']
             or activation.get('manager') != 'system' or activation.get('unit') not in {'eimemory-learn-watch.service','eimemory-nightly.service','eimemory-release-closure.service'}):
         return None, 'original_activation_unverified'
+    if ('runtime_commit' in registry and (activation.get('runtime_commit')!=registry['runtime_commit']
+            or activation.get('controller_commit')!=registry.get('controller_commit',registry['runtime_commit']))):
+        return None,'original_activation_release_unverified'
     try:
         issued = _time(activation['observed_at']); created = _time(facts['source_created_at']); observed = _time(facts['observed_at'])
         received = _time(facts['source_received_at'])
@@ -434,8 +491,11 @@ def issue(source_record_id, source_digest, *, verified_activation_receipt, regis
         existing = conn.execute('SELECT * FROM managed_receipts WHERE source_record_id=? AND source_digest=?', (source_record_id,source_digest)).fetchone()
         if existing is not None:
             return {'schema':'managed_code_incident_proof_ref.v1','receipt_id':existing['receipt_id'],'digest':existing['digest']}
+        producer_before=_runtime_producer_guard(manifest,registry)
         row = conn.execute("SELECT value FROM authority_meta WHERE key='high_water'").fetchone()
         facts = _worker(manifest,registry,source_record_id,source_digest,int(row[0]) if row else 0)
+        if producer_before!=_runtime_producer_guard(manifest,registry):
+            raise ValueError('managed_authority_runtime_producer_identity_changed')
         _ingest(conn,facts,manifest)
         if not facts['complete']:
             return {'status':'unproven','reason':'managed_history_accumulation_incomplete','high_water':facts['through']}
@@ -493,7 +553,10 @@ def checkpoint(*,registry,peer):
         raise ValueError('managed_authority_checkpoint_peer_invalid')
     with _state(registry,manifest) as conn:
         row=conn.execute("SELECT value FROM authority_meta WHERE key='high_water'").fetchone()
+        producer_before=_runtime_producer_guard(manifest,registry)
         facts=_worker(manifest,registry,'','',int(row[0]) if row else 0)
+        if producer_before!=_runtime_producer_guard(manifest,registry):
+            raise ValueError('managed_authority_runtime_producer_identity_changed')
         if facts.get('incident') is not None or facts.get('scope') is not None:
             raise ValueError('managed_authority_checkpoint_no_source_expected')
         _ingest(conn,facts,manifest)
