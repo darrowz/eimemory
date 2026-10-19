@@ -1,5 +1,5 @@
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -834,3 +834,99 @@ def test_historical_grant_does_not_select_an_unlisted_old_fact(historical_busine
     expected={entry['source_binding']['record_id'] for entry in before['business_sources']}
     packet=setup.runtime.store.get_by_exact_ref(result['record_id'],scope=OWNER,source_id='default')
     assert {sample['source_binding']['record_id'] for agent in packet.content['agents'] for sample in agent['samples']}==expected
+
+
+from eimemory.retrieval.postgres_vector import PostgresVectorConfig, PostgresVectorCandidateSource
+
+
+class AbsentIndex:
+    def __init__(self):self.reads=0
+    def read_index_state(self):
+        self.reads+=1
+        raise RuntimeError('isolated index does not exist')
+
+
+def native_pg(setup,config):
+    engine=setup.runtime.memory.recall_engine
+    repository=AbsentIndex()
+    source=PostgresVectorCandidateSource(sqlite_source=engine.candidate_source,
+        config=config,repository=repository)
+    setup.monkeypatch.setattr(engine,'candidate_source',source)
+    return source,repository
+
+
+@pytest.mark.parametrize('config',[PostgresVectorConfig(enabled=False),PostgresVectorConfig(enabled=True)],ids=['disabled','not_configured'])
+def test_explicit_native_bypass_no_index_can_issue_and_revalidate_signed_cpa(setup,config):
+    source,repository=native_pg(setup,config)
+    contract=cpa.controlled_retrieval_contract(setup.runtime)
+    setup.policy['engine_contract_digest']=cpa.digest(contract)
+    report=run(setup)
+    assert report['accepted'],report
+    assert len(setup.calls)==12
+    assert report['candidate_readiness_barrier']['status']=='not_applicable'
+    packet=setup.runtime.store.get_by_exact_ref(report['record_id'],scope=OWNER,source_id='default')
+    assert cpa.verify(packet.content,cpa.SCHEMA)
+    assert verified(setup,record_id=report['record_id'])['accepted']
+    assert len(setup.calls)==12,'verification must not rerun any case'
+    assert repository.reads==0
+
+
+@pytest.mark.parametrize('change',['enabled','semantics'])
+def test_signed_explicit_bypass_does_not_survive_changed_native_configuration(setup,change):
+    source,repository=native_pg(setup,PostgresVectorConfig(enabled=False))
+    setup.policy['engine_contract_digest']=cpa.digest(cpa.controlled_retrieval_contract(setup.runtime))
+    report=run(setup);assert report['accepted']
+    source.config=replace(source.config,**({'enabled':True} if change=='enabled' else {'top_k_max':11}))
+    assert not verified(setup,record_id=report['record_id'])['accepted']
+    assert repository.reads==0
+
+
+@pytest.mark.parametrize('damage',['barrier','identity','index_mode'])
+def test_signed_bypass_cannot_relabel_a_forged_projection_proof(setup,damage):
+    _,repository=native_pg(setup,PostgresVectorConfig(enabled=False))
+    setup.policy['engine_contract_digest']=cpa.digest(cpa.controlled_retrieval_contract(setup.runtime))
+    report=run(setup);assert report['accepted']
+    packet=setup.runtime.store.get_by_exact_ref(report['record_id'],scope=OWNER,source_id='default')
+    if damage=='barrier':packet.content['candidate_readiness_barrier']['source_configuration']['enabled']=True
+    if damage=='identity':packet.content['engine_identity']['candidate_source']['enabled']=True
+    if damage=='index_mode':packet.content['engine_identity']['candidate_source']['candidate_index_requirement']['reason']='not_configured'
+    packet.content=cpa.seal({k:v for k,v in packet.content.items() if k not in {'signature','key_id'}},cpa.SCHEMA)
+    packet.meta['report_digest']=cpa.digest(packet.content);setup.runtime.store.append(packet)
+    assert not verified(setup,record_id=report['record_id'])['accepted']
+    assert repository.reads==0
+
+
+def test_enabled_pg_contract_and_older_signed_certificate_keep_the_ready_index_binding(setup):
+    source,raw=configured_pg(setup)
+    contract=cpa.controlled_retrieval_contract(setup.runtime)
+    assert 'candidate_index_requirement' not in contract['candidate_source']
+    assert contract['candidate_source']['durable_index_contract']['ready'] is True
+    report=run(setup);assert report['accepted']
+    assert verified(setup,record_id=report['record_id'])['accepted']
+
+
+def test_enabled_configured_native_pg_still_requires_actual_ready_index(setup):
+    _,repository=native_pg(setup,PostgresVectorConfig(enabled=True,dsn='postgresql://localhost/isolated'))
+    with pytest.raises(cpa.ControlledAcceptanceError,match='controlled_acceptance_index_contract_unavailable'):
+        cpa.controlled_retrieval_contract(setup.runtime)
+    assert repository.reads==1
+
+
+@pytest.mark.parametrize('config',[PostgresVectorConfig(enabled=False),PostgresVectorConfig(enabled=True)],ids=['disabled','not_configured'])
+def test_explicit_bypass_signs_actual_native_sqlite_recall_without_backend_or_index(setup,config):
+    _,repository=native_pg(setup,config)
+    memory=setup.runtime.memory
+    actual_recall=type(memory).recall.__get__(memory,type(memory))
+    calls=[]
+    def recall(**kwargs):
+        calls.append(kwargs)
+        return actual_recall(**kwargs)
+    setup.monkeypatch.setattr(memory,'recall',recall)
+    setup.policy['engine_contract_digest']=cpa.digest(cpa.controlled_retrieval_contract(setup.runtime))
+    report=run(setup)
+    assert report['accepted'],report
+    assert len(calls)==12
+    packet=setup.runtime.store.get_by_exact_ref(report['record_id'],scope=OWNER,source_id='default')
+    assert cpa.verify(packet.content,cpa.SCHEMA)
+    assert verified(setup,record_id=report['record_id'])['accepted']
+    assert len(calls)==12 and repository.reads==0

@@ -26,10 +26,11 @@ from eimemory.identity_ops import _repair_snapshot, _RepairSkipped
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import normalize_source_ids
 from eimemory.ops.candidate_readiness_barrier import (
-    candidate_readiness_barrier_ok, wait_for_candidate_readiness,
+    _explicit_pg_bypass, candidate_readiness_barrier_ok, wait_for_candidate_readiness,
 )
 from eimemory.retrieval.diagnostics import STAGES
-from eimemory.retrieval.postgres_vector import PostgresVectorCandidateSource, _CANDIDATE_ERROR_CODES
+from eimemory.retrieval.postgres_vector import (PostgresVectorCandidateSource,
+    _CANDIDATE_ERROR_CODES, postgres_config_fingerprint)
 
 SCHEMA = 'controlled_production_acceptance.v1'
 POLICY_SCHEMA = 'controlled_production_acceptance_policy.v1'
@@ -212,16 +213,32 @@ def _engine(runtime):
     source.pop('authority_revision', None)
     source.pop('postgres', None)
     if source.get('candidate_source_type') == 'PostgresVectorCandidateSource':
-        try:
-            state = runtime.memory.recall_engine.candidate_source.repository.read_index_state()
-            source['durable_index_contract'] = dict(ready=state.ready,
-                embedding_fingerprint=state.embedding_fingerprint,
-                projection_digest_schema=state.projection_digest_schema,
-                projection_fingerprint=state.projection_fingerprint)
-        except Exception:
-            _error('index_contract_unavailable')
-        if state.ready is not True:
-            _error('index_contract_unavailable')
+        native_source = runtime.memory.recall_engine.candidate_source
+        bypass, configuration = _explicit_pg_bypass(native_source)
+        if bypass:
+            # An explicitly unavailable optional projection has no durable
+            # index to bind. Use the same exact native configuration boundary
+            # as the measured barrier, and bind its current stable semantics.
+            # This is a different policy contract; old ready-index certificates
+            # are never rewritten or accepted under this exemption.
+            if (source.get('enabled') is not configuration['enabled']
+                    or source.get('configured') is not (configuration['configured']
+                        and native_source.embedding_provider is not None)):
+                _error('engine_identity_unavailable')
+            source['candidate_index_requirement'] = dict(mode='not_applicable',
+                reason=bypass, source_configuration=configuration,
+                config_fingerprint=postgres_config_fingerprint(native_source.config))
+        else:
+            try:
+                state = native_source.repository.read_index_state()
+                source['durable_index_contract'] = dict(ready=state.ready,
+                    embedding_fingerprint=state.embedding_fingerprint,
+                    projection_digest_schema=state.projection_digest_schema,
+                    projection_fingerprint=state.projection_fingerprint)
+            except Exception:
+                _error('index_contract_unavailable')
+            if state.ready is not True:
+                _error('index_contract_unavailable')
     copied['contract_schema'] = 'controlled_retrieval_engine_contract.v1'
     copied['identity_digest'] = digest(copied)
     return copied
