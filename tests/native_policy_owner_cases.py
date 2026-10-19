@@ -41,6 +41,14 @@ def native_policy_fixture(tmp_path, monkeypatch):
     repo = tmp_path / 'fixture-git'
     subprocess.run(['git', 'clone', '--quiet', '--local', '--shared',
                     Path(__file__).resolve().parents[1].as_posix(), str(repo)], check=True)
+    # GitHub PR checkouts can have detached HEAD. Give this new private clone
+    # its own explicit branch without changing the source checkout or commit.
+    cloned_commit = subprocess.check_output(
+        ['git', '-C', str(repo), 'rev-parse', 'HEAD']).strip()
+    subprocess.run(['git', '-C', str(repo), 'checkout', '--quiet', '-B',
+                    'master', 'HEAD'], check=True)
+    assert subprocess.check_output(
+        ['git', '-C', str(repo), 'rev-parse', 'HEAD']).strip() == cloned_commit
     commit = owner._git(repo, 'rev-parse', 'HEAD')
     branch = owner._git(repo, 'symbolic-ref', '--short', 'HEAD')
     scope = ScopeRef(tenant_id='fixture-tenant', agent_id='fixture-agent', workspace_id='fixture-workspace', user_id='fixture-user')

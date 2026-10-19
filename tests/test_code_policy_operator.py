@@ -158,3 +158,16 @@ def test_issuer_binds_the_configured_remote_url_not_origin(monkeypatch, policy_r
     assert report["ok"] is True, report
     assert report["policy"]["repository"]["remote"] == "authorized"
     assert report["policy"]["repository"]["remote_url_digest"] == remote_url_digest(configured)
+
+
+def test_detached_repository_cannot_publish_policy_or_replace_original(tmp_path, monkeypatch, policy_repo):
+    monkeypatch.setattr("eimemory.config.trusted.trusted_repository_root", lambda: policy_repo)
+    subprocess.run(["git", "-C", str(policy_repo), "checkout", "--quiet", "--detach"], check=True)
+    destination = tmp_path / "original-policy.json"
+    destination.write_bytes(b"original-private-policy")
+    report = issuer.issue_code_automation_policy(
+        repo_root=policy_repo, incident_class="deployment.runtime_commit_drift",
+        detector_id="eimemory.runtime_identity_drift.v1", incident_digest="a" * 64,
+        test_plan_id="deployment.runtime-identity-drift.v1", install_path=destination)
+    assert report["ok"] is False and report["reason"].startswith("git_identity_unavailable:"), report
+    assert destination.read_bytes() == b"original-private-policy"

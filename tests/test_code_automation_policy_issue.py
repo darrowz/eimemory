@@ -23,6 +23,14 @@ def policy_repo(tmp_path):
     repo = tmp_path / "repository"
     subprocess.run(["git", "clone", "--quiet", "--shared",
                     str(Path(__file__).resolve().parents[1]), str(repo)], check=True)
+    # GitHub PR checkouts can have detached HEAD. Give this new private clone
+    # its own explicit branch without changing the source checkout or commit.
+    cloned_commit = subprocess.check_output(
+        ['git', '-C', str(repo), 'rev-parse', 'HEAD']).strip()
+    subprocess.run(['git', '-C', str(repo), 'checkout', '--quiet', '-B',
+                    'master', 'HEAD'], check=True)
+    assert subprocess.check_output(
+        ['git', '-C', str(repo), 'rev-parse', 'HEAD']).strip() == cloned_commit
     return repo
 
 
