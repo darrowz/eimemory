@@ -750,27 +750,32 @@ def validation_fixture(monkeypatch,tmp_path):
         r['compatibility_hashes'][relative]=sha256(path.read_bytes()).hexdigest()
     parent=dict(job_key=key,request=req,registry=r,unit=c.job_unit(key),original_invocation='a'*32,
         phase='activate',quiesced=True,resumed=False)
-    b.state=tmp_path;(tmp_path/'validations').mkdir();(tmp_path/'validation-results').mkdir()
+    b.state=tmp_path
+    for name in ('jobs','validations','validation-results'):(tmp_path/name).mkdir(mode=0o750)
+    r['generation']=c.digest({name:value for name,value in r.items() if name!='generation'})
     store={};artifact={'raw':None};state={'LoadState':'loaded','ActiveState':'activating','SubState':'start',
         'Result':'success','InvocationID':'b'*32,'ExecMainStatus':'0','MainPID':'123',
         'ControlGroup':'/system.slice/'+c.validation_unit(key,'receipt'),'ExecMainExitTimestampMonotonic':'0'}
     monkeypatch.setattr(module,'RELEASES',releases)
     monkeypatch.setattr(module,'CURRENT',SimpleNamespace(resolve=lambda **_:target))
     monkeypatch.setattr(module,'trusted_directory',lambda *_a,**_k:None)
-    monkeypatch.setattr(b,'record',lambda _:deepcopy(parent))
     monkeypatch.setattr(b,'verify_job_peer',lambda *_:None)
     monkeypatch.setattr(b,'storage_guard',lambda *_:None)
     monkeypatch.setattr(b,'unit_state',lambda *_:deepcopy(state))
     monkeypatch.setattr(b,'validation_artifact',lambda *_:artifact['raw'])
-    monkeypatch.setattr(module,'read_file',lambda path,**_:c.canonical(store[str(path)]) if str(path) in store else Path(path).read_bytes())
+    monkeypatch.setattr(module,'read_file',lambda path,**_:Path(path).read_bytes())
     def atomic(path,value,**kwargs):
         if kwargs.get('exclusive') and str(path) in store:raise FileExistsError(path)
-        Path(path).touch();store[str(path)]=deepcopy(value)
+        Path(path).write_bytes(c.canonical(value));store[str(path)]=deepcopy(value)
     monkeypatch.setattr(module,'atomic_json',atomic)
     def copy(path,raw,gid,exclusive=False):
         if exclusive and str(path) in store:raise FileExistsError(path)
-        Path(path).touch();store[str(path)]=c.strict_json(raw,max_bytes=9*1024*1024)
+        Path(path).write_bytes(raw);store[str(path)]=c.strict_json(raw,max_bytes=9*1024*1024)
     monkeypatch.setattr(b,'write_root_bytes',copy)
+    # A validation always belongs to an already-persisted, contract-valid job.
+    # Exercise the same parent readback path as later fencing/status updates.
+    b.save(r,parent,exclusive=True)
+    assert b.record(key)==parent
     b.proc=tmp_path/'proc';process=b.proc/'42';process.mkdir(parents=True)
     (process/'status').write_text('Uid: 1001 1001 1001 1001\nNoNewPrivs: 1\nCapEff: 0000000000000000\nCapPrm: 0000000000000000\nCapAmb: 0000000000000000\n')
     (process/'cgroup').write_text('0::/system.slice/'+c.validation_unit(key,'receipt')+'\n')
@@ -794,7 +799,7 @@ def test_validation_ambiguous_dispatch_is_not_restarted(monkeypatch,tmp_path):
     dispatched=[]
     def start(*args):
         dispatched.append(args)
-        assert store
+        assert str(b.validation_record_path(key,'receipt')) in store
         raise ValueError('manager_command_failed')
     monkeypatch.setattr(b,'systemctl',start)
     with pytest.raises(ValueError,match='command_failed'):b.validate_job(r,key,'receipt',42,1001)
@@ -813,6 +818,7 @@ def test_validation_cannot_choose_entry_scope_current_or_early_business(monkeypa
     elif fault=='receipt_before_quiesce':parent['quiesced']=False
     elif fault=='retired_parent':parent['finalized']=True
     elif fault=='wrong_operation':operation='shell'
+    if fault in {'receipt_before_quiesce','retired_parent'}:b.save(r,parent)
     with pytest.raises(ValueError):b.validate_job(r,key,operation,42,1001)
     assert calls==[]
 
@@ -820,6 +826,7 @@ def test_validation_cannot_choose_entry_scope_current_or_early_business(monkeypa
 def test_business_validation_requires_resumed_phase_and_preserves_controller_serving_distinction(monkeypatch,tmp_path):
     _m,b,r,req,key,parent,_store,state,_artifact,_calls=validation_fixture(monkeypatch,tmp_path)
     parent.update(resumed=True,phase='resumed_awaiting_business')
+    b.save(r,parent)
     state['ControlGroup']='/system.slice/'+c.validation_unit(key,'post_resume')
     result=b.validate_job(r,key,'post_resume',42,1001)
     assert result['target_commit']==req['candidate_commit']
@@ -1269,6 +1276,10 @@ def test_parent_terminal_requires_real_retained_exit_before_gc_or_release(monkey
         b.release_job(r,key)
         assert calls[-1][1:3]==['stop','--no-block']
         state.update(LoadState='not-found',ActiveState='inactive',SubState='dead',InvocationID='',MainPID='0')
+        # A missing native unit cannot still own its old cgroup.  Reject that
+        # contradictory state before modelling actual GC's empty/defaults.
+        with pytest.raises(ValueError,match='terminal_state_changed'):b.job_status(r,key)
+        state.update(ControlGroup='',ExecMainExitTimestampMonotonic='0')
         assert b.job_status(r,key)['terminal_state']==pinned
         state.update(LoadState='loaded',InvocationID='b'*32)
         with pytest.raises(ValueError,match='invocation_changed'):b.job_status(r,key)
@@ -1387,6 +1398,10 @@ def test_rollback_fences_genuine_retained_child_after_its_cgroup_disappears(monk
     b.fence_job_processes(r,parent,include_parent=False)
     assert calls==[(unit,('stop',))]
     assert parent['writer_fences']['receipt']['phase']=='inactive_verified'
+    stored_parent=b.record(key)
+    assert stored_parent['original_invocation']=='a'*32
+    assert stored_parent['request']==parent['request'] and stored_parent['registry']==r
+    assert stored_parent['writer_fences']==parent['writer_fences']
     child=c.strict_json(_m.read_file(b.validation_record_path(key,'receipt')))
     assert child['terminal_state']['InvocationID']=='b'*32
     assert int(child['terminal_state']['ExecMainExitTimestampMonotonic'])>0
