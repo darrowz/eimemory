@@ -121,7 +121,8 @@ def test_release_plan_reaches_evidence_builder_but_not_admission_or_effects() ->
     plan = plans.RELEASE_CLOSURE_FAILURE_TEST_PLAN
     assert not plan.allows_path("eimemory/governance/release_closure.py")
     assert plan.allows_path("eimemory/governance/release_closure_gate_evidence.py")
-    assert plan.allows_path("eimemory/ops/release_closure_failure.py")
+    # Incident producers retain the independent authority boundary.
+    assert not plan.allows_path("eimemory/ops/release_closure_failure.py")
     assert not plan.allows_path("eimemory/governance/code_evolution_effects.py")
     assert not plan.allows_path("deploy/install_immutable_release.sh")
     assert not plan.allows_path("tests/test_release_closure.py")
