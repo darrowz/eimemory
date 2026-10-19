@@ -154,11 +154,13 @@ def verify_provider_authority(runtime: Any, snapshot: Any, *, owner_scope: Scope
 def delegated_provider_authority(runtime: Any, *, owner_scope: ScopeRef | Mapping[str, Any],
                                   profile_key: str) -> dict | None:
     """Optional explicit code-only route for the native assessment consumer."""
-    value = _secure_delegations()
-    if value is None:
+    if not os.path.lexists(DELEGATION_PATH):
         return None
     owner = _scope(owner_scope);provider = configured_provider_scope(owner)
     if provider == owner:
+        return None
+    value = _secure_delegations()
+    if value is None:
         return None
     if not any(entry['owner_scope'] == owner and entry['provider_scope'] == provider
                                 for entry in value['delegations']):

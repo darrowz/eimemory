@@ -30,6 +30,9 @@ def provider_authority_fixture(tmp_path, monkeypatch):
     entry=dict(owner_scope=asdict(owner),provider_scope=asdict(provider),capability_id=authority.CAPABILITY_ID,
         capability_scope='global',operation=authority.OPERATION,profile_key='l5.default',profile_digest='6'*64)
     mapping=dict(schema=authority.DELEGATION_SCHEMA,enabled=True,delegations=[entry])
+    delegation_path = tmp_path / 'active-delegation.json'
+    delegation_path.write_text(json.dumps(mapping), encoding='utf-8')
+    monkeypatch.setattr(authority, 'DELEGATION_PATH', delegation_path)
     monkeypatch.setattr(authority,'_secure_delegations',lambda:deepcopy(mapping))
     def profile(_self,key,*,runtime_scope,capability_scope,**_kwargs):
         scope=asdict(runtime_scope) if isinstance(runtime_scope,ScopeRef) else dict(runtime_scope)
@@ -51,6 +54,62 @@ def _create(f,identity='isolated-code-authority'):
         capability_authority=f.snapshot,source_evidence={'capability_authority':f.snapshot},
         payload={'capability_authority':f.snapshot,'profile_key':'l5.default'})
     return CodeEvolutionTransactionManager(f.runtime).create_detected(value)
+
+
+@pytest.mark.parametrize('error', [
+    ValueError('code_provider_delegation_parent_not_root_controlled'),
+    ValueError('code_provider_delegation_contract_invalid'),
+    PermissionError('unreadable authority'),
+    OSError('authority unavailable'),
+])
+def test_exact_provider_assessment_does_not_read_cross_scope_authority(tmp_path, monkeypatch, error):
+    path = tmp_path / 'delegations.json'
+    path.write_text('{}', encoding='utf-8')
+    monkeypatch.setattr(authority, 'DELEGATION_PATH', path)
+    owner = ScopeRef('tenant', 'agent', 'workspace', 'operator')
+    monkeypatch.setattr(authority, 'configured_provider_scope', lambda _owner: asdict(owner))
+    calls = []
+    def unavailable():
+        calls.append('read')
+        raise error
+    monkeypatch.setattr(authority, '_secure_delegations', unavailable)
+    # A same-owner native assessment needs no cross-scope grant. In a user
+    # namespace, even valid host-root files may have an unmapped ownership ID.
+    assert authority.delegated_provider_authority(SimpleNamespace(), owner_scope=owner,
+        profile_key='l5.default') is None
+    assert calls == []
+
+
+@pytest.mark.parametrize('error', [
+    ValueError('code_provider_delegation_parent_not_root_controlled'),
+    PermissionError('unreadable authority'),
+])
+def test_cross_scope_assessment_still_requires_readable_protected_authority(tmp_path, monkeypatch, error):
+    path = tmp_path / 'delegations.json'
+    path.write_text('{}', encoding='utf-8')
+    monkeypatch.setattr(authority, 'DELEGATION_PATH', path)
+    owner = ScopeRef('tenant', 'agent', 'workspace::channel::hermes', 'business-owner')
+    provider = ScopeRef('tenant', 'agent', 'workspace', 'operator')
+    monkeypatch.setattr(authority, 'configured_provider_scope', lambda _owner: asdict(provider))
+    def unavailable():
+        raise error
+    monkeypatch.setattr(authority, '_secure_delegations', unavailable)
+    monkeypatch.setattr(authority, 'select_provider_authority',
+        lambda *_a, **_k: pytest.fail('unverified delegation must not select a provider'))
+    with pytest.raises(type(error), match=str(error)):
+        authority.delegated_provider_authority(SimpleNamespace(), owner_scope=owner,
+            profile_key='l5.default')
+
+
+def test_absent_optional_delegation_preserves_unconfigured_legacy_reader(tmp_path, monkeypatch):
+    monkeypatch.setattr(authority, 'DELEGATION_PATH', tmp_path / 'absent.json')
+    monkeypatch.setattr(authority, 'configured_provider_scope',
+        lambda *_a: pytest.fail('absent optional delegation must not require provider configuration'))
+    monkeypatch.setattr(authority, '_secure_delegations',
+        lambda: pytest.fail('absent optional delegation must not be read'))
+    owner = ScopeRef('tenant', 'agent', 'workspace', 'operator')
+    assert authority.delegated_provider_authority(SimpleNamespace(), owner_scope=owner,
+        profile_key='l5.default') is None
 
 
 def test_code_provider_delegation_never_canonicalizes_business_identity(provider_authority_fixture):
