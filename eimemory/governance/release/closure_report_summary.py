@@ -94,4 +94,3 @@ def reported_release_summary(report: object) -> dict[str, Any]:
         "readiness_stage": str(readiness.get("current_stage") or readiness.get("status") or ""),
         "readiness_score": readiness.get("readiness_score"),
     }
-
