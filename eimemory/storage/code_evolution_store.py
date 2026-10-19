@@ -22,7 +22,7 @@ from eimemory.contracts.code_incident_provenance import (
     FIELDS as _PROVENANCE_FIELDS, SOURCE_KEY as _PROVENANCE_KEY,
     provenance_snapshot, verified_provenance, provenance_guard,
 )
-from eimemory.governance.evolution.code_evolution_provider_authority import (
+from eimemory.contracts.code_provider_authority import (
     SOURCE_KEY as _PROVIDER_AUTHORITY_KEY, validate_provider_authority,
     transaction_provider_authority,
 )

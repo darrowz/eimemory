@@ -19,6 +19,7 @@ AIGC:
 - Bind prior-policy handoff to an actual terminal receipt and retain global and scoped revocation. Standing authority can be explicitly persistent; each child retains its real expiry and the complete observation requirement.
 - Delegate code implementation through an exact root-controlled provider mapping, pin its authority throughout the transaction, and retain the original business owner. Validate an unconsumed prior policy in its original scope and recheck replacement authority when recovering publication.
 - Read repository identity as the selected runtime account during root grant installation, preserving Git ownership checks and rejecting changed or untrusted repositories.
+- Keep immutable provider-authority codecs in the data contracts layer, and include deployment receipt checks in both explicit CI plans. Exercise delegated socket routing with the real client type and preserve wrong-version rejection diagnostics.
 - Bind explicitly disabled or unconfigured PostgreSQL retrieval to its actual native configuration without reading an unavailable index. Preserve configured enabled projection proofs and reject changed or forged bypass evidence.
 
 ## [1.14.153] — 2026-10-19

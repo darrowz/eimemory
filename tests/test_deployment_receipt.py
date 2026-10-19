@@ -428,10 +428,21 @@ def test_deployment_receipt_reads_version_from_head_not_dirty_worktree(tmp_path)
                 health_url=health_url,
                 prior_commit=prior_commit,
             )
+        records = runtime.store.list_records(kinds=["promotion_request"], scope=SCOPE, limit=10)
     finally:
         runtime.close()
 
-    assert report == {"ok": False, "error": "health_version_mismatch"}
+    assert set(report) == {"ok", "error", "health_diagnostics"}
+    assert report["ok"] is False
+    assert report["error"] == "health_version_mismatch"
+    diagnostics = report["health_diagnostics"]
+    assert diagnostics["schema"] == "deployment_health_identity_diagnostics.v1"
+    assert diagnostics["health_ok"] is True
+    assert diagnostics["checks_ready"] is True
+    assert diagnostics["identity_fields_present"] == {
+        key: True for key in ("commit", "version", "current", "release", "import_root", "package_tree_digest")
+    }
+    assert records == []
 
 
 def test_deployment_receipt_idempotency_includes_prior_rollback_commit(tmp_path) -> None:
@@ -966,7 +977,6 @@ def _create_dir_link(current_link: Path, release_dir: Path) -> None:
             ["cmd", "/c", "mklink", "/J", str(current_link), str(release_dir)],
             check=True,
             capture_output=True,
-            text=True,
         )
 
 

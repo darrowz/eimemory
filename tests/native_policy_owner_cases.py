@@ -932,7 +932,13 @@ def test_native_policy_actual_socket_catalog_activation_profile_and_sqlite(nativ
     real_client = provider.CodeImplementationSocketClient
     with tempfile.TemporaryDirectory(prefix='eim-own-', dir='/var/tmp') as socket_dir:
         socket_path = Path(socket_dir)/'p.sock'
-        def client(**kwargs): return real_client(socket_path=socket_path, **kwargs)
+        class FixtureSocketClient(real_client):
+            # Keep the real transport's type contract: the bridge recognizes
+            # attested SocketClient instances to apply its bounded completion
+            # timeout. A function factory cannot be the isinstance operand.
+            def __init__(self, **kwargs):
+                super().__init__(socket_path=socket_path, **kwargs)
+        client = FixtureSocketClient
         monkeypatch.setattr(provider, 'CodeImplementationSocketClient', client)
         monkeypatch.setattr(bootstrap, 'CodeImplementationSocketClient', client)
         monkeypatch.setattr(bootstrap, 'CODE_IMPLEMENTATION_SOCKET', str(socket_path))
@@ -957,6 +963,8 @@ def test_native_policy_actual_socket_catalog_activation_profile_and_sqlite(nativ
             resolved = _REAL_PROVIDER_RESOLVER(f.runtime, runtime_scope=scope, capability_scope='global',
                                                checked_at=datetime.now(timezone.utc).isoformat(), probe=True)
             assert resolved['ok'] is True and resolved['health']['ok'] is True, resolved
+            assert isinstance(resolved['provider'], real_client)
+            assert isinstance(resolved['provider'], provider.CodeImplementationSocketClient)
             if mapped:
                 from eimemory.governance.evolution import code_evolution_provider_authority as authority_api
                 directory = owner.STANDING_AUTHORITY_DIRECTORY
@@ -989,7 +997,11 @@ def test_native_policy_actual_socket_catalog_activation_profile_and_sqlite(nativ
                 # then retain semantic rejection instead of inventing a tx.
                 assert len(completion_requests) > before, routed
                 assert routed['ok'] is False and routed['processed'][0]['status'] == 'proposal_blocked', routed
-                assert CodeEvolutionStore(f.runtime.store).list_transactions() == []
+                assert routed['processed'][0]['reason'] == (
+                    'provider_response_invalid:release_closure_gate_evidence_builder_invalid'), routed
+                ledger = CodeEvolutionStore(f.runtime.store)
+                assert ledger.list_transactions() == []
+                assert ledger.get_policy_consumption(result['policy_digest']) is None
         finally:
             server.stop()
 

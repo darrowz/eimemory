@@ -8,45 +8,23 @@ Legacy proposals without a snapshot continue to resolve their own exact scope.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict
-from hashlib import sha256
 from pathlib import Path
 from typing import Any
-import json
 import os
 import stat
 
 from eimemory.core.strict_json import loads
 from eimemory.models.records import ScopeRef
+from eimemory.contracts.code_provider_authority import (
+    SCHEMA, SOURCE_KEY, CAPABILITY_ID, OPERATION, _SCOPE_KEYS, _SNAPSHOT_KEYS,
+    _digest, _scope, _hex64, validate_provider_authority,
+    validate_provider_authority_snapshot, transaction_provider_authority,
+)
 
-SCHEMA = 'code_provider_authority.v1'
-SOURCE_KEY = 'capability_authority'
 DELEGATION_SCHEMA = 'code_provider_scope_delegations.v1'
 DELEGATION_PATH = Path('/etc/eimemory-code-automation-authority/code-provider-delegations.v1.json')
-CAPABILITY_ID = 'code.implementation'
-OPERATION = 'propose_patch_v2'
-_SCOPE_KEYS = {'tenant_id', 'agent_id', 'workspace_id', 'user_id'}
-_SNAPSHOT_KEYS = {'schema', 'owner_scope', 'provider_scope', 'capability_id', 'capability_scope',
-                  'operation', 'profile_key', 'profile_digest', 'authorization_basis', 'delegation_digest', 'digest'}
 _ENTRY_KEYS = {'owner_scope', 'provider_scope', 'capability_id', 'capability_scope', 'operation',
                'profile_key', 'profile_digest'}
-
-
-def _digest(value: Any) -> str:
-    return sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False,
-                            allow_nan=False).encode()).hexdigest()
-
-
-def _scope(value: ScopeRef | Mapping[str, Any]) -> dict[str, str]:
-    result = asdict(value) if isinstance(value, ScopeRef) else dict(value)
-    if (set(result) != _SCOPE_KEYS or any(not isinstance(item, str) or not item or item != item.strip() or '*' in item
-            or any(ord(char) < 32 for char in item) for item in result.values())):
-        raise ValueError('code_provider_exact_scope_required')
-    return result
-
-
-def _hex64(value: Any) -> bool:
-    return isinstance(value, str) and len(value) == 64 and all(char in '0123456789abcdef' for char in value)
 
 
 def configured_provider_scope(owner_scope: ScopeRef | Mapping[str, Any]) -> dict[str, str]:
@@ -143,35 +121,6 @@ def _profile(runtime: Any, provider: dict, profile_key: str) -> str:
     return resolved['profile']['profile_digest']
 
 
-def validate_provider_authority(snapshot: Any, *, owner_scope: ScopeRef | Mapping[str, Any] | None = None) -> dict:
-    """Validate immutable encoding only; current authorization is separate."""
-    if (not isinstance(snapshot, Mapping) or set(snapshot) != _SNAPSHOT_KEYS or snapshot.get('schema') != SCHEMA
-            or snapshot.get('capability_id') != CAPABILITY_ID or snapshot.get('capability_scope') != 'global'
-            or snapshot.get('operation') != OPERATION or not isinstance(snapshot.get('profile_key'), str)
-            or not snapshot['profile_key'] or snapshot['profile_key'] != snapshot['profile_key'].strip()
-            or not _hex64(snapshot.get('profile_digest'))):
-        raise ValueError('code_provider_authority_snapshot_invalid')
-    owner = _scope(snapshot['owner_scope']);provider = _scope(snapshot['provider_scope'])
-    if (owner_scope is not None and owner != _scope(owner_scope)
-            or owner['tenant_id'] != provider['tenant_id'] or owner['agent_id'] != provider['agent_id']):
-        raise ValueError('code_provider_authority_owner_mismatch')
-    basis = snapshot.get('authorization_basis');delegation = snapshot.get('delegation_digest')
-    if (basis not in {'exact_scope', 'existing_product_scope', 'root_code_provider_delegation'}
-            or (basis == 'exact_scope') != (owner == provider)
-            or (not _hex64(delegation) if basis == 'root_code_provider_delegation' else delegation != '')
-            or snapshot.get('digest') != _digest({key: value for key, value in snapshot.items() if key != 'digest'})):
-        raise ValueError('code_provider_authority_digest_invalid')
-    return dict(snapshot)
-
-
-def validate_provider_authority_snapshot(snapshot: Any, *, owner_scope: ScopeRef | Mapping[str, Any],
-                                         profile_key: str = '') -> dict:
-    value = validate_provider_authority(snapshot, owner_scope=owner_scope)
-    if profile_key and value['profile_key'] != profile_key:
-        raise ValueError('code_provider_authority_profile_key_mismatch')
-    return value
-
-
 def select_provider_authority(runtime: Any, *, owner_scope: ScopeRef | Mapping[str, Any], profile_key: str) -> dict:
     owner = _scope(owner_scope);provider = configured_provider_scope(owner)
     # Select only the configured product target. Missing delegation does not
@@ -231,25 +180,3 @@ def resolve_provider_authority(runtime: Any, *, owner_scope: ScopeRef | Mapping[
     result = resolve_code_implementation_provider(runtime, runtime_scope=value['provider_scope'], capability_scope='global',
         checked_at=checked_at, probe=probe)
     return {**result, SOURCE_KEY: value}
-
-
-def transaction_provider_authority(transaction: Mapping[str, Any]) -> dict | None:
-    """Read the same snapshot from source, both ledger mirrors and proposal."""
-    source = transaction.get('source_evidence') or {}
-    payload = transaction.get('payload') or {}
-    proposal = payload.get('payload') if isinstance(payload, Mapping) else None
-    mirror = payload.get('source_evidence') if isinstance(payload, Mapping) else None
-    values = [source.get(SOURCE_KEY) if isinstance(source, Mapping) else None,
-              payload.get(SOURCE_KEY) if isinstance(payload, Mapping) else None,
-              proposal.get(SOURCE_KEY) if isinstance(proposal, Mapping) else None,
-              mirror.get(SOURCE_KEY) if isinstance(mirror, Mapping) else None]
-    if all(value is None for value in values):
-        if (transaction.get('schema_version') == 'code_evolution_transaction.v3'
-                or any(isinstance(item, Mapping) and SOURCE_KEY in item for item in (source,payload,proposal,mirror))):
-            raise ValueError('code_provider_authority_snapshot_missing')
-        return None
-    if any(value is None or value != values[0] for value in values):
-        raise ValueError('code_provider_authority_projection_mismatch')
-    owner = {key: transaction[key] for key in _SCOPE_KEYS}
-    return validate_provider_authority_snapshot(values[0], owner_scope=owner,
-        profile_key=str(transaction.get('profile_key') or ''))

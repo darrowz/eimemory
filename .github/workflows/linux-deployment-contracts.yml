@@ -41,6 +41,7 @@ jobs:
         run: >-
           python -B -m pytest -q --strict-markers
           tests/test_deployment_tools.py
+          tests/test_deployment_receipt.py
           tests/test_hermes_gateway_restart_boundary.py
           tests/test_storage_writer_restart_order.py
           tests/test_deploy_worker_attempt_receipts.py
