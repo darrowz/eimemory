@@ -11,6 +11,14 @@ AIGC:
 
 # Changelog
 
+## [1.14.154] — 2026-10-19
+
+- Separate quality-chain diagnostics from genuine L5 terminal authority. Read exact-owner recovery work before the bounded limit and preserve unfinished transactions and native failures.
+- Retain unknown original incident facts through proposals, typed ledger rows, terminal receipts, observations and L5 qualification; require explicit verified original facts for product completion.
+- Delegate one-shot native incident policies from exact-scope root-controlled standing authority. Revalidate current capture fences, protected routes and Profile bindings, preserve manual policies, and recover atomic publication without resetting issuance clocks.
+- Bind prior-policy handoff to an actual terminal receipt and retain global and scoped revocation. Standing authority can be explicitly persistent; each child retains its real expiry and the complete observation requirement.
+- Bind explicitly disabled or unconfigured PostgreSQL retrieval to its actual native configuration without reading an unavailable index. Preserve configured enabled projection proofs and reject changed or forged bypass evidence.
+
 ## [1.14.153] — 2026-10-19
 
 - Select historical business cases from the protected exact source grants before applying a candidate limit. New imports cannot displace those targets; missing, archived or changed sources still fail physical-version, cutoff, provenance and signature verification.
