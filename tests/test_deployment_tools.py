@@ -240,6 +240,10 @@ def test_native_product_launcher_selects_raw_source_over_noneditable_wheel_and_r
                     os.chown(path, account.pw_uid, account.pw_gid, follow_symlinks=False)
             work = root / 'business-data';work.mkdir(mode=0o700)
             os.chown(work, account.pw_uid, account.pw_gid)
+            config = work / 'config';config.mkdir(mode=0o700)
+            settings_file = config / 'settings.json';settings_file.write_text('{}\n')
+            for path in (config,settings_file):os.chown(path,account.pw_uid,account.pw_gid)
+            settings_file.chmod(0o600)
             subprocess.run(["mount", "--bind", str(release), str(release)], check=True, capture_output=True, timeout=20)
             mounted = True
             subprocess.run(["mount", "-o", "remount,bind,ro", str(release)], check=True, capture_output=True, timeout=20)
@@ -271,9 +275,10 @@ def test_native_product_launcher_selects_raw_source_over_noneditable_wheel_and_r
             import time
             import urllib.request
             stderr = root / 'actual-rpc.stderr'
-            with stderr.open('wb') as log:
+            stdout = root / 'actual-rpc.stdout'
+            with stderr.open('wb') as log, stdout.open('wb') as output:
                 child = subprocess.Popen(prefix + real_command + ['serve-eibrain-rpc', '--host', '127.0.0.1', '--port', '1'],
-                    cwd=root, env=real_env, stdout=subprocess.DEVNULL, stderr=log)
+                    cwd=root, env=real_env, stdout=output, stderr=log)
                 try:
                     deadline = time.monotonic() + 45;address = None
                     while time.monotonic() < deadline:
@@ -284,7 +289,7 @@ def test_native_product_launcher_selects_raw_source_over_noneditable_wheel_and_r
                                 address=(message['host'],message['port'])
                         if address is not None or child.poll() is not None:break
                         time.sleep(.1)
-                    assert child.poll() is None and address is not None, stderr.read_text()
+                    assert child.poll() is None and address is not None, stdout.read_text()+stderr.read_text()
                     request=urllib.request.Request(f'http://{address[0]}:{address[1]}/health',
                         headers={'Authorization':'Bearer '+real_env['EIMEMORY_RPC_AUTH_TOKEN']})
                     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -680,7 +685,7 @@ def test_eimemory_rpc_systemd_unit_uses_loopback_endpoint() -> None:
         in unit_text
     )
     assert "/opt/eimemory/current/.venv/bin/eimemory serve-eibrain-rpc" not in unit_text
-    assert "--loopback-health-host 127.0.0.1 --loopback-health-port 8091" in unit_text
+    assert "--loopback-health-host" not in unit_text
     assert "Environment=EIMEMORY_ROOT=/var/lib/eimemory" in unit_text
     assert "Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory" in unit_text
     assert "KillMode=mixed" in unit_text
@@ -749,7 +754,6 @@ def test_agent_runtime_adapter_operations_are_reproducible_and_fail_open() -> No
     assert "EIMEMORY_RPC_AUTH_TOKEN" in operations
     assert "EnvironmentFile=/etc/eimemory/rpc.env" in unit_text
     assert "--host 127.0.0.1 --port 8091" in unit_text
-    assert "--loopback-health-host 127.0.0.1 --loopback-health-port 8091" in unit_text
 
 
 def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> None:
