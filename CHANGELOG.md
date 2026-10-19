@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.153] — 2026-10-19
+
+- Select historical business cases from the protected exact source grants before applying a candidate limit. New imports cannot displace those targets; missing, archived or changed sources still fail physical-version, cutoff, provenance and signature verification.
+- Filter generic controlled-benchmark candidates by native default-use visibility, exact scope/source and creation cutoff before the original bounded scan. Preserve full-precision temporal checks and independent hydrated-source verification.
+- Keep candidate sorting limited to thin identity rows before reading payloads, and cover ingestion growth, foreign boundaries, altered index hints and timezone/microsecond cutoff semantics with actual recall regressions.
+
 ## [1.14.152] — 2026-10-19
 
 - Preserve explicit disabled/unconfigured vector bypass without weakening enabled PostgreSQL readiness. Keep genuine pre-152 signed business certificates verifiable, with the new readiness field mandatory from 152.
