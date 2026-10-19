@@ -123,11 +123,11 @@ def test_native_controlled_cutoff_and_expired_sources_retain_specific_diagnostic
         report = run_controlled_memory_benchmark(runtime, dataset, scope=SCOPE, source_ids=["hermes"])
         report["dataset_source"] = "controlled_records"
         generation = nightly_result_diagnostics({"memory_eval_ci": report}, [])["memory_benchmark"]["dataset_generation"]
-        assert generation["same_run_skipped_count"] == 1
+        # Creation cutoff is now applied before bounded candidate hydration.
+        assert generation["same_run_skipped_count"] == 0
         assert generation["stable_before"] == "2026-10-11T00:00:00Z"
         assert generation["skipped_reason_counts"] == {
-            "source_record_expired": 1, "source_record_not_yet_valid": 1,
-            "source_not_stable_before_cutoff": 1}
+            "source_record_expired": 1, "source_record_not_yet_valid": 1}
         assert generation["selection_truncated"] is False
 
 
@@ -515,7 +515,10 @@ def test_native_source_eligibility_reasons_survive_generation_and_old_case_durab
         runtime.store.append(retained)
         generated = build_controlled_memory_benchmark(runtime, scope=SCOPE, source_ids=["hermes"])
         assert [case["source_binding"]["record_id"] for case in generated["cases"]] == [retained.record_id]
-        assert generated["dataset_generation"]["skipped_reason_counts"] == {reason: 1}
+        # SQL prefilters episode/evidence hints. Payload capture quality still
+        # contributes a Python skip; supplied old cases retain their own reason.
+        expected_skips = {reason: 1} if boundary == "capture_rejected" else {}
+        assert generated["dataset_generation"]["skipped_reason_counts"] == expected_skips
         current_report = run_controlled_memory_benchmark(runtime, generated, scope=SCOPE, source_ids=["hermes"])
         old_case_report = run_controlled_memory_benchmark(runtime, original, scope=SCOPE, source_ids=["hermes"])
         assert current_report["pass_count"] == 1
@@ -535,7 +538,7 @@ def test_native_source_eligibility_reasons_survive_generation_and_old_case_durab
                 supervisor_id = persist_supervisor_summary(runtime, scope=SCOPE, summary=summary).record_id
                 selected_receipt_id, selected_report, selected_diagnostics = receipt.record_id, measured, diagnostics
         current_diagnostics = nightly_result_diagnostics({"memory_eval_ci": current_report}, [])["memory_benchmark"]
-        assert current_diagnostics["dataset_generation"]["skipped_reason_counts"] == {reason: 1}
+        assert current_diagnostics["dataset_generation"]["skipped_reason_counts"] == expected_skips
         old_diagnostics = nightly_result_diagnostics({"memory_eval_ci": old_case_report}, [])["memory_benchmark"]
         assert old_diagnostics["failed_case_refs"][0]["failure_reason"] == reason
         assert "retrieval_diagnostics" not in old_diagnostics["failed_case_refs"][0]

@@ -48,7 +48,10 @@ def test_typed_deployment_evidence_has_one_operational_contract(tmp_path, monkey
         assert record.record_id in {item.record_id for item in explicit.items}
         dataset = build_controlled_memory_benchmark(runtime, scope=SCOPE, source_ids=["hermes"])
         assert dataset["cases"] == []
-        assert dataset["dataset_generation"]["skipped_reason_counts"] == {"source_record_evidence_only":1}
+        # Native typed boundaries exclude this index candidate before the
+        # bounded payload scan, including an older primary/default projection.
+        assert dataset["dataset_generation"]["skipped_reason_counts"] == {}
+        assert dataset["dataset_generation"]["scanned_count"] == 0
 
 
 def test_deployment_words_do_not_reclassify_a_real_operator_fact(tmp_path, monkeypatch):
