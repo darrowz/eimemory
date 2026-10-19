@@ -1263,8 +1263,19 @@ finally:
             verification_receipt_digests=transaction["payload"]["verification_receipt_digests"],
             observation_deadline=transaction["observation_deadline"], lineage=_code_evolution_lineage(transaction))
         env.update(EIMEMORY_RUNTIME_COMMIT=release.name, EIMEMORY_RUNTIME_TRANSITION_JOB=job_key,
-                   INVOCATION_ID=str(os.environ.get("INVOCATION_ID") or ""))
-        argv = [str(release / ".venv/bin/python"), "-I", "-B", "-c", worker,
+                   INVOCATION_ID=str(os.environ.get("INVOCATION_ID") or ""),
+                   EIMEMORY_CONFIG_DIR="/etc/eimemory",
+                   EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="/etc/eimemory/evidence-receipt.env")
+        python = str(release / ".venv/bin/python")
+        # The controlled policy is bound to the real service recall engine.
+        # Load the SAME allowlisted files/order as the standard installer;
+        # a stripped subprocess environment must not silently select SQLite.
+        argv = [python, "-I", "-B", str(release / "deploy/run_with_governance_env.py"),
+                "--env-file", "/etc/eimemory/governance.env", "--optional",
+                "--runtime-recall-config-dir", "/etc/eimemory",
+                "--runtime-recall-root", str(runtime.store.root),
+                "--optional-runtime-authority-env-file", "/etc/eimemory/runtime-authority.env", "--",
+                python, "-I", "-B", "-c", worker,
                 str(release), job_key, str(runtime.store.root)]
         report, transport, raw, errors = _run_native_json_report(argv, cwd=release, env=env, heartbeat=heartbeat)
         from eimemory.governance.evolution.code_deployment_job import JOBS_ROOT, _exclusive_blob

@@ -376,6 +376,32 @@ def test_restoration_transport_renews_sql_only_on_original_thread_and_propagates
         jobs._after_storage_call(failed_transport,manager=SimpleNamespace(renew_lease=renew),transaction_id="tx",interval=.01)
 
 
+def test_post_resume_runtime_loads_service_recall_configuration_instead_of_ambient_route(tmp_path,monkeypatch):
+    release=tmp_path/"releases"/("b"*40);release.mkdir(parents=True)
+    key="d"*64;root=tmp_path/"jobs";jobs._directory(root/key,create=True)
+    monkeypatch.setattr(jobs,"JOBS_ROOT",root)
+    transaction={**_body()["scope"],"candidate_commit":release.name,"payload":{
+        "verification_receipt_digests":["6"*64,"7"*64,"8"*64]},"observation_deadline":"2030-01-01T00:00:00Z"}
+    monkeypatch.setattr(effects,"_code_evolution_lineage",lambda tx:{})
+    monkeypatch.setenv("EIMEMORY_POSTGRES_VECTOR_DSN","ambient-untrusted-route")
+    seen=[]
+    def native(argv,**kwargs):
+        seen.append((argv,kwargs))
+        return {"ok":False,"business_qualified":False},{"exit_status":1},b'{"ok":false}',b"retained"
+    monkeypatch.setattr(effects,"_run_native_json_report",native)
+    runtime=SimpleNamespace(store=SimpleNamespace(root=tmp_path/"runtime"))
+    result=effects.ProductionEffectAdapter().run_post_resume_business(runtime,transaction=transaction,
+        policy={"deployment":{"current_link":str(release)}},job_key=key,heartbeat=lambda:None)
+    argv,kwargs=seen[0]
+    assert str(release/"deploy/run_with_governance_env.py") in argv
+    assert argv[argv.index("--runtime-recall-config-dir")+1]=="/etc/eimemory"
+    assert argv[argv.index("--runtime-recall-root")+1]==str(runtime.store.root)
+    assert argv[argv.index("--optional-runtime-authority-env-file")+1]=="/etc/eimemory/runtime-authority.env"
+    assert "EIMEMORY_POSTGRES_VECTOR_DSN" not in kwargs["env"]
+    assert result["business_qualified"] is False and result["native_transport"]["exit_status"]==1
+    assert (root/key/"post-resume-business.stderr").read_bytes()==b"retained"
+
+
 @pytest.mark.skipif(os.name!="posix",reason="actual directory fsync/no-follow requires POSIX")
 def test_new_job_directory_syncs_each_new_parent_and_rejects_symlink(tmp_path,monkeypatch):
     observed=[]
