@@ -425,6 +425,23 @@ def test_posix_empty_source_and_changed_then_restored_identity_are_strict(tmp_pa
         producer_files={'__init__.py':authority.sha256(path.read_bytes()).hexdigest()})
     registry=dict(runtime_user='darrow',runtime_uid=os.geteuid(),runtime_gid=os.getegid())
     before=authority._producer_guard(manifest,registry)
+    if os.geteuid()==0:
+        # Same native layout as an unrelated root job adding a /var/tmp entry.
+        # Root-only parent namespace stays fixed; source file is unchanged.
+        parent=tmp_path.parent
+        sibling=parent/('unrelated-private-state-'+tmp_path.name);sibling.mkdir()
+        assert before==authority._producer_guard(manifest,registry)
+        sibling.rmdir()
+        import pwd
+        account=pwd.getpwnam('darrow');mutable=tmp_path/'mutable';mutable.mkdir()
+        source=mutable/'producer.py';source.write_bytes(b'same source')
+        os.chown(mutable,account.pw_uid,account.pw_gid)
+        mutable_manifest={**manifest,'source_directory':str(mutable),
+            'producer_files':{'producer.py':authority.sha256(source.read_bytes()).hexdigest()}}
+        mutable_registry={**registry,'runtime_uid':account.pw_uid,'runtime_gid':account.pw_gid}
+        original_parent=authority._producer_guard(mutable_manifest,mutable_registry)
+        moved=tmp_path/'moved';mutable.rename(moved);moved.rename(mutable)
+        assert original_parent!=authority._producer_guard(mutable_manifest,mutable_registry)
     path.write_bytes(b'value = 2\n');path.write_bytes(b'value = 1\n')
     after=authority._producer_guard(manifest,registry)
     assert before!=after

@@ -118,6 +118,16 @@ def _identity(meta):
             meta.st_nlink, meta.st_size, meta.st_mtime_ns, meta.st_ctime_ns)
 
 
+def _directory_identity(meta):
+    # Root-only ancestors (including sticky global temporary directories) may
+    # receive unrelated entries from other root jobs. Runtime cannot replace an
+    # existing root entry there. Keep namespace/permission identity, while all
+    # runtime-writable parents retain mutation clocks and every file stays full.
+    if meta.st_uid==0 and (not meta.st_mode&0o022 or meta.st_mode&stat.S_ISVTX):
+        return (meta.st_dev,meta.st_ino,meta.st_uid,meta.st_gid,meta.st_mode)
+    return _identity(meta)
+
+
 def _read(path, *, owners=(0,), gid=None, limit=16*1024*1024, mode=None,
           allow_empty=False, with_identity=False):
     """No-follow every component, with descriptor/name identity revalidation."""
@@ -152,11 +162,11 @@ def _read(path, *, owners=(0,), gid=None, limit=16*1024*1024, mode=None,
         if len(raw) != before.st_size or _identity(before) != _identity(os.fstat(fd)) or _identity(before) != _identity(os.stat(leaf, dir_fd=descriptors[-2], follow_symlinks=False)):
             raise ValueError('managed_authority_source_changed')
         for index, old in enumerate(before_dirs):
-            if _identity(old) != _identity(os.fstat(descriptors[index])):
+            if _directory_identity(old) != _directory_identity(os.fstat(descriptors[index])):
                 raise ValueError('managed_authority_parent_changed')
-            if index and _identity(old) != _identity(os.stat(names[index-1], dir_fd=descriptors[index-1], follow_symlinks=False)):
+            if index and _directory_identity(old) != _directory_identity(os.stat(names[index-1], dir_fd=descriptors[index-1], follow_symlinks=False)):
                 raise ValueError('managed_authority_parent_replaced')
-        identity=(_identity(before),tuple(_identity(meta) for meta in before_dirs))
+        identity=(_identity(before),tuple(_directory_identity(meta) for meta in before_dirs))
         return (bytes(raw),identity) if with_identity else bytes(raw)
     finally:
         for fd in reversed(descriptors): os.close(fd)
