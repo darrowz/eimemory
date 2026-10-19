@@ -71,11 +71,11 @@ export EIMEMORY_DEPLOY_SCOPE_WORKSPACE="$SCOPE_WORKSPACE"
 export EIMEMORY_DEPLOY_SCOPE_USER="$SCOPE_USER"
 
 echo "stage=memory_plane_eval"
-EIMEMORY_L1_WORKER_ACTION=eval "$BIN" -m eimemory.cli.l1_worker
+EIMEMORY_L1_WORKER_ACTION=eval "$BIN" -I -B -X "pycache_prefix=$CACHE" -m eimemory.cli.l1_worker
 echo "stage=memory_plane_eval ok"
 
 echo "stage=production_query_collect"
-"$BIN" -m eimemory.cli.main eval production-query collect \
+"$BIN" -I -B -X "pycache_prefix=$CACHE" -m eimemory.cli.main eval production-query collect \
   --scope-tenant "$SCOPE_TENANT" \
   --scope-agent "$SCOPE_AGENT" \
   --scope-workspace "$SCOPE_WORKSPACE" \
@@ -84,14 +84,14 @@ echo "stage=production_query_collect"
 echo "stage=production_query_collect ok"
 
 echo "stage=production_query_status"
-"$BIN" -m eimemory.cli.main eval production-query status \
+"$BIN" -I -B -X "pycache_prefix=$CACHE" -m eimemory.cli.main eval production-query status \
   --scope-tenant "$SCOPE_TENANT" \
   --scope-agent "$SCOPE_AGENT" \
   --scope-workspace "$SCOPE_WORKSPACE" \
   --scope-user "$SCOPE_USER" | tee "$STATUS_JSON"
 echo "stage=production_query_status ok"
 
-ready="$("$BIN" -c 'import json, os; from pathlib import Path; obj=json.loads(Path(os.environ["EIMEMORY_L5_QUERY_STATUS_JSON"]).read_text(encoding="utf-8")); print("1" if obj.get("ok") is True and obj.get("ready") is True else "0")')"
+ready="$("$BIN" -I -B -X "pycache_prefix=$CACHE" -c 'import json, os; from pathlib import Path; obj=json.loads(Path(os.environ["EIMEMORY_L5_QUERY_STATUS_JSON"]).read_text(encoding="utf-8")); print("1" if obj.get("ok") is True and obj.get("ready") is True else "0")')"
 if [ "$ready" != "1" ]; then
   echo "blocked_stage=production_query_dataset"
   echo "blocked_reason=production_query_not_ready"
@@ -100,7 +100,7 @@ if [ "$ready" != "1" ]; then
 fi
 
 echo "stage=release_closure"
-"$BIN" -m eimemory.cli.main learn release-closure \
+"$BIN" -I -B -X "pycache_prefix=$CACHE" -m eimemory.cli.main learn release-closure \
   --repo-root "$REPO" \
   --current-link "$CURRENT" \
   --health-url "$HEALTH" \
