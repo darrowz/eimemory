@@ -16,6 +16,7 @@ AIGC:
 - Keep same-scope native L5 assessments independent of unrelated cross-scope delegation files. Preserve strict delegated authority validation and the absent-mapping legacy path in user namespaces.
 - Archive the actual nightly maintenance and native-assessment reports with exact run, scope and release bindings. Retain bounded failure stage/type/code diagnostics, verify physical readback, and carry safe references through supervisor and command archives.
 - Collect bounded SQLite incident-ingress chronology with append-only version metadata, incrementally signed checkpoints and explicit coverage gaps. Preserve unclassified, external, PostgreSQL and historical unknowns, and retain the original L5 qualification gates.
+- Initialize the native policy lock marker after acquiring the kernel lock, preventing concurrent Windows issuers from writing a byte already locked by another owner.
 
 ## [1.14.154] — 2026-10-19
 
