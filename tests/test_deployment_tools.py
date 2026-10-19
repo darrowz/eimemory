@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import errno
+import ast
+import base64
+import csv
 import importlib.util
+import io
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -10,6 +14,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+from hashlib import sha256
+import zipfile
 
 import pytest
 
@@ -18,6 +25,178 @@ from deploy.rotate_console_token import rotate_token
 
 
 pytestmark = pytest.mark.linux_deployment
+
+
+def _noneditable_origin_environment(root: Path, *, venv: Path | None = None) -> dict[str, Path]:
+    """Install an actual, offline wheel; its copied package is not a mock importer."""
+    release = root / "releases" / ("a" * 40)
+    release.mkdir(parents=True)
+    package = {
+        "eimemory/__init__.py": b"",
+        "eimemory/cli/__init__.py": b"",
+        "eimemory/cli/main.py": (
+            b"import json, os, sys\n"
+            b"print(json.dumps({'origin':'wheel-copy','file':__file__,"
+            b"'args':sys.argv[1:],'uid':getattr(os,'getuid',lambda:None)()}))\n"
+        ),
+    }
+    metadata = "eimemory-0.0.1.dist-info/"
+    members = {
+        **package,
+        metadata + "METADATA": b"Metadata-Version: 2.1\nName: eimemory\nVersion: 0.0.1\n",
+        metadata + "WHEEL": (
+            b"Wheel-Version: 1.0\nGenerator: isolated-origin-fixture\n"
+            b"Root-Is-Purelib: true\nTag: py3-none-any\n"
+        ),
+    }
+    record = io.StringIO(newline="")
+    writer = csv.writer(record, lineterminator="\n")
+    for name, raw in members.items():
+        writer.writerow([name, "sha256=" + base64.urlsafe_b64encode(sha256(raw).digest()).rstrip(b"=").decode(), len(raw)])
+    writer.writerow([metadata + "RECORD", "", ""])
+    members[metadata + "RECORD"] = record.getvalue().encode()
+    wheel = root / "eimemory-0.0.1-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, raw in members.items():
+            archive.writestr(name, raw)
+    for name, raw in package.items():
+        target = release / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+    venv = venv or release / ".venv"
+    subprocess.run([sys.executable, "-I", "-B", "-m", "venv", str(venv)],
+                   capture_output=True, text=True, check=True, timeout=90)
+    python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    subprocess.run([str(python), "-I", "-B", "-m", "pip", "install", "--no-index", "--no-deps", "--no-compile", str(wheel)],
+                   capture_output=True, text=True, check=True, timeout=60)
+    # A deliberate, visible divergence proves which of the two real trees runs.
+    (release / "eimemory/cli/main.py").write_bytes(package["eimemory/cli/main.py"].replace(b"wheel-copy", b"raw-source"))
+    return {"release": release, "python": python, "wheel": wheel, "root": root, "venv": venv}
+
+
+def test_isolated_noneditable_wheel_ignores_pythonpath_and_uses_its_real_copy(tmp_path):
+    # A short temporary venv keeps ensurepip's deep vendor paths usable on
+    # Windows. The native test below uses the real release/.venv arrangement.
+    with tempfile.TemporaryDirectory(prefix="eio-") as short:
+        value = _noneditable_origin_environment(tmp_path, venv=Path(short) / "venv")
+        result = subprocess.run([str(value["python"]), "-I", "-B", "-m", "eimemory.cli.main", "fixture-argument"],
+            cwd=value["release"], env={**os.environ, "PYTHONPATH": str(value["release"])},
+            capture_output=True, text=True, check=True, timeout=20)
+        observed = json.loads(result.stdout)
+        assert observed["origin"] == "wheel-copy"
+        assert observed["args"] == ["fixture-argument"]
+        assert Path(observed["file"]).is_relative_to(value["venv"])
+        assert not Path(observed["file"]).is_relative_to(value["release"] / "eimemory")
+
+
+def _private_product_launcher(source: Path, target: Path, constants: dict[str, Path]) -> None:
+    """Relocate only fixed filesystem constants; preserve every function's AST."""
+    tree = ast.parse(source.read_bytes())
+    functions = {node.name: ast.dump(node) for node in tree.body if isinstance(node, ast.FunctionDef)}
+    replaced = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            if name in constants:
+                node.value = ast.Call(func=ast.Name(id="Path", ctx=ast.Load()),
+                                      args=[ast.Constant(str(constants[name]))], keywords=[])
+                replaced.add(name)
+    assert replaced == set(constants), "Fixture must not silently retain a production authority path"
+    assert {node.name: ast.dump(node) for node in tree.body if isinstance(node, ast.FunctionDef)} == functions
+    target.write_text(ast.unparse(ast.fix_missing_locations(tree)) + "\n", encoding="utf-8")
+
+
+@pytest.mark.skipif(sys.platform != "linux" or not hasattr(os, "geteuid") or os.geteuid() != 0,
+                    reason="actual root ownership, runtime UID and read-only mount require native Linux")
+def test_native_product_launcher_selects_raw_source_over_noneditable_wheel_and_rejects_bad_origins():
+    """Real UID/venv/imports, confined to one private /run fixture, never production."""
+    import pwd
+    from eimemory.contracts import runtime_manager as contract
+
+    account = pwd.getpwuid(1001)
+    assert shutil.which("mount") and shutil.which("umount") and shutil.which("runuser")
+    source = Path(__file__).resolve().parents[1] / "deploy/runtime_manager_launch.py"
+    with tempfile.TemporaryDirectory(prefix="eimemory-product-origin-", dir="/run") as name:
+        root = Path(name)
+        root.chmod(0o755)
+        value = _noneditable_origin_environment(root)
+        release = value["release"]
+        # The synthetic package can deliberately expose a wrong package search
+        # path. The actual launcher's origin check, not an import mock, rejects it.
+        (release / "eimemory/__init__.py").write_text(
+            "import os\nif os.environ.get('EIMEMORY_ORIGIN_FIXTURE_BAD_PATH'):\n"
+            "    __path__ = [os.environ['EIMEMORY_ORIGIN_FIXTURE_BAD_PATH']]\n", encoding="utf-8")
+        for directory, dirs, files in os.walk(release, followlinks=False):
+            for path in [Path(directory), *(Path(directory) / item for item in (*dirs, *files))]:
+                os.chown(path, account.pw_uid, account.pw_gid, follow_symlinks=False)
+        current = root / "current"
+        current.symlink_to(release, target_is_directory=True)
+        cache = root / "empty-pycache"
+        cache.mkdir(mode=0o555)
+        authority = root / "authority"
+        authority.mkdir(mode=0o755)
+        registry_path = authority / "runtime-manager.v1.json"
+        registry = dict(schema=contract.REGISTRY_SCHEMA,
+            runtime_user=account.pw_name, runtime_uid=account.pw_uid, runtime_gid=account.pw_gid,
+            controller_commit="a" * 40, runtime_commit="a" * 40, repository_root="/dev-project/eimemory",
+            units={unit: dict(manager="user" if unit in contract.USER_COMPAT_UNITS else "system", installed=False)
+                   for unit in contract.REGISTERED_UNITS}, template_hashes={},
+            compatibility_hashes={path: "0" * 64 for path in contract.COMPATIBILITY_PATHS},
+            unit_scopes={unit: dict(tenant_id="origin-fixture", agent_id="fixture", workspace_id="fixture", user_id="fixture")
+                         for unit in contract.PRODUCT_SERVICES},
+            managed_incident_authority={"enabled": False}, controller_entry_digest=None, validation_entry_digest=None)
+        registry["generation"] = contract.digest(registry)
+        assert contract.validate_registry(registry) == registry
+        registry_path.write_text(json.dumps(registry), encoding="utf-8")
+        launcher = authority / "runtime_manager_launch.py"
+        _private_product_launcher(source, launcher, {
+            "CURRENT": current, "RELEASES": root / "releases", "REGISTRY": registry_path, "EMPTY_PYCACHE": cache})
+        for path in (registry_path, launcher):
+            os.chown(path, 0, account.pw_gid)
+            path.chmod(0o640)
+        flags = ["-I", "-B", "-X", "pycache_prefix=" + str(cache)]
+        prefix = [shutil.which("runuser"), "-u", account.pw_name, "--"]
+        command = [str(value["python"]), *flags, str(launcher), "--product-module", "eimemory.cli.main", "fixture-argument"]
+        environment = {**os.environ, "PYTHONPATH": str(root / "wrong-caller-source")}
+        mounted = False
+        try:
+            subprocess.run(["mount", "--bind", str(release), str(release)], check=True, capture_output=True, timeout=20)
+            mounted = True
+            subprocess.run(["mount", "-o", "remount,bind,ro", str(release)], check=True, capture_output=True, timeout=20)
+            assert os.statvfs(release).f_flag & os.ST_RDONLY
+            result = subprocess.run(prefix + command, cwd=root, env=environment,
+                                    capture_output=True, text=True, timeout=20)
+            assert result.returncode == 0, result.stderr
+            observed = json.loads(result.stdout)
+            assert observed["origin"] == "raw-source" and observed["uid"] == 1001
+            assert observed["args"] == ["fixture-argument"]
+            assert Path(observed["file"]) == release / "eimemory/cli/main.py"
+            # A root caller, wrong interpreter, non-allowlisted module and an
+            # already imported wheel package must all retain actual rejection.
+            preload = (
+                "import eimemory,runpy,sys;sys.argv=" + repr([str(launcher), "--product-module", "eimemory.cli.main"]) +
+                ";runpy.run_path(" + repr(str(launcher)) + ",run_name='__main__')"
+            )
+            failures = [
+                (command, environment, "manager_launcher_runtime_uid_required"),
+                (prefix + [sys.executable, *flags, str(launcher), "--product-module", "eimemory.cli.main"],
+                 environment, "manager_product_target_interpreter_required"),
+                (prefix + [str(value["python"]), *flags, str(launcher), "--product-module", "eimemory.unregistered"],
+                 environment, "manager_product_module_not_registered"),
+                (prefix + [str(value["python"]), *flags, "-c", preload],
+                 environment, "manager_product_module_origin_invalid"),
+                (prefix + command, {**environment, "EIMEMORY_ORIGIN_FIXTURE_BAD_PATH": str(root / "wrong-package-search")},
+                 "manager_product_package_path_invalid"),
+            ]
+            for argv, env, reason in failures:
+                failed = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True, timeout=20)
+                assert failed.returncode != 0, (argv, failed.stdout)
+                assert reason in failed.stderr
+                assert "raw-source" not in failed.stdout and "wheel-copy" not in failed.stdout
+            assert not any(cache.iterdir())
+        finally:
+            if mounted:
+                subprocess.run(["umount", str(release)], check=True, capture_output=True, timeout=20)
 
 
 @pytest.mark.parametrize('state,expected', [('activating',0),('deactivating',0),('inactive',1),('failed',1),('unknown',2)])
