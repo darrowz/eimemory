@@ -1353,9 +1353,13 @@ def sample_code_evolution_observation(
     provider_ok = not provider_error
     receipt_digest = str(deployment.get("deployment_receipt_digest") or "")
     health_ok = release.commit == expected_commit and semantic_correct and provider_ok and deployment.get("ok") is True
-    from eimemory.governance.evolution.code_evolution_observation import native_observation_clock
-    clock = native_observation_clock()
+    try:
+        from eimemory.governance.evolution.code_evolution_observation import native_observation_clock
+        clock = native_observation_clock()
+    except (ImportError, OSError, RuntimeError, ValueError) as exc:
+        return {"ok": False, "reason": "observation_clock_unavailable:" + type(exc).__name__, "hard_failure": True}
     checked_at = clock["wall_utc"]
+    phase = max(0, observation_phase(parse_observation_time(phase_start), parse_observation_time(checked_at)))
     sample_key = f"phase-{phase}:{checked_at}"
     return {
         "sample_key": sample_key,

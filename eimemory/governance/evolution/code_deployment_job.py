@@ -332,13 +332,21 @@ def run_job(runtime, key: str, *, wait_seconds: float = 310) -> dict:
             from eimemory.core.runtime_manager import finalize_deployment_job
             finalized = finalize_deployment_job(key)
             _exclusive(JOBS_ROOT / key / "finalized.json", {"request_key": key, "invocation": invocation, "native": finalized})
+            if finalized.get("job_key") != key or finalized.get("resumed") is not True:
+                return {**result, "ok": False, "deployment_verified": True,
+                    "automation_resumed": False, "status": "held_background", "finalization": finalized}
         elif body["operation"] == "deploy":
             handoff(reopened, fresh, policy, operation="rollback")
         return result
     finally:
         try:
             if "reopened" in locals() or not locals().get("runtime_closed", False):
-                manager.release_lease(body["transaction_id"])
+                try:
+                    manager.release_lease(body["transaction_id"])
+                except CodeEvolutionConflict:
+                    # State/receipt are already durable before native resume;
+                    # a freshly resumed watcher may now own this transaction.
+                    pass
         finally:
             if "reopened" in locals():
                 reopened.close()

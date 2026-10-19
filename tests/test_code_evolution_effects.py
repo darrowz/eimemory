@@ -916,6 +916,11 @@ def test_system_observation_rejects_silently_defaulted_provenance():
 @pytest.mark.parametrize("deployment_ok", [True, False])
 def test_observation_uses_transaction_profile_and_still_requires_live_deployment(monkeypatch, deployment_ok):
     from eimemory.governance.evidence_contract import ReleaseIdentity
+    from eimemory.governance.evolution import code_evolution_observation as clock_module
+
+    clocks = iter(["2026-01-01T00:00:00+00:00", "2026-01-01T01:00:00+00:00", "2026-01-01T01:15:00+00:00"])
+    monkeypatch.setattr(clock_module,"native_observation_clock",lambda:dict(schema="code_observation_clock.v1",
+        wall_utc=next(clocks),boot_id="fixture-boot",monotonic_ns=1),raising=False)
 
     report = _pending_observation_report()
     report["profile_key"] = "custom.profile:v7"
@@ -943,12 +948,14 @@ def test_observation_uses_transaction_profile_and_still_requires_live_deployment
     # These are new measurements, not retries of the first phase receipt.
     transaction["observation_started_at"] = "2026-01-01T00:00:00+00:00"
     first = effects_module.sample_code_evolution_observation(
-        SimpleNamespace(), transaction=transaction, observed_at="2026-01-01T01:00:00+00:00",
+        SimpleNamespace(), transaction=transaction, observed_at="2099-01-01T01:00:00+00:00",
     )
     later = effects_module.sample_code_evolution_observation(
         SimpleNamespace(), transaction=transaction, observed_at="2026-01-01T01:15:00+00:00",
     )
     assert first["sample_key"] != later["sample_key"]
+    assert first["observed_at"]=="2026-01-01T01:00:00+00:00"
+    assert first["claimed_observed_at"]=="2099-01-01T01:00:00+00:00"
 
 
 def test_missing_bwrap_maps_to_verification_sandbox_unavailable(tmp_path, monkeypatch) -> None:

@@ -187,3 +187,18 @@ def test_strict_deployment_environment_preserves_all_four_owner_coordinates():
         verification_receipt_digests=[],observation_deadline="",lineage={})
     assert {k:env["EIMEMORY_DEPLOY_SCOPE_"+v] for k,v in
         (("tenant_id","TENANT"),("agent_id","AGENT"),("workspace_id","WORKSPACE"),("user_id","USER"))}==scope
+
+
+def test_fixed_job_launcher_argv_matches_entry_without_request_selected_paths(monkeypatch):
+    from deploy import run_code_deployment_job as entry
+    key="e"*64
+    seen=[]
+    runtime=SimpleNamespace(close=lambda:seen.append("closed"))
+    monkeypatch.setattr(entry.os,"geteuid",lambda:1001,raising=False)
+    monkeypatch.setattr(entry.sys,"argv",["/fixed/controller/deploy/run_code_deployment_job.py","--job-key",key])
+    monkeypatch.setattr(Runtime,"create",lambda **kw:seen.append(kw) or runtime)
+    monkeypatch.setattr(jobs,"run_job",lambda rt,value:seen.append((rt,value)) or {"ok":False})
+    assert entry.main()==1
+    assert seen==[{"root":"/var/lib/eimemory"},(runtime,key),"closed"]
+    monkeypatch.setattr(entry.sys,"argv",["entry",key])
+    with pytest.raises(SystemExit):entry.main()
