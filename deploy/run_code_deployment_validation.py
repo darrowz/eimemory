@@ -71,7 +71,7 @@ def _receive(stream, size):
 
 def _root_validation_status(key, operation):
     """Fixed stdlib bootstrap: authenticate the root peer before product import."""
-    registry = _root_json(Path("/etc/eimemory/runtime-manager.v1.json"))
+    registry = _root_json(Path("/etc/eimemory-code-automation-authority/runtime-manager.v1.json"))
     if (registry.get("schema") != "eimemory.runtime_manager_registry.v1"
         or re.fullmatch("[0-9a-f]{64}", str(registry.get("generation"))) is None
         or registry.get("runtime_uid") != 1001 or registry.get("runtime_gid") != 1001
@@ -175,7 +175,7 @@ def main():
         "operation":operation, "invocation":native["original_invocation"], "host_root_peer_uid":peer_uid,
         "uid_map":Path("/proc/self/uid_map").read_text(), "gid_map":Path("/proc/self/gid_map").read_text(),
         "root_job_uid":(Path("/var/lib/eimemory-manager/jobs")/(key+".json")).lstat().st_uid,
-        "root_registry_uid":Path("/etc/eimemory/runtime-manager.v1.json").lstat().st_uid,
+        "root_registry_uid":Path("/etc/eimemory-code-automation-authority/runtime-manager.v1.json").lstat().st_uid,
         "root_pycache_uid":cache.lstat().st_uid, "root_socket_uid":Path("/run/eimemory-manager/bridge.sock").lstat().st_uid,
         "actual_cgroup":Path("/proc/self/cgroup").read_text()}, sort_keys=True), flush=True)
     sys.path.insert(0, str(release))

@@ -939,3 +939,31 @@ def test_manager_reinstall_cannot_replace_live_root_authority_in_place(monkeypat
     monkeypatch.setattr(m,'write',lambda *_args,**_kwargs:pytest.fail('root source must not be replaced'))
     with pytest.raises(ValueError,match='existing_manager_upgrade_requires_reviewed_handoff'):
         m.install(SimpleNamespace(repository_root=str(repository),expected_registry_sha256=sha256(path.read_bytes()).hexdigest()))
+
+
+@pytest.mark.skipif(sys.platform=='win32' or os.geteuid()!=0,
+    reason='actual root registry parent ownership and permissions require POSIX root')
+@pytest.mark.parametrize('parent_uid',[0,1001])
+def test_actual_registry_rejects_runtime_parent_without_changing_configuration_owner(parent_uid):
+    import tempfile,shutil
+    base=Path(tempfile.mkdtemp(prefix='eimemory-manager-registry-parent-',dir='/run'))
+    assert base.resolve().parent==Path('/run')
+    root_parent=base/'protected-authority';root_parent.mkdir(mode=0o750)
+    runtime_config=base/'runtime-configuration';runtime_config.mkdir(mode=0o750)
+    os.chown(runtime_config,1001,1001)
+    selected=root_parent if parent_uid==0 else runtime_config
+    path=selected/'runtime-manager.v1.json'
+    value=registry();path.write_bytes(c.canonical(value));path.chmod(0o640);os.chown(path,0,1001)
+    try:
+        if parent_uid==0:
+            assert client.read_registry(path)==value
+        else:
+            with pytest.raises(client.RuntimeManagerError,match='parent_untrusted'):
+                client.read_registry(path)
+        # The security fix moves the trust anchor; it never takes over the
+        # legitimate runtime configuration or its child policy write surface.
+        assert runtime_config.stat().st_uid==1001 and runtime_config.stat().st_gid==1001
+        assert c.REGISTRY_PATH=='/etc/eimemory-code-automation-authority/runtime-manager.v1.json'
+    finally:
+        assert base.resolve().parent==Path('/run') and base.name.startswith('eimemory-manager-registry-parent-')
+        shutil.rmtree(base)

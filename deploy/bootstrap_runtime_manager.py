@@ -23,7 +23,7 @@ from contextlib import contextmanager
 
 ROOT=Path('/usr/libexec/eimemory-manager')
 STATE=Path('/var/lib/eimemory-manager')
-REGISTRY=Path('/etc/eimemory/runtime-manager.v1.json')
+REGISTRY=Path('/etc/eimemory-code-automation-authority/runtime-manager.v1.json')
 SYSTEM_UNITS=Path('/etc/systemd/system')
 CURRENT=Path('/opt/eimemory/current')
 RELEASES=Path('/opt/eimemory/releases')

@@ -3,7 +3,16 @@
 This change moves registered eimemory services to PID1 with `User=darrow`,
 `PrivateUsers=self`, `NoNewPrivileges=yes` and empty product capabilities.
 Hermes/OpenClaw compatibility units retain their explicitly registered user
-manager. A missing or corrupt root-owned registry is an error; no consumer
+manager.
+The manager registry is fixed at
+`/etc/eimemory-code-automation-authority/runtime-manager.v1.json`, under an
+existing root-owned non-writable authority directory. The ordinary
+`/etc/eimemory` directory is owned by the runtime account on the deployed host;
+it remains available for legitimate child policies and service configuration.
+Neither bootstrap nor a registry reader changes that directory's ownership or
+accepts it as a root trust anchor. A root-owned file inside a runtime-owned
+parent is rejected before JSON parsing, since the parent owner could replace it.
+A missing or corrupt root-owned registry is an error; no consumer
 chooses an alternative manager from a healthy shadow service.
 
 The privileged socket daemon imports only stdlib and its reviewed root-owned

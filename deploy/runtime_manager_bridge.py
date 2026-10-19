@@ -24,7 +24,7 @@ import time
 
 ROOT = Path('/usr/libexec/eimemory-manager')
 STATE = Path('/var/lib/eimemory-manager')
-REGISTRY = Path('/etc/eimemory/runtime-manager.v1.json')
+REGISTRY = Path('/etc/eimemory-code-automation-authority/runtime-manager.v1.json')
 SOCKET = Path('/run/eimemory-manager/bridge.sock')
 CURRENT = Path('/opt/eimemory/current')
 RELEASES = Path('/opt/eimemory/releases')

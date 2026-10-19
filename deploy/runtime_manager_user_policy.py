@@ -26,7 +26,7 @@ def read_root(path):
 
 def apply(commit):
     if re.fullmatch('[0-9a-f]{40}',commit) is None:raise ValueError('manager_user_policy_commit_invalid')
-    registry=read_root('/etc/eimemory/runtime-manager.v1.json')
+    registry=read_root('/etc/eimemory-code-automation-authority/runtime-manager.v1.json')
     uid=registry['runtime_uid']
     if os.getuid()!=uid or os.geteuid()!=uid or uid==0:raise ValueError('manager_user_policy_runtime_uid_required')
     root=Path('/usr/libexec/eimemory-manager')
