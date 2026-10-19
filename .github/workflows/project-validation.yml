@@ -55,6 +55,7 @@ jobs:
           tests/test_native_l5_assessment_maintenance.py
           tests/test_l5_exact_evidence_pages.py
           tests/test_system_code_maintenance.py
+          tests/test_code_incident_coverage.py
           tests/test_code_policy_operator.py
           tests/test_code_automation_policy_issue.py
           tests/test_runtime_identity_drift.py

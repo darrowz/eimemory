@@ -155,7 +155,10 @@ def record_release_closure_failure(
     stored = runtime.store.append(record, existing_match=same)
     if not same(stored):
         raise ValueError('closure_incident_identity_mismatch')
+    from eimemory.governance.evolution.code_evolution_incident_coverage import observe_native_incident
+    coverage = observe_native_incident(runtime, scope=scope_ref, record_id=stored.record_id)
     return {**report, 'recording_ok': True, 'incident_record_id': stored.record_id,
+            'incident_coverage': coverage,
             'repair_status': stored.content.get('repair_status') or 'registered'}
 
 

@@ -50,7 +50,11 @@ def run_system_code_maintenance(
     from eimemory.ops.system_code_repair_failure import record_system_code_repair_failure
     from eimemory.governance.evolution.system_code_repair import process_system_code_incidents
     from eimemory.governance.evolution.code_automation_policy_owner import ensure_native_incident_policy
+    from eimemory.governance.evolution.code_evolution_incident_coverage import (
+        checkpoint_native_ingress, observe_native_incident,
+    )
 
+    ingress_checkpoint = checkpoint_native_ingress(runtime, scope=scope_ref)
     detected_at = now_iso()
     detector = _call(
         lambda: inspect_live_runtime_identity(runtime, scope=scope_ref, detected_at=detected_at),
@@ -102,6 +106,9 @@ def run_system_code_maintenance(
     status = "blocked" if not execution_ok else (
         "processed" if route.get("processed") or recovery.get("resumed_count", 0) else (
             "observed" if detector.get("incident_record_id") or failure.get("incident_record_id") else "idle"))
+    observed_ids = list(dict.fromkeys(value for value in
+        (detector.get('incident_record_id'), failure.get('incident_record_id')) if value))
+    ingress_observations = [observe_native_incident(runtime, scope=scope_ref, record_id=value) for value in observed_ids]
     return {
         "schema": "system_code_maintenance.v1", "report_type": "code_evolution_maintenance",
         "ok": execution_ok, "execution_ok": execution_ok, "status": status,
@@ -111,6 +118,10 @@ def run_system_code_maintenance(
         "runtime_identity": detector, "system_code_repair": route,
         "native_policy_owner": policy_owner,
         "system_code_repair_failure": failure, "code_evolution": recovery,
+        # Coverage diagnostics never replace repair permission, original global
+        # provenance, or the product's terminal/8-hour qualification gates.
+        "incident_coverage": {"diagnostic_only": True, "checkpoint": ingress_checkpoint,
+                              "observations": ingress_observations, "qualifies_for_product_completion": False},
     }
 
 

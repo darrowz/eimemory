@@ -41,6 +41,12 @@ DEFAULT_DENIED_PATH_GLOBS: tuple[str, ...] = (
 DENY_SELF_PATH_GLOBS: tuple[str, ...] = (
     "eimemory/ops/closure_capture.py",
     "eimemory/contracts/code_incident_provenance.py",
+    "eimemory/contracts/code_incident_coverage.py",
+    "eimemory/contracts/nightly_step_evidence.py",
+    "eimemory/governance/learning/nightly_step_evidence.py",
+    "eimemory/storage/code_incident_coverage_store.py",
+    "eimemory/storage/migrations/code_incident_coverage.py",
+    "eimemory/storage/migrations/__init__.py",
     "eimemory/contracts/code_provider_authority.py",
     "eimemory/governance/code_evolution*",
     "eimemory/governance/evolution/code_evolution*",

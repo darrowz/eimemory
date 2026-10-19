@@ -40,6 +40,13 @@ from .code_evolution_quarantine_resolution import (
     ensure_code_evolution_quarantine_resolution_schema,
     is_code_evolution_quarantine_resolution_schema_ready,
 )
+from .code_incident_coverage import (
+    MIGRATION_ID as CODE_INCIDENT_COVERAGE_MIGRATION,
+    ensure_schema as ensure_code_incident_coverage_schema,
+    schema_ready as is_code_incident_coverage_schema_ready,
+    data_is_scheduled as code_incident_coverage_data_is_scheduled,
+    apply_data_batch as apply_code_incident_coverage_data_batch,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +61,13 @@ class StorageMigrationSpec:
 
 
 REGISTERED_STORAGE_MIGRATIONS: tuple[StorageMigrationSpec, ...] = (
+    StorageMigrationSpec(
+        migration_id=CODE_INCIDENT_COVERAGE_MIGRATION,
+        ensure_schema=ensure_code_incident_coverage_schema,
+        is_schema_ready=is_code_incident_coverage_schema_ready,
+        data_is_scheduled=code_incident_coverage_data_is_scheduled,
+        apply_data_batch=apply_code_incident_coverage_data_batch,
+    ),
     StorageMigrationSpec(
         migration_id=CAPABILITY_V3_SCHEMA_MIGRATION,
         ensure_schema=ensure_capability_v3_schema,

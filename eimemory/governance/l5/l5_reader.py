@@ -321,6 +321,9 @@ def _v3_readiness_envelope(
     }
     envelope["transaction_evidence"] = dict(transaction)
     envelope["current_lineage"] = dict(lineage)
+    from eimemory.governance.evolution.code_evolution_incident_coverage import read_native_ingress_coverage
+    envelope['incident_coverage'] = read_native_ingress_coverage(
+        runtime, scope=scope, record_id=str(transaction.get('incident_id') or ''))
     envelope["completion_evidence_refs"] = _completion_evidence_refs(
         provider=provider,
         transaction=transaction,
@@ -631,6 +634,7 @@ def _code_evolution_evidence(
         if active is not None:
             transaction.update({
                 "transaction_id": str(active.get("transaction_id") or ""),
+                "incident_id": str(active.get("incident_id") or ""),
                 "current_state": str(active.get("current_state") or ""),
                 "origin": str(active.get("origin") or ""),
                 "detector": str(active.get("detector") or ""),
@@ -669,6 +673,7 @@ def _code_evolution_evidence(
             )
             transaction.update({
                 "transaction_id": latest.get("transaction_id"),
+                "incident_id": str(latest.get("incident_id") or ""),
                 "origin": latest.get("origin"),
                 "detector": latest.get("detector"),
                 **{field: bool(latest[field])
