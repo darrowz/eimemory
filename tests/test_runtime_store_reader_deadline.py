@@ -87,6 +87,7 @@ class ReaderAcquisitionDeadlineTests(unittest.TestCase):
     def setUp(self):
         self.clock = _Clock()
         self.store = object.__new__(RuntimeStore)
+        self.store.bootstrap_schema = True
         self.store._lock = _FakeLock(self.clock)
         self.store._reader_pool_lock = _FakeLock(self.clock)
         self.store._readers = []

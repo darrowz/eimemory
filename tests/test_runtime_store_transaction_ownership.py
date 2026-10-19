@@ -43,6 +43,7 @@ class _FakeTransactionStore:
 class AtomicMutationOwnershipTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = object.__new__(RuntimeStore)
+        self.store.bootstrap_schema = True
         self.store._lock = RLock()
         self.store.sqlite = _FakeTransactionStore()
         self.store._safe_post_commit_projection = lambda *_args: None
