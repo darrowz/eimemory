@@ -11,6 +11,15 @@ AIGC:
 
 # Changelog
 
+## [1.14.156] — 2026-10-19
+
+- Bind historical controlled business acceptance to all six release-lineage domains, independently reread physical evidence, and refresh signed nightly acceptance and replay high water without borrowing stale success.
+- Run registered deployment and rollback jobs independently of paused storage writers. Preserve exact owner scope, original invocation, intent and receipt identities; restore background work before real business admission and start observation only after durable completion.
+- Register the host service manager explicitly with PID1 runtime-user isolation, a root-owned fixed-action bridge, reviewed controller bytes, source protection, and complete first-migration owner recovery. Retain typed managed rollback plans and legacy receipt readability.
+- Preserve original global provenance while introducing explicit managed-domain v5 qualification, independently signed native-source evidence, persistent positive knowledge, immutable activation bindings, and conservative unknown results for incomplete or adverse history.
+- Bound hot incident coverage with durable, signed cold archives and exact retained source chronology. Restore original rows and guards on failed archival transactions, and stop explicitly at capacity rather than silently discarding evidence.
+- Recover expired unused intent and interrupted observation with bounded native lifecycle transitions; preserve consumed authorization, genuine boot and monotonic clocks, original evidence and the full eight-hour requirement. Extend both CI lanes to the new authority, lineage and storage contracts.
+
 ## [1.14.155] — 2026-10-19
 
 - Keep same-scope native L5 assessments independent of unrelated cross-scope delegation files. Preserve strict delegated authority validation and the absent-mapping legacy path in user namespaces.
