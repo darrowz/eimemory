@@ -251,8 +251,18 @@ def append_learning_record_once(
     evidence: list[str] | None = None,
     source: str = "eimemory.autonomous_learning",
     release_bound_idempotency: bool = True,
+    occurred_at: str | None = None,
 ) -> RecordEnvelope:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    if occurred_at is not None:
+        if not isinstance(occurred_at, str):
+            raise ValueError("learning_record_occurred_at_invalid")
+        try:
+            instant = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("learning_record_occurred_at_invalid") from exc
+        if instant.tzinfo is None or instant.utcoffset().total_seconds() != 0:
+            raise ValueError("learning_record_occurred_at_invalid")
     if not release_bound_idempotency and not (
         kind == "promotion_request" and source == "eimemory.deployment_receipt"
     ):
@@ -305,6 +315,9 @@ def append_learning_record_once(
         meta=meta_payload,
         evidence=list(evidence or []),
     )
+    if occurred_at is not None:
+        # An existing idempotent record returned above keeps its original time.
+        record.time.occurred_at = occurred_at
     return runtime.store.append(record)
 
 

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
-from eimemory.core.clock import now_iso
 from eimemory.models.records import ScopeRef
 
 
@@ -55,7 +55,9 @@ def run_system_code_maintenance(
     )
 
     ingress_checkpoint = checkpoint_native_ingress(runtime, scope=scope_ref)
-    detected_at = now_iso()
+    # This native acquisition follows the precise ingress checkpoint. Keeping
+    # its actual subsecond instant avoids declaring it before that checkpoint.
+    detected_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     detector = _call(
         lambda: inspect_live_runtime_identity(runtime, scope=scope_ref, detected_at=detected_at),
         "runtime_identity_detector",

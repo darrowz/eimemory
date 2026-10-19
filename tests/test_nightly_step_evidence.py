@@ -1,6 +1,7 @@
 """Isolated SQLite observations; no production incident/model/policy is used."""
 from copy import deepcopy
 from dataclasses import asdict
+from datetime import datetime, timezone
 import importlib
 import json
 
@@ -80,6 +81,28 @@ def test_one_run_cannot_overwrite_its_original_observation(runtime):
     with pytest.raises(ValueError, match="run_report_changed"):
         archive(runtime, report("blocked", ok=False))
     assert read(runtime, first).content["step_report"] == original
+
+
+def test_native_archive_uses_real_precise_creation_time_and_replay_keeps_original_clock(runtime):
+    before = datetime.now(timezone.utc)
+    original = report()
+    first = archive(runtime, original)
+    saved = read(runtime, first)
+    after = datetime.now(timezone.utc)
+    occurred = datetime.fromisoformat(saved.time.occurred_at.replace('Z', '+00:00'))
+    assert before <= occurred <= after
+    assert archive(runtime, original) == first
+    assert read(runtime, first).time.occurred_at == saved.time.occurred_at
+
+
+@pytest.mark.parametrize('invalid', ['2026-10-19T00:00:00', '2026-10-19T08:00:00+08:00', False, 0, 'not-a-time'])
+def test_optional_precise_record_time_rejects_unknown_or_non_utc_without_writes(runtime, invalid):
+    from eimemory.governance.learning.learning_state import append_learning_record_once
+    before = runtime.store.count_records(kinds=['reflection'], scope=SCOPE)
+    with pytest.raises(ValueError, match='occurred_at_invalid'):
+        append_learning_record_once(runtime, kind='reflection', title='isolated time validation',
+            summary='', scope=SCOPE, loop_id='fixture', step_name='time', semantic_key='fixture', occurred_at=invalid)
+    assert runtime.store.count_records(kinds=['reflection'], scope=SCOPE) == before
 
 
 @pytest.mark.parametrize("wrong", ["run", "scope", "step", "release", "digest", "missing"])

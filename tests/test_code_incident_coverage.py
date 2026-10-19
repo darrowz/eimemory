@@ -134,6 +134,131 @@ def test_late_ingress_invalidates_signed_previous_observation(runtime):
     assert original['covered_prior_user_reported'] is False  # historical bytes are retained
 
 
+@pytest.mark.parametrize('progress', ['future_ingress', 'future_ingress_checkpoint', 'checkpoint_only'])
+def test_safe_future_ingress_preserves_original_signed_historical_prefix(runtime, monkeypatch, progress):
+    checkpoint_native_ingress(runtime, scope=SCOPE)
+    actual = incident(runtime)
+    original = actual['incident_coverage']
+    raw = connection(runtime).execute(f'SELECT payload_json FROM {OBSERVATIONS} WHERE record_id=?',
+                                     (actual['incident_record_id'],)).fetchone()[0]
+    if progress != 'checkpoint_only':
+        later = RecordEnvelope.create(kind='reflection', source='eimemory.scheduler.step_evidence',
+            scope=SCOPE, title='actual later diagnostic', content={'status': 'observed'})
+        later.time.occurred_at = datetime.now(timezone.utc).isoformat()
+        runtime.store.append(later)
+    if progress != 'future_ingress':
+        next_value = checkpoint_native_ingress(runtime, scope=SCOPE)
+        assert next_value['epoch_id'] == original['epoch_id']
+        assert digest(next_value) != original['checkpoint_digest']
+    monkeypatch.setattr('eimemory.governance.evolution.code_evolution_incident_coverage.seal',
+                        lambda *_a, **_k: pytest.fail('readback must not reseal an observation'))
+    result = read_native_ingress_coverage(runtime, scope=SCOPE, record_id=actual['incident_record_id'])
+    assert result == original and verify(result, OBSERVATION_SCHEMA)
+    high_water = connection(runtime).execute(f'SELECT max(sequence) FROM {JOURNAL}').fetchone()[0]
+    assert result['high_water'] == high_water if progress == 'checkpoint_only' else result['high_water'] < high_water
+    assert connection(runtime).execute(f'SELECT payload_json FROM {OBSERVATIONS} WHERE record_id=?',
+                                     (actual['incident_record_id'],)).fetchone()[0] == raw
+    assert result['global_facts'] == dict.fromkeys(('known_before_detection', 'prior_user_reported', 'manual_bootstrap'))
+    assert result['qualifies_for_product_completion'] is False
+
+
+@pytest.mark.parametrize('danger', ['late', 'ambiguous_second', 'malformed_time', 'related', 'human', 'version', 'epoch', 'page_bound', 'prefix_metadata', 'prefix_hole'])
+def test_new_ingress_never_hides_unsafe_changes_behind_a_signed_old_prefix(runtime, monkeypatch, danger):
+    checkpoint_native_ingress(runtime, scope=SCOPE)
+    actual = incident(runtime)
+    original = actual['incident_coverage']
+    original_raw = connection(runtime).execute(f'SELECT payload_json FROM {OBSERVATIONS} WHERE record_id=?',
+                                              (actual['incident_record_id'],)).fetchone()[0]
+    record = RecordEnvelope.create(kind='reflection', source='hermes', scope=SCOPE, title='later actual ingress')
+    record.time.occurred_at = datetime.now(timezone.utc).isoformat()
+    if danger == 'late': record.time.occurred_at = actual['detected_at']
+    if danger == 'ambiguous_second':
+        record.time.occurred_at = datetime.fromisoformat(actual['detected_at'].replace('Z', '+00:00')).replace(microsecond=0).isoformat()
+    if danger == 'malformed_time': record.time.occurred_at = 'invalid-source-time'
+    if danger == 'related':
+        incident_record = runtime.store.get_by_id(actual['incident_record_id'], scope=SCOPE, exact_scope=True)
+        record.content = dict(incident_record.content)
+    if danger == 'human': record.provenance = {'origin': 'user_reported'}
+    runtime.store.append(record)
+    if danger == 'version':
+        current = runtime.store.get_by_id(actual['incident_record_id'], scope=SCOPE, exact_scope=True)
+        current.content['note'] = 'version changed after detection'
+        runtime.store.rewrite(current)
+    if danger == 'epoch':
+        monkeypatch.setattr('eimemory.storage.code_incident_coverage_store.MAX_EPOCH_CHECKPOINTS', 1)
+        assert checkpoint_native_ingress(runtime, scope=SCOPE)['epoch_id'] != original['epoch_id']
+    if danger == 'page_bound':
+        monkeypatch.setattr('eimemory.storage.code_incident_coverage_store.MAX_JOURNAL_PAGE', 1)
+    if danger in {'prefix_metadata', 'prefix_hole'}:
+        conn = connection(runtime)
+        operation = 'update' if danger == 'prefix_metadata' else 'delete'
+        guard = f'trg_{JOURNAL}_no_{operation}'
+        conn.execute('DROP TRIGGER ' + guard)
+        if operation == 'update':
+            conn.execute(f"UPDATE {JOURNAL} SET source='changed-prefix' WHERE record_id=?", (actual['incident_record_id'],))
+        else:
+            conn.execute(f'DELETE FROM {JOURNAL} WHERE record_id=?', (actual['incident_record_id'],))
+        conn.execute(trigger_definitions()[guard]); conn.commit()
+    result = read_native_ingress_coverage(runtime, scope=SCOPE, record_id=actual['incident_record_id'])
+    assert result['status'] == 'unproven' and result['covered_known_before_detection'] is None
+    assert result['covered_prior_user_reported'] is None and result['qualifies_for_product_completion'] is False
+    assert original['covered_known_before_detection'] is False
+    assert connection(runtime).execute(f'SELECT payload_json FROM {OBSERVATIONS} WHERE record_id=?',
+                                     (actual['incident_record_id'],)).fetchone()[0] == original_raw
+
+
+def test_real_maintenance_observation_then_complete_report_archive_remains_readable_by_native_l5(runtime, monkeypatch):
+    from eimemory.contracts.release_identity import ReleaseIdentity
+    from eimemory.governance.learning.nightly_step_evidence import read_nightly_step_evidence
+    from eimemory.ops.runtime_identity_drift import inspect_live_runtime_identity
+    from eimemory.ops.system_code_repair_failure import detect_system_code_repair_failure
+    from eimemory.scheduler.jobs import _run_archived_code_maintenance
+    from eimemory.governance.l5 import l5_reader
+
+    # Real native producer + SQLite persistence + maintenance collector + full
+    # evidence writer and native envelope hook. Systemd/provider/repair effects
+    # are isolated deterministic fixtures; no deployment or model is invoked.
+    release = ReleaseIdentity(COMMIT, '1.14.155', 'fixture-receipt', 'fixture-session')
+    monkeypatch.setattr('eimemory.governance.release.evidence_contract.current_release_identity', lambda *_a, **_k: release)
+    monkeypatch.setenv('EIMEMORY_L5_LOOP_ENABLED', '1')
+    monkeypatch.setenv('EIMEMORY_L5_LOOP_APPLY', '1')
+    def inspect(value, **kwargs):
+        return inspect_live_runtime_identity(value, **kwargs,
+            runner=lambda unit: 'EIMEMORY_RUNTIME_COMMIT=' + 'b' * 40 if unit == 'eimemory-rpc.service' else None)
+    monkeypatch.setattr('eimemory.ops.runtime_identity_drift.inspect_live_runtime_identity', inspect)
+    monkeypatch.setattr('eimemory.governance.evolution.code_automation_policy_owner.ensure_native_incident_policy',
+                        lambda *_a, **_k: {'ok': True, 'status': 'idle', 'processed': []})
+    route = {'ok': True, 'status': 'idle', 'processed': []}
+    monkeypatch.setattr('eimemory.governance.evolution.system_code_repair.process_system_code_incidents',
+                        lambda *_a, **_k: dict(route))
+    monkeypatch.setattr('eimemory.ops.system_code_repair_failure.record_system_code_repair_failure',
+        lambda _runtime, **kwargs: {**detect_system_code_repair_failure(kwargs['repair_report'], policy={},
+            release_commit=COMMIT, detected_at=kwargs['detected_at']), 'incident_record_id': ''})
+    runtime.resume_code_evolution_transactions = lambda **_k: {'ok': True, 'reports': []}
+    maintenance = _run_archived_code_maintenance(runtime, scope=asdict(SCOPE), run_id='fixture-native-maintenance')
+    assert maintenance['ok'] is True and maintenance['status'] == 'observed'
+    assert datetime.fromisoformat(maintenance['detected_at'].replace('Z', '+00:00')) >= datetime.fromisoformat(
+        maintenance['incident_coverage']['checkpoint']['observed_at'])
+    actual_id = maintenance['runtime_identity']['incident_record_id']
+    observation = maintenance['incident_coverage']['observations'][0]
+    assert 'record_id' in observation, observation
+    assert observation['record_id'] == actual_id and verify(observation, OBSERVATION_SCHEMA)
+    archived = read_nightly_step_evidence(runtime, scope=SCOPE, run_id='fixture-native-maintenance',
+        step='code_evolution', reference=maintenance['evidence_archive'])
+    assert archived.content['step_report']['incident_coverage']['observations'][0] == observation
+    assert connection(runtime).execute(f'SELECT max(sequence) FROM {JOURNAL}').fetchone()[0] > observation['high_water']
+    monkeypatch.setattr(l5_reader, '_code_evolution_evidence', lambda *_a, **_k: (
+        {'ready': False}, {'incident_id': actual_id, 'known_before_detection': None,
+                         'prior_user_reported': None, 'manual_bootstrap': None}, {'ok': False, 'compatible': False}))
+    envelope = l5_reader._v3_readiness_envelope({'ok': False, 'deployment_assurance': {'required': False, 'blocking': False}},
+        scope=SCOPE, profile_key='l5.default', capability_scope='global', runtime=runtime)
+    assert envelope['incident_coverage'] == observation and verify(envelope['incident_coverage'], OBSERVATION_SCHEMA)
+    assert envelope['product_l5_complete'] is False
+    assert all(envelope['transaction_evidence'][field] is None
+               for field in ('known_before_detection', 'prior_user_reported', 'manual_bootstrap'))
+    assert connection(runtime).execute('SELECT count(*) FROM code_evolution_terminal_receipts').fetchone()[0] == 0
+
+
 def test_different_connection_update_delete_and_scope_moves_are_journaled(runtime):
     record = runtime.store.append(RecordEnvelope.create(kind='memory', source='hermes', scope=SCOPE, title='version one'))
     database = connection(runtime).execute('PRAGMA database_list').fetchone()[2]

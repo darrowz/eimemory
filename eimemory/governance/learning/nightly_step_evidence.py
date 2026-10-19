@@ -7,6 +7,7 @@ operational state. Archiving a report never certifies repair or L5 qualification
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from typing import Any, Mapping
@@ -99,6 +100,7 @@ def archive_nightly_step_evidence(
         scope=scope_ref, loop_id="supervisor", step_name="nightly_step_evidence",
         semantic_key=stable_semantic_key(SCHEMA, step, run_id, scope_ref), authority_tier="L0", status="archived",
         source=SOURCE,
+        occurred_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         content={"schema": SCHEMA, "report_type": SCHEMA, "run_id": run_id,
                  "scope": asdict(scope_ref), "step": step, "report_digest": report_digest(original), "step_report": original},
         meta={"report_type": SCHEMA, "step_evidence_run_id": run_id, "nightly_step": step},

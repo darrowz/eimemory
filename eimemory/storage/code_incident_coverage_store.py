@@ -305,19 +305,76 @@ class CodeIncidentCoverageStore:
             return signed
         return self._transaction(True, perform)
 
+    def _historical_prefix(self, saved, owner, producer_digest, verify):
+        """Verify the signed original range before considering any later ingress."""
+        coordinates = ('epoch_start_sequence', 'high_water', 'detection_sequence', 'page_count')
+        if (any(type(saved.get(key)) is not int or saved[key] < 0 for key in coordinates)
+                or not saved['epoch_start_sequence'] < saved['detection_sequence'] <= saved['high_water']
+                or saved['high_water'] - saved['epoch_start_sequence'] > MAX_JOURNAL_PAGE
+                or saved['page_count'] > MAX_JOURNAL_PAGE):
+            raise ValueError('incident_coverage_observation_prefix_coordinates_invalid')
+        original = self._checkpoint_by_digest(saved['checkpoint_digest'], owner, verify)
+        latest = self._row(CHECKPOINTS, owner, verify)
+        if (latest is None or saved['producer_digest'] != producer_digest
+                or any(row['producer_digest'] != producer_digest or row['epoch_id'] != saved['epoch_id']
+                       or row['epoch_start_sequence'] != saved['epoch_start_sequence']
+                       or row['epoch_started_at'] != saved['epoch_started_at']
+                       or row['capture_contract_digest'] != digest(trigger_definitions())
+                       for row in (original, latest))
+                or original['high_water'] > saved['high_water']):
+            raise ValueError('incident_coverage_observation_epoch_changed')
+        low, high = saved['epoch_start_sequence'], saved['high_water']
+        count = self.conn.execute(f'SELECT count(*) FROM {JOURNAL} WHERE sequence>? AND sequence<=?',
+                                  (low, high)).fetchone()[0]
+        page = self._page(owner, low, high)
+        if count != high - low or len(page) != saved['page_count'] or digest(page) != saved['page_digest']:
+            raise ValueError('incident_coverage_observation_prefix_changed')
+
+    def _safe_later_ingress(self, saved, current, owner):
+        low, high = saved['high_water'], current['high_water']
+        if high < low or high - low > MAX_JOURNAL_PAGE:
+            return False
+        count = self.conn.execute(f'SELECT count(*) FROM {JOURNAL} WHERE sequence>? AND sequence<=?',
+                                  (low, high)).fetchone()[0]
+        page = self._page(owner, low, high)
+        if count != high - low:
+            return False
+        detected_at = instant(saved['detected_at'])
+        for row in page:
+            if (row['table_name'] == 'coverage_control' or row['record_id'] == saved['record_id']
+                    or row['human_input'] == 1 or row['origin'] == 'user_reported'
+                    or instant(row['source_time']) <= detected_at):
+                return False
+            try:
+                key = incident_key(row['incident_class'], row['release_commit'], json.loads(row['codes_json']))
+            except (TypeError, ValueError):
+                key = None
+            if key == saved['incident_key']:
+                return False
+        return True
+
     def read_observation(self, scope, record_id, *, producer_digest, verify):
         owner = exact_scope(scope)
         def perform():
+            if not schema_ready(self.conn):
+                return unknown('capture_schema_or_index_not_ready')
             saved = self._row(OBSERVATIONS, owner, verify, record_id)
             if saved is None:
                 return unknown('persisted_observation_missing')
+            if saved['producer_digest'] != producer_digest:
+                return unknown('producer_changed')
+            self._historical_prefix(saved, owner, producer_digest, verify)
             current = self._observation(owner, record_id, producer_digest, verify, saved['payload_digest'])
             if 'scope' not in current:
                 return current
-            # A new late ingress, scope/version mutation or producer change
-            # cannot be hidden behind the earlier signed verdict.
-            comparable = {key: value for key, value in saved.items() if key not in {'key_id', 'signature', 'observed_at'}}
-            if comparable != {key: value for key, value in current.items() if key != 'observed_at'}:
+            # A complete physical prefix and safe later ingress may preserve an
+            # historical reading. Never silently substitute the new high water
+            # or sign new bytes as though they belonged to the original proof.
+            if not self._safe_later_ingress(saved, current, owner):
+                return {**unknown('unsafe_ingress_after_observation'), 'persisted_observation_digest': digest(saved)}
+            progress = {'key_id', 'signature', 'observed_at', 'high_water', 'page_count', 'page_digest', 'checkpoint_digest'}
+            comparable = {key: value for key, value in saved.items() if key not in progress}
+            if comparable != {key: value for key, value in current.items() if key not in progress}:
                 return {**unknown('physical_chronology_changed_since_observation'), 'persisted_observation_digest': digest(saved)}
             return saved
         return self._transaction(False, perform)
