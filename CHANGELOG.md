@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.151] — 2026-10-19
+
+- Pass the verified current deployment receipt into initial release lineage recording. Preserve exact scope, commit, receipt and session validation; governance and channel evidence remain independently required.
+- Cover CLI forwarding, missing and mismatched identities, and persisted lineage readback with focused regression tests. This change does not certify production L5 completion.
+
 ## [1.14.150] — 2026-10-19
 
 - Persist vector bypass error codes on controlled acceptance. A complete lexical result with an explicitly disabled or unconfigured vector source is not a retrieval failure; timeout, index faults and unknown bypasses still fail.

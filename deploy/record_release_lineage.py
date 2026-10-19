@@ -41,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
                 scope=scope,
                 repo_root=args.repo_root,
                 current_release=release,
+                gate_evidence={"deployment.runtime": [release.receipt_id]},
             )
     finally:
         runtime.close()

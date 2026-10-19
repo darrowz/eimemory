@@ -1,6 +1,6 @@
 [project]
 name = "eimemory"
-version = "1.14.150"
+version = "1.14.151"
 description = "Local-first memory and evidence-gated learning for long-running AI agents."
 readme = "README.md"
 license = "MIT"
