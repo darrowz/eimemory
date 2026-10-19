@@ -17,6 +17,8 @@ AIGC:
 - Retain unknown original incident facts through proposals, typed ledger rows, terminal receipts, observations and L5 qualification; require explicit verified original facts for product completion.
 - Delegate one-shot native incident policies from exact-scope root-controlled standing authority. Revalidate current capture fences, protected routes and Profile bindings, preserve manual policies, and recover atomic publication without resetting issuance clocks.
 - Bind prior-policy handoff to an actual terminal receipt and retain global and scoped revocation. Standing authority can be explicitly persistent; each child retains its real expiry and the complete observation requirement.
+- Delegate code implementation through an exact root-controlled provider mapping, pin its authority throughout the transaction, and retain the original business owner. Validate an unconsumed prior policy in its original scope and recheck replacement authority when recovering publication.
+- Read repository identity as the selected runtime account during root grant installation, preserving Git ownership checks and rejecting changed or untrusted repositories.
 - Bind explicitly disabled or unconfigured PostgreSQL retrieval to its actual native configuration without reading an unavailable index. Preserve configured enabled projection proofs and reject changed or forged bypass evidence.
 
 ## [1.14.153] — 2026-10-19
