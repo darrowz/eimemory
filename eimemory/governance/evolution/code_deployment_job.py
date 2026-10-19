@@ -15,7 +15,8 @@ import re
 import stat
 import time
 
-from eimemory.contracts.code_deployment_job import SCHEMA, canonical_bytes, request_key, validate_request
+from eimemory.contracts.code_deployment_job import (SCHEMA, MANUAL_SCHEMA, VALIDATION_BUDGETS,
+    canonical_bytes, request_key, validate_request, validate_manual_permit)
 
 JOBS_ROOT = Path("/var/lib/eimemory/state/code-deployment-jobs")
 
@@ -220,23 +221,68 @@ def job_state(key: str, body: dict) -> dict:
     except (OSError, RuntimeError, ValueError, TimeoutError):
         native = {}
     state = native.get("state") if isinstance(native.get("state"), dict) else {}
-    invocation = state.get("InvocationID", "")
-    evidence = {"job_key": key, "operation": body["operation"], "unit": f"eimemory-code-deployment-job@{key}.service",
+    unit = f"eimemory-code-deployment-job@{key}.service"
+    invocation = native.get("original_invocation") or ""
+    if native and (native.get("job_key") != key or native.get("manager") != "system"
+        or native.get("unit") != unit
+        or (invocation and re.fullmatch(r"[0-9a-f]{32}", str(invocation)) is None)
+        or state.get("InvocationID") not in {"", None, invocation}):
+        raise ValueError("deployment_job_root_identity_mismatch")
+    evidence = {"job_key": key, "operation": body["operation"], "unit": unit,
                 "native_invocation": invocation, "native_state": state, "pending": True,
+                "native_phase": native.get("phase"), "native_complete": native.get("complete") is True,
                 "reason": "managed_deployment_job_awaiting_reconciliation"}
+    if not invocation:
+        # A same-UID result file cannot stand in for the root's durable
+        # original Invocation, including after unit collection or a lost reply.
+        evidence["reconciliation_required"] = True
+        return evidence
     try:
         result = _read(JOBS_ROOT / key / "result.json")
         started = _read(JOBS_ROOT / key / "started.json")
     except FileNotFoundError:
         # Absence remains explicit even if the native unit is currently unknown.
-        evidence["reconciliation_required"] = state.get("ActiveState") not in {"active", "activating", "deactivating"}
+        evidence["reconciliation_required"] = (state.get("ActiveState") not in {"active", "activating", "deactivating"}
+            or state.get("SubState") == "exited" or native.get("terminal_state") is not None)
         return evidence
     if (set(result) != {"request_key", "invocation", "result"} or result["request_key"] != key
         or started != {"request_key": key, "invocation": result["invocation"]}
         or not isinstance(result["invocation"], str) or not re.fullmatch(r"[0-9a-f]{32}", result["invocation"])
-        or (invocation and invocation != result["invocation"]) or not isinstance(result["result"], dict)):
+        or invocation != result["invocation"] or not isinstance(result["result"], dict)):
         raise ValueError("deployment_job_result_identity_mismatch")
-    evidence.update(pending=False, native_invocation=result["invocation"], result=result["result"],
+    if result["result"].get("ok") is True and (
+        native.get("phase") != "completed" or native.get("complete") is not True
+        or native.get("resumed") is not True or native.get("held_background")):
+        raise ValueError("deployment_job_success_before_native_completion")
+    projected = result["result"]
+    if (projected.get("status") == "native_completion_unknown"
+        and native.get("phase") == "completed" and native.get("complete") is True
+        and native.get("resumed") is True and not native.get("held_background")):
+        # A lost complete reply is reconciled from root's durable outcome;
+        # never overwrite the original failed/unknown process artifact.
+        receipt, receipt_native = managed_validation_report(key, "receipt", heartbeat=lambda: None)
+        if receipt.get("ok") is not True or receipt_native["exit_status"] != 0:
+            raise ValueError("deployment_job_completion_receipt_unverified")
+        refs = {"receipt": receipt_native["artifact_digest"]}
+        if body["operation"] == "deploy":
+            business, business_native = managed_validation_report(key, "post_resume", heartbeat=lambda: None)
+            if (business.get("ok") is not True or business.get("business_qualified") is not True
+                or business_native["exit_status"] != 0):
+                raise ValueError("deployment_job_completion_business_unverified")
+            refs["post_resume"] = business_native["artifact_digest"]
+        supplement = {"schema": "eimemory.deployment_completion_readback.v1", "request_key": key,
+            "invocation": invocation, "original_result_digest": sha256(canonical_bytes(result)).hexdigest(),
+            "root_phase": "completed", "artifact_digests": refs}
+        path = JOBS_ROOT / key / "completion-readback.json"
+        try:
+            _exclusive(path, supplement)
+        except FileExistsError:
+            if _read(path) != supplement:
+                raise ValueError("deployment_job_completion_readback_changed") from None
+        projected = {**projected, "ok": True, "operational_complete": True,
+            "status": "native_completion_reconciled", "reconciliation_required": False,
+            "original_process_result_preserved": True, "completion_readback": supplement}
+    evidence.update(pending=False, native_invocation=result["invocation"], result=projected,
                     result_digest=sha256(canonical_bytes(result)).hexdigest())
     return evidence
 
@@ -252,7 +298,8 @@ def pending(runtime, transaction: Mapping) -> dict | None:
     evidence = job_state(*binding)
     # An absent/terminal/unknown native unit is not an endless pending lease.
     # The normal physical readback must decide success or explicit quarantine.
-    active = evidence["native_state"].get("ActiveState") in {"active", "activating", "deactivating"}
+    state = evidence["native_state"]
+    active = state.get("ActiveState") in {"active", "activating", "deactivating"} and state.get("SubState") != "exited"
     return evidence if evidence["pending"] and active else None
 
 
@@ -270,6 +317,13 @@ def post_resume_business_error(runtime, transaction: Mapping) -> str:
             return "managed_post_resume_business_required"
         key, body = binding
         report = _read(JOBS_ROOT / key / "post-resume-business.json", maximum=4 * 1024 * 1024)
+        original, transport = managed_validation_report(key, "post_resume", heartbeat=lambda: None)
+        saved_transport = report.get("native_transport") or {}
+        if ({name: value for name, value in report.items() if name != "native_transport"} != original
+            or any(saved_transport.get(name) != transport.get(name) for name in (
+                "exit_status", "manager", "unit", "invocation", "parent_invocation",
+                "source_readonly", "artifact_digest", "target_transport"))):
+            return "managed_post_resume_root_original_changed"
         if (sha256(canonical_bytes(report)).hexdigest() != payload.get("post_resume_business_digest")
             or report.get("business_qualified") is not True or report.get("observation_started") is not False
             or report.get("managed_job_key") != key or report.get("managed_transaction_id") != body["transaction_id"]
@@ -281,6 +335,7 @@ def post_resume_business_error(runtime, transaction: Mapping) -> str:
         if (not isinstance(invocation, str) or not re.fullmatch(r"[0-9a-f]{32}", invocation)
             or _read(JOBS_ROOT / key / "started.json") != {"request_key": key, "invocation": invocation}
             or native.get("phase") not in {"resumed_awaiting_business", "completed"}
+            or native.get("original_invocation") != invocation
             or (native.get("state") or {}).get("InvocationID") not in {"", None, invocation}):
             return "managed_post_resume_native_identity_changed"
         policy = payload["authorized_policy"]
@@ -319,6 +374,8 @@ def observation_completion_error(transaction: Mapping) -> str:
         current = Path(policy["deployment"]["current_link"]).resolve(strict=True)
         if (native.get("manager") != "system" or native.get("unit") != f"eimemory-code-deployment-job@{key}.service"
             or native.get("phase") != "completed" or started.get("request_key") != key
+            or native.get("complete") is not True or native.get("resumed") is not True
+            or native.get("held_background")
             or not re.fullmatch(r"[0-9a-f]{32}", str(started.get("invocation") or ""))
             or native.get("original_invocation") != started["invocation"]
             or registry.get("runtime_commit") != body["candidate_commit"]
@@ -347,7 +404,7 @@ def _after_storage_call(call, *, manager, transaction_id: str, interval: float =
 
 
 def _validation_unit(key, operation):
-    if re.fullmatch(r"[0-9a-f]{64}", str(key)) is None or operation not in {"receipt", "post_resume"}:
+    if re.fullmatch(r"[0-9a-f]{64}", str(key)) is None or operation not in VALIDATION_BUDGETS:
         raise ValueError("deployment_validation_identity_invalid")
     return f"eimemory-code-validation-{operation.replace('_', '-')}@{key}.service"
 
@@ -363,33 +420,65 @@ def _assert_child_cgroup(native: dict, actual: str) -> None:
         raise ValueError("deployment_validation_actual_cgroup_unverified")
 
 
+def validation_binding(key: str, operation: str, native: dict | None = None) -> tuple[dict, dict]:
+    """Root original request is authoritative for manual and automatic jobs.
+
+    The normalized target/controller coordinates are local to this validation;
+    the original permit remains byte-for-byte unchanged under its original key.
+    """
+    from eimemory.core.runtime_manager import deployment_validation_status
+    _validation_unit(key, operation)
+    root = json.loads(_root_file_bytes(Path("/var/lib/eimemory-manager/jobs") / (key + ".json"), maximum=65536))
+    original = root.get("request")
+    manual = root.get("manual_release") is True
+    original = validate_manual_permit(original) if manual else validate_request(original)
+    if root.get("job_key") != key or sha256(canonical_bytes(original)).hexdigest() != key:
+        raise ValueError("deployment_validation_root_request_invalid")
+    native = deployment_validation_status(key, operation) if native is None else native
+    controller = original["validation_controller_commit"] if manual else original["controller_commit"]
+    target = native.get("target_commit")
+    if (target not in ({original["base_commit"], original["candidate_commit"]} if manual else {original["target_commit"]})
+        or native.get("controller_commit") != controller
+        or native.get("launch_controller_commit", original["controller_commit"]) != original["controller_commit"]
+        or native.get("manual_release", False) is not manual
+        or native.get("parent_original_invocation") != root.get("original_invocation")
+        or re.fullmatch(r"[0-9a-f]{32}", str(root.get("original_invocation"))) is None):
+        raise ValueError("deployment_validation_root_coordinates_invalid")
+    if not manual:
+        if (_read(JOBS_ROOT / key / "request.json") != original
+            or _read(JOBS_ROOT / key / "started.json") != {"request_key": key, "invocation": root["original_invocation"]}):
+            raise ValueError("deployment_validation_local_request_changed")
+    body = {**original, "controller_commit": controller, "target_commit": target,
+        "manual_release": manual, "launch_controller_commit": original["controller_commit"]}
+    return body, native
+
+
+def _validation_artifact_context(key, operation, body, native):
+    return {"schema": "managed_code_deployment_validation.v2", "job_key": key, "operation": operation,
+        "parent_invocation": native["parent_original_invocation"], "invocation": native["original_invocation"],
+        "target_commit": body["target_commit"], "controller_commit": body["controller_commit"],
+        "launch_controller_commit": body["launch_controller_commit"], "manual_release": body["manual_release"],
+        "scope": body["scope"], "source_readonly": True}
+
+
 def validation_context(key: str, operation: str) -> tuple[dict, dict]:
     """Verify the actual child Invocation against the protected root record."""
-    from eimemory.core.runtime_manager import deployment_validation_status
     unit = _validation_unit(key, operation)
-    body = validate_request(_read(JOBS_ROOT / key / "request.json"))
-    started = _read(JOBS_ROOT / key / "started.json")
-    native = deployment_validation_status(key, operation)
+    body, native = validation_binding(key, operation)
     invocation = os.environ.get("INVOCATION_ID", "")
-    if (request_key(body) != key or not re.fullmatch(r"[0-9a-f]{32}", invocation)
+    if (not re.fullmatch(r"[0-9a-f]{32}", invocation)
         or native.get("job_key") != key or native.get("operation") != operation
         or native.get("manager") != "system" or native.get("unit") != unit
-        or native.get("target_commit") != body["target_commit"]
-        or native.get("controller_commit") != body["controller_commit"]
         or native.get("artifact_basename") != f"validation-{operation}-result.json"
         or native.get("original_invocation") != invocation
         or (native.get("state") or {}).get("InvocationID") != invocation
-        or (native.get("state") or {}).get("ActiveState") not in {"active", "activating"}
-        or started != {"request_key": key, "invocation": native.get("parent_original_invocation")}
-        or not re.fullmatch(r"[0-9a-f]{32}", str(native.get("parent_original_invocation") or ""))):
+        or (native.get("state") or {}).get("ActiveState") not in {"active", "activating"}):
         raise ValueError("deployment_validation_native_context_unverified")
     _assert_child_cgroup(native, _native_child_cgroup())
     return body, native
 
 
-def _root_validation_envelope(key: str, operation: str) -> bytes:
-    """Read only the root's immutable copy, never a late UID1001 replacement."""
-    path = Path("/var/lib/eimemory-manager/validation-results") / f"{key}-{operation}.json"
+def _root_file_bytes(path: Path, *, maximum=8 * 1024 * 1024 + 65536) -> bytes:
     for parent in (path.parent, *path.parent.parents):
         info = parent.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
@@ -398,15 +487,20 @@ def _root_validation_envelope(key: str, operation: str) -> bytes:
     try:
         before = os.fstat(descriptor)
         if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or before.st_nlink != 1
-            or stat.S_IMODE(before.st_mode) != 0o640 or before.st_size > 8 * 1024 * 1024 + 65536):
+            or stat.S_IMODE(before.st_mode) != 0o640 or before.st_size > maximum):
             raise ValueError("deployment_validation_root_artifact_untrusted")
-        raw = os.read(descriptor, 8 * 1024 * 1024 + 65537)
+        raw = os.read(descriptor, maximum + 1)
         if (_stable(before) != _stable(os.fstat(descriptor)) or _stable(before) != _stable(path.lstat())
             or len(raw) != before.st_size):
             raise ValueError("deployment_validation_root_artifact_changed")
         return raw
     finally:
         os.close(descriptor)
+
+
+def _root_validation_envelope(key: str, operation: str) -> bytes:
+    """Read only the root's immutable copy, never a late UID1001 replacement."""
+    return _root_file_bytes(Path("/var/lib/eimemory-manager/validation-results") / f"{key}-{operation}.json")
 
 
 def _sealed_validation_artifact(native: dict, *, key: str, operation: str, child: str, parent: str) -> tuple[dict, str]:
@@ -448,42 +542,66 @@ def run_validation(runtime, *, key: str, operation: str) -> dict:
         or not os.statvfs(release / "eimemory").f_flag & os.ST_RDONLY):
         raise ValueError("deployment_validation_actual_source_not_readonly")
     invocation = native["original_invocation"]
-    context = {"schema": "managed_code_deployment_validation.v1", "job_key": key, "operation": operation,
-        "parent_invocation": native["parent_original_invocation"], "invocation": invocation,
-        "target_commit": body["target_commit"], "controller_commit": body["controller_commit"],
-        "scope": body["scope"], "source_readonly": True}
+    context = _validation_artifact_context(key, operation, body, native)
+    _directory(JOBS_ROOT / key, create=True)
     _exclusive(JOBS_ROOT / key / f"validation-{operation}-started.json", context)
     target_transport = {"exit_status": None, "executed": None}
     try:
-        transaction = CodeEvolutionStore(runtime.store).get_transaction(body["transaction_id"])
-        if (not transaction or not effect_execution_authorized(transaction)
-            or _bound_request(transaction, body["operation"]) != (key, body)):
-            raise ValueError("deployment_validation_transaction_changed")
-        policy = transaction["payload"]["authorized_policy"]
-        if operation == "receipt":
-            expected = "DEPLOY_INTENT" if body["operation"] == "deploy" else "ROLLBACK_INTENT"
-            if transaction.get("current_state") != expected:
-                raise ValueError("deployment_validation_receipt_state_invalid")
-            arguments = dict(scope=body["scope"], repo_root=transaction["repository_root"],
-                current_link=policy["deployment"]["current_link"], health_url=policy["deployment"]["health_url"],
-                prior_commit=body["base_commit"] if body["operation"] == "deploy" else body["candidate_commit"],
-                deployed_commit=body["target_commit"])
-            if body["operation"] == "deploy":
-                from eimemory.governance.evolution.code_evolution_effects import _code_evolution_lineage
-                arguments.update(strict_transaction=True, transaction_id=body["transaction_id"],
-                    **{name: body[name] for name in ("authorization_digest", "policy_digest", "patch_digest",
-                        "candidate_tree_digest", "verification_receipt_digests", "observation_deadline")},
-                    provider_implementation_digest=transaction["implementation_digest"],
-                    code_evolution_lineage=_code_evolution_lineage(transaction))
+        transaction = None
+        if body["manual_release"]:
+            from eimemory.core.runtime_manager import read_registry
+            registry = read_registry()
+            policy = {"deployment": {"current_link": "/opt/eimemory/current", "health_url": "http://127.0.0.1:8091/health"}}
+            if operation == "pre_observation":
+                raise ValueError("deployment_manual_has_no_automatic_observation")
+            if operation == "receipt":
+                arguments = dict(scope=body["scope"], repo_root=registry["repository_root"],
+                    current_link=policy["deployment"]["current_link"], health_url=policy["deployment"]["health_url"],
+                    prior_commit=body["base_commit"] if body["target_commit"] == body["candidate_commit"] else body["candidate_commit"],
+                    deployed_commit=body["target_commit"])
+            else:
+                if body["target_commit"] != body["candidate_commit"]:
+                    raise ValueError("deployment_manual_business_requires_candidate")
+                arguments = native
         else:
-            if body["operation"] != "deploy":
-                raise ValueError("deployment_validation_business_requires_forward_job")
-            arguments = native
+            transaction = CodeEvolutionStore(runtime.store).get_transaction(body["transaction_id"])
+            original = {name: value for name, value in body.items()
+                if name not in {"manual_release", "launch_controller_commit"}}
+            if (not transaction or not effect_execution_authorized(transaction)
+                or _bound_request(transaction, body["operation"]) != (key, original)):
+                raise ValueError("deployment_validation_transaction_changed")
+            policy = transaction["payload"]["authorized_policy"]
+            if operation == "receipt":
+                expected = "DEPLOY_INTENT" if body["operation"] == "deploy" else "ROLLBACK_INTENT"
+                if transaction.get("current_state") != expected:
+                    raise ValueError("deployment_validation_receipt_state_invalid")
+                arguments = dict(scope=body["scope"], repo_root=transaction["repository_root"],
+                    current_link=policy["deployment"]["current_link"], health_url=policy["deployment"]["health_url"],
+                    prior_commit=body["base_commit"] if body["operation"] == "deploy" else body["candidate_commit"],
+                    deployed_commit=body["target_commit"])
+                if body["operation"] == "deploy":
+                    from eimemory.governance.evolution.code_evolution_effects import _code_evolution_lineage
+                    arguments.update(strict_transaction=True, transaction_id=body["transaction_id"],
+                        **{name: body[name] for name in ("authorization_digest", "policy_digest", "patch_digest",
+                            "candidate_tree_digest", "verification_receipt_digests", "observation_deadline")},
+                        provider_implementation_digest=transaction["implementation_digest"],
+                        code_evolution_lineage=_code_evolution_lineage(transaction))
+            else:
+                if body["operation"] != "deploy":
+                    raise ValueError("deployment_validation_business_requires_forward_job")
+                if operation == "pre_observation":
+                    receipt, _ = managed_validation_report(key, "receipt", heartbeat=lambda: None)
+                    arguments = dict(receipt=receipt, transaction_id=body["transaction_id"], identity_kwargs=dict(
+                        scope=body["scope"], repo_root=transaction["repository_root"],
+                        current_link=policy["deployment"]["current_link"], health_url=policy["deployment"]["health_url"],
+                        prior_commit=body["base_commit"], deployed_commit=body["target_commit"]))
+                else:
+                    arguments = native
         result, target_transport = _target_validation_report(runtime, key=key, operation=operation,
             body=body, transaction=transaction, arguments=arguments)
         _, after = validation_context(key, operation)
         if any(native.get(name) != after.get(name) for name in ("unit", "original_invocation",
-            "parent_original_invocation", "target_commit", "controller_commit", "phase")):
+            "parent_original_invocation", "target_commit", "controller_commit", "phase", "manual_release", "launch_controller_commit")):
             raise ValueError("deployment_validation_native_context_changed")
         if (Path(policy["deployment"]["current_link"]).resolve(strict=True) != release.parent / body["target_commit"]
             or not os.statvfs(release).f_flag & os.ST_RDONLY):
@@ -524,7 +642,7 @@ if Path(eimemory.__file__).resolve().parent.parent!=expected or not os.statvfs(e
     raise SystemExit('deployment_validation_target_import_or_mount_invalid')
 from eimemory.api.runtime import Runtime
 from eimemory.models.records import ScopeRef
-runtime=Runtime.create(root=sys.argv[5])
+runtime=Runtime.create(root=sys.argv[5], **({"bootstrap_schema":False} if "bootstrap_schema" in inspect.signature(Runtime.create).parameters else {}))
 try:
     if operation=='receipt':
         if asdict(ScopeRef.from_dict(arguments['scope']))!=arguments['scope']:
@@ -532,15 +650,46 @@ try:
         if not set(arguments)<=set(inspect.signature(runtime.verify_and_record_deployment).parameters):
             raise SystemExit('deployment_validation_legacy_native_api_unsupported')
         report=runtime.verify_and_record_deployment(**arguments)
+    elif operation=='pre_observation':
+        from eimemory.governance.release.release_pre_observation import run_pre_observation_closure
+        report=run_pre_observation_closure(runtime,**arguments)
     elif operation=='post_resume':
-        from eimemory.governance.release.release_closure import run_managed_post_resume_closure
-        report=run_managed_post_resume_closure(runtime,job_key=key,validation_context=arguments)
+        from eimemory.governance.release.release_closure import run_managed_post_resume_closure,run_manual_post_resume_closure
+        entry=run_manual_post_resume_closure if arguments.get('manual_release') is True else run_managed_post_resume_closure
+        report=entry(runtime,job_key=key,validation_context=arguments)
     else:
         raise SystemExit('deployment_validation_operation_invalid')
     if Path(eimemory.__file__).resolve().parent.parent!=expected or not os.statvfs(expected).f_flag & os.ST_RDONLY:
         raise SystemExit('deployment_validation_target_changed')
-    print(json.dumps({'report':report,'source_commit':expected.name,'source_readonly':True},sort_keys=True,allow_nan=False))
-    raise SystemExit(0 if report.get('ok') is True and (operation=='receipt' or report.get('business_qualified') is True) else 1)
+    readback=None
+    if operation=='receipt' and report.get('ok') is True:
+        runtime.close()
+        runtime=Runtime.create(root=sys.argv[5], **({'bootstrap_schema':False} if 'bootstrap_schema' in inspect.signature(Runtime.create).parameters else {}))
+        from eimemory.governance.release.evidence_contract import current_release_identity
+        identity=current_release_identity(runtime,ScopeRef.from_dict(arguments['scope']))
+        if identity is None or identity.commit!=expected.name or identity.receipt_id!=report.get('promotion_request_id') or identity.version!=report.get('version'):
+            raise SystemExit('current_deployment_receipt_unavailable')
+        readback={'current_deployment_receipt_verified':True,'commit':identity.commit,'receipt_id':identity.receipt_id}
+    if operation=='pre_observation':
+        from eimemory.governance.release.release_pre_observation import pre_observation_report_ok
+        passed=pre_observation_report_ok(report)
+    else:
+        passed=report.get('ok') is True and (operation=='receipt' or report.get('business_qualified') is True)
+    capture=None
+    if operation in {'pre_observation','post_resume'}:
+        from eimemory.governance.evolution.code_deployment_job import JOBS_ROOT,_exclusive_blob,canonical_bytes
+        from eimemory.ops.closure_capture import process_capture
+        source=JOBS_ROOT/key/('validation-'+operation+'-report.json')
+        _exclusive_blob(source,canonical_bytes(report))
+        scope=report.get('scope') or arguments.get('identity_kwargs',{}).get('scope')
+        if not isinstance(scope,dict):
+            raise SystemExit('deployment_validation_capture_scope_missing')
+        capture=process_capture(source,evidence_dir=Path(sys.argv[5])/'logs/release-closure-captures',
+            scope=scope,expected_commit=expected.name,attempt_id=key,closure_exit_status=0 if passed else 1,
+            runtime_factory=lambda:Runtime.create(root=sys.argv[5],bootstrap_schema=False))
+        passed=passed and capture.get('recording_ok') is True and capture.get('capture_saved') is True and capture.get('exit_code')==0
+    print(json.dumps({'report':report,'source_commit':expected.name,'source_readonly':True,'physical_receipt_readback':readback,'closure_capture':capture},sort_keys=True,allow_nan=False))
+    raise SystemExit(0 if passed else 1)
 finally:
     runtime.close()
 '''
@@ -548,14 +697,22 @@ finally:
     argv = [str(target / ".venv/bin/python"), "-I", "-B", "-X",
         "pycache_prefix=/var/lib/eimemory-manager/empty-pycache", "-c", program,
         str(target), key, operation, json.dumps(arguments, sort_keys=True, separators=(",", ":")), str(runtime.store.root)]
-    envelope, transport, raw, errors = _run_native_json_report(argv, cwd=target, env=env, heartbeat=lambda: None)
+    envelope, transport, raw, errors = _run_native_json_report(argv, cwd=target, env=env, heartbeat=lambda: None,
+        max_seconds=VALIDATION_BUDGETS[operation][0])
     transport["executed"] = True
     _exclusive_blob(JOBS_ROOT / key / f"validation-{operation}-target.stdout", raw)
     _exclusive_blob(JOBS_ROOT / key / f"validation-{operation}-target.stderr", errors)
-    if (set(envelope) != {"report", "source_commit", "source_readonly"}
+    if (set(envelope) != {"report", "source_commit", "source_readonly", "physical_receipt_readback", "closure_capture"}
         or envelope.get("source_commit") != body["target_commit"] or envelope.get("source_readonly") is not True
         or not isinstance(envelope.get("report"), dict)):
         raise ValueError("deployment_validation_target_report_unverified")
+    transport["physical_receipt_readback"] = envelope["physical_receipt_readback"]
+    transport["closure_capture"] = envelope["closure_capture"]
+    if operation == "receipt" and envelope["report"].get("ok") is True:
+        readback = envelope["physical_receipt_readback"]
+        if readback != {"current_deployment_receipt_verified": True, "commit": body["target_commit"],
+            "receipt_id": envelope["report"].get("promotion_request_id")}:
+            raise ValueError("deployment_validation_physical_receipt_unverified")
     result = envelope["report"]
     if transport["exit_status"] != 0:
         result = {**result, "ok": False, "business_qualified": False}
@@ -566,15 +723,15 @@ def managed_validation_report(key: str, operation: str, *, heartbeat) -> tuple[d
     """One root-managed child per key/op; an unknown result is never rerun."""
     from eimemory.core.runtime_manager import validate_deployment_job, deployment_validation_status
     unit = _validation_unit(key, operation)
-    body = validate_request(_read(JOBS_ROOT / key / "request.json"))
-    parent = _read(JOBS_ROOT / key / "started.json")
     native = validate_deployment_job(key, operation)
+    body, native = validation_binding(key, operation, native)
+    parent = {"request_key": key, "invocation": native["parent_original_invocation"]}
     begin = time.monotonic()
-    deadline = begin + (1800 if operation == "post_resume" else 600)
+    deadline = begin + VALIDATION_BUDGETS[operation][2]
     next_heartbeat = begin
     while True:
         state = native.get("state") if isinstance(native.get("state"), dict) else {}
-        if (request_key(body) != key or native.get("job_key") != key or native.get("operation") != operation
+        if (native.get("job_key") != key or native.get("operation") != operation
             or native.get("manager") != "system" or native.get("unit") != unit
             or native.get("target_commit") != body["target_commit"]
             or native.get("controller_commit") != body["controller_commit"]
@@ -622,10 +779,7 @@ def managed_validation_report(key: str, operation: str, *, heartbeat) -> tuple[d
         native = deployment_validation_status(key, operation)
     artifact, artifact_digest = _sealed_validation_artifact(native, key=key, operation=operation,
         child=child, parent=parent["invocation"])
-    expected = {"schema": "managed_code_deployment_validation.v1", "job_key": key, "operation": operation,
-        "parent_invocation": parent["invocation"], "invocation": child,
-        "target_commit": body["target_commit"], "controller_commit": body["controller_commit"],
-        "scope": body["scope"], "source_readonly": True}
+    expected = _validation_artifact_context(key, operation, body, native)
     if (set(artifact) != set(expected) | {"report", "target_transport"} or any(artifact.get(name) != value for name, value in expected.items())
         or not isinstance(artifact.get("report"), dict)
         or not isinstance(artifact.get("target_transport"), dict)
@@ -714,7 +868,7 @@ def run_job(runtime, key: str, *, wait_seconds: float = 310) -> dict:
         _exclusive(JOBS_ROOT / key / "technical-install.json", {
             "request_key": key, "invocation": invocation, "result": result})
         from eimemory.api.runtime import Runtime
-        reopened = Runtime.create(root=runtime.store.root)
+        reopened = Runtime.create(root=runtime.store.root, bootstrap_schema=False)
         manager = CodeEvolutionTransactionManager(reopened, owner_id=f"deployment-job:{key}:{invocation}")
         deadline = time.monotonic() + min(max(wait_seconds, 0), 310)
         while True:

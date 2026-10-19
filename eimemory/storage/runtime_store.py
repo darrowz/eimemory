@@ -147,8 +147,12 @@ class _ReadSlot:
 
 
 class RuntimeStore:
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path, *, bootstrap_schema: bool = True) -> None:
         self.root = Path(root)
+        self.bootstrap_schema = bool(bootstrap_schema)
+        if not self.bootstrap_schema and (self.root.is_symlink() or not self.root.is_dir()
+            or not (self.root / "state" / "eimemory.sqlite").is_file()):
+            raise ValueError("existing_runtime_database_required")
         self.root.mkdir(parents=True, exist_ok=True)
         self.log = JsonlLog(self.root / "records.jsonl")
         self.auxiliary_log_dir = self.root / "state"
@@ -162,7 +166,8 @@ class RuntimeStore:
             "pending": 0,
             "error": "",
         }
-        self.sqlite = SqliteRecordStore(self.root / "state" / "eimemory.sqlite", auxiliary_log_dir=self.auxiliary_log_dir)
+        self.sqlite = SqliteRecordStore(self.root / "state" / "eimemory.sqlite", auxiliary_log_dir=self.auxiliary_log_dir,
+            bootstrap_schema=self.bootstrap_schema)
         bind = getattr(self.sqlite, "bind_runtime_lock", None)
         if callable(bind):
             bind(self._lock)
@@ -461,6 +466,7 @@ class RuntimeStore:
                     self.sqlite.path,
                     auxiliary_log_dir=self.auxiliary_log_dir,
                     archive_writes=False,
+                    bootstrap_schema=self.bootstrap_schema,
                 )
                 lock = RLock()
                 reader.bind_runtime_lock(lock)
@@ -2101,6 +2107,8 @@ class RuntimeStore:
             self.sqlite.close()
 
     def rebuild_sqlite_from_jsonl(self, *, replace: bool = False) -> dict:
+        if not self.bootstrap_schema:
+            raise RuntimeError("existing_schema_attachment_cannot_rebuild")
         with self._lock:
             try:
                 flush_report = self.flush_exports()

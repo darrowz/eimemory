@@ -494,6 +494,68 @@ def run_managed_post_resume_closure(runtime: Any, *, job_key: str, validation_co
     return report
 
 
+def run_manual_post_resume_closure(runtime: Any, *, job_key: str, validation_context: dict) -> dict:
+    """Root-reviewed manual release admission; never an automatic L5 source.
+
+    The permit's deployment owner is independent from the nightly/watch owner.
+    No transaction, policy consumption, observation anchor or L5 fact is made.
+    """
+    from eimemory.core.runtime_manager import deployment_job_status, read_registry
+    from eimemory.governance.evolution.code_deployment_job import (
+        validation_context as actual_context, managed_validation_report,
+    )
+    from eimemory.governance.release.evidence_contract import current_release_identity
+    from eimemory.governance.release.closure_contracts import controlled_production_closure_report_ok
+    from eimemory.evaluation.controlled_production_acceptance import load_controlled_policy
+    from eimemory.governance.l5.l5_readiness import _storage_migration_status
+    from eimemory.governance.safety.prompt_safety_executor import bind_prompt_safety_from_service
+
+    report = dict(ok=False, closure_complete=False, data_accumulating=False,
+        report_type="manual_post_resume_business", blocked_stage="", blocked_reason="",
+        business_qualified=False, observation_started=False, l5_certification="not_certified",
+        manual_release=True, managed_job_key=job_key, record_ids={})
+    body, child = actual_context(job_key, "post_resume")
+    identity = ("job_key", "operation", "unit", "original_invocation", "parent_original_invocation",
+        "target_commit", "controller_commit", "launch_controller_commit", "manual_release", "phase")
+    if (body.get("manual_release") is not True or body["target_commit"] != body["candidate_commit"]
+        or not isinstance(validation_context, dict)
+        or any(validation_context.get(name) != child.get(name) for name in identity)):
+        return _blocked(report, "managed_job", "root_reviewed_manual_context_required")
+    parent = deployment_job_status(job_key)
+    registry = read_registry()
+    if (parent.get("original_invocation") != child["parent_original_invocation"]
+        or parent.get("phase") != "resumed_awaiting_business" or parent.get("resumed") is not True
+        or parent.get("manual_release") is not True or parent.get("held_background")
+        or registry["runtime_commit"] != body["target_commit"]):
+        return _blocked(report, "managed_resume", "native_restoration_not_verified")
+    scope = dict(body["scope"])
+    report["scope"] = scope
+    receipt, native = managed_validation_report(job_key, "receipt", heartbeat=lambda: None)
+    actual = current_release_identity(runtime, ScopeRef.from_dict(scope))
+    if (native["exit_status"] != 0 or receipt.get("ok") is not True or actual is None
+        or actual.commit != body["target_commit"] or actual.receipt_id != receipt.get("promotion_request_id")
+        or actual.version != receipt.get("version") or receipt.get("strict_transaction") is True):
+        return _blocked(report, "deployment_receipt", "manual_physical_receipt_unverified")
+    report.update(deployment_receipt=receipt, deployment=_deployment_identity(receipt))
+    report["record_ids"]["deployment_receipt"] = actual.receipt_id
+    policy = load_controlled_policy(runtime, scope)
+    if policy is None or policy.get("purpose") != "historical_business_qualification":
+        return _blocked(report, "controlled_policy", "historical_business_policy_required")
+    migration = _storage_migration_status(runtime)
+    report["storage_migrations"] = migration
+    if migration.get("ok") is not True:
+        return _blocked(report, "storage_migrations", "storage_migrations_pending")
+    bind_prompt_safety_from_service(runtime)
+    identity_kwargs = dict(scope=scope, repo_root=registry["repository_root"],
+        current_link="/opt/eimemory/current", health_url="http://127.0.0.1:8091/health",
+        prior_commit=body["base_commit"], deployed_commit=body["target_commit"], deployment_receipt=receipt)
+    report = _run_controlled_operational_closure(runtime, report=report, scope=scope,
+        identity_kwargs=identity_kwargs, release=actual, policy=policy)
+    report["business_qualified"] = controlled_production_closure_report_ok(report)
+    report.update(manual_release=True, observation_started=False, l5_certification="not_certified")
+    return report
+
+
 def _run_controlled_operational_closure(
     runtime: Any, *, report: dict[str, Any], scope: dict[str, Any],
     identity_kwargs: dict[str, Any], release: ReleaseIdentity, policy: dict[str, Any],

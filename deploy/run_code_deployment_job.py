@@ -14,7 +14,7 @@ def main() -> int:
     from eimemory.governance.evolution.code_deployment_job import run_job
     # Root registry owns service configuration; neither request nor argv can
     # choose a state directory, command, environment, or Python entry point.
-    runtime = Runtime.create(root="/var/lib/eimemory")
+    runtime = Runtime.create(root="/var/lib/eimemory", bootstrap_schema=False)
     try:
         result = run_job(runtime, sys.argv[2])
         print(json.dumps(result, sort_keys=True))

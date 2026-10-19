@@ -13,6 +13,16 @@ KEYS = frozenset({"schema", "operation", "transaction_id", "scope", "base_commit
     "policy_digest", "authorization_digest", "patch_digest", "candidate_tree_digest",
     "verification_receipt_digests", "observation_deadline"})
 SCOPE_KEYS = frozenset({"tenant_id", "agent_id", "workspace_id", "user_id"})
+MANUAL_SCHEMA = "eimemory.manual_release_permit.v2"
+MANUAL_KEYS = frozenset({"schema", "operation", "controller_commit", "validation_controller_commit",
+    "base_commit", "candidate_commit", "target_commit", "reviewed_attempt_id", "scope"})
+# Ordered containment: the target process must stop before its native child
+# deadline, and that child must stop before the parent's readback deadline.
+VALIDATION_BUDGETS = {
+    "receipt": (300, 420, 480),
+    "pre_observation": (1800, 1860, 1920),
+    "post_resume": (1800, 1860, 1920),
+}
 
 def canonical_bytes(value: Mapping) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -57,3 +67,22 @@ def validate_request(value: object) -> dict:
 
 def request_key(value: object) -> str:
     return sha256(canonical_bytes(validate_request(value))).hexdigest()
+
+def validate_manual_permit(value: object) -> dict:
+    """Decode a root-reviewed permit; this does not grant any repair authority."""
+    if (not isinstance(value, dict) or set(value) != MANUAL_KEYS
+        or value.get("schema") != MANUAL_SCHEMA or value.get("operation") != "deploy"):
+        raise ValueError("deployment_manual_permit_fields_invalid")
+    for name in ("controller_commit", "validation_controller_commit", "base_commit", "candidate_commit", "target_commit"):
+        if re.fullmatch(r"[0-9a-f]{40}", str(value.get(name))) is None:
+            raise ValueError("deployment_manual_permit_commit_invalid")
+    if value["validation_controller_commit"] != value["candidate_commit"] or value["target_commit"] != value["candidate_commit"]:
+        raise ValueError("deployment_manual_permit_target_invalid")
+    scope = value["scope"]
+    if (not isinstance(scope, dict) or set(scope) != SCOPE_KEYS or any(
+        not isinstance(item, str) or not item.strip() or item != item.strip() or len(item) > 256
+        or any(char in item for char in "\r\n\x00") for item in scope.values())):
+        raise ValueError("deployment_manual_permit_scope_invalid")
+    if re.fullmatch(r"[0-9a-f]{32}", str(value.get("reviewed_attempt_id"))) is None:
+        raise ValueError("deployment_manual_permit_attempt_invalid")
+    return dict(value)

@@ -2022,11 +2022,11 @@ def _run_bounded_process(
     return result.returncode, result.stdout
 
 
-def _run_native_json_report(argv, *, cwd, env, heartbeat):
+def _run_native_json_report(argv, *, cwd, env, heartbeat, max_seconds=7200):
     """Keep stderr separate so a diagnostic cannot corrupt or impersonate JSON."""
     from eimemory.governance.learning.effect_process import run_owned_process
     result = run_owned_process(argv, cwd=cwd, env=env, heartbeat=heartbeat,
-        merge_stderr=False, output_limit=4 * 1024 * 1024)
+        merge_stderr=False, output_limit=4 * 1024 * 1024, max_seconds=max_seconds)
     transport = {"exit_status": result.returncode, "timed_out": result.timed_out,
         "stdout_digest": sha256(result.stdout).hexdigest(), "stderr_digest": sha256(result.stderr).hexdigest()}
     try:

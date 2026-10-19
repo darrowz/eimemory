@@ -55,7 +55,7 @@ def _root_job(key):
         separators=(",", ":"), allow_nan=False).encode()
     if record.get("job_key") != key or sha256(canonical).hexdigest() != key:
         raise ValueError("validation_root_job_identity_invalid")
-    return request
+    return record
 
 
 def _receive(stream, size):
@@ -121,6 +121,8 @@ def _assert_execution_identity(request, key, operation, native, invocation, stat
         or native.get("manager") != "system" or native.get("unit") != unit
         or native.get("target_commit") != request["target_commit"]
         or native.get("controller_commit") != request["controller_commit"]
+        or native.get("manual_release", False) is not request["manual_release"]
+        or native.get("launch_controller_commit", request["launch_controller_commit"]) != request["launch_controller_commit"]
         or native.get("artifact_basename") != "validation-" + operation + "-result.json"
         or re.fullmatch("[0-9a-f]{32}", invocation) is None
         or native.get("original_invocation") != invocation or state.get("InvocationID") != invocation
@@ -140,11 +142,22 @@ def _assert_execution_identity(request, key, operation, native, invocation, stat
 def main():
     if (len(sys.argv) != 5 or sys.argv[1] != "--job-key" or sys.argv[3] != "--operation"
         or re.fullmatch("[0-9a-f]{64}", sys.argv[2]) is None
-        or sys.argv[4] not in {"receipt", "post_resume"}
+        or sys.argv[4] not in {"receipt", "pre_observation", "post_resume"}
         or os.getuid() != 1001 or os.geteuid() != 1001):
         raise SystemExit("validation_fixed_low_privilege_entry_required")
     key, operation = sys.argv[2], sys.argv[4]
-    request = _root_job(key)
+    record = _root_job(key)
+    original = record["request"]
+    manual = record.get("manual_release") is True
+    native, peer_uid = _root_validation_status(key, operation)
+    controller = original.get("validation_controller_commit") if manual else original.get("controller_commit")
+    target = native.get("target_commit")
+    if (target not in ({original.get("base_commit"), original.get("candidate_commit")} if manual else {original.get("target_commit")})
+        or record.get("original_invocation") != native.get("parent_original_invocation")
+        or native.get("manual_release", False) is not manual):
+        raise ValueError("validation_root_job_coordinates_invalid")
+    request = {**original, "controller_commit": controller, "target_commit": target,
+        "launch_controller_commit": original["controller_commit"], "manual_release": manual}
     if any(re.fullmatch("[0-9a-f]{40}", str(request.get(name))) is None
         for name in ("controller_commit", "target_commit")):
         raise ValueError("validation_root_job_commit_invalid")
@@ -167,7 +180,6 @@ def main():
         raise ValueError("validation_pycache_prefix_not_empty")
     # An environment InvocationID is a claim. The authenticated root response
     # and actual kernel cgroup/identity must agree before any product import.
-    native, peer_uid = _root_validation_status(key, operation)
     _assert_execution_identity(request, key, operation, native,
         os.environ.get("INVOCATION_ID", ""), Path("/proc/self/status").read_text(),
         Path("/proc/self/cgroup").read_text())
@@ -205,7 +217,7 @@ def main():
     from eimemory.api.runtime import Runtime
     from eimemory.governance.evolution.code_deployment_job import run_validation, validation_context
     validation_context(key, operation)
-    runtime = Runtime.create(root="/var/lib/eimemory")
+    runtime = Runtime.create(root="/var/lib/eimemory", bootstrap_schema=False)
     try:
         result = run_validation(runtime, key=key, operation=operation)
         print(json.dumps({"job_key": key, "operation": operation,

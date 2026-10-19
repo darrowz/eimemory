@@ -2262,11 +2262,24 @@ finally:
 PY
 }
 
+_managed_validation_gate() {
+  [ -n "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" ] || return 2
+  # Transport only: the controller schedules a separate PID1 child whose
+  # entire target/controller source is read-only. No gate is evaluated here.
+  _run_as_service_user "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
+    "$REPO_DIR/deploy/run_code_deployment_gate.py" \
+    --job-key "$EIMEMORY_RUNTIME_TRANSITION_JOB" --operation "$1"
+}
+
 _record_deployment_receipt() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return 0
   fi
   _prepare_release_receipt_source || return $?
+  if [ -n "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" ]; then
+    _managed_validation_gate receipt
+    return $?
+  fi
   local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"
   local args=(
     --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK"
@@ -2339,6 +2352,12 @@ print(rid)' "$COMMIT" 2>/dev/null)" || {
 
 _record_release_lineage() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+    return 0
+  fi
+  if [ -n "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" ]; then
+    # The same native lineage writer runs inside pre_observation/post_resume,
+    # alongside its actual gate evidence. Do not run target Python on RW code.
+    echo "release_lineage=bound_to_managed_gate"
     return 0
   fi
   env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
@@ -2657,9 +2676,20 @@ _run_post_deploy_validation() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     BUSINESS_CLOSURE_OUTCOME="skipped"
     echo "post_deploy_validation=skipped"
-    [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ] && return 2
+    { [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ] || [ -n "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" ]; } && return 2
     # The failed transaction-mode predicate above is the most recent status;
     # make the legacy/non-strict skip explicitly successful under `set -e`.
+    return 0
+  fi
+  if [ -n "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" ]; then
+    if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ]; then
+      _managed_validation_gate pre_observation || return $?
+      BUSINESS_CLOSURE_OUTCOME="ready_for_observation"
+    else
+      _managed_validation_gate post_resume || return $?
+      BUSINESS_CLOSURE_OUTCOME="closure_complete"
+    fi
+    echo "post_deploy_validation=process_succeeded business_closure_outcome=$BUSINESS_CLOSURE_OUTCOME"
     return 0
   fi
   local degraded=0

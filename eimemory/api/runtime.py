@@ -169,9 +169,10 @@ class Runtime:
         candidate_source: CandidateSource | None = None,
         recall_engine: RecallEngine | None = None,
         profile: str = "full",
+        bootstrap_schema: bool = True,
     ) -> "Runtime":
         final_root = default_root(root)
-        store = RuntimeStore(final_root)
+        store = RuntimeStore(final_root) if bootstrap_schema else RuntimeStore(final_root, bootstrap_schema=False)
         effective_source = candidate_source
         candidate_source_error = ""
         if effective_source is None and recall_engine is None:

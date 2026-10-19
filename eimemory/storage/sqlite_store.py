@@ -230,8 +230,12 @@ class SqliteRecordStore:
         archive_writes: bool = True,
         payload_archive_inline_bytes: int = _DEFAULT_PAYLOAD_INLINE_BYTES,
         payload_max_bytes: int = DEFAULT_MAX_PAYLOAD_BYTES,
+        bootstrap_schema: bool = True,
     ) -> None:
         self.path = path
+        self.bootstrap_schema = bool(bootstrap_schema)
+        if not self.bootstrap_schema and (self.path.is_symlink() or not self.path.is_file()):
+            raise ValueError("existing_sqlite_database_required")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.auxiliary_log_dir = Path(auxiliary_log_dir) if auxiliary_log_dir is not None else None
         self.suppress_auxiliary_logging = False
@@ -249,28 +253,47 @@ class SqliteRecordStore:
         self._runtime_lock = None
         self._lock_enforcement = False
         self._schema_migration_cache: dict[str, bool] = {}
-        self.conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
+        self.conn = (sqlite3.connect(self.path, timeout=30, check_same_thread=False) if self.bootstrap_schema
+            else sqlite3.connect(self.path.resolve().as_uri()+"?mode=rw", uri=True, timeout=30, check_same_thread=False))
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA busy_timeout = 30000")
+        if not self.bootstrap_schema:
+            denied = frozenset(getattr(sqlite3, name) for name in (
+                "SQLITE_CREATE_INDEX", "SQLITE_CREATE_TABLE", "SQLITE_CREATE_TEMP_INDEX", "SQLITE_CREATE_TEMP_TABLE",
+                "SQLITE_CREATE_TEMP_TRIGGER", "SQLITE_CREATE_TEMP_VIEW", "SQLITE_CREATE_TRIGGER", "SQLITE_CREATE_VIEW",
+                "SQLITE_DROP_INDEX", "SQLITE_DROP_TABLE", "SQLITE_DROP_TEMP_INDEX", "SQLITE_DROP_TEMP_TABLE",
+                "SQLITE_DROP_TEMP_TRIGGER", "SQLITE_DROP_TEMP_VIEW", "SQLITE_DROP_TRIGGER", "SQLITE_DROP_VIEW",
+                "SQLITE_CREATE_VTABLE", "SQLITE_DROP_VTABLE", "SQLITE_ALTER_TABLE", "SQLITE_ATTACH", "SQLITE_DETACH",
+                "SQLITE_REINDEX", "SQLITE_ANALYZE"))
+            self.conn.set_authorizer(lambda operation, first, second, _database, _source, forbidden=denied:
+                sqlite3.SQLITE_DENY if operation in forbidden or (operation == sqlite3.SQLITE_PRAGMA
+                    and str(first).lower() in {"schema_version", "user_version", "writable_schema", "auto_vacuum", "journal_mode"}
+                    and second is not None)
+                else sqlite3.SQLITE_OK)
         self._configure_connection()
-        self._init_db()
-        self._create_schema_migrations_table()
-        self._create_adapter_receipt_tables()
-        self._create_proactive_recall_tables()
-        self.conn.commit()
+        if self.bootstrap_schema:
+            self._init_db()
+            self._create_schema_migrations_table()
+            self._create_adapter_receipt_tables()
+            self._create_proactive_recall_tables()
+            self.conn.commit()
         # V3 schema creation intentionally runs after the legacy initialization
         # branch, including its early-return fast path for already-migrated
         # production stores.  It creates schema only and never scans/backfills
         # record payloads during startup.
-        ensure_registered_storage_schema(self.conn)
-        self.preload_report = self.preload_hot_pages()
+        if self.bootstrap_schema:
+            ensure_registered_storage_schema(self.conn)
+            self.preload_report = self.preload_hot_pages()
+        else:
+            self.preload_report = {"status": "not_run", "reason": "existing_schema_attachment"}
         # After bootstrap, require an explicit bind before guarded mutate wrappers.
         self._lock_enforcement = True
         # PERF P1 §3.1: warm recall-schema verification once per connection.
         self._recall_schema_verified = False
         self._schema_migration_cache: dict[str, bool] = {}
         self._recall_identity_ready_cached = None
-        self._ensure_recall_schema_once()
+        if self.bootstrap_schema:
+            self._ensure_recall_schema_once()
 
 
     def bind_runtime_lock(self, lock) -> None:
@@ -327,10 +350,11 @@ class SqliteRecordStore:
         foreign_keys = self.conn.execute("PRAGMA foreign_keys").fetchone()
         if foreign_keys is None or int(foreign_keys[0]) != 1:
             raise RuntimeError("SQLite foreign-key enforcement could not be enabled")
-        try:
-            self.conn.execute("PRAGMA journal_mode=WAL")
-        except sqlite3.OperationalError:
-            pass
+        if self.bootstrap_schema:
+            try:
+                self.conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.OperationalError:
+                pass
         # Durability vs performance trade-off: NORMAL survives process crashes but
         # not power loss; FULL guarantees durable records survive power loss at a
         # write-speed cost; OFF is fastest and non-durable. Default NORMAL preserves
@@ -344,7 +368,8 @@ class SqliteRecordStore:
         self.conn.execute("PRAGMA temp_store=FILE")
         self.conn.execute("PRAGMA wal_autocheckpoint=1000")
         self.conn.execute(f"PRAGMA journal_size_limit={64 * 1024 * 1024}")
-        self.conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+        if self.bootstrap_schema:
+            self.conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
         try:
             cache_kib = int(os.environ.get("EIMEMORY_SQLITE_CACHE_KIB") or 16_384)
         except ValueError:
@@ -664,6 +689,12 @@ class SqliteRecordStore:
         verification still runs after schema-changing work.
         """
         if not force and getattr(self, "_recall_schema_verified", False):
+            return
+        if not getattr(self, "bootstrap_schema", True):
+            if not self._completed_storage_schema_ready():
+                raise RuntimeError("existing_sqlite_schema_incompatible")
+            self._recall_identity_ready_cached = self._compute_recall_identity_physical_ready()
+            self._recall_schema_verified = True
             return
         self._prepare_deferred_recall_schema()
         self._ensure_recall_index_columns()
@@ -1134,10 +1165,11 @@ class SqliteRecordStore:
         stamp = current.isoformat()
         cutoff = (current - timedelta(days=PENDING_DECISION_PIN_MAX_AGE_DAYS)).isoformat()
         wanted = sorted({str(item) for item in decision_ids if isinstance(item, str) and item})
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS proactive_decision_retention_pins ("
-            "decision_id TEXT PRIMARY KEY, reason TEXT NOT NULL, pinned_at TEXT NOT NULL)"
-        )
+        if self.bootstrap_schema:
+            self.conn.execute(
+                "CREATE TABLE IF NOT EXISTS proactive_decision_retention_pins ("
+                "decision_id TEXT PRIMARY KEY, reason TEXT NOT NULL, pinned_at TEXT NOT NULL)"
+            )
         pinned = upgraded = missing = 0
         for decision_id in wanted:
             if self.conn.execute("SELECT 1 FROM proactive_decisions WHERE decision_id=?",
@@ -2017,6 +2049,10 @@ class SqliteRecordStore:
         created and backfilled in one savepoint: its existence implies it is
         complete.
         """
+        if not self.bootstrap_schema:
+            if self._has_fts_table() and not self._fts_key_map_ready():
+                raise RuntimeError("existing_sqlite_fts_key_map_required")
+            return
         try:
             if not self._has_fts_table() or self._fts_key_map_ready():
                 return
@@ -2898,6 +2934,8 @@ class SqliteRecordStore:
         batch_size: int = 200,
         offline: bool | None = None,
     ) -> dict[str, Any]:
+        if not self.bootstrap_schema:
+            raise RuntimeError("existing_schema_attachment_cannot_migrate")
         if offline is None:
             # STO-12: opt into forced offline/batched path via env (default on for safety).
             env = str(__import__("os").environ.get("EIMEMORY_STORAGE_MIGRATIONS_OFFLINE", "1")).strip().lower()

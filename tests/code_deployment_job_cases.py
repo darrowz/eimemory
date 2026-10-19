@@ -72,7 +72,15 @@ def durable_job_fixture(tmp_path, monkeypatch):
         accepted.add(key)
         return {"ok":True,"state":dict(native)}
     core.submit_deployment_job=submit
-    core.deployment_job_status=lambda key:{"ok":True,"state":dict(native)}
+    core.deployment_job_status=lambda key:{"ok":True,"job_key":key,"manager":"system",
+        "unit":f"eimemory-code-deployment-job@{key}.service","original_invocation":"e"*32,
+        "state":dict(native),"manual_release":False,"phase":"submitted","complete":False,"resumed":False}
+    def root_file(path,**kwargs):
+        assert path.parent==Path("/var/lib/eimemory-manager/jobs")
+        key=path.stem
+        return jobs.canonical_bytes({"job_key":key,"request":jobs._read(root/key/"request.json"),
+            "original_invocation":"e"*32,"manual_release":False})
+    monkeypatch.setattr(jobs,"_root_file_bytes",root_file)
     core.read_registry=lambda:{"controller_commit":"c"*40}
     monkeypatch.setitem(sys.modules,"eimemory.core.runtime_manager",core)
     f=SimpleNamespace(runtime=runtime,manager=manager,txid=TX_ID,policy=policy,native=native,
@@ -203,7 +211,7 @@ def test_fixed_job_launcher_argv_matches_entry_without_request_selected_paths(mo
     monkeypatch.setattr(Runtime,"create",lambda **kw:seen.append(kw) or runtime)
     monkeypatch.setattr(jobs,"run_job",lambda rt,value:seen.append((rt,value)) or {"ok":False})
     assert entry.main()==1
-    assert seen==[{"root":"/var/lib/eimemory"},(runtime,key),"closed"]
+    assert seen==[{"root":"/var/lib/eimemory","bootstrap_schema":False},(runtime,key),"closed"]
     monkeypatch.setattr(entry.sys,"argv",["entry",key])
     with pytest.raises(SystemExit):entry.main()
 
@@ -295,6 +303,7 @@ def test_observation_uses_current_root_completion_not_a_success_boolean(tmp_path
     native={"manager":"system","unit":f"eimemory-code-deployment-job@{key}.service",
         "phase":"resumed_awaiting_business" if fault=="phase" else "completed",
         "original_invocation":"f"*32 if fault=="original" else "e"*32,
+        "complete":True,"resumed":True,"held_background":[],
         "state":{"InvocationID":"f"*32 if fault=="invocation" else ""}}
     core.deployment_job_status=lambda value:native
     core.read_registry=lambda:{"runtime_commit":"d"*40 if fault=="runtime" else body["candidate_commit"],
@@ -410,9 +419,10 @@ def managed_validation_fixture(tmp_path,monkeypatch):
     jobs._directory(root/key,create=True);monkeypatch.setattr(jobs,"JOBS_ROOT",root)
     jobs._exclusive(root/key/"request.json",body)
     jobs._exclusive(root/key/"started.json",{"request_key":key,"invocation":"e"*32})
-    context={"schema":"managed_code_deployment_validation.v1","job_key":key,"operation":operation,
+    context={"schema":"managed_code_deployment_validation.v2","job_key":key,"operation":operation,
         "parent_invocation":"e"*32,"invocation":"d"*32,"target_commit":body["target_commit"],
-        "controller_commit":body["controller_commit"],"scope":body["scope"],"source_readonly":True}
+        "controller_commit":body["controller_commit"],"launch_controller_commit":body["controller_commit"],
+        "manual_release":False,"scope":body["scope"],"source_readonly":True}
     artifact={**context,"report":{"ok":True,"commit":body["target_commit"]},
         "target_transport":{"exit_status":0,"executed":True}}
     jobs._exclusive(root/key/"validation-receipt-started.json",context)
@@ -435,6 +445,8 @@ def managed_validation_fixture(tmp_path,monkeypatch):
             envelope_sha256=sha256(raw).hexdigest())
         return raw
     sealed_raw=root_envelope()
+    root_record={"job_key":key,"request":body,"original_invocation":"e"*32,"manual_release":False}
+    monkeypatch.setattr(jobs,"_root_file_bytes",lambda *a,**kw:jobs.canonical_bytes(root_record))
     monkeypatch.setattr(jobs,"_root_validation_envelope",lambda *a:sealed_raw)
     core=ModuleType("eimemory.core.runtime_manager");calls=[];accepted=set()
     def submit(value,op):
@@ -610,9 +622,9 @@ def test_validation_entry_authenticates_kernel_identity_before_product_import(fa
         status=status.replace(field+":\t0000",field+":\t0001")
     if fault:
         with pytest.raises(ValueError,match="actual_execution_identity"):
-            entry._assert_execution_identity(body,key,"receipt",native,"d"*32,status,actual)
+            entry._assert_execution_identity({**body,"manual_release":False,"launch_controller_commit":body["controller_commit"]},key,"receipt",native,"d"*32,status,actual)
     else:
-        entry._assert_execution_identity(body,key,"receipt",native,"d"*32,status,actual)
+        entry._assert_execution_identity({**body,"manual_release":False,"launch_controller_commit":body["controller_commit"]},key,"receipt",native,"d"*32,status,actual)
         jobs._assert_child_cgroup(native,actual)
 
 
@@ -653,3 +665,123 @@ def test_new_job_directory_syncs_each_new_parent_and_rejects_symlink(tmp_path,mo
     linked=tmp_path/"linked";linked.symlink_to(path,target_is_directory=True)
     with pytest.raises((ValueError,OSError)):jobs._directory(linked/"child",create=True)
     assert not (path/"child").exists()
+
+
+def _manual_permit():
+    from eimemory.contracts.code_deployment_job import MANUAL_SCHEMA
+    return dict(schema=MANUAL_SCHEMA, operation="deploy", controller_commit="a"*40,
+        validation_controller_commit="b"*40, base_commit="a"*40, candidate_commit="b"*40,
+        target_commit="b"*40, reviewed_attempt_id="d"*32,
+        scope=dict(tenant_id="business-tenant", agent_id="hongrui",
+            workspace_id="embodied::channel::hermes", user_id="business-owner"))
+
+
+@pytest.mark.parametrize("fault", ["", "scope", "controller", "schema", "drop-scope", "drop-controller", "command"])
+def test_manual_permit_binds_reviewed_business_scope_and_validation_controller(fault):
+    from eimemory.contracts.code_deployment_job import validate_manual_permit
+    permit = _manual_permit()
+    if fault == "scope": permit["scope"].pop("tenant_id")
+    elif fault == "controller": permit["validation_controller_commit"] = "c"*40
+    elif fault == "schema": permit["schema"] = "eimemory.manual_release_permit.v1"
+    elif fault == "drop-scope": permit.pop("scope")
+    elif fault == "drop-controller": permit.pop("validation_controller_commit")
+    elif fault == "command": permit["argv"] = ["sh"]
+    if fault:
+        with pytest.raises(ValueError): validate_manual_permit(permit)
+    else:
+        assert validate_manual_permit(permit) == permit
+
+
+@pytest.mark.parametrize("fault", ["", "scope-replacement", "launch", "target", "invocation", "manual-tag"])
+def test_manual_child_uses_root_permit_without_fabricated_automatic_transaction(tmp_path, monkeypatch, fault):
+    from hashlib import sha256
+    permit = _manual_permit()
+    key = sha256(jobs.canonical_bytes(permit)).hexdigest()
+    root = tmp_path / "jobs"
+    jobs._directory(root / key, create=True)
+    monkeypatch.setattr(jobs, "JOBS_ROOT", root)
+    record = dict(job_key=key, request=deepcopy(permit), manual_release=True, original_invocation="e"*32)
+    native = dict(target_commit=permit["candidate_commit"], controller_commit=permit["validation_controller_commit"],
+        launch_controller_commit=permit["controller_commit"], manual_release=True, parent_original_invocation="e"*32)
+    if fault == "scope-replacement": record["request"]["scope"]["user_id"] = "nightly-owner"
+    elif fault == "launch": native["launch_controller_commit"] = "c"*40
+    elif fault == "target": native["target_commit"] = "c"*40
+    elif fault == "invocation": native["parent_original_invocation"] = "f"*32
+    elif fault == "manual-tag": native["manual_release"] = False
+    monkeypatch.setattr(jobs, "_root_file_bytes", lambda *a, **kw: jobs.canonical_bytes(record))
+    if fault:
+        with pytest.raises(ValueError): jobs.validation_binding(key, "receipt", native)
+    else:
+        body, _ = jobs.validation_binding(key, "receipt", native)
+        assert body["scope"] == permit["scope"] and body["controller_commit"] == permit["candidate_commit"]
+        assert body["launch_controller_commit"] == permit["base_commit"] and body["manual_release"] is True
+        assert "transaction_id" not in body and not list((root / key).iterdir())
+
+
+def test_restored_database_attachment_keeps_schema_and_continues_real_ledger_dml(durable_job_fixture, tmp_path):
+    """A controller reopens an actual restored DB, not a fresh-schema double."""
+    import sqlite3
+    f = durable_job_fixture
+    root = f.runtime.store.root
+    snapshot = tmp_path / "rollback.sqlite"
+    backup = sqlite3.connect(snapshot)
+    try: f.runtime.store.sqlite.conn.backup(backup)
+    finally: backup.close()
+    f.runtime.close()
+    source = sqlite3.connect(snapshot)
+    target = sqlite3.connect(root / "state/eimemory.sqlite")
+    try: source.backup(target)
+    finally: source.close(); target.close()
+    attached = Runtime.create(root=root, bootstrap_schema=False)
+    try:
+        conn = attached.store.sqlite.conn
+        before = [tuple(row) for row in conn.execute("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name")]
+        version = conn.execute("PRAGMA schema_version").fetchone()[0]
+        manager = CodeEvolutionTransactionManager(attached, owner_id="restored-controller")
+        manager.acquire_lease(f.txid)
+        updated = manager.update_metadata(f.txid, payload_updates={"rollback_reopened_without_ddl": True})
+        assert updated["payload"]["rollback_reopened_without_ddl"] is True
+        manager.renew_lease(f.txid)
+        manager.release_lease(f.txid)
+        assert manager.store.get_transaction(f.txid)["current_state"] == "DEPLOY_INTENT"
+        assert [tuple(row) for row in conn.execute("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name")] == before
+        assert conn.execute("PRAGMA schema_version").fetchone()[0] == version
+        for sql in ("CREATE TABLE IF NOT EXISTS records(x)", "DROP TABLE records", "PRAGMA auto_vacuum=1",
+            "PRAGMA user_version=999", "PRAGMA schema_version=999"):
+            with pytest.raises(sqlite3.DatabaseError): conn.execute(sql)
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+        with pytest.raises(RuntimeError, match="cannot_migrate"):
+            attached.store.sqlite.apply_storage_migrations()
+    finally: attached.close()
+
+
+def test_attachment_never_creates_missing_database_or_ledger_table(tmp_path):
+    import sqlite3
+    with pytest.raises(ValueError, match="existing_runtime_database"):
+        Runtime.create(root=tmp_path / "absent", bootstrap_schema=False)
+    assert not (tmp_path / "absent").exists()
+    runtime = Runtime.create(root=tmp_path / "existing")
+    runtime.store.sqlite.conn.execute("DROP TABLE code_evolution_transactions")
+    runtime.store.sqlite.conn.commit()
+    runtime.close()
+    attached = Runtime.create(root=tmp_path / "existing", bootstrap_schema=False)
+    try:
+        with pytest.raises(sqlite3.DatabaseError):
+            CodeEvolutionTransactionManager(attached).store.get_transaction("missing")
+        assert attached.store.sqlite.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='code_evolution_transactions'").fetchone() is None
+    finally: attached.close()
+
+
+def test_registered_installer_runs_original_gates_in_children_without_reordering_commit():
+    """Source contract pairs with the real PID1/target fixture in the full suite."""
+    source = (Path(__file__).resolve().parents[1] / "deploy/install_immutable_release.sh").read_text(encoding="utf8")
+    receipt = source[source.index("_record_deployment_receipt() {"):source.index("_record_release_lineage() {")]
+    assert receipt.index("_managed_validation_gate receipt") < receipt.index("record_deployment_receipt.py")
+    gate = source[source.index("_run_post_deploy_validation() {"):source.index("_rollback_current_release() {")]
+    assert "_managed_validation_gate pre_observation" in gate and "_managed_validation_gate post_resume" in gate
+    assert source.index('echo "technical_commit_complete=1"') < source.rindex("_run_post_deploy_validation")
+    for path in ("deploy/run_code_deployment_gate.py", "deploy/run_code_deployment_validation.py"):
+        from eimemory.governance.evolution.code_evolution_path_policy import path_allowed_for_evolution
+        assert path_allowed_for_evolution(path, allowed_path_globs=("**",), exact_allow_files=(path,),
+            denied_path_globs=(), deny_self_paths=()) == (False, "deny_self")

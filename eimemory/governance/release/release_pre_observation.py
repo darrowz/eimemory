@@ -38,6 +38,7 @@ def run_pre_observation_closure(runtime: Any, *, receipt: dict, transaction_id: 
             or not transaction_id or receipt.get("transaction_id") != transaction_id):
         return blocked("deployment_receipt", "strict_deployment_receipt_required")
     scope = ScopeRef.from_dict(identity_kwargs["scope"])
+    report["scope"] = asdict(scope)
     transaction = CodeEvolutionStore(runtime.store).get_transaction(transaction_id)
     if (not transaction or transaction.get("terminal")
             or transaction.get("current_state") not in {"DEPLOY_INTENT", "DEPLOYED_VERIFIED", "HEALTHY", "OBSERVING"}
@@ -56,7 +57,10 @@ def run_pre_observation_closure(runtime: Any, *, receipt: dict, transaction_id: 
     report["transaction"] = {
         **{key: transaction.get(key) for key in (
             "transaction_id", "profile_key", "current_state", "base_commit", "candidate_commit", "deployed_commit",
+            "tenant_id", "agent_id", "workspace_id", "user_id", "incident_id", "incident_digest", "detector",
         )},
+        **{key: transaction[key] for key in ("schema_version", "transaction_schema_version", "managed_incident_proof")
+            if key in transaction},
         **provenance,
     }
     migration = _storage_migration_status(runtime)
