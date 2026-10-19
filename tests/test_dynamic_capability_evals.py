@@ -257,6 +257,25 @@ def test_pinned_code_provider_profile_keeps_acceptance_and_manifest_owned_by_bus
     elif damage == "wrong_owner":
         owner = {**owner, "user_id": "other-openid"}
     try:
+        from eimemory.governance.l5 import live_task_acceptance as live
+        seen=[]
+        actual_readiness=runtime.build_l5_readiness_report
+        def readiness(**kwargs):
+            seen.append(kwargs)
+            return actual_readiness(**kwargs)
+        monkeypatch.setattr(runtime,"build_l5_readiness_report",readiness)
+        definitions=live._case_definitions(runtime,scope=ScopeRef.from_dict(owner),identity={},
+            l5_reader_mode="v3",profile_key=profile.profile_key,capability_scope="global",
+            provider_authority_snapshot=snapshot)
+        for case_id in ("governance.readiness_pure_read","governance.replay_integrity"):
+            check=next(case["check"] for case in definitions if case["case_id"]==case_id)
+            if damage in {"revoked","wrong_owner"}:
+                with pytest.raises(ValueError):check()
+            else:
+                assert check()["passed"] is True
+        if damage not in {"revoked","wrong_owner"}:
+            assert len(seen)==2
+            assert all(row["scope"]==owner and row["runtime_scope"]==ScopeRef.from_dict(provider) for row in seen)
         acceptance = runtime.run_capability_acceptance(scope=owner, persist=True, catalog=catalog,
             runtime_scope=owner, profile_key=profile.profile_key, provider_authority_snapshot=snapshot)
         if damage in {"revoked", "wrong_owner"}:

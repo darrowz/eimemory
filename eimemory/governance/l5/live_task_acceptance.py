@@ -169,6 +169,7 @@ def run_live_task_acceptance(
     prior_commit: str = "",
     deployed_commit: str = "",
     deployment_receipt: dict | None = None,
+    provider_authority_snapshot: dict | None = None,
     l5_reader_mode: str = "v3",
     profile_key: str = "",
     capability_scope: str = "global",
@@ -195,6 +196,15 @@ def run_live_task_acceptance(
                if isinstance(identity.get("health_diagnostics"), dict) else {}),
         }
 
+    authority_fields = {}
+    if provider_authority_snapshot is not None:
+        from eimemory.governance.capability.provider_selection import provider_selection
+        try:
+            _, authority_fields = provider_selection(runtime, owner_scope=scope_ref,
+                profile_key=profile_key, snapshot=provider_authority_snapshot)
+        except ValueError as exc:
+            return {"ok": False, "report_type": REPORT_TYPE, "error": str(exc),
+                    "case_count": 0, "pass_count": 0, "cases": []}
     definitions = _case_definitions(
         runtime,
         scope=scope_ref,
@@ -202,7 +212,10 @@ def run_live_task_acceptance(
         l5_reader_mode=l5_reader_mode,
         profile_key=profile_key,
         capability_scope=capability_scope,
+        **({"provider_authority_snapshot": provider_authority_snapshot} if provider_authority_snapshot is not None else {}),
     )
+    if authority_fields:
+        definitions = [{**definition, "selection_authority": authority_fields} for definition in definitions]
     case_ids = {str(item.get("case_id") or "") for item in definitions}
     task_types = {str(item.get("task_type") or "") for item in definitions}
     if (
@@ -222,7 +235,9 @@ def run_live_task_acceptance(
     cases: list[dict[str, Any]] = []
     reused_count = 0
     for definition in definitions:
-        existing = _existing_passed_case(
+        # Re-read the live delegated Profile instead of reusing a probe whose
+        # receipt/session alone cannot prove the current provider selection.
+        existing = None if authority_fields else _existing_passed_case(
             runtime,
             scope=scope_ref,
             identity=identity,
@@ -244,9 +259,19 @@ def run_live_task_acceptance(
         )
 
     pass_count = sum(1 for case in cases if case.get("passed") is True)
+    authority_current = True
+    if authority_fields:
+        try:
+            _, actual = provider_selection(runtime, owner_scope=scope_ref,
+                profile_key=profile_key, snapshot=provider_authority_snapshot)
+            authority_current = actual == authority_fields
+        except ValueError:
+            authority_current = False
     task_types = {str(case.get("task_type") or "") for case in cases if str(case.get("task_type") or "")}
     return {
-        "ok": pass_count == REQUIRED_CASE_COUNT and len(task_types) == REQUIRED_CASE_COUNT,
+        "ok": authority_current and pass_count == REQUIRED_CASE_COUNT and len(task_types) == REQUIRED_CASE_COUNT,
+        **authority_fields,
+        **({"provider_authority_current": authority_current} if authority_fields else {}),
         "report_type": REPORT_TYPE,
         "schema_version": SCHEMA_VERSION,
         "scope": asdict(scope_ref),
@@ -364,8 +389,17 @@ def _case_definitions(
     l5_reader_mode: str,
     profile_key: str,
     capability_scope: str,
+    provider_authority_snapshot: dict | None = None,
 ) -> list[dict[str, Any]]:
     scope_payload = asdict(scope)
+
+    def profile_context():
+        if provider_authority_snapshot is None:
+            return {}
+        from eimemory.governance.capability.provider_selection import provider_selection
+        provider, _ = provider_selection(runtime, owner_scope=scope,
+            profile_key=profile_key, snapshot=provider_authority_snapshot)
+        return {"runtime_scope": provider}
 
     def store_sqlite() -> dict[str, Any]:
         with runtime.store.locked() as sqlite:
@@ -409,6 +443,7 @@ def _case_definitions(
             reader_mode=l5_reader_mode,
             profile_key=profile_key,
             capability_scope=capability_scope,
+            **profile_context(),
         )
         after = total_changes(runtime)
         return {
@@ -431,6 +466,7 @@ def _case_definitions(
             reader_mode=l5_reader_mode,
             profile_key=profile_key,
             capability_scope=capability_scope,
+            **profile_context(),
         )
         assessment = report.get("assessment") if isinstance(report.get("assessment"), dict) else {}
         projection = assessment.get("projection") if isinstance(assessment.get("projection"), dict) else {}
@@ -503,6 +539,8 @@ def _execute_and_record_case(
         observation = observation if isinstance(observation, dict) else {"passed": False, "invalid_result": True}
     except Exception as exc:
         observation = {"passed": False, "error_type": type(exc).__name__}
+    if definition.get("selection_authority"):
+        observation = {**observation, "selection_authority": definition["selection_authority"]}
     passed = observation.get("passed") is True
     case_id = str(definition.get("case_id") or "")
     task_type = str(definition.get("task_type") or "")
@@ -539,6 +577,7 @@ def _execute_and_record_case(
             or ""
         ),
     }
+    payload.update(definition.get("selection_authority") or {})
     record = append_learning_record_once(
         runtime,
         kind="learning_eval",

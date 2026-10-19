@@ -468,6 +468,18 @@ def run_managed_post_resume_closure(runtime: Any, *, job_key: str) -> dict:
     identity_kwargs = dict(scope=scope, repo_root=transaction["repository_root"],
         current_link=policy["deployment"]["current_link"], health_url=policy["deployment"]["health_url"],
         prior_commit=body["base_commit"], deployed_commit=body["candidate_commit"], deployment_receipt=receipt)
+    from eimemory.governance.evolution.code_evolution_provider_authority import transaction_provider_authority
+    from eimemory.governance.capability.provider_selection import provider_selection
+    authority = transaction_provider_authority(transaction)
+    try:
+        _, fields = provider_selection(runtime, owner_scope=scope,
+            profile_key=str(transaction.get("profile_key") or ""), snapshot=authority)
+    except ValueError as exc:
+        return _blocked(report, "provider_authority", str(exc))
+    report.update(fields)
+    identity_kwargs["profile_key"] = str(transaction.get("profile_key") or "")
+    if authority is not None:
+        identity_kwargs["provider_authority_snapshot"] = authority
     report = _run_controlled_operational_closure(runtime, report=report, scope=scope,
         identity_kwargs=identity_kwargs, release=release, policy=controlled_policy)
     report["business_qualified"] = controlled_production_closure_report_ok(report)
