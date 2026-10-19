@@ -9,6 +9,7 @@ import re
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.contracts.code_incident_provenance import native_detection_provenance
 from eimemory.governance.code_automation_policy import (
     CODE_AUTOMATION_POLICY_DEFAULT_PATH,
     load_code_automation_policy,
@@ -32,6 +33,7 @@ def detect_system_code_repair_failure(
     detected_at: str,
 ) -> dict[str, Any]:
     """Turn an observed stale consumed policy into one bounded incident."""
+    source_facts = native_detection_provenance(DETECTOR_ID)
 
     current_commit = str(release_commit or "").strip().lower()
     repository = policy.get("repository") if isinstance(policy.get("repository"), Mapping) else {}
@@ -63,6 +65,7 @@ def detect_system_code_repair_failure(
         "consumed_policy_digest": policy_digest,
         "consumed_policy_base_commit": policy_base_commit,
         "policy_transaction_id": policy_transaction_id,
+        'source_facts_digest': source_facts['digest'],
     }
     incident: dict[str, Any] | None = None
     if actionable:
@@ -94,9 +97,7 @@ def detect_system_code_repair_failure(
         "ok": not actionable,
         "status": "failure_detected" if actionable else "non_actionable",
         "origin": "system_detector",
-        "known_before_detection": False,
-        "prior_user_reported": False,
-        "manual_bootstrap": False,
+        **source_facts['facts'], 'source_facts': source_facts,
         "observation_valid": True,
         "incident": incident,
     }
@@ -148,8 +149,7 @@ def record_system_code_repair_failure(
                 provenance={
                     "origin": "system_detector",
                     "detector": DETECTOR_ID,
-                    "known_before_detection": False,
-                    "prior_user_reported": False,
+                    **report['source_facts']['facts'],
                 },
                 meta={
                     "idempotency_key": marker,

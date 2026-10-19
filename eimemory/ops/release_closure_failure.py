@@ -6,6 +6,7 @@ from dataclasses import asdict
 from typing import Any, TYPE_CHECKING
 
 from eimemory.governance.release.closure_verdict import report_digest, summarize_release_closure
+from eimemory.contracts.code_incident_provenance import native_detection_provenance
 
 if TYPE_CHECKING:
     from eimemory.models.records import ScopeRef
@@ -23,6 +24,7 @@ def detect_release_closure_failure(
     if not isinstance(closure_report, Mapping):
         raise ValueError('closure_report must be a mapping')
     original = dict(closure_report)
+    source_facts = native_detection_provenance(DETECTOR_ID, original.get('source_provenance'))
     context = dict(execution or {})
     if scope is not None:
         context['expected_scope'] = dict(scope)
@@ -54,6 +56,7 @@ def detect_release_closure_failure(
         'attempt_id': str(context.get('attempt_id') or ''),
         'report_digest': verdict['report_digest'], 'status': status,
         'source_sha256': str(context.get('source_sha256') or ''),
+        'source_facts_digest': source_facts['digest'],
         'hard_errors': signals['hard_errors'], 'diagnosis': signals['diagnosis'],
         'incident_class': incident_class,
     }
@@ -105,8 +108,7 @@ def detect_release_closure_failure(
         'release_version': str(deployment.get('version') or ''),
         'blocked_stage': stage, 'blocked_reason': reason,
         'ok': not actionable, 'status': status, 'actionable': actionable,
-        'origin': 'system_detector', 'known_before_detection': False,
-        'prior_user_reported': False, 'manual_bootstrap': False,
+        **source_facts['facts'], 'source_facts': source_facts,
         'observation_valid': True, 'incident': incident, 'identity': identity,
         'report_digest': verdict['report_digest'], 'validation': verdict,
         'repair_eligible': status == 'failure_detected' and bool(commit),
@@ -137,8 +139,7 @@ def record_release_closure_failure(
                  'repair_complete': False},
         tags=['code-evolution', 'release-closure', 'system-detected'],
         source='eimemory.release_closure_failure', scope=scope_ref, status='active',
-        provenance={'origin': 'system_detector', 'detector': DETECTOR_ID,
-                    'known_before_detection': False, 'prior_user_reported': False},
+        provenance={**report['source_facts']['facts']},
         meta={'idempotency_key': 'release-closure-failure:' + digest,
               'incident_class': incident['incident_class'], 'incident_digest': digest,
               'report_digest': report['report_digest'], 'observation_valid': True},

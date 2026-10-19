@@ -7,6 +7,7 @@ This module never writes /etc/eimemory unless ``install_path`` is provided.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
@@ -14,7 +15,9 @@ import json
 import os
 import re
 import subprocess
+import stat
 import tempfile
+import time
 
 from eimemory.governance.evolution.code_automation_policy import (
     CODE_AUTOMATION_POLICY_DEFAULT_PATH,
@@ -241,12 +244,88 @@ def issue_code_automation_policy(
     }
 
 
-def _install_policy_atomically(destination: Path, policy: Mapping[str, Any]) -> str:
+@contextmanager
+def _policy_lock(path: Path):
+    """Serialize native writers without following an authority path link."""
+    from eimemory.governance.evolution.code_automation_policy import _v2_no_symlink
+    if _v2_no_symlink(path, missing_ok=True):
+        raise ValueError("policy_lock_path_invalid")
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+                         | getattr(os, "O_NONBLOCK", 0), 0o600)
+    acquired = False
+    try:
+        info = os.fstat(descriptor)
+        named = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino)
+                or (os.name == "posix" and (info.st_uid != os.geteuid()
+                                             or stat.S_IMODE(info.st_mode) & 0o077))):
+            raise ValueError("policy_lock_authority_invalid")
+        if os.fstat(descriptor).st_size == 0:
+            os.write(descriptor, b"0")
+        deadline = time.monotonic() + 5
+        while not acquired:
+            try:
+                if os.name == "posix":
+                    import fcntl
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                elif os.name == "nt":
+                    import msvcrt
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                else:
+                    raise ValueError("policy_lock_platform_unsupported")
+                acquired = True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise ValueError("policy_owner_busy") from None
+                time.sleep(.05)
+        yield
+    finally:
+        if acquired:
+            if os.name == "posix":
+                import fcntl
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            elif os.name == "nt":
+                import msvcrt
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        os.close(descriptor)
+
+
+def _install_policy_atomically(destination: Path, policy: Mapping[str, Any], *, expected_digest: str | None = None) -> str:
+    from eimemory.governance.evolution.code_automation_policy import _v2_no_symlink
+    error = _v2_no_symlink(destination, missing_ok=True)
+    if error:
+        return error
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with _policy_lock(destination.with_name("." + destination.name + ".publish.lock")):
+            return _install_locked_policy(destination, policy, expected_digest=expected_digest)
+    except ValueError as exc:
+        return str(exc)
+
+
+def _install_locked_policy(destination: Path, policy: Mapping[str, Any], *, expected_digest: str | None) -> str:
     """Publish complete private bytes without following or truncating a link."""
     from eimemory.governance.evolution.code_automation_policy import _v2_no_symlink
     error = _v2_no_symlink(destination, missing_ok=True)
     if error:
         return error
+    if expected_digest is not None:
+        from eimemory.governance.evolution.code_automation_policy import _secure_read_v2_policy, _policy_digest
+        if destination.exists():
+            raw, error = _secure_read_v2_policy(destination)
+            if error:
+                return error
+            try:
+                actual = _policy_digest(json.loads(raw))
+            except (TypeError, ValueError):
+                return "existing_policy_invalid"
+            if actual != expected_digest:
+                return "existing_policy_changed"
+        elif expected_digest:
+            return "existing_policy_changed"
     destination.parent.mkdir(parents=True, exist_ok=True)
     error = _v2_no_symlink(destination, missing_ok=True)
     if error:
@@ -262,6 +341,8 @@ def _install_policy_atomically(destination: Path, policy: Mapping[str, Any]) -> 
         if error:
             return error
         os.replace(temporary, destination)
+        from eimemory.storage.atomic_file import _fsync_directory
+        _fsync_directory(destination.parent)
         return ""
     finally:
         # Only the fresh same-directory temporary file belongs to this call.

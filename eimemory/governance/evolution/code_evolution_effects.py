@@ -1288,12 +1288,19 @@ def sample_code_evolution_observation(
 def _observation_provenance(value: Mapping[str, Any]) -> dict[str, Any] | None:
     """Normalize explicit ledger source facts without inventing negatives."""
 
+    from eimemory.contracts.code_incident_provenance import qualification_provenance
+    value = qualification_provenance(value)
     origin = value.get("origin")
     if not isinstance(origin, str) or origin not in {"system_detector", "user_reported", "manual_bootstrap"}:
         return None
     result: dict[str, Any] = {"origin": origin}
     for field in ("known_before_detection", "prior_user_reported", "manual_bootstrap"):
         raw = value.get(field)
+        if field not in value:
+            return None
+        if raw is None:
+            result[field] = None
+            continue
         if type(raw) not in {bool, int} or raw not in (0, 1):
             return None
         result[field] = bool(raw)
@@ -1343,19 +1350,26 @@ def _l5_observation_semantics(
         "manual_bootstrap_nonqualifying", "incident_known_before_system_detection",
         "incident_not_system_originated", "incident_prior_knowledge_unproven",
         "incident_not_user_reported_unproven",
+        'incident_not_manual_bootstrap_unproven',
     }
     expected_provenance_gaps: set[str] = set()
     if provenance is not None:
-        if provenance["manual_bootstrap"]:
+        if provenance["manual_bootstrap"] is None:
+            expected_provenance_gaps.add('incident_not_manual_bootstrap_unproven')
+        elif provenance["manual_bootstrap"]:
             expected_provenance_gaps.add("manual_bootstrap_nonqualifying")
         if provenance["known_before_detection"]:
             expected_provenance_gaps.update({
                 "incident_known_before_system_detection", "incident_prior_knowledge_unproven",
             })
+        elif provenance['known_before_detection'] is None:
+            expected_provenance_gaps.add('incident_prior_knowledge_unproven')
         if provenance["prior_user_reported"] or provenance["origin"] != "system_detector":
             expected_provenance_gaps.add("incident_not_system_originated")
         if provenance["prior_user_reported"]:
             expected_provenance_gaps.add("incident_not_user_reported_unproven")
+        elif provenance['prior_user_reported'] is None:
+            expected_provenance_gaps.add('incident_not_user_reported_unproven')
     allowed_gaps |= expected_provenance_gaps
     checks = {
         "schema": report.get("schema") == "l5.reader.v4"

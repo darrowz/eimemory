@@ -63,6 +63,9 @@ def process_capture(
     if len(attempt_id) > 200 or any(ord(c) < 32 for c in attempt_id):
         raise ValueError('attempt_id_invalid')
     capture_dir = _capture_directory(evidence_dir)
+    if not inspect_only:
+        from eimemory.governance.evolution.code_automation_policy_capture import begin_current_capture
+        begin_current_capture(capture_dir, scope=scope, commit=expected_commit)
     context = {'expected_commit': expected_commit, 'expected_scope': dict(scope), 'attempt_id': attempt_id,
                'closure_exit_status': closure_exit_status}
     raw = None
@@ -136,4 +139,7 @@ def process_capture(
         'exit_code': summary['exit_code'] if result['recording_ok'] and source_archived else 2,
     }
     atomic_write_json(capture_dir/'result.json', output)
+    if not inspect_only:
+        from eimemory.governance.evolution.code_automation_policy_capture import finish_current_capture
+        finish_current_capture(capture_dir, output)
     return output

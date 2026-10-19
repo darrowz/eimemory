@@ -49,8 +49,8 @@ def test_consumed_policy_for_older_base_is_system_detected() -> None:
 
     assert report["status"] == "failure_detected"
     assert report["origin"] == "system_detector"
-    assert report["known_before_detection"] is False
-    assert report["prior_user_reported"] is False
+    assert report["known_before_detection"] is None
+    assert report["prior_user_reported"] is None
     assert report["incident"]["incident_class"] == INCIDENT_CLASS
     assert "without reusing or resetting" in report["incident"]["summary"]
 
@@ -138,6 +138,7 @@ def test_recording_is_idempotent_and_preserves_detector_provenance(tmp_path, mon
     assert records[0].provenance == {
         "origin": "system_detector",
         "detector": "eimemory.system_code_repair_failure.v1",
-        "known_before_detection": False,
-        "prior_user_reported": False,
+        "known_before_detection": None,
+        "prior_user_reported": None,
+        'manual_bootstrap': None,
     }

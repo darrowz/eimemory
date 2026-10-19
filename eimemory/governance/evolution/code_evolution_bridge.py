@@ -52,9 +52,9 @@ def propose_code_patch_v2(
     bounds: Mapping[str, Any],
     origin: str = "manual_bootstrap",
     detector: str = "",
-    known_before_detection: bool = True,
-    prior_user_reported: bool = True,
-    manual_bootstrap: bool = True,
+    known_before_detection: bool | None = True,
+    prior_user_reported: bool | None = True,
+    manual_bootstrap: bool | None = True,
     repository_ref: str = "",
 ) -> dict[str, Any]:
     """Request a strict v2 proposal from the exact live Hermes provider.
@@ -98,6 +98,9 @@ def propose_code_patch_v2(
         "transaction_id": str(transaction_id or ""),
         "request_id": str(request_id or ""),
     }
+    if any(value is not None and type(value) is not bool
+           for value in (known_before_detection, prior_user_reported, manual_bootstrap)):
+        return {**base_report, 'status': 'blocked', 'reason': 'incident_provenance_facts_invalid'}
     if plan is None:
         return {**base_report, "status": "blocked", "reason": "test_plan_not_registered"}
     if str(test_plan_digest or "") != protected_test_plan_digest(test_plan_id):
@@ -249,9 +252,9 @@ def propose_code_patch_v2(
         # repository, or binding facts from untrusted response text.
         "origin": str(origin or "manual_bootstrap"),
         "detector": str(detector or ""),
-        "known_before_detection": bool(known_before_detection),
-        "prior_user_reported": bool(prior_user_reported),
-        "manual_bootstrap": bool(manual_bootstrap),
+        "known_before_detection": known_before_detection,
+        "prior_user_reported": prior_user_reported,
+        "manual_bootstrap": manual_bootstrap,
         "profile_key": str(profile_key or ""),
         "incident": dict(incident),
         "repository": {

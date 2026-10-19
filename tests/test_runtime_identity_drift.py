@@ -72,9 +72,9 @@ def test_detector_emits_exact_system_incident_for_stale_learning_runtime() -> No
     assert report["status"] == "drift_detected"
     assert report["origin"] == "system_detector"
     assert report["detector"] == "eimemory.runtime_identity_drift.v1"
-    assert report["known_before_detection"] is False
-    assert report["prior_user_reported"] is False
-    assert report["manual_bootstrap"] is False
+    assert report["known_before_detection"] is None
+    assert report["prior_user_reported"] is None
+    assert report["manual_bootstrap"] is None
     assert report["observation_valid"] is True
     assert report["mismatches"] == [
         {

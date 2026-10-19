@@ -18,9 +18,14 @@ import sqlite3
 import zlib
 from threading import RLock
 from typing import Any
+from eimemory.contracts.code_incident_provenance import (
+    FIELDS as _PROVENANCE_FIELDS, SOURCE_KEY as _PROVENANCE_KEY,
+    provenance_snapshot, verified_provenance, provenance_guard,
+)
 
 
 CODE_EVOLUTION_STORE_SCHEMA = "code_evolution_store.v1"
+TYPED_TRANSACTION_SCHEMA = 'code_evolution_transaction.v2'
 MAX_SUMMARY_BYTES = 8 * 1024
 MAX_ARTIFACT_BYTES = 256 * 1024
 MAX_VERIFICATION_LOG_BYTES = 16 * 1024 * 1024
@@ -92,6 +97,41 @@ def _transaction_row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     result = _row_dict(row)
     if result is not None:
         result["profile_key"] = _transaction_profile_key(result.get("payload"))
+        source = result.get('source_evidence')
+        payload = result.get('payload')
+        if (not isinstance(payload, Mapping) or payload.get('schema_version') != result.get('schema_version')
+                or result.get('schema_version') == TYPED_TRANSACTION_SCHEMA and (
+                    not isinstance(source, Mapping) or _PROVENANCE_KEY not in source)):
+            raise CodeEvolutionStoreError('incident provenance encoding missing')
+        if isinstance(source, Mapping) and _PROVENANCE_KEY in source:
+            try:
+                facts = verified_provenance(source[_PROVENANCE_KEY])
+                if (not isinstance(payload, Mapping)
+                        or not isinstance(payload.get('source_evidence'), Mapping)
+                        or payload['source_evidence'].get(_PROVENANCE_KEY) != source[_PROVENANCE_KEY]
+                        or any(payload.get(k) != v for k, v in facts.items())
+                        or any(type(result.get(k)) is not int or result[k] != provenance_guard(facts[k])
+                               for k in _PROVENANCE_FIELDS)
+                        or any(result.get(k) != facts[k] for k in ('origin', 'detector'))):
+                    raise ValueError('incident_provenance_projection_mismatch')
+                nested = payload.get('payload', {})
+                if isinstance(nested, Mapping) and any(nested[k] != v for k, v in facts.items() if k in nested):
+                    raise ValueError('incident_provenance_proposal_mismatch')
+                result.update(facts)
+            except (TypeError, ValueError) as exc:
+                raise CodeEvolutionStoreError('incident provenance evidence invalid') from exc
+        elif isinstance(payload, Mapping) and isinstance(payload.get('source_evidence'), Mapping) and _PROVENANCE_KEY in payload['source_evidence']:
+            raise CodeEvolutionStoreError('incident provenance evidence missing')
+        else:
+            # Legacy authenticated rows retain original bool declarations.
+            # Missing old fields never gain a negative fact from SQL defaults.
+            for key in _PROVENANCE_FIELDS:
+                if key not in payload:
+                    result[key] = None
+                elif type(payload[key]) is not bool or result.get(key) != int(payload[key]):
+                    raise CodeEvolutionStoreError('legacy incident provenance projection invalid')
+                else:
+                    result[key] = payload[key]
     return result
 
 
@@ -119,6 +159,17 @@ def _check_transaction_profile_update(row: sqlite3.Row, payload: Any) -> None:
     current = _transaction_row_dict(row) or {}
     if _transaction_profile_key(payload) != current.get("profile_key"):
         raise CodeEvolutionConflict("transaction profile_key identity is immutable")
+    source = current.get('source_evidence')
+    if isinstance(source, Mapping) and _PROVENANCE_KEY in source:
+        if (not isinstance(payload, Mapping) or any(payload.get(k) != current.get(k)
+                for k in ('origin', 'detector', *_PROVENANCE_FIELDS))
+                or not isinstance(payload.get('source_evidence'), Mapping)
+                or payload['source_evidence'].get(_PROVENANCE_KEY) != source[_PROVENANCE_KEY]):
+            raise CodeEvolutionConflict('transaction incident provenance is immutable')
+        nested = payload.get('payload', {})
+        if isinstance(nested, Mapping) and any(nested[k] != current.get(k)
+                for k in ('origin', 'detector', *_PROVENANCE_FIELDS) if k in nested):
+            raise CodeEvolutionConflict('transaction proposal provenance is immutable')
 
 
 def _verification_row_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -406,6 +457,17 @@ class CodeEvolutionStore:
             "user_id": scope[3],
         })
         profile_key = _transaction_profile_key(normalized)
+        normalized['schema_version'] = TYPED_TRANSACTION_SCHEMA
+        try:
+            snapshot = provenance_snapshot(normalized)
+            source = dict(normalized.get('source_evidence') or {})
+            if _PROVENANCE_KEY in source and source[_PROVENANCE_KEY] != snapshot:
+                raise ValueError('incident_provenance_input_mismatch')
+            source[_PROVENANCE_KEY] = snapshot
+            normalized['source_evidence'] = source
+            normalized.update(snapshot['facts'])
+        except (TypeError, ValueError) as exc:
+            raise CodeEvolutionStoreError('incident provenance facts invalid') from exc
         incident_id = _text(incident.get("incident_id") or incident.get("id"), field="incident_id", required=True)
         repository_root = _text(repository.get("repository_root") or repository.get("root"), field="repository.root", required=True, max_chars=4096)
         repository_remote = _text(repository.get("repository_remote") or repository.get("remote") or "", field="repository.remote", max_chars=4096)
@@ -423,10 +485,10 @@ class CodeEvolutionStore:
             "incident_class": _text(incident.get("incident_class") or incident.get("class") or "", field="incident_class", max_chars=256),
             "origin": _text(payload.get("origin") or "", field="origin", max_chars=256),
             "detector": _text(payload.get("detector") or "", field="detector", max_chars=256),
-            "source_evidence_json": canonical_json(payload.get("source_evidence") or {}),
-            "known_before_detection": _bool_int(payload.get("known_before_detection", False)),
-            "prior_user_reported": _bool_int(payload.get("prior_user_reported", False)),
-            "manual_bootstrap": _bool_int(payload.get("manual_bootstrap", False)),
+            "source_evidence_json": canonical_json(normalized['source_evidence']),
+            "known_before_detection": provenance_guard(normalized.get("known_before_detection")),
+            "prior_user_reported": provenance_guard(normalized.get("prior_user_reported")),
+            "manual_bootstrap": provenance_guard(normalized.get("manual_bootstrap")),
             "current_state": _text(normalized["current_state"], field="current_state", required=True, max_chars=64),
             "state_version": int(normalized["state_version"]),
             "terminal": _bool_int(normalized["terminal"]),
@@ -466,6 +528,30 @@ class CodeEvolutionStore:
         placeholders = ",".join("?" for _ in columns)
 
         def write() -> dict[str, Any]:
+            existing = self.conn.execute(
+                "SELECT * FROM code_evolution_transactions WHERE transaction_id=? OR idempotency_key=?",
+                (transaction_id, idempotency_key),
+            ).fetchone()
+            if existing is not None and existing['schema_version'] != TYPED_TRANSACTION_SCHEMA:
+                # A retry of an authenticated legacy identity is a read, never
+                # a migration. Compare the original declarations rather than
+                # the new conservative SQL guards or added typed snapshot.
+                result = _transaction_row_dict(existing) or {}
+                original = result['payload']
+                encoding = {'schema_version', 'source_evidence_json', *_PROVENANCE_FIELDS}
+                if (any(existing[column] != row_values[column]
+                        for column in _TRANSACTION_IDENTITY_COLUMNS if column not in encoding)
+                        or payload.get('schema_version', existing['schema_version']) != existing['schema_version']
+                        or canonical_json(payload.get('source_evidence') or {}) != existing['source_evidence_json']
+                        or any((key in payload) != (key in original)
+                               or key in payload and (type(payload[key]) is not bool
+                                                       or payload[key] is not original[key])
+                               for key in _PROVENANCE_FIELDS)):
+                    raise CodeEvolutionConflict('legacy transaction identity conflict')
+                if result['profile_key'] != profile_key:
+                    raise CodeEvolutionConflict('transaction profile_key identity conflict')
+                result['idempotent'] = True
+                return result
             repository_blocker = self.conn.execute(
                 "SELECT t.transaction_id,t.current_state FROM code_evolution_transactions t "
                 "WHERE t.repository_root=? AND t.repository_ref=? "
@@ -633,7 +719,7 @@ class CodeEvolutionStore:
             if column.endswith("_json") and not isinstance(value, str):
                 value = canonical_json(value)
             if column in {"known_before_detection", "prior_user_reported", "manual_bootstrap"}:
-                value = _bool_int(value)
+                value = provenance_guard(value)
             assignments.append(f"{column}=?")
             values.append(value)
         if terminal is not None:
@@ -642,6 +728,18 @@ class CodeEvolutionStore:
         values.extend([tx_id, expected_state, int(expected_state_version)])
 
         def write() -> dict[str, Any]:
+            stored_for_provenance = self.conn.execute('SELECT * FROM code_evolution_transactions WHERE transaction_id=?', (tx_id,)).fetchone()
+            if stored_for_provenance is not None:
+                decoded = _transaction_row_dict(stored_for_provenance)
+                protected_source = decoded.get('source_evidence')
+                if isinstance(protected_source, Mapping) and _PROVENANCE_KEY in protected_source:
+                    if any(update_values.get(k, decoded.get(k)) != decoded.get(k) for k in _PROVENANCE_FIELDS):
+                        raise CodeEvolutionConflict('transaction incident provenance is immutable')
+                    if 'source_evidence_json' in update_values:
+                        incoming = update_values['source_evidence_json']
+                        incoming = _parse_json(incoming, field='source_evidence_json') if isinstance(incoming, str) else incoming
+                        if not isinstance(incoming, Mapping) or incoming.get(_PROVENANCE_KEY) != protected_source[_PROVENANCE_KEY]:
+                            raise CodeEvolutionConflict('transaction incident provenance is immutable')
             if "payload_json" in update_values:
                 stored = self.conn.execute(
                     "SELECT * FROM code_evolution_transactions WHERE transaction_id=?", (tx_id,)
@@ -1356,6 +1454,14 @@ class CodeEvolutionStore:
         tx_id = _text(transaction_id, field="transaction_id", required=True, max_chars=256)
         if not isinstance(receipt, Mapping):
             raise CodeEvolutionStoreError("terminal receipt must be an object")
+        current = self.get_transaction(tx_id)
+        if current is None:
+            raise CodeEvolutionStoreError('transaction not found')
+        source = current.get('source_evidence')
+        if isinstance(source, Mapping) and _PROVENANCE_KEY in source:
+            if _PROVENANCE_KEY in receipt and receipt[_PROVENANCE_KEY] != source[_PROVENANCE_KEY]:
+                raise CodeEvolutionStoreError('terminal incident provenance mismatch')
+            receipt = {**dict(receipt), _PROVENANCE_KEY: source[_PROVENANCE_KEY]}
         outcome = _text(receipt.get("outcome"), field="outcome", required=True, max_chars=64)
         supplied_digest = str(receipt.get("receipt_digest") or "").strip().lower()
         values: dict[str, Any] = {
@@ -1463,6 +1569,12 @@ class CodeEvolutionStore:
                 if payload.get(field) != result.get(field):
                     raise CodeEvolutionStoreError("terminal receipt row identity mismatch")
             result["payload"] = payload
+            tx = self.conn.execute('SELECT * FROM code_evolution_transactions WHERE transaction_id=?', (tx_id,)).fetchone()
+            transaction = _transaction_row_dict(tx)
+            source = transaction.get('source_evidence') if transaction is not None else None
+            if isinstance(source, Mapping) and _PROVENANCE_KEY in source:
+                if payload.get(_PROVENANCE_KEY) != source[_PROVENANCE_KEY]:
+                    raise CodeEvolutionStoreError('terminal incident provenance mismatch')
             return result
 
         return self._read(read)

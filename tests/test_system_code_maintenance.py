@@ -10,6 +10,8 @@ from eimemory.governance.promotion_watch import resume_code_evolution_transactio
 from eimemory.storage.code_evolution_store import CodeEvolutionStoreError
 from eimemory.storage.runtime_store import RuntimeStore
 from test_code_evolution_recovery import _observing_manager, _sample
+from native_policy_owner_cases import *  # Native owner regressions run in both existing CI lanes.
+from native_provenance_cases import *  # Typed original facts are covered in the same CI lanes.
 
 
 SCOPE = {"tenant_id": "default", "agent_id": "hongrui", "workspace_id": "embodied", "user_id": "darrow"}
@@ -38,6 +40,8 @@ def owners(monkeypatch):
                         lambda _runtime, **kw: invoke("detector", detector, **kw))
     monkeypatch.setattr("eimemory.governance.evolution.system_code_repair.process_system_code_incidents",
                         lambda _runtime, **kw: invoke("router", route, **kw))
+    monkeypatch.setattr("eimemory.governance.evolution.code_automation_policy_owner.ensure_native_incident_policy",
+                        lambda *_a, **_kw: {"ok": True, "status": "idle"})
     monkeypatch.setattr("eimemory.ops.system_code_repair_failure.record_system_code_repair_failure",
                         lambda _runtime, **kw: invoke("failure", failure, **kw))
     runtime = SimpleNamespace(resume_code_evolution_transactions=lambda **kw: invoke("recovery", recovery, **kw))
@@ -142,7 +146,7 @@ def test_valid_system_drift_is_an_observation_and_not_a_false_detector_exception
     report = run(owners)
     assert report["execution_ok"] is True and report["status"] == "processed"
     assert report["repair_complete"] is False
-    assert report["runtime_identity"]["known_before_detection"] is False
+    assert report["runtime_identity"]["known_before_detection"] is None
     assert report["code_evolution"] == owners.recovery
 
 
@@ -154,6 +158,16 @@ def test_blocked_route_and_failed_recovery_remain_visible(owners):
     assert report["system_code_repair"]["reason"] == "automation_policy_identity_unavailable"
     assert report["code_evolution"]["reason"] == "observation_failed"
     assert owners.calls[-1][0] == "recovery"
+
+
+def test_native_policy_owner_failure_keeps_existing_transaction_recovery(owners, monkeypatch):
+    monkeypatch.setattr("eimemory.governance.evolution.code_automation_policy_owner.ensure_native_incident_policy",
+                        lambda *_a, **_k: (_ for _ in ()).throw(OSError('fixture-owner-failure')))
+    report = run(owners)
+    assert report['ok'] is False
+    assert report['native_policy_owner']['reason'] == 'native_policy_owner_error:OSError'
+    assert report['system_code_repair']['reason'] == 'native_policy_owner_unverified'
+    assert [name for name, _ in owners.calls] == ['detector', 'failure', 'recovery']
 
 
 @pytest.mark.parametrize("stage", ["detector", "route", "failure", "recovery"])

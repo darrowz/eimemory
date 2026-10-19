@@ -823,7 +823,8 @@ def _code_evolution_evidence(
         ):
             transaction["evidence_verified"] = False
             transaction["evidence_error"] = "terminal_transaction_lineage_mismatch"
-    return provider, transaction, lineage_result
+    from eimemory.contracts.code_incident_provenance import qualification_provenance
+    return provider, qualification_provenance(transaction), lineage_result
 
 
 def _quality_repair_transaction(

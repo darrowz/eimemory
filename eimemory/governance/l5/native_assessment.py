@@ -76,7 +76,12 @@ def _negative_evidence(envelope: dict[str, Any]) -> bool:
         return True
     transaction = envelope.get("transaction_evidence")
     if isinstance(transaction, dict):
+        from eimemory.contracts.code_incident_provenance import qualification_provenance
+        transaction = qualification_provenance(transaction)
         if transaction.get("quarantined") is True:
+            return True
+        if any(transaction.get(key) is True for key in
+                ('known_before_detection', 'prior_user_reported', 'manual_bootstrap')):
             return True
         # Existing immutable proof rejected by the native verifier is not the
         # same claim as having no terminal proof yet. Retain that distinction.

@@ -109,9 +109,9 @@ def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypat
     assert report["ok"] is True
     assert report["status"] == "processed"
     assert proposal_calls[0]["origin"] == "system_detector"
-    assert proposal_calls[0]["known_before_detection"] is False
-    assert proposal_calls[0]["prior_user_reported"] is False
-    assert proposal_calls[0]["manual_bootstrap"] is False
+    assert proposal_calls[0]["known_before_detection"] is None
+    assert proposal_calls[0]["prior_user_reported"] is None
+    assert proposal_calls[0]["manual_bootstrap"] is None
     assert proposal_calls[0]["profile_key"] == "custom.production"
     assert proposal_calls[0]["bounds"] == {
         "maximum_files": 1,
@@ -247,7 +247,7 @@ def _select_runtime_drift_incident(record):
         unit_environments={'fixture.service':'EIMEMORY_RUNTIME_COMMIT='+('b'*40)},
         detected_at='2026-10-01T00:00:00+00:00')
     record.source = "eimemory.runtime_identity_drift"
-    record.provenance["detector"] = "eimemory.runtime_identity_drift.v1"
+    record.provenance = dict(report['source_facts']['facts'])
     record.record_id=report['incident']['incident_id']
     record.meta['incident_digest']=report['incident']['incident_digest']
     record.content={**report['incident'],'detector_report':report}

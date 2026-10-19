@@ -1,0 +1,373 @@
+"""Default-deny native delegation from a root standing grant to one incident.
+
+This owner signs no provenance facts. The grant authorizes narrowly bounded
+repair; detector origin, one-shot consumption and terminal/8h evidence retain
+their independent native contracts. No grant is shipped or created here.
+"""
+from __future__ import annotations
+
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Mapping
+import json
+import os
+import stat
+
+from eimemory.core.strict_json import loads
+from eimemory.governance.evolution import code_automation_policy as policy_api
+from eimemory.governance.evolution.code_automation_policy_capture import _private_json, verify_current_closure_capture
+from eimemory.governance.evolution.code_automation_policy_incidents import (
+    _ROUTES, _resolve_repo_root, select_current_system_incidents,
+)
+from eimemory.governance.evolution.code_automation_policy_issue import (
+    _EFFECTS_BY_MODE, _git, _install_policy_atomically, _policy_lock, issue_code_automation_policy,
+)
+from eimemory.governance.evolution.code_evolution_repository import remote_url_digest
+from eimemory.governance.evolution.code_evolution_test_plans import protected_test_plan_digest
+from eimemory.governance.release.closure_verdict import report_digest
+from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.storage.atomic_file import atomic_write_json
+from eimemory.storage.code_evolution_store import CodeEvolutionStore
+
+
+STANDING_AUTHORITY_DIRECTORY = Path('/etc/eimemory-code-automation-authority')
+SOURCE = 'eimemory.code_automation_policy_owner'
+_FIELDS = {'schema', 'grant_id', 'enabled', 'not_before', 'expires_at', 'scope',
+           'repository', 'profile_key', 'profile_digest', 'routes', 'effects', 'max_transactions'}
+
+
+def _time(value: Any) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError('standing_grant_time_invalid')
+    parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if parsed.tzinfo is None:
+        raise ValueError('standing_grant_time_invalid')
+    return parsed.astimezone(timezone.utc)
+
+
+def _scope_key(scope: ScopeRef | Mapping[str, Any]) -> str:
+    value = asdict(scope) if isinstance(scope, ScopeRef) else dict(scope)
+    if (set(value) != {'tenant_id', 'agent_id', 'workspace_id', 'user_id'}
+            or any(not isinstance(v, str) or not v or v != v.strip() for v in value.values())):
+        raise ValueError('standing_grant_exact_scope_required')
+    return report_digest(value)
+
+
+def standing_grant_path(scope: ScopeRef | Mapping[str, Any]) -> Path:
+    # One exact path, no directory scan, wildcard or cross-scope fallback.
+    return STANDING_AUTHORITY_DIRECTORY / ('scope-' + _scope_key(scope) + '.v1.json')
+
+
+def standing_revocation_path(scope: ScopeRef | Mapping[str, Any]) -> Path:
+    return STANDING_AUTHORITY_DIRECTORY / ('scope-' + _scope_key(scope) + '.revoked')
+
+
+def _secure_read_standing_grant(scope: ScopeRef | Mapping[str, Any]) -> dict:
+    path = standing_grant_path(scope)
+    if policy_api._v2_no_symlink(path, missing_ok=False):
+        raise ValueError('standing_grant_missing_or_unsafe')
+    if os.name != 'posix' or not hasattr(os, 'geteuid'):
+        raise ValueError('standing_grant_owner_check_unsupported')
+    # Unlike /etc/eimemory, every authority directory is root controlled.
+    for directory in (path.parent, *path.parent.parents):
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
+                or (stat.S_IMODE(info.st_mode) & 0o022
+                    and not (directory != path.parent and info.st_mode & stat.S_ISVTX))):
+            raise ValueError('standing_grant_parent_not_root_controlled')
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_NONBLOCK', 0)
+    descriptor = os.open(path, flags)
+    try:
+        info = os.fstat(descriptor)
+        named = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != 0
+                or stat.S_IMODE(info.st_mode) not in {0o600, 0o640}
+                or (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)
+                or info.st_size > 65536):
+            raise ValueError('standing_grant_file_not_root_controlled')
+        raw = os.read(descriptor, 65537)
+        after = os.fstat(descriptor)
+        if (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (
+                after.st_size, after.st_mtime_ns, after.st_ctime_ns) or len(raw) != info.st_size:
+            raise ValueError('standing_grant_changed_during_read')
+    finally:
+        os.close(descriptor)
+    value = loads(raw, max_bytes=65536, max_depth=16)
+    if not isinstance(value, dict):
+        raise ValueError('standing_grant_object_required')
+    return value
+
+
+def _grant(scope: ScopeRef, root: Path, now: datetime) -> dict:
+    grant = _secure_read_standing_grant(scope)
+    return _validate_grant(grant, scope, root, now)
+
+
+def _validate_grant(grant: dict, scope: ScopeRef, root: Path, now: datetime) -> dict:
+    if (set(grant) != _FIELDS or grant.get('schema') != 'code_automation_standing_grant.v1'
+            or grant.get('enabled') is not True or not isinstance(grant.get('grant_id'), str)
+            or not 1 <= len(grant['grant_id']) <= 200 or grant.get('scope') != asdict(scope)
+            or not isinstance(grant.get('profile_key'), str) or not grant['profile_key']
+            or not isinstance(grant.get('profile_digest'), str) or len(grant['profile_digest']) != 64
+            or any(c not in '0123456789abcdef' for c in grant['profile_digest'])
+            or type(grant.get('max_transactions')) is not int or grant['max_transactions'] != 1
+            or grant.get('effects') != _EFFECTS_BY_MODE['full']
+            or any(type(v) is not bool for v in grant.get('effects', {}).values())):
+        raise ValueError('standing_grant_contract_invalid')
+    start = _time(grant['not_before'])
+    end = _time(grant['expires_at']) if grant['expires_at'] is not None else None
+    if not start <= now or end is not None and not now < end:
+        raise ValueError('standing_grant_expired_or_not_yet_valid')
+    revoked = STANDING_AUTHORITY_DIRECTORY / 'standing-grant.revoked'
+    switch = Path(os.environ.get(policy_api.CODE_EVOLUTION_KILL_SWITCH_ENV)
+                  or policy_api.CODE_EVOLUTION_KILL_SWITCH_DEFAULT_PATH)
+    if (os.path.lexists(revoked) or os.path.lexists(standing_revocation_path(scope))
+            or os.path.lexists(switch)):
+        raise ValueError('standing_grant_revoked_or_killed')
+    from eimemory.config.trusted import trusted_repository_root, trusted_remote, trusted_branch_allowed
+    remote = trusted_remote()
+    branch = _git(root, 'symbolic-ref', '--short', 'HEAD')
+    actual = {'root': str(root), 'remote': remote, 'branch': branch,
+              'remote_url_digest': remote_url_digest(_git(root, 'remote', 'get-url', remote))}
+    if (root != Path(trusted_repository_root()).resolve() or not trusted_branch_allowed(branch)
+            or grant.get('repository') != actual):
+        raise ValueError('standing_grant_repository_mismatch')
+    routes = grant.get('routes')
+    if not isinstance(routes, dict) or not routes or len(routes) > len(_ROUTES):
+        raise ValueError('standing_grant_routes_invalid')
+    for kind, route in routes.items():
+        expected = _ROUTES.get(kind)
+        if (expected is None or not isinstance(route, dict)
+                or route != {'source': expected[0], 'detector_id': expected[0]+'.v1',
+                             'test_plan_id': expected[1],
+                             'test_plan_digest': protected_test_plan_digest(expected[1])}):
+            raise ValueError('standing_grant_route_mismatch')
+    return grant
+
+
+def _verify_profile(runtime: Any, scope: ScopeRef, grant: dict) -> None:
+    from eimemory.capabilities.profiles import CapabilityProfiles
+    resolved = CapabilityProfiles(runtime.store).resolve(grant['profile_key'], runtime_scope=scope, capability_scope='global')
+    if resolved.get('profile', {}).get('profile_digest') != grant['profile_digest']:
+        raise ValueError('standing_grant_profile_digest_mismatch')
+
+
+def _selection(runtime: Any, scope: ScopeRef, root: Path) -> dict:
+    selected = select_current_system_incidents(runtime, scope=scope, root=root)
+    if selected.get('status') == 'current' and not getattr(selected['release'], 'complete', False):
+        raise ValueError('current_release_authority_incomplete')
+    return selected
+
+
+def _source_fence(runtime: Any, selected: dict, scope: ScopeRef, record: Any, incident: dict) -> dict:
+    if incident['incident_class'].startswith('release.closure_'):
+        return verify_current_closure_capture(runtime, scope=scope, release=selected['release'],
+                                              record=record, incident=incident)
+    # The shared selector revalidates native runtime current-observation evidence.
+    if incident['incident_class'] == 'deployment.runtime_commit_drift':
+        return {'incident_digest': incident['incident_digest']}
+    # A router failure has no native current-success retirement fence yet.
+    # Keep manual recovery available, but never derive automatic new authority.
+    raise ValueError('incident_current_authority_not_supported')
+
+
+def _policy_at(path: Path) -> tuple[dict | None, str]:
+    if not os.path.lexists(path):
+        return None, ''
+    raw, error = policy_api._secure_read_v2_policy(path)
+    if error:
+        raise ValueError('existing_policy_unverified:' + error)
+    policy = loads(raw, max_bytes=65536, max_depth=32)
+    if not isinstance(policy, dict):
+        raise ValueError('existing_policy_invalid')
+    return policy, policy_api._policy_digest(policy)
+
+
+def ensure_native_incident_policy(runtime: Any, *, scope: ScopeRef | Mapping[str, Any],
+                                  repo_root: str | Path | None = None, apply: bool = True) -> dict:
+    """Issue once from genuine current evidence; dry runs never write authority."""
+    if apply is not True:
+        return {'ok': True, 'status': 'skipped', 'reason': 'apply_disabled', 'repair_complete': False}
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope))
+    root = Path(_resolve_repo_root(repo_root)).expanduser().resolve()
+    try:
+        selected = _selection(runtime, scope_ref, root)
+        if selected.get('status') != 'current':
+            return {k: v for k, v in selected.items() if k not in {'current', 'release'}}
+        state = Path(runtime.store.root) / 'state' / 'code-automation-owner'
+        destination = Path(policy_api.CODE_AUTOMATION_POLICY_DEFAULT_PATH)
+        current_policy, current_digest = _policy_at(destination)
+        # An unowned manual policy is never replaced. The router validates it.
+        owned = state / 'published.json'
+        binding = _private_json(owned) if owned.exists() else None
+        if current_policy is not None and (not binding or binding.get('policy_digest') != current_digest):
+            # A crash may have published the exact current intent before receipt.
+            matching_intent = False
+            for _, incident in selected['current']:
+                key = _intent_key(scope_ref, selected['release'], incident)
+                path = state / (key + '.json')
+                if path.exists() and _private_json(path).get('policy_digest') == current_digest:
+                    matching_intent = True
+                    break
+            if not matching_intent:
+                return {'ok': True, 'status': 'manual_policy_preserved', 'repair_complete': False}
+        now = datetime.now(timezone.utc)
+        grant = _grant(scope_ref, root, now)
+        candidates = [(r, i) for r, i in selected['current'] if i['incident_class'] in grant['routes']]
+        if not candidates:
+            raise ValueError('standing_grant_incident_not_authorized')
+        # Selection is deterministic within the bounded, verified source page.
+        record, incident = sorted(candidates, key=lambda pair: pair[1]['incident_digest'])[0]
+        source = _source_fence(runtime, selected, scope_ref, record, incident)
+        _verify_profile(runtime, scope_ref, grant)
+        from eimemory.adapters.hermes.code_implementation import resolve_code_implementation_provider
+        provider = resolve_code_implementation_provider(runtime, runtime_scope=asdict(scope_ref), capability_scope='global',
+                    checked_at=now.isoformat(), probe=True)
+        if (provider.get('ok') is not True or provider.get('provider_ready') is not True
+                or provider.get('advertisement_fresh') is not True or provider.get('health', {}).get('ok') is not True):
+            raise ValueError('native_provider_unavailable')
+        # No grant/incident/provider -> no owner directory, intent or policy write.
+        if policy_api._v2_no_symlink(state / '.path-check', missing_ok=True):
+            raise ValueError('policy_owner_state_path_invalid')
+        state.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = state.stat()
+        if os.name == 'posix' and (info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077):
+            raise ValueError('policy_owner_state_not_private')
+        with _policy_lock(state / 'owner.lock'):
+            return _issue_locked(runtime, scope_ref, root, selected, record, incident, source,
+                                 grant, provider, state, destination)
+    except Exception as exc:
+        return {'ok': False, 'status': 'blocked', 'reason': str(exc) if isinstance(exc, ValueError)
+                else 'native_policy_owner_error:' + type(exc).__name__, 'repair_complete': False}
+
+
+def _intent_key(scope: ScopeRef, release: Any, incident: dict) -> str:
+    # No grant/clock in the key: renewal cannot reset one-shot consumption.
+    return report_digest({'scope': asdict(scope), 'commit': release.commit,
+                          'receipt_id': release.receipt_id, 'session_id': release.session_id,
+                          'incident_digest': incident['incident_digest']})
+
+
+def _issue_locked(runtime: Any, scope: ScopeRef, root: Path, selected: dict, record: Any,
+                  incident: dict, source: dict, grant: dict, provider: dict,
+                  state: Path, destination: Path) -> dict:
+    key = _intent_key(scope, selected['release'], incident)
+    path = state / (key + '.json')
+    ledger = CodeEvolutionStore(runtime.store)
+    current_policy, current_digest = _policy_at(destination)
+    if path.exists():
+        intent = _private_json(path)
+        if (intent.get('schema') != 'code_automation_policy_intent.v1' or intent.get('intent_key') != key
+                or intent.get('grant_digest') != report_digest(grant) or intent.get('source') != source
+                or intent.get('scope') != asdict(scope) or intent.get('incident_digest') != incident['incident_digest']):
+            raise ValueError('existing_intent_authority_changed')
+        policy = loads(intent['policy_bytes'], max_bytes=65536, max_depth=32)
+        if policy_api._policy_digest(policy) != intent['policy_digest']:
+            raise ValueError('existing_intent_policy_changed')
+    else:
+        if ledger.repository_blocker(str(root)):
+            raise ValueError('repository_transaction_active')
+        if current_policy is not None:
+            binding_path = state / 'published.json'
+            binding = _private_json(binding_path) if binding_path.exists() else {}
+            if binding.get('policy_digest') != current_digest:
+                raise ValueError('manual_policy_present')
+            old = _private_json(state / (binding['intent_key'] + '.json'))
+            if old.get('policy_digest') != current_digest:
+                raise ValueError('prior_owned_policy_unverified')
+            raw, read_error = policy_api._secure_read_v2_policy(destination)
+            if read_error or raw != old.get('policy_bytes'):
+                raise ValueError('prior_owned_policy_bytes_changed')
+            consumed = ledger.get_policy_consumption(current_digest)
+            if consumed:
+                transaction = ledger.get_transaction(str(consumed.get('transaction_id') or ''))
+                if (not transaction or type(transaction.get('terminal')) not in {bool, int}
+                        or transaction['terminal'] != 1):
+                    raise ValueError('prior_policy_transaction_incomplete')
+                terminal = ledger.get_terminal_receipt(transaction['transaction_id'])
+                outcomes = {'SUCCEEDED_SEDIMENTED': 'succeeded_sedimented',
+                            'ROLLED_BACK_HEALTHY': 'rolled_back_healthy',
+                            'ABORTED_NO_EXTERNAL_EFFECT': 'aborted_no_external_effect',
+                            'ABORTED_CANDIDATE_RESTORED': 'aborted_candidate_restored',
+                            'RECOVERY_QUARANTINED': 'recovery_quarantined'}
+                if (not terminal or terminal.get('outcome') != outcomes.get(transaction.get('current_state'))
+                        or terminal.get('receipt_digest') != transaction.get('terminal_receipt_digest')
+                        or transaction.get('policy_digest') != current_digest
+                        or transaction.get('authorization_digest') != consumed.get('authorization_receipt_digest')):
+                    raise ValueError('prior_policy_terminal_receipt_unverified')
+            elif any(i['incident_digest'] == old.get('incident_digest') for _, i in selected['current']):
+                raise ValueError('prior_policy_incident_still_current')
+        now = datetime.now(timezone.utc)
+        end = now + timedelta(days=2)
+        if grant['expires_at'] is not None:
+            end = min(end, _time(grant['expires_at']))
+        route = grant['routes'][incident['incident_class']]
+        issued = issue_code_automation_policy(repo_root=root, incident_class=incident['incident_class'],
+            detector_id=route['detector_id'], test_plan_id=route['test_plan_id'], effects_mode='full',
+            policy_id='native-incident-' + key[:32], profile_key=grant['profile_key'], max_transactions=1,
+            incident_digest=incident['incident_digest'], not_before=now.isoformat(), expires_at=end.isoformat())
+        if issued.get('ok') is not True:
+            raise ValueError('native_issuer_rejected:' + str(issued.get('reason')))
+        policy = issued['policy']
+        if (policy['capability']['implementation_digest'] != provider.get('implementation_digest')
+                or policy['repository']['base_commit'] != selected['release'].commit):
+            raise ValueError('native_issuer_live_binding_mismatch')
+        intent = {'schema': 'code_automation_policy_intent.v1', 'intent_key': key,
+                  'grant_digest': report_digest(grant), 'scope': asdict(scope),
+                  'incident_record_id': record.record_id, 'incident_digest': incident['incident_digest'],
+                  'source': source, 'policy_bytes': json.dumps(policy, indent=2)+'\n',
+                  'policy_digest': policy_api._policy_digest(policy), 'expected_previous_digest': current_digest,
+                  'created_at': now.isoformat(), 'provider': {k: provider[k] for k in (
+                      'implementation_digest', 'advertisement_id', 'advertisement_digest',
+                      'catalog_case_id', 'catalog_snapshot_digest', 'catalog_activation_state_digest')}}
+        atomic_write_json(path, intent)
+    consumed = ledger.get_policy_consumption(intent['policy_digest'])
+    if consumed:
+        return {'ok': True, 'status': 'consumed', 'policy_digest': intent['policy_digest'],
+                'transaction_id': consumed.get('transaction_id'), 'repair_complete': False}
+    # Late re-read closes grant, repository, release, and native source races.
+    fresh_grant = _grant(scope, root, datetime.now(timezone.utc))
+    _verify_profile(runtime, scope, fresh_grant)
+    fresh = _selection(runtime, scope, root)
+    matches = [(r, i) for r, i in fresh.get('current', []) if i['incident_digest'] == incident['incident_digest']]
+    if (report_digest(fresh_grant) != intent['grant_digest'] or len(matches) != 1
+            or _intent_key(scope, fresh['release'], matches[0][1]) != key
+            or _source_fence(runtime, fresh, scope, *matches[0]) != intent['source']):
+        raise ValueError('incident_or_grant_changed_before_publication')
+    if not _time(policy['not_before']) <= datetime.now(timezone.utc) < _time(policy['expires_at']):
+        raise ValueError('original_intent_policy_expired')
+    if current_digest != intent['policy_digest']:
+        error = _install_policy_atomically(destination, policy, expected_digest=intent['expected_previous_digest'])
+        if error:
+            raise ValueError(error)
+    raw, read_error = policy_api._secure_read_v2_policy(destination)
+    if read_error or raw != intent['policy_bytes']:
+        raise ValueError('published_policy_bytes_changed')
+    # Publication may have succeeded before a crash/fsync error. Equal bytes
+    # still need the durability boundary before a delegation can be reported.
+    from eimemory.storage.atomic_file import _fsync_directory
+    _fsync_directory(destination.parent)
+    # The strict native loader validates the actual installed authority.
+    loaded = policy_api.load_code_automation_policy(path=destination)
+    if loaded.get('ok') is not True or loaded.get('policy_digest') != intent['policy_digest']:
+        raise ValueError('published_policy_readback_unverified')
+    receipt = {'schema': 'code_automation_policy_delegation.v1', 'intent_key': key,
+               'policy_digest': intent['policy_digest'], 'grant_digest': intent['grant_digest'],
+               'scope': asdict(scope), 'incident_record_id': record.record_id,
+               'incident_digest': incident['incident_digest'], 'source': source,
+               'policy_created_at': intent['created_at'], 'terminal_evidence': False, 'repair_complete': False,
+               'l5_origin_verified': False,
+               'source_facts': record.content.get('detector_report', {}).get('source_facts')}
+    record_out = RecordEnvelope.create(kind='reflection', title='Native incident policy delegation',
+        summary='Standing grant delegated to exact native incident; no repair or terminal success is claimed.',
+        content=receipt, source=SOURCE, scope=scope, status='active',
+        provenance={'origin': 'native_policy_owner'}, meta={'idempotency_key': 'native-policy-delegation:'+key})
+    stored = runtime.store.append(record_out, existing_match=lambda r:
+        r.kind == 'reflection' and r.source == SOURCE and r.scope == scope and r.content == receipt)
+    if stored.content != receipt or stored.source != SOURCE or stored.scope != scope:
+        raise ValueError('delegation_receipt_mismatch')
+    atomic_write_json(state / 'published.json', {'intent_key': key, 'policy_digest': intent['policy_digest']})
+    return {'ok': True, 'status': 'available', 'policy_digest': intent['policy_digest'],
+            'delegation_record_id': stored.record_id, 'incident_record_id': record.record_id,
+            'repair_complete': False}

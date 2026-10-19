@@ -34,7 +34,7 @@ from eimemory.storage.code_evolution_store import (
 )
 
 
-CODE_EVOLUTION_TRANSACTION_SCHEMA = "code_evolution_transaction.v1"
+CODE_EVOLUTION_TRANSACTION_SCHEMA = "code_evolution_transaction.v2"
 LEASE_OWNER_PREFIX = "eimemory-code-evolution"
 LEASE_RENEWAL_LOCK_RETRY_SECONDS = 240.0
 LEASE_RENEWAL_LOCK_RETRY_INTERVAL_SECONDS = 1.0
@@ -292,7 +292,8 @@ def qualification_report(
 ) -> dict[str, Any]:
     """Return explicit qualification evidence and the first blocking reason."""
 
-    tx = transaction if isinstance(transaction, Mapping) else {}
+    from eimemory.contracts.code_incident_provenance import qualification_provenance
+    tx = qualification_provenance(transaction) if isinstance(transaction, Mapping) else {}
     receipt = terminal_receipt if isinstance(terminal_receipt, Mapping) else {}
     lineage = current_lineage if isinstance(current_lineage, Mapping) else {}
     outcome = str(receipt.get("outcome") or tx.get("qualifying_terminal_outcome") or tx.get("outcome") or "")
@@ -349,7 +350,7 @@ class CodeEvolutionTransactionManager:
         normalized = dict(payload)
         normalized.setdefault("schema_version", CODE_EVOLUTION_TRANSACTION_SCHEMA)
         normalized.setdefault("current_state", "DETECTED")
-        normalized.setdefault("manual_bootstrap", False)
+        normalized.setdefault("manual_bootstrap", None)
         return self.store.create_transaction(normalized)
 
     def submit_proposal(
@@ -381,7 +382,7 @@ class CodeEvolutionTransactionManager:
         provenance_fields = ("origin", "known_before_detection", "prior_user_reported", "manual_bootstrap")
         if any(field not in proposal for field in provenance_fields):
             raise CodeEvolutionTransactionError("code evolution provenance is incomplete")
-        if any(not isinstance(proposal.get(field), bool) for field in provenance_fields[1:]):
+        if any(proposal.get(field) is not None and type(proposal.get(field)) is not bool for field in provenance_fields[1:]):
             raise CodeEvolutionTransactionError("code evolution provenance booleans invalid")
         origin = str(proposal.get("origin") or "").strip()
         if origin not in {"system_detector", "manual_bootstrap", "user_reported"}:
@@ -458,9 +459,9 @@ class CodeEvolutionTransactionManager:
             "incident": dict(incident),
             "origin": origin,
             "detector": str(proposal.get("detector") or ""),
-            "known_before_detection": proposal.get("known_before_detection") is True,
-            "prior_user_reported": proposal.get("prior_user_reported") is True,
-            "manual_bootstrap": proposal.get("manual_bootstrap") is True,
+            "known_before_detection": proposal.get("known_before_detection"),
+            "prior_user_reported": proposal.get("prior_user_reported"),
+            "manual_bootstrap": proposal.get("manual_bootstrap"),
             "repository": {
                 **dict(repository),
                 "repository_remote": str(repository.get("repository_remote") or "origin"),

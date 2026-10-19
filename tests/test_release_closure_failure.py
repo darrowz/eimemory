@@ -43,9 +43,9 @@ def test_release_closure_failure_becomes_exact_system_incident() -> None:
     assert report["ok"] is False
     assert report["status"] == "failure_detected"
     assert report["origin"] == "system_detector"
-    assert report["known_before_detection"] is False
-    assert report["prior_user_reported"] is False
-    assert report["manual_bootstrap"] is False
+    assert report["known_before_detection"] is None
+    assert report["prior_user_reported"] is None
+    assert report["manual_bootstrap"] is None
     assert report["observation_valid"] is True
     assert set(report["incident"]) == {
         "incident_id",

@@ -47,6 +47,8 @@ def detect_runtime_identity_drift(
     scope: ScopeRef | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compare effective systemd environments with one release identity."""
+    from eimemory.contracts.code_incident_provenance import native_detection_provenance
+    source_facts = native_detection_provenance(DETECTOR_ID)
 
     commit = str(expected_commit or "").strip().lower()
     if _HEX40.fullmatch(commit) is None:
@@ -96,6 +98,7 @@ def detect_runtime_identity_drift(
             "expected_commit": commit,
             "scope": asdict(scope_ref),
             "mismatches": mismatches,
+            'source_facts_digest': source_facts['digest'],
         }
         material.update(schema=REPORT_SCHEMA, scope=asdict(scope_ref),
                         identity=identity, identity_digest=_digest(identity))
@@ -127,9 +130,7 @@ def detect_runtime_identity_drift(
         "ok": not mismatches,
         "status": "current" if not mismatches else "drift_detected",
         "origin": "system_detector",
-        "known_before_detection": False,
-        "prior_user_reported": False,
-        "manual_bootstrap": False,
+        **source_facts['facts'], 'source_facts': source_facts,
         "observation_valid": True,
         "incident": incident,
     }
@@ -237,8 +238,7 @@ def inspect_live_runtime_identity(
                     provenance={
                         "origin": "system_detector",
                         "detector": DETECTOR_ID,
-                        "known_before_detection": False,
-                        "prior_user_reported": False,
+                        **report['source_facts']['facts'],
                     },
                     meta={
                         "idempotency_key": f"runtime-identity-drift:v2:{incident['incident_digest']}",
@@ -348,11 +348,18 @@ def validate_runtime_identity_drift_report(report: Any, *, scope: ScopeRef | Map
         identity = {"schema": IDENTITY_SCHEMA, "detector": DETECTOR_ID,
                     "expected_commit": report["expected_commit"], "scope": scope_dict,
                     "mismatches": mismatches}
+        if 'source_facts' in report:
+            from eimemory.contracts.code_incident_provenance import native_detection_provenance
+            expected_facts = native_detection_provenance(DETECTOR_ID)
+            if report['source_facts'] != expected_facts or any(
+                    report.get(key) != value for key, value in expected_facts['facts'].items()):
+                return False
+            identity['source_facts_digest'] = expected_facts['digest']
         if report.get("identity") != identity or report.get("identity_digest") != _digest(identity):
             return False
-        if (report.get("origin") != "system_detector" or report.get("manual_bootstrap") is not False
-                or report.get("known_before_detection") is not False
-                or report.get("prior_user_reported") is not False
+        if (report.get("origin") != "system_detector"
+                or any(report.get(field) is not None and type(report.get(field)) is not bool
+                       for field in ('known_before_detection', 'prior_user_reported', 'manual_bootstrap'))
                 or report.get("observation_valid") is not True
                 or report.get("ok") is not (not mismatches)
                 or report.get("status") != ("drift_detected" if mismatches else "current")):

@@ -44,7 +44,8 @@ def build_product_completion(
 
     raw = _mapping(assessment)
     provider_data = _mapping(provider)
-    transaction_data = _mapping(transaction)
+    from eimemory.contracts.code_incident_provenance import qualification_provenance
+    transaction_data = qualification_provenance(_mapping(transaction))
     lineage = _mapping(current_lineage)
     control_plane_ok = _bool(raw.get("ok")) and str(raw.get("status") or "") not in {"blocked", "degraded"}
     control_plane_status = "ready" if control_plane_ok else str(raw.get("status") or "blocked")
@@ -104,6 +105,8 @@ def build_product_completion(
         gaps.append("no_qualifying_terminal_receipt")
     if manual_bootstrap:
         gaps.append("manual_bootstrap_nonqualifying")
+    elif not _explicit_false(transaction_data.get('manual_bootstrap')):
+        gaps.append('incident_not_manual_bootstrap_unproven')
     if known_before_detection:
         gaps.append("incident_known_before_system_detection")
     if prior_user_reported or origin != "system_detector":
@@ -135,7 +138,7 @@ def build_product_completion(
         outcome in QUALIFYING_OUTCOMES
         and terminal_receipt_bound
         and transaction_evidence_verified
-        and not manual_bootstrap
+        and _explicit_false(transaction_data.get('manual_bootstrap'))
         and _explicit_false(transaction_data.get("known_before_detection"))
         and _explicit_false(transaction_data.get("prior_user_reported"))
         and origin == "system_detector"

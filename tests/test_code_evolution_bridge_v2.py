@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from contextlib import closing
 import inspect
 from pathlib import Path
 import subprocess
@@ -43,7 +44,8 @@ class _TestProvider:
 
 
 @pytest.mark.parametrize("oversized", [False, True])
-def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monkeypatch, tmp_path, oversized) -> None:
+@pytest.mark.parametrize('unknown_source_facts', [False, True])
+def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monkeypatch, tmp_path, oversized, unknown_source_facts) -> None:
     monkeypatch.delenv("EIMEMORY_L5_V3_PROFILE", raising=False)
     path = Path("eimemory/governance/l5/l5_reader.py")
     # A real checkout's reader can exceed the fixed provider file limit.
@@ -99,6 +101,9 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
         test_plan_id="l5.product-completion-reporting.v1",
         test_plan_digest=protected_test_plan_digest("l5.product-completion-reporting.v1"),
         bounds={"maximum_files": 1, "maximum_bytes_per_file": 48 * 1024, "maximum_total_bytes": 96 * 1024, "maximum_changed_lines": 400},
+        **({'origin': 'system_detector', 'detector': 'eimemory.release_closure_failure.v1',
+            'known_before_detection': None, 'prior_user_reported': None, 'manual_bootstrap': None}
+           if unknown_source_facts else {}),
     )
     if oversized:
         assert report["ok"] is False and report["reason"] == "allowed_file_content_invalid"
@@ -124,6 +129,17 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
     assert "commands" not in report
     assert "verification_commands" not in report
     assert "provider_override" not in inspect.signature(propose_code_patch_v2).parameters
+    if unknown_source_facts:
+        from eimemory.storage.runtime_store import RuntimeStore
+        from eimemory.governance.evolution.code_evolution_transaction import CodeEvolutionTransactionManager
+        from eimemory.contracts.code_incident_provenance import FIELDS, SOURCE_KEY
+        assert all(report[key] is None for key in FIELDS)
+        with closing(RuntimeStore(tmp_path/'isolated-ledger')) as store:
+            manager = CodeEvolutionTransactionManager(store)
+            result = manager.submit_proposal(report, scope=SCOPE, effects_enabled=False)
+            assert all(result['transaction'][key] is None for key in FIELDS)
+            receipt = manager.store.get_terminal_receipt(report['transaction_id'])
+            assert all(receipt['payload'][SOURCE_KEY]['facts'][key] is None for key in FIELDS)
 
 
 def test_release_closure_bridge_rejects_storage_receipt_fallback(monkeypatch) -> None:
