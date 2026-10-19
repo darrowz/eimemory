@@ -119,8 +119,26 @@ def combine_agent_verdicts(verdicts: dict[str, dict[str, Any]]) -> dict[str, Any
             "failing_agents": sorted(failing)}
 
 
+def _quality_gate(report: dict[str, Any]) -> dict[str, Any]:
+    """Read the authoritative quality gate, not a real-query report's top-level ok.
+
+    Production reports persist the verdict in ``threshold_gate``. An older
+    nightly wrapper used ``quality_gate``. A real-query report also has a
+    top-level ``ok`` that only means the report was produced, so that field
+    must not certify label trust or recall quality.
+    """
+    for key in ("quality_gate", "threshold_gate"):
+        gate = report.get(key)
+        if not isinstance(gate, dict) or "recall_quality_evidence" not in gate and "ok" not in gate:
+            continue
+        if gate.get("ok") is True and not isinstance(gate.get("recall_quality_evidence"), dict):
+            continue
+        return gate
+    return {}
+
+
 def agent_verdict(report: dict[str, Any]) -> dict[str, Any]:
-    gate = report.get("quality_gate") if isinstance(report.get("quality_gate"), dict) else {}
+    gate: dict[str, Any] = _quality_gate(report)
     evidence = gate.get("recall_quality_evidence") if isinstance(gate.get("recall_quality_evidence"), dict) else {}
     verdict = {
         "ok": gate.get("ok") is True,

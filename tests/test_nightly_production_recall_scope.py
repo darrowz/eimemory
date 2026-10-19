@@ -175,6 +175,43 @@ def test_partial_scope_diagnostics_only_include_fields_actually_overridden(tmp_p
     assert report["scope_mismatch_fields"] == ["agent_id"]
 
 
+def test_authoritative_threshold_gate_is_not_reread_as_missing_quality_gate():
+    # Nightly 1.14.149 shape: the authoritative report passed in threshold_gate,
+    # while quality_gate was absent. Reading only quality_gate marked a passed
+    # agent as production_recall_gate_failed / label_trust_false.
+    report = {
+        "ok": True,
+        "sample_count": 3,
+        "evaluation_contract": "production_real_query_gate.v1",
+        "recall_at_5": 1.0,
+        "mrr": 0.833,
+        "threshold_gate": {
+            "ok": True,
+            "blocked_reason": "",
+            "blocking_metrics": {},
+            "recall_quality_evidence": {
+                "evaluation_contract": "production_real_query_gate.v1",
+                "label_trust_accepted": True,
+            },
+        },
+    }
+
+    verdict = agent_verdict(report)
+
+    assert verdict["ok"] is True
+    assert verdict["blocked_reason"] == ""
+    assert verdict["label_trust_accepted"] is True
+    assert verdict["sample_count"] == 3
+
+
+def test_missing_quality_gate_still_fails_closed():
+    verdict = agent_verdict({"ok": True, "sample_count": 3, "threshold_gate": {}})
+
+    assert verdict["ok"] is False
+    assert verdict["blocked_reason"] == "recall_quality_unavailable"
+    assert verdict["label_trust_accepted"] is False
+
+
 def test_per_agent_diagnostics_only_forward_fixed_scope_field_names():
     verdict = agent_verdict({
         "quality_gate": {"ok": False, "blocked_reason": "dataset_scope_override_mismatch"},

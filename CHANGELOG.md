@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.150] — 2026-10-19
+
+- Persist vector bypass error codes on controlled acceptance. A complete lexical result with an explicitly disabled or unconfigured vector source is not a retrieval failure; timeout, index faults and unknown bypasses still fail.
+- Read per-agent nightly quality from the authoritative `threshold_gate` or `quality_gate`. A real-query report's top-level `ok` no longer certifies label trust.
+
 ## [1.14.149] — 2026-10-19
 
 - Persist and re-read the exact native deployment receipt before restoring maintenance writers and timers. Keep first-install metadata registration free of early dispatch, preserving strict deployment and rollback gates.

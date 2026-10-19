@@ -321,6 +321,18 @@ def _cascade_evidence(runtime, compact, scope, sources, cutoff, primary, *, raw=
     return evidence
 
 
+def _fallback_codes(engine):
+    raw = engine.get('fallback_error_codes')
+    if not isinstance(raw, dict) or not raw:
+        return None
+    codes = {}
+    for key, value in list(raw.items())[:8]:
+        if not isinstance(key, str) or not key or type(value) is not int or isinstance(value, bool) or value < 1:
+            return None
+        codes[key] = min(value, 1_000_000)
+    return codes
+
+
 def _complete(bundle):
     """Strict native sparse-counter contract; no coercion of missing values."""
     explanation = bundle.explanation if isinstance(bundle.explanation, dict) else {}
@@ -339,13 +351,17 @@ def _complete(bundle):
                  retrieval_status=explanation.get('retrieval_status') if explanation.get('retrieval_status') in statuses else 'unknown',
                  source_searches=count(engine.get('source_searches')), source_budget_exhausted=count(engine.get('source_budget_exhausted')),
                  recall_budget_exhausted=count(recall), fallback=engine.get('fallback')
-                 if type(engine.get('fallback')) is bool else None)
-    good = (state['collection_complete'] is True and state['status'] == 'evidence_found'
+                 if type(engine.get('fallback')) is bool else None,
+                 fallback_error_codes=_fallback_codes(engine))
+    lexical_complete = (state['collection_complete'] is True and state['status'] == 'evidence_found'
             and state['retrieval_status'] == 'evidence_found'
             and type(state['source_searches']) is int and state['source_searches'] > 0
             and all(type(state[k]) is int and state[k] == 0 for k in
-                    ('source_budget_exhausted', 'recall_budget_exhausted')) and state['fallback'] is False)
-    return state, good
+                    ('source_budget_exhausted', 'recall_budget_exhausted')))
+    fallback_ok = state['fallback'] is False or (
+        state['fallback'] is True and state['fallback_error_codes']
+        and set(state['fallback_error_codes']) <= {'disabled', 'not_configured'})
+    return state, lexical_complete and fallback_ok
 
 
 def _evaluate_agent(runtime, entry, policy, cutoff):
@@ -620,6 +636,7 @@ def verify_controlled_production_acceptance(runtime, *, scope, release=None, rec
                     'relevance_selector': {'status': state['status'], 'collection_complete': state['collection_complete']},
                     'engine_diagnostics': {'source_searches': state['source_searches'],
                         'source_budget_exhausted': state['source_budget_exhausted'], 'fallback': state['fallback'],
+                        'fallback_error_codes': state.get('fallback_error_codes'),
                         'drops': {'recall_budget_exhausted': state['recall_budget_exhausted']}}})
                 if not _complete(proxy)[1]:
                     _error('retrieval_incomplete')

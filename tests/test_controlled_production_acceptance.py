@@ -104,6 +104,35 @@ def test_old_targets_can_coexist_with_valid_newer_same_scope_results(setup):
     assert verified(setup,record_id=report['record_id'])['accepted']
 
 
+def test_disabled_vector_with_complete_lexical_retrieval_is_not_a_failure(setup):
+    def recall(**kwargs):
+        bundle = setup.recall(**kwargs)
+        engine = bundle.explanation['engine_diagnostics']
+        engine['fallback'] = True
+        engine['fallback_error_codes'] = {'disabled': 1}
+        return bundle
+    setup.monkeypatch.setattr(setup.runtime.memory, 'recall', recall)
+    report = run(setup)
+    assert report['accepted'], report
+    stored = setup.runtime.store.get_by_exact_ref(report['record_id'], scope=OWNER, source_id='default')
+    state = stored.content['agents'][0]['samples'][0]['state']
+    assert state['fallback'] is True
+    assert state['fallback_error_codes'] == {'disabled': 1}
+
+
+@pytest.mark.parametrize('codes', [{'recall_budget_exhausted': 1}, {'unknown': 1}, {'postgres_timeout': 1}, {}])
+def test_real_or_unknown_vector_bypass_still_fails_acceptance(setup, codes):
+    def recall(**kwargs):
+        bundle = setup.recall(**kwargs)
+        engine = bundle.explanation['engine_diagnostics']
+        engine['fallback'] = True
+        if codes:
+            engine['fallback_error_codes'] = dict(codes)
+        return bundle
+    setup.monkeypatch.setattr(setup.runtime.memory, 'recall', recall)
+    assert not run(setup)['accepted']
+
+
 @pytest.mark.parametrize('change', ['collection', 'selector', 'top', 'source_budget', 'recall_budget',
     'missing_source_budget', 'missing_drops', 'truncated_drops', 'fallback', 'missing_fallback',
     'boolean_budget', 'negative_budget', 'none_budget'])
