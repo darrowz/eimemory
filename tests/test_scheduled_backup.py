@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import sqlite3
 import stat
 import sys
@@ -21,6 +22,19 @@ def _module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _main_with_restored_process_state(module, argv):
+    # The real CLI deliberately installs private process defaults. These tests
+    # call it in pytest's process, so retain those defaults during the call and
+    # restore the caller's umask and signal handler even when the CLI fails.
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    previous_umask = os.umask(0o077)
+    try:
+        return module.main(argv)
+    finally:
+        os.umask(previous_umask)
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 def _fake_cli(tmp_path: Path, *, verify_ok: bool = True) -> str:
@@ -72,8 +86,9 @@ def _runtime(tmp_path: Path) -> tuple[Path, Path]:
 def test_backup_set_is_verified_complete_and_discoverable_by_governance(tmp_path, capsys):
     module = _module()
     root, config = _runtime(tmp_path)
-    rc = module.main(["--root", str(root), "--config-dir", str(config),
-                      "--eimemory-bin", _fake_cli(tmp_path), "--keep", "3"])
+    rc = _main_with_restored_process_state(module, [
+        "--root", str(root), "--config-dir", str(config),
+        "--eimemory-bin", _fake_cli(tmp_path), "--keep", "3"])
     out = capsys.readouterr().out
     assert rc == 0
     report = json.loads(out)
@@ -106,8 +121,9 @@ def test_backup_set_is_verified_complete_and_discoverable_by_governance(tmp_path
 def test_failed_verification_never_publishes_a_backup_set(tmp_path, capsys):
     module = _module()
     root, config = _runtime(tmp_path)
-    rc = module.main(["--root", str(root), "--config-dir", str(config),
-                      "--eimemory-bin", _fake_cli(tmp_path, verify_ok=False)])
+    rc = _main_with_restored_process_state(module, [
+        "--root", str(root), "--config-dir", str(config),
+        "--eimemory-bin", _fake_cli(tmp_path, verify_ok=False)])
     report = json.loads(capsys.readouterr().out)
     assert rc == 1 and report["ok"] is False
     published = [p for p in (root / "backups").iterdir() if module.SET_NAME.match(p.name)]

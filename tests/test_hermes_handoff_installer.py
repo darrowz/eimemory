@@ -88,6 +88,10 @@ def test_profile_state_symlink_is_refused_before_any_mode_change(tmp_path):
     profiles.chmod(0o775)
     target = tmp_path / "outside-state"
     target.mkdir(mode=0o755)
+    # mkdir's mode is filtered by the invoking process's umask. Establish the
+    # external target's exact initial permissions before testing preservation.
+    target.chmod(0o755)
+    target_before = target.lstat()
     state = profiles / "xiaomage" / "state"
     state.rmdir()
     state.symlink_to(target, target_is_directory=True)
@@ -95,6 +99,11 @@ def test_profile_state_symlink_is_refused_before_any_mode_change(tmp_path):
         INSTALLER.prepare_handoff_directories(home)
     assert stat.S_IMODE(profiles.stat().st_mode) == 0o775
     assert stat.S_IMODE(target.stat().st_mode) == 0o755
+    target_after = target.lstat()
+    assert (target_after.st_dev, target_after.st_ino, target_after.st_uid,
+            target_after.st_gid, target_after.st_mode) == (
+        target_before.st_dev, target_before.st_ino, target_before.st_uid,
+        target_before.st_gid, target_before.st_mode)
     assert not (home / "state").exists()
 
 
