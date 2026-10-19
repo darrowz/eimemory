@@ -1097,6 +1097,7 @@ def _external_collection_diagnostics(report: object) -> dict:
 
 
 def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
+    from eimemory.contracts.nightly_step_evidence import native_l5_failure_diagnostics, step_evidence_diagnostics
     from .collection_diagnostics import production_collection_diagnostics
     from .controlled_acceptance_diagnostics import controlled_acceptance_diagnostics
     from eimemory.scheduler.research_review_diagnostics import (
@@ -1152,9 +1153,13 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         "natural_evidence_waits": natural_waits,
         "l5_evidence_waits": l5_waits,
         "native_l5_assessment": {
-            key: native_l5.get(key) for key in ("execution_ok", "control_plane_ok",
+            **{key: native_l5.get(key) for key in ("execution_ok", "control_plane_ok",
                 "product_l5_complete", "status", "archive_verified", "record_id", "envelope_digest")
+            }, **native_l5_failure_diagnostics(native_l5)
         } if native_l5 else {},
+        **({"code_maintenance_evidence": step_evidence_diagnostics(
+            report["code_evolution"].get("evidence_archive"))}
+           if isinstance(report.get("code_evolution"), dict) and "evidence_archive" in report["code_evolution"] else {}),
         "recall_quality_accepted": natural_accepted or historical_accepted,
         "recall_quality_acceptance_basis": "historical_business_memory_controlled" if historical_accepted
             else "natural_production_queries" if natural_accepted else "not_accepted",

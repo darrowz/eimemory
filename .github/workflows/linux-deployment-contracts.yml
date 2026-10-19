@@ -166,6 +166,7 @@ jobs:
           tests/test_nightly_memory_eval_provenance_review.py
           tests/test_nightly_release_binding.py
           tests/test_nightly_command_outcome.py
+          tests/test_nightly_step_evidence.py
           tests/test_identity_projection_diagnostics.py
           tests/test_identity_dualview_preview.py
           tests/test_identity_legacy_envelope_compatibility.py

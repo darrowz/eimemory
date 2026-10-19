@@ -81,7 +81,42 @@ def _same_command_run(outcome: dict[str, Any], supervisor: dict[str, Any]) -> bo
         and type(outcome.get("scheduler_execution_ok")) is bool
         and outcome["scheduler_execution_ok"] == (supervisor.get("nightly_diagnostics") or {}).get("execution_ok")
         and outcome.get("scheduler_ok") is bool(supervisor.get("ok"))
+        and outcome.get("step_evidence", {}) == _step_evidence(supervisor)
     )
+
+
+def _step_evidence(supervisor: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = supervisor.get("nightly_diagnostics") or {}
+    refs = {}
+    if "code_maintenance_evidence" in diagnostics:
+        refs["code_evolution"] = diagnostics["code_maintenance_evidence"]
+    native = diagnostics.get("native_l5_assessment")
+    if isinstance(native, dict) and "failure_evidence" in native:
+        refs["native_l5_assessment_failure"] = native["failure_evidence"]
+    return refs
+
+
+def _verify_step_evidence(runtime: Any, *, scope: ScopeRef, supervisor: dict[str, Any],
+                          expected_release: dict[str, Any] | None = None) -> None:
+    refs = _step_evidence(supervisor)
+    if not refs:
+        return  # Historical summaries did not archive step observations.
+    from eimemory.contracts.nightly_step_evidence import step_evidence_diagnostics
+    from eimemory.governance.learning.nightly_step_evidence import read_nightly_step_evidence
+    if expected_release is None:
+        from eimemory.governance.release.evidence_contract import current_release_identity, release_identity_payload
+        release = current_release_identity(runtime, scope)
+        expected_release = release_identity_payload(release) if release is not None else {}
+    for step, reference in refs.items():
+        checked = step_evidence_diagnostics(reference)
+        if checked.get("archive_verified") is not True:
+            if supervisor.get("ok") is True:
+                raise ValueError("nightly_success_step_evidence_unverified")
+            continue  # A recorded archive failure is still a genuine failed ending.
+        if checked != reference:
+            raise ValueError("nightly_step_evidence_projection_changed")
+        read_nightly_step_evidence(runtime, scope=scope, run_id=supervisor.get("run_id", ""),
+                                   step=step, reference=reference, expected_release=expected_release)
 
 
 def _valid_command_result(outcome: dict[str, Any]) -> bool:
@@ -110,6 +145,7 @@ def _command_outcome_payload(record: RecordEnvelope) -> dict[str, Any]:
             "scheduler_execution_ok", "identity_repair_ok", "first_failed_phase",
         ) if key in content},
         **{key: content[key] for key in RELEASE_FIELDS if key in content},
+        **({"step_evidence": content["step_evidence"]} if "step_evidence" in content else {}),
         "identity_repair": _identity_command_summary(
             content.get("identity_repair") or {},
             raised=(content.get("identity_repair") or {}).get("exception_raised") is True,
@@ -139,6 +175,8 @@ def persist_nightly_command_outcome(
     if (type(supervisor.get("ok")) is not bool or scheduled.content.get("ok") is not supervisor["ok"]
             or scheduled.content.get("nightly_diagnostics") != diagnostics):
         raise ValueError("nightly_command_scheduler_result_changed")
+    _verify_step_evidence(runtime, scope=scope_ref, supervisor=supervisor,
+                          expected_release={key: scheduled.meta.get(key, "") for key in RELEASE_FIELDS})
     identity = _identity_command_summary(identity_repair, raised=identity_exception)
     scheduler_ok = supervisor.get("ok") is True
     ok = scheduler_ok and diagnostics["execution_ok"] and identity["ok"]
@@ -150,6 +188,7 @@ def persist_nightly_command_outcome(
         "identity_repair_ok": identity["ok"], "identity_repair": identity,
         "first_failed_phase": "scheduler" if not scheduler_ok or not diagnostics["execution_ok"]
             else "identity_repair" if not identity["ok"] else "",
+        **({"step_evidence": _step_evidence(supervisor)} if _step_evidence(supervisor) else {}),
     }
     record = append_learning_record_once(
         runtime, kind="reflection", title="Nightly command outcome",
@@ -189,7 +228,11 @@ def read_nightly_command_outcome(
                    and all(record.content.get(key, "") == (record.meta or {}).get(key, "") for key in RELEASE_FIELDS)
                    and _valid_command_result(record.content)
                    and _same_command_run(record.content, supervisor)]
-        return _command_outcome_payload(matched[0]) if len(matched) == 1 else unavailable
+        if len(matched) != 1:
+            return unavailable
+        _verify_step_evidence(runtime, scope=scope, supervisor=supervisor,
+                              expected_release={key: matched[0].meta.get(key, "") for key in RELEASE_FIELDS})
+        return _command_outcome_payload(matched[0])
     except Exception:
         return unavailable
 
@@ -232,6 +275,8 @@ def persist_supervisor_summary(
 ) -> RecordEnvelope:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     command = str(summary.get("command") or "unknown")
+    if command == "nightly":
+        _verify_step_evidence(runtime, scope=scope_ref, supervisor=summary)
     record = append_learning_record_once(
         runtime,
         kind="reflection",

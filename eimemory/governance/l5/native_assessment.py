@@ -18,6 +18,7 @@ from eimemory.governance.l5.l5_scope_authority import authorized_capability_scop
 from eimemory.identity import default_operator_user_id
 from eimemory.models.records import ScopeRef
 from eimemory.models.source_partitions import DEFAULT_SOURCE_ID
+from eimemory.contracts.nightly_step_evidence import NATIVE_L5_ERROR_CODES, exception_type_name
 
 
 SCHEMA = "native_l5_assessment_maintenance.v1"
@@ -105,6 +106,7 @@ def run_native_l5_assessment(runtime: Any, *, scope: Mapping[str, Any],
         "ok": False, "execution_ok": False, "enabled": True, "control_plane_ok": False,
         "product_l5_complete": False, "status": "failed", "awaiting_evidence": False,
         "archive_verified": False, "record_id": ""}
+    stage = "scope_selection"
     try:
         owner = exact_runtime_scope(scope)
         selector = _capability_selector(owner)
@@ -112,20 +114,25 @@ def run_native_l5_assessment(runtime: Any, *, scope: Mapping[str, Any],
         from eimemory.governance.evolution.code_evolution_provider_authority import (
             delegated_provider_authority, verify_provider_authority,
         )
+        stage = "provider_authority"
         authority = delegated_provider_authority(runtime, owner_scope=owner, profile_key=profile)
         if authority is not None:
             selector = ScopeRef.from_dict(authority['provider_scope'])
+        stage = "release_authority"
         before = current_release_identity(runtime, owner)
         if before is None or not before.complete:
             raise ValueError("native_l5_current_release_unverified")
         release = release_identity_payload(before)
         result.update(scope=asdict(owner), selector_scope=asdict(selector), profile_key=profile, **release)
+        stage = "readiness_reader"
         envelope = runtime.build_l5_readiness_report(scope=asdict(owner), runtime_scope=selector,
             reader_mode="v3", profile_key=profile, capability_scope=capability_scope,
             persist=True, loop_id=loop_id)
         if authority is not None:
+            stage = "provider_authority_recheck"
             verify_provider_authority(runtime, authority, owner_scope=owner, profile_key=profile)
             envelope['capability_authority'] = authority
+        stage = "envelope_validation"
         if (not isinstance(envelope, dict) or envelope.get("schema") != "l5.reader.v4"
                 or envelope.get("schema_version") != "l5_readiness.v4"
                 or envelope.get("reader_mode") != "v3"
@@ -139,9 +146,11 @@ def run_native_l5_assessment(runtime: Any, *, scope: Mapping[str, Any],
         # Includes exception states deliberately caught by the raw reader.
         # Retain a structurally valid failed reading, but never waive it as
         # evidence starvation or let it certify product completion.
+        stage = "evidence_classification"
         reader_failed = _execution_error(envelope)
         evidence_failed = _negative_evidence(envelope)
         raw = envelope["assessment"]
+        stage = "normalized_assessment"
         if raw.get("assessment_id"):
             receipt = raw.get("persisted")
             if (not isinstance(raw["assessment_id"], str)
@@ -151,8 +160,10 @@ def run_native_l5_assessment(runtime: Any, *, scope: Mapping[str, Any],
                     or receipt.get("entity_id") != raw["assessment_id"]
                     or receipt.get("entity_digest") != raw.get("assessment_digest")):
                 raise ValueError("native_l5_normalized_assessment_not_persisted")
+        stage = "release_recheck"
         if not same_release_authority(before, current_release_identity(runtime, owner)):
             raise ValueError("native_l5_release_authority_changed")
+        stage = "completion_validation"
         digest = _digest(envelope)
         complete = envelope["product_l5_complete"]
         if complete and not raw.get("assessment_id"):
@@ -167,6 +178,7 @@ def run_native_l5_assessment(runtime: Any, *, scope: Mapping[str, Any],
             "control_plane_ok": envelope["control_plane_ok"], "product_l5_complete": complete,
             "evidence_failed": evidence_failed,
             "envelope_digest": digest, "envelope": envelope}
+        stage = "archive_write"
         record = append_learning_record_once(runtime, kind="reflection",
             title="Native L5 product assessment", summary="complete" if complete else "incomplete",
             scope=owner, loop_id=loop_id, step_name="native_l5_assessment",
@@ -174,6 +186,7 @@ def run_native_l5_assessment(runtime: Any, *, scope: Mapping[str, Any],
             meta={"report_type": "native_l5_assessment", "envelope_digest": digest},
             source=SOURCE, status="active")
         result["record_id"] = record.record_id
+        stage = "archive_readback"
         records = runtime.store.list_records_by_sources_exact_scope(scope=owner,
             sources=[SOURCE], kinds=["reflection"], record_ids=[record.record_id], limit=2)
         if not isinstance(records, list) or len(records) != 1:
@@ -191,10 +204,12 @@ def run_native_l5_assessment(runtime: Any, *, scope: Mapping[str, Any],
                        for key, value in release.items())
                 or not same_release_authority(before, current_release_identity(runtime, owner))):
             raise ValueError("native_l5_archive_authority_mismatch")
+        stage = "provider_authority_recheck"
         if authority is not None:
             # The archive retains the original reading if the root delegation
             # changes during persistence; it must not certify current authority.
             verify_provider_authority(runtime, authority, owner_scope=owner, profile_key=profile)
+        stage = "result_projection"
         result.update(ok=complete and not reader_failed, execution_ok=not reader_failed,
             control_plane_ok=envelope["control_plane_ok"], product_l5_complete=complete,
             status="failed" if reader_failed else "blocked" if evidence_failed else "complete" if complete else "incomplete",
@@ -205,10 +220,19 @@ def run_native_l5_assessment(runtime: Any, *, scope: Mapping[str, Any],
             gaps=envelope.get("gaps", []), envelope=envelope)
         if reader_failed:
             result["error"] = "native_l5_reader_execution_failed"
+            result["failure_stage"] = "readiness_reader"
         return result
     except Exception as exc:
         # Preserve failed captures and exception type, never arbitrary provider
         # text. A valid incomplete product is the only non-fatal wait below.
-        result.update(error=str(exc) if isinstance(exc, ValueError) and str(exc).startswith("native_l5_")
-                      else "native_l5_execution_failed", error_type=type(exc).__name__)
+        result.update(error=str(exc) if isinstance(exc, ValueError) and str(exc) in NATIVE_L5_ERROR_CODES
+                      else "native_l5_execution_failed", error_type=exception_type_name(exc), failure_stage=stage)
+        try:
+            from eimemory.governance.learning.nightly_step_evidence import archive_nightly_step_evidence
+            result["failure_evidence"] = archive_nightly_step_evidence(
+                runtime, scope=scope, run_id=loop_id, step="native_l5_assessment_failure", report=result)
+        except Exception as archive_error:
+            # Do not recurse or replace the actual failure with an archive error.
+            result["failure_evidence"] = {"ok": False, "archive_verified": False, "archive_complete": False,
+                "reason": "nightly_step_evidence_unverified", "error_type": exception_type_name(archive_error)}
         return result

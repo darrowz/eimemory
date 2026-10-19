@@ -372,7 +372,7 @@ def run_nightly_jobs(
             step_reports, "l5_v3_reconcile", lambda: _run_l5_v3_reconcile(runtime, scope=scope)
         )
         code_evolution_report = _nightly_step(
-            step_reports, "code_evolution", lambda: _run_code_evolution_maintenance(runtime, scope=scope)
+            step_reports, "code_evolution", lambda: _run_archived_code_maintenance(runtime, scope=scope, run_id=run_id)
         )
         capability_incubation_report = _nightly_step(
             step_reports, "capability_incubation", lambda: _run_capability_incubation(runtime, scope=scope)
@@ -649,6 +649,24 @@ def _run_knowledge_refresh_with_retry(
         "refresh_attempt_count": 2,
         "initial_retry_required": True,
     }
+
+
+def _run_archived_code_maintenance(runtime: Runtime, *, scope: dict[str, Any], run_id: str) -> dict[str, Any]:
+    """Retain the actual observation before the CLI discards the full report."""
+    from eimemory.governance.learning.nightly_step_evidence import archive_nightly_step_evidence
+
+    report = _run_code_evolution_maintenance(runtime, scope=scope)
+    try:
+        reference = archive_nightly_step_evidence(
+            runtime, scope=scope, run_id=run_id, step="code_evolution", report=report)
+    except Exception:
+        # Keep the original operation result. Persistence failure must neither
+        # erase its failures nor produce an apparently complete successful run.
+        reference = {"ok": False, "archive_verified": False, "archive_complete": False,
+                     "reason": "nightly_step_evidence_unverified"}
+    return {**report, "maintenance_execution_ok": report.get("execution_ok"),
+            "ok": report.get("ok") is True and reference.get("ok") is True,
+            "evidence_archive": reference}
 
 
 def _run_code_evolution_maintenance(runtime: Runtime, *, scope: dict[str, Any]) -> dict[str, Any]:

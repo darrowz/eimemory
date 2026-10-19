@@ -136,7 +136,14 @@ def test_unknown_or_failed_reader_cannot_be_an_evidence_wait(producer, fault):
     assert not result["execution_ok"] and not steps[0]["ok"] and not result["awaiting_evidence"]
     captured_failure = fault in {"reader_error", "projection_exception"}
     assert result["archive_verified"] is captured_failure
-    assert len(producer.store.list_records(kinds=["reflection"], scope=SCOPE)) == int(captured_failure)
+    records = producer.store.list_records(kinds=["reflection"], scope=SCOPE)
+    assert len([record for record in records if record.source == native.SOURCE]) == int(captured_failure)
+    diagnostics = [record for record in records if record.source == "eimemory.scheduler.step_evidence"]
+    assert len(diagnostics) == int(not captured_failure)
+    if not captured_failure:
+        assert result["failure_evidence"]["archive_verified"] is True
+        assert diagnostics[0].content["step_report"]["execution_ok"] is False
+        assert diagnostics[0].content["step_report"]["failure_stage"] == result["failure_stage"]
 
 
 def test_current_release_must_exist_before_reader_or_any_write(producer, monkeypatch):
@@ -172,7 +179,11 @@ def test_replaying_revoked_or_unknown_archive_cannot_reactivate_it(producer, sta
     assert not repeated["archive_verified"] and not repeated["execution_ok"]
     assert not repeated["awaiting_evidence"] and not repeated["product_l5_complete"]
     assert producer.store.get_by_id(first["record_id"], scope=SCOPE, exact_scope=True).status == status
-    assert len(producer.store.list_records(kinds=["reflection"], scope=SCOPE)) == 1
+    records = producer.store.list_records(kinds=["reflection"], scope=SCOPE)
+    assert len([record for record in records if record.source == native.SOURCE]) == 1
+    assert len([record for record in records if record.source == "eimemory.scheduler.step_evidence"]) == 1
+    assert repeated["failure_evidence"]["archive_verified"] is True
+    assert repeated["failure_stage"] == "archive_readback"
 
 
 @pytest.mark.parametrize("column,value", [("status", "revoked"), ("kind", "incident"),
