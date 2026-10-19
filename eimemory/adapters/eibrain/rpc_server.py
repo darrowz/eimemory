@@ -297,6 +297,19 @@ class EIBrainRPCServer:
         self._loopback_health_server: ThreadingHTTPServer | None = None
         self._loopback_health_thread: threading.Thread | None = None
         self.loopback_health_address: tuple[str, int] | None = None
+        # Main RPC already serves /health. Reuse its socket when old unit or
+        # environment settings request the identical listener a second time.
+        auxiliary_host = "127.0.0.1" if loopback_health_host.lower() == "localhost" else loopback_health_host
+        shared_health_listener = (
+            bool(auxiliary_host) and loopback_health_port not in (None, 0)
+            and int(loopback_health_port) == int(self.address[1])
+            and (auxiliary_host == self.address[0]
+                 or (self.address[0] == "0.0.0.0" and auxiliary_host == "127.0.0.1"))
+        )
+        if shared_health_listener:
+            self.loopback_health_address = (auxiliary_host, int(self.address[1]))
+            handler.loopback_health = {"host": auxiliary_host, "port": int(self.address[1]), "path": "/health"}
+            return
         if loopback_health_host and loopback_health_port is not None:
             health_handler = type("EIMemoryLoopbackRPCHandler", (_RPCHandler,), {})
             health_handler.bridge = handler.bridge
@@ -305,7 +318,11 @@ class EIBrainRPCServer:
             health_handler.attestation_tokens = dict(self.attestation_tokens)
             health_handler.listen_host = str(self.address[0])
             health_handler.listen_port = int(self.address[1])
-            self._loopback_health_server = BoundedThreadingHTTPServer((loopback_health_host, loopback_health_port), health_handler)
+            try:
+                self._loopback_health_server = BoundedThreadingHTTPServer((loopback_health_host, loopback_health_port), health_handler)
+            except BaseException:
+                self._server.server_close()
+                raise
             self.loopback_health_address = self._loopback_health_server.server_address
             loopback_health = {
                 "host": str(self.loopback_health_address[0]),

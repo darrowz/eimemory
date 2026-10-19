@@ -27,6 +27,35 @@ from deploy.rotate_console_token import rotate_token
 pytestmark = pytest.mark.linux_deployment
 
 
+@pytest.mark.parametrize('host,auxiliary,shared',[
+    ('127.0.0.1','127.0.0.1',True),('127.0.0.1','localhost',True),
+    ('0.0.0.0','127.0.0.1',True),('127.0.0.1','127.0.0.2',False)])
+def test_actual_rpc_shared_health_listener_and_distinct_listener_remain_usable(tmp_path,monkeypatch,host,auxiliary,shared):
+    import socket
+    import urllib.request
+    from eimemory.api.runtime import Runtime
+    from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
+    monkeypatch.delenv('EIMEMORY_RUNTIME_COMMIT',raising=False)
+    token='FixtureAuthenticationToken0123456789abcdef'
+    runtime=Runtime.create(root=tmp_path)
+    with socket.socket() as reservation:
+        reservation.bind(('127.0.0.1',0));port=reservation.getsockname()[1]
+    server=None
+    try:
+        server=EIBrainRPCServer(runtime,host=host,port=port,loopback_health_host=auxiliary,
+            loopback_health_port=port,auth_token=token,attestation_tokens={})
+        assert (server._loopback_health_server is None)==shared
+        server.start()
+        opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        for address in ('127.0.0.1',auxiliary):
+            request=urllib.request.Request(f'http://{address}:{port}/health',headers={'Authorization':'Bearer '+token})
+            with opener.open(request,timeout=5) as response:health=json.load(response)
+            assert health['checks']['process'] is True
+    finally:
+        if server is not None:server.stop()
+        runtime.close()
+
+
 def _noneditable_origin_environment(root: Path, *, venv: Path | None = None) -> dict[str, Path]:
     """Install an actual, offline wheel; its copied package is not a mock importer."""
     release = root / "releases" / ("a" * 40)
@@ -150,7 +179,8 @@ def test_native_product_launcher_selects_raw_source_over_noneditable_wheel_and_r
         registry_path.write_text(json.dumps(registry), encoding="utf-8")
         launcher = authority / "runtime_manager_launch.py"
         _private_product_launcher(source, launcher, {
-            "CURRENT": current, "RELEASES": root / "releases", "REGISTRY": registry_path, "EMPTY_PYCACHE": cache})
+            "CURRENT": current, "RELEASES": root / "releases", "REGISTRY": registry_path, "EMPTY_PYCACHE": cache,
+            "CGROUP":authority/'native-cgroup'})
         # The launcher's strict loader imports only its adjacent reviewed root
         # copy, never the runtime-writable product contract or wheel copy.
         root_contract = authority / "runtime_manager_contract.py"
@@ -198,6 +228,74 @@ def test_native_product_launcher_selects_raw_source_over_noneditable_wheel_and_r
                 assert reason in failed.stderr
                 assert "raw-source" not in failed.stdout and "wheel-copy" not in failed.stdout
             assert not any(cache.iterdir())
+            # Exercise the actual CLI and its full compatibility import graph,
+            # not only the tiny origin fixture. Keep the installed wheel so
+            # raw-source selection is still necessary under isolated Python.
+            subprocess.run(["umount", str(release)], check=True, capture_output=True, timeout=20)
+            mounted = False
+            shutil.copytree(source.parents[1] / 'eimemory', release / 'eimemory',
+                            dirs_exist_ok=True, ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+            for directory, dirs, files in os.walk(release / 'eimemory', followlinks=False):
+                for path in [Path(directory), *(Path(directory) / item for item in (*dirs, *files))]:
+                    os.chown(path, account.pw_uid, account.pw_gid, follow_symlinks=False)
+            work = root / 'business-data';work.mkdir(mode=0o700)
+            os.chown(work, account.pw_uid, account.pw_gid)
+            subprocess.run(["mount", "--bind", str(release), str(release)], check=True, capture_output=True, timeout=20)
+            mounted = True
+            subprocess.run(["mount", "-o", "remount,bind,ro", str(release)], check=True, capture_output=True, timeout=20)
+            real_command = [str(value['python']), *flags, str(launcher), '--product-module', 'eimemory.cli.main']
+            real_env = {**{k:v for k,v in environment.items() if not k.startswith(('EIMEMORY_','OPENCLAW_','HERMES_'))},
+                        'HOME':str(work), 'EIMEMORY_ROOT': str(work), 'EIMEMORY_CONFIG_DIR': str(work / 'config'),
+                        'EIMEMORY_SYSTEM_SETTINGS_PATH':str(work/'no-system-settings.json'),
+                        'EIMEMORY_RPC_AUTH_TOKEN': 'OriginFixtureAuthenticationToken0123456789'}
+            help_result = subprocess.run(prefix + real_command + ['--help'], cwd=root, env=real_env,
+                                         capture_output=True, text=True, timeout=45)
+            assert help_result.returncode == 0, help_result.stderr
+            assert 'serve-eibrain-rpc' in help_result.stdout
+            # Install the same root-owned data manifest and helper used by
+            # migration. The runtime user reads its live business env file;
+            # root never sources or executes that file or a legacy command.
+            helper=authority/'runtime_manager_settings.py'
+            shutil.copyfile(source.parent/'runtime_manager_settings.py',helper)
+            business_env=work/'business.env'
+            business_env.write_text('EIMEMORY_CAPTURE_ORIGINAL_QUERY=1\nEIMEMORY_RECALL_BUDGET_SECONDS=47\n')
+            os.chown(business_env,account.pw_uid,account.pw_gid);business_env.chmod(0o600)
+            settings=authority/'runtime-settings.v1.json'
+            settings.write_text(json.dumps({'schema':'eimemory.legacy_runtime_settings.v1',
+                'source_snapshot_sha256':'a'*64,'units':{'eimemory-rpc.service':{
+                    'environment':{},'environment_files':[{'path':str(business_env),'optional':False}],
+                    'rpc_argv':['--host','127.0.0.1','--port','0']}}}))
+            cgroup=authority/'native-cgroup'
+            cgroup.write_text('0::/system.slice/eimemory-rpc.service\n')
+            for path in (helper,settings,cgroup):os.chown(path,0,account.pw_gid);path.chmod(0o640)
+            import time
+            import urllib.request
+            stderr = root / 'actual-rpc.stderr'
+            with stderr.open('wb') as log:
+                child = subprocess.Popen(prefix + real_command + ['serve-eibrain-rpc', '--host', '127.0.0.1', '--port', '1'],
+                    cwd=root, env=real_env, stdout=subprocess.DEVNULL, stderr=log)
+                try:
+                    deadline = time.monotonic() + 45;address = None
+                    while time.monotonic() < deadline:
+                        for line in stderr.read_text(errors='replace').splitlines():
+                            try:message=json.loads(line)
+                            except ValueError:continue
+                            if message.get('ok') is True and message.get('port'):
+                                address=(message['host'],message['port'])
+                        if address is not None or child.poll() is not None:break
+                        time.sleep(.1)
+                    assert child.poll() is None and address is not None, stderr.read_text()
+                    request=urllib.request.Request(f'http://{address[0]}:{address[1]}/health',
+                        headers={'Authorization':'Bearer '+real_env['EIMEMORY_RPC_AUTH_TOKEN']})
+                    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    with opener.open(request,timeout=10) as response:health=json.load(response)
+                    assert health['checks']['process'] is True
+                    assert health['import_root']==str(release/'eimemory')
+                finally:
+                    if child.poll() is None:child.terminate()
+                    try:child.wait(timeout=15)
+                    except subprocess.TimeoutExpired:child.kill();child.wait(timeout=10)
+            assert 'manager_product_module_origin_invalid' not in stderr.read_text()
         finally:
             if mounted:
                 subprocess.run(["umount", str(release)], check=True, capture_output=True, timeout=20)
@@ -2443,7 +2541,12 @@ def _installer_test_systemctl_env(tmp_path: Path) -> dict[str, str]:
         encoding="utf-8",
     )
     systemctl.chmod(0o755)
-    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+    system_dir=tmp_path/'systemd-system'
+    system_dir.mkdir(exist_ok=True)
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "SYSTEM_SYSTEMD_DIR":system_dir.as_posix(),
+            "SYSTEM_RPC_UNIT_PATH":(system_dir/'eimemory-rpc.service').as_posix(),
+            "SYSTEM_RPC_DROPIN_DIR":(system_dir/'eimemory-rpc.service.d').as_posix()}
 
 
 def _create_directory_link(link: Path, target: Path) -> None:

@@ -161,6 +161,26 @@ def storage_clean():
         if path.exists() or path.is_symlink():raise ValueError('bootstrap_storage_recovery_not_clean')
 
 
+def preview_runtime_settings(account,snapshot,units):
+    # Extract unit directives as data only. External EnvironmentFile reads and
+    # syntax validation must happen as the runtime UID before stopping owners.
+    path=ROOT/'runtime_manager_settings.py';raw=read(path)
+    spec=importlib.util.spec_from_file_location('reviewed_runtime_settings',path)
+    helper=importlib.util.module_from_spec(spec)
+    exec(compile(raw,str(path),'exec'),helper.__dict__)
+    value=helper.build(snapshot,units);encoded=helper.canonical(value)
+    done=subprocess.run(['/usr/sbin/runuser','-u',account.pw_name,'--','/usr/bin/python3','-I','-B','-X',
+        'pycache_prefix=/var/lib/eimemory-manager/empty-pycache',str(path),'--preview'],
+        input=encoded,capture_output=True,timeout=30,
+        env={'PATH':'/usr/bin:/bin','LC_ALL':'C','PYTHONDONTWRITEBYTECODE':'1'})
+    if done.returncode or done.stderr or len(done.stdout)>65536:
+        raise ValueError('bootstrap_runtime_settings_preview_failed')
+    report=json.loads(done.stdout)
+    if report.get('ok') is not True or report.get('manifest_sha256')!=sha256(encoded).hexdigest():
+        raise ValueError('bootstrap_runtime_settings_preview_invalid')
+    return encoded,done.stdout
+
+
 def healthy_original(commit):
     # Public /health deliberately omits deploy identity. Read one fixed local
     # credential as data only; do not source it, export it, archive it or follow
@@ -206,7 +226,7 @@ def healthy_original(commit):
 
 
 def root_snapshot(files):
-    paths={REGISTRY,SYSTEM_UNITS/'eimemory-runtime-manager.service'}
+    paths={REGISTRY,SYSTEM_UNITS/'eimemory-runtime-manager.service',ROOT/'runtime-settings.v1.json'}
     for name in files:
         if name=='manifest.json':continue
         paths.add(ROOT/name)
@@ -575,8 +595,11 @@ def install(args):
     owner_original={'schema':'eimemory.runtime_owner_snapshot.v1','commit':commit,'root_files':before_root,
         'user_files':user_original,'prior_user_state':prior,'prior_system_state':prior_system}
     write(history/'owner-snapshot.json',c.canonical(owner_original),gid=0,mode=0o600,exclusive=True)
+    settings,settings_preview=preview_runtime_settings(account,user_original,c.PRODUCT_SERVICES)
+    write(history/'runtime-settings-preview.json',settings_preview,gid=0,mode=0o600,exclusive=True)
     storage_clean()
     authority_preview=configure_managed_authority(args,{'managed_incident_authority':{'enabled':False},'runtime_uid':account.pw_uid,'runtime_gid':account.pw_gid,'runtime_user':'darrow','runtime_commit':commit,'controller_commit':commit},history,c,account)
+    write(ROOT/'runtime-settings.v1.json',settings,gid=account.pw_gid)
     # Stop/disable the old product owner before publishing any system owner.
     # No parallel RPC owner is ever started as part of a migration.
     active=retire_legacy_user_owners(account,prior,set(c.REGISTERED_UNITS)-set(c.USER_COMPAT_UNITS))

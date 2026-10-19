@@ -11,6 +11,7 @@ import socket
 import struct
 import importlib
 import runpy
+import ast
 from hashlib import sha256
 
 
@@ -44,6 +45,7 @@ EMPTY_PYCACHE=Path('/var/lib/eimemory-manager/empty-pycache')
 REGISTRY=Path('/etc/eimemory-code-automation-authority/runtime-manager.v1.json')
 CURRENT=Path('/opt/eimemory/current')
 RELEASES=Path('/opt/eimemory/releases')
+CGROUP=Path('/proc/self/cgroup')
 PRODUCT_MODULES=frozenset({'eimemory.cli.main','eimemory.cli.l1_worker',
     'eimemory.governance.serve_console','eimemory.governance.safety.audit_verifier',
     'eimemory.retrieval.vector_sync_worker'})
@@ -57,12 +59,46 @@ def root_contract():
     return module
 
 
+def source_alias_target(path):
+    """Recognize only the repository's explicit, data-free relocation shim."""
+    if path.is_symlink() or not path.is_file() or path.resolve(strict=True)!=path:
+        return None
+    try:
+        tree=ast.parse(path.read_bytes())
+        branch=tree.body[2]
+        target=branch.body[0].names[0].name
+        if re.fullmatch(r'eimemory(?:\.[A-Za-z_][A-Za-z_0-9]*)+',target) is None:return None
+        expected=ast.parse('''"""Compatibility alias: this module moved to TARGET."""
+import sys as _sys
+if __name__ != "__main__":
+    import TARGET as _target
+    _sys.modules[__name__] = _target
+else:
+    import runpy as _runpy
+    _runpy.run_module("TARGET", run_name="__main__", alter_sys=True)
+'''.replace('TARGET',target))
+        if ast.dump(tree,include_attributes=False)!=ast.dump(expected,include_attributes=False):return None
+        return target
+    except (OSError,SyntaxError,AttributeError,IndexError,TypeError,ValueError):
+        return None
+
+
 def assert_product_origins(release):
     package=release/'eimemory'
     for name,module in list(sys.modules.items()):
         if name!='eimemory' and not name.startswith('eimemory.'):continue
+        if re.fullmatch(r'eimemory(?:\.[A-Za-z_][A-Za-z_0-9]*)*',name) is None:
+            raise ValueError('manager_product_module_origin_invalid')
         if module is None:raise ValueError('manager_product_preloaded_module_invalid')
-        relative=Path(*name.split('.'))
+        canonical=getattr(getattr(module,'__spec__',None),'name',name)
+        if not isinstance(canonical,str) or re.fullmatch(r'eimemory(?:\.[A-Za-z_][A-Za-z_0-9]*)*',canonical) is None:
+            raise ValueError('manager_product_module_origin_invalid')
+        if canonical!=name:
+            alias=release/Path(*name.split('.'))
+            alias=alias/'__init__.py' if alias.is_dir() else alias.with_suffix('.py')
+            if (source_alias_target(alias)!=canonical or sys.modules.get(canonical) is not module):
+                raise ValueError('manager_product_module_alias_invalid')
+        relative=Path(*canonical.split('.'))
         path=release/relative;filename=getattr(module,'__file__',None)
         namespace=getattr(module,'__path__',None)
         if filename is None:
@@ -114,13 +150,38 @@ def prepare_product_module(module):
     return release
 
 
+def apply_runtime_settings(module,args):
+    path=Path(__file__).parent/'runtime-settings.v1.json'
+    if not path.exists() and not path.is_symlink():return args
+    value=read_root(path)
+    helper_path=path.parent/'runtime_manager_settings.py'
+    raw=read_root(helper_path,raw=True)
+    spec=importlib.util.spec_from_file_location('reviewed_launcher_settings',helper_path)
+    helper=importlib.util.module_from_spec(spec)
+    exec(compile(raw,str(helper_path),'exec'),helper.__dict__)
+    helper.validate(value)
+    units={part for line in CGROUP.read_text().splitlines()
+        for part in line.split(':',2)[-1].split('/') if part in value['units']}
+    if len(units)!=1:raise ValueError('manager_settings_native_unit_ambiguous')
+    return helper.apply(value,units.pop(),module,args)
+
+
 def product_module(module,args):
     if len(args)>128 or sum(len(v) for v in args)>65536 or any('\0' in v for v in args):
         raise ValueError('manager_product_argv_invalid')
     release=prepare_product_module(module)
+    args=apply_runtime_settings(module,args)
     sys.argv=[module,*args]
-    try:runpy.run_module(module,run_name='__main__',alter_sys=True)
-    finally:assert_product_origins(release)
+    try:
+        runpy.run_module(module,run_name='__main__',alter_sys=True)
+    except BaseException as error:
+        try:assert_product_origins(release)
+        except (ValueError,OSError) as origin_error:
+            if isinstance(error,SystemExit) and error.code in (None,0):raise origin_error from error
+            if hasattr(error,'add_note'):error.add_note('Product origin recheck also failed: '+type(origin_error).__name__)
+        raise
+    else:
+        assert_product_origins(release)
 
 
 def protected_cache():

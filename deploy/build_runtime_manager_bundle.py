@@ -24,7 +24,7 @@ def build(root,commit):
         'validation_entry':'deploy/run_code_deployment_validation.py','validation_sha256':sha256(validation_entry.read_bytes()).hexdigest() if validation_entry.is_file() else None},sort_keys=True,separators=(',',':')).encode()
     files['compatibility.json']=json.dumps({name:sha256((root/name).read_bytes()).hexdigest() for name in COMPATIBILITY_PATHS},sort_keys=True,separators=(',',':')).encode()
     files['runtime_manager_contract.py']=(root/'eimemory/contracts/runtime_manager.py').read_bytes()
-    for name in ('runtime_manager_bridge.py','runtime_manager_launch.py','runtime_manager_user_policy.py','runtime_manager_owner_files.py','storage_release_transaction.py'):
+    for name in ('runtime_manager_bridge.py','runtime_manager_launch.py','runtime_manager_settings.py','runtime_manager_user_policy.py','runtime_manager_owner_files.py','storage_release_transaction.py'):
         files[name]=(root/'deploy'/name).read_bytes()
     authority=root/'eimemory/core/managed_incident_proof_authority.py'
     if authority.is_file():

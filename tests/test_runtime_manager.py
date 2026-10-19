@@ -25,6 +25,108 @@ def standalone(name):
     return module
 
 
+def test_legacy_settings_preserve_business_configuration_and_distinct_rpc_listeners():
+    m=standalone('runtime_manager_settings')
+    unit='eimemory-rpc.service'
+    base='''[Service]
+Environment=EIMEMORY_CAPTURE_ORIGINAL_QUERY=1 EIMEMORY_RECALL_BUDGET_SECONDS=45 PYTHONPATH=/untrusted EIMEMORY_RUNTIME_COMMIT=bad
+EnvironmentFile=-%h/business.env
+ExecStart=/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main serve-eibrain-rpc --host 127.0.0.1 --port 8091
+'''
+    drop='''[Service]
+Environment=EIMEMORY_RECALL_EXPECTED_MODEL=luna EIMEMORY_LUNA_PROVIDER=provider
+EnvironmentFile=/var/lib/eimemory/state/vector-serving.env
+ExecStart=
+ExecStart=/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main serve-eibrain-rpc --host 100.71.12.69 --port 8091 --loopback-health-host 127.0.0.1 --loopback-health-port 8091
+'''
+    record=lambda text:dict(kind='file',raw_hex=text.encode().hex(),sha256=sha256(text.encode()).hexdigest(),mode=0o644)
+    snapshot=dict(schema='eimemory.runtime_owner_user_files.v1',units=[unit],
+        files={unit:record(base),unit+'.d/99-business.conf':record(drop),unit+'.d/zzzz-eimemory-host-manager.conf':None})
+    result=m.build(snapshot,[unit]);item=result['units'][unit]
+    assert item['environment']==dict(EIMEMORY_CAPTURE_ORIGINAL_QUERY='1',EIMEMORY_RECALL_BUDGET_SECONDS='45',
+        EIMEMORY_RECALL_EXPECTED_MODEL='luna',EIMEMORY_LUNA_PROVIDER='provider')
+    assert item['environment_files']==[dict(path='/home/darrow/business.env',optional=True),
+        dict(path='/var/lib/eimemory/state/vector-serving.env',optional=False)]
+    assert item['rpc_argv']==['--host','100.71.12.69','--port','8091','--loopback-health-host','127.0.0.1','--loopback-health-port','8091']
+    assert result['source_snapshot_sha256']==sha256(m.canonical(snapshot)).hexdigest()
+    assert snapshot['files'][unit]['raw_hex']==base.encode().hex()
+
+
+@pytest.mark.parametrize('main,aux,port,shared',[
+    ('127.0.0.1','127.0.0.1','8091',True),('localhost','127.0.0.1','8091',True),
+    ('0.0.0.0','127.0.0.1','8091',True),('100.71.12.69','127.0.0.1','8091',False),
+    ('127.0.0.1','127.0.0.1','0',False)])
+def test_legacy_rpc_listener_normalization(main,aux,port,shared):
+    m=standalone('runtime_manager_settings')
+    args=m.rpc_arguments('/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main serve-eibrain-rpc '
+        f'--host {main} --port {port} --loopback-health-host {aux} --loopback-health-port {port}')
+    assert ('--loopback-health-host' not in args)==shared
+
+
+@pytest.mark.parametrize('command',[
+    '/bin/sh -c evil',
+    '/opt/eimemory/current/.venv/bin/python -c evil -m eimemory.cli.main serve-eibrain-rpc',
+    '/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main serve-eibrain-rpc --auth-token secret',
+    '/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main serve-eibrain-rpc --port 65536',
+    '/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main serve-eibrain-rpc --loopback-health-host 127.0.0.1'])
+def test_legacy_settings_never_execute_or_forward_arbitrary_commands(command):
+    with pytest.raises(ValueError):standalone('runtime_manager_settings').rpc_arguments(command)
+
+
+@pytest.mark.skipif(sys.platform=='win32',reason='POSIX file descriptors and runtime identities')
+def test_legacy_environment_is_literal_runtime_data_and_never_root_read(tmp_path,monkeypatch):
+    m=standalone('runtime_manager_settings');path=tmp_path/'business.env'
+    path.write_text('EIMEMORY_CAPTURE_QUERY_SCOPES="old memories"\n'
+        'EIMEMORY_LUNA_PROVIDER=$(touch /must-not-exist)\nPYTHONPATH=/evil\n'
+        'EIMEMORY_RUNTIME_COMMIT=evil\nEIMEMORY_RECALL_BUDGET_SECONDS=45\n')
+    monkeypatch.setattr(m.os,'getuid',lambda:1001);monkeypatch.setattr(m.os,'geteuid',lambda:1001)
+    result=m.environment_file(str(path))
+    assert result=={'EIMEMORY_CAPTURE_QUERY_SCOPES':'old memories','EIMEMORY_LUNA_PROVIDER':'$(touch /must-not-exist)',
+        'EIMEMORY_RECALL_BUDGET_SECONDS':'45'}
+    link=tmp_path/'symlink';link.symlink_to(path)
+    with pytest.raises(OSError):m.environment_file(str(link))
+    assert m.environment_file(str(tmp_path/'missing'),True)=={}
+    monkeypatch.setattr(m.os,'geteuid',lambda:0)
+    with pytest.raises(ValueError,match='runtime_uid'):m.environment_file(str(path))
+
+
+def test_product_failure_retains_original_exception_and_origin_failure_note(monkeypatch,tmp_path):
+    m=standalone('runtime_manager_launch')
+    monkeypatch.setattr(m,'prepare_product_module',lambda _:tmp_path)
+    monkeypatch.setattr(m,'apply_runtime_settings',lambda _,args:args)
+    def fail(*_args,**_kwargs):raise OSError(98,'address already in use')
+    monkeypatch.setattr(m.runpy,'run_module',fail)
+    def bad_origin(_):raise ValueError('bad_origin')
+    monkeypatch.setattr(m,'assert_product_origins',bad_origin)
+    with pytest.raises(OSError) as caught:m.product_module('eimemory.cli.main',[])
+    assert caught.value.errno==98
+    assert any('origin recheck' in note for note in caught.value.__notes__)
+
+
+def test_relocation_alias_requires_exact_reviewed_shim_and_canonical_module(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    m=standalone('runtime_manager_launch');package=tmp_path/'eimemory';package.mkdir()
+    (package/'new.py').write_text('value=1\n')
+    shim='''"""Compatibility alias: this module moved to eimemory.new."""
+import sys as _sys
+if __name__ != "__main__":
+    import eimemory.new as _target
+    _sys.modules[__name__] = _target
+else:
+    import runpy as _runpy
+    _runpy.run_module("eimemory.new", run_name="__main__", alter_sys=True)
+'''
+    (package/'old.py').write_text(shim)
+    canonical=SimpleNamespace(__file__=str(package/'new.py'),__spec__=SimpleNamespace(name='eimemory.new'))
+    monkeypatch.setattr(m,'sys',SimpleNamespace(modules={'eimemory.old':canonical,'eimemory.new':canonical}))
+    m.assert_product_origins(tmp_path)
+    (package/'old.py').write_text(shim+'\nprint("injected")\n')
+    with pytest.raises(ValueError,match='alias_invalid'):m.assert_product_origins(tmp_path)
+    (package/'old.py').write_text(shim)
+    monkeypatch.setattr(m,'sys',SimpleNamespace(modules={'eimemory.old':canonical}))
+    with pytest.raises(ValueError,match='alias_invalid'):m.assert_product_origins(tmp_path)
+
+
 def registry():
     value = dict(schema=c.REGISTRY_SCHEMA, runtime_user='darrow', runtime_uid=1001, runtime_gid=1001,
         controller_commit='a'*40, runtime_commit='a'*40, repository_root='/dev-project/eimemory',

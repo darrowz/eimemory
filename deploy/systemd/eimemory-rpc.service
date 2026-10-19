@@ -25,7 +25,7 @@ Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime
 KillMode=mixed
 TimeoutStopSec=10
 ExecStartPre=/opt/eimemory/current/deploy/systemd/eimemory-rpc-cleanup-port.sh 8091 serve-eibrain-rpc
-ExecStart=/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main serve-eibrain-rpc --host 127.0.0.1 --port 8091 --loopback-health-host 127.0.0.1 --loopback-health-port 8091
+ExecStart=/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main serve-eibrain-rpc --host 127.0.0.1 --port 8091
 Restart=always
 RestartSec=3
 StandardOutput=journal
