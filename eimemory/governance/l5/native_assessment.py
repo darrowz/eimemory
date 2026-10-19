@@ -109,6 +109,12 @@ def run_native_l5_assessment(runtime: Any, *, scope: Mapping[str, Any],
         owner = exact_runtime_scope(scope)
         selector = _capability_selector(owner)
         profile = effective_l5_profile(profile_key)
+        from eimemory.governance.evolution.code_evolution_provider_authority import (
+            delegated_provider_authority, verify_provider_authority,
+        )
+        authority = delegated_provider_authority(runtime, owner_scope=owner, profile_key=profile)
+        if authority is not None:
+            selector = ScopeRef.from_dict(authority['provider_scope'])
         before = current_release_identity(runtime, owner)
         if before is None or not before.complete:
             raise ValueError("native_l5_current_release_unverified")
@@ -117,6 +123,9 @@ def run_native_l5_assessment(runtime: Any, *, scope: Mapping[str, Any],
         envelope = runtime.build_l5_readiness_report(scope=asdict(owner), runtime_scope=selector,
             reader_mode="v3", profile_key=profile, capability_scope=capability_scope,
             persist=True, loop_id=loop_id)
+        if authority is not None:
+            verify_provider_authority(runtime, authority, owner_scope=owner, profile_key=profile)
+            envelope['capability_authority'] = authority
         if (not isinstance(envelope, dict) or envelope.get("schema") != "l5.reader.v4"
                 or envelope.get("schema_version") != "l5_readiness.v4"
                 or envelope.get("reader_mode") != "v3"
@@ -182,6 +191,10 @@ def run_native_l5_assessment(runtime: Any, *, scope: Mapping[str, Any],
                        for key, value in release.items())
                 or not same_release_authority(before, current_release_identity(runtime, owner))):
             raise ValueError("native_l5_archive_authority_mismatch")
+        if authority is not None:
+            # The archive retains the original reading if the root delegation
+            # changes during persistence; it must not certify current authority.
+            verify_provider_authority(runtime, authority, owner_scope=owner, profile_key=profile)
         result.update(ok=complete and not reader_failed, execution_ok=not reader_failed,
             control_plane_ok=envelope["control_plane_ok"], product_l5_complete=complete,
             status="failed" if reader_failed else "blocked" if evidence_failed else "complete" if complete else "incomplete",

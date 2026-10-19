@@ -56,6 +56,7 @@ def propose_code_patch_v2(
     prior_user_reported: bool | None = True,
     manual_bootstrap: bool | None = True,
     repository_ref: str = "",
+    capability_authority: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Request a strict v2 proposal from the exact live Hermes provider.
 
@@ -163,13 +164,18 @@ def propose_code_patch_v2(
     except CodeImplementationError as exc:
         return {**base_report, "status": "blocked", "reason": str(exc)}
 
-    provider_info = resolve_code_implementation_provider(
-        runtime,
-        runtime_scope=scope,
-        capability_scope=capability_scope,
-        checked_at=now_iso(),
-        probe=True,
-    )
+    from eimemory.governance.evolution.code_evolution_provider_authority import resolve_provider_authority
+    try:
+        provider_info = resolve_provider_authority(
+            runtime,
+            owner_scope=scope,
+            checked_at=now_iso(),
+            probe=True,
+            snapshot=capability_authority,
+            capability_scope=capability_scope,
+        )
+    except (TypeError, ValueError, RuntimeError) as exc:
+        return {**base_report, 'status': 'blocked', 'reason': str(exc)}
     if provider_info.get("ok") is not True or not callable(getattr(provider_info.get("provider"), "propose_patch_v2", None)):
         return {**base_report, "status": "blocked", "reason": str(provider_info.get("reason") or "provider_unavailable"), "provider": {key: value for key, value in provider_info.items() if key not in {"provider", "resolution"}}}
     provider = provider_info["provider"]
@@ -256,6 +262,7 @@ def propose_code_patch_v2(
         "prior_user_reported": prior_user_reported,
         "manual_bootstrap": manual_bootstrap,
         "profile_key": str(profile_key or ""),
+        **({'capability_authority': dict(capability_authority)} if capability_authority is not None else {}),
         "incident": dict(incident),
         "repository": {
             "repository_root": repository_root,

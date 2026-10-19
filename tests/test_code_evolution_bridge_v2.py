@@ -12,6 +12,7 @@ from eimemory.adapters.hermes import code_implementation as provider_module
 from eimemory.governance.code_evolution_bridge import propose_code_patch_v2
 from eimemory.governance.code_evolution_test_plans import protected_test_plan_digest
 from eimemory.adapters.hermes.code_implementation import build_attestation, canonical_json
+from code_provider_authority_cases import *
 
 
 SCOPE = {"tenant_id": "tenant", "agent_id": "agent", "workspace_id": "workspace", "user_id": "user"}

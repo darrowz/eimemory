@@ -22,10 +22,15 @@ from eimemory.contracts.code_incident_provenance import (
     FIELDS as _PROVENANCE_FIELDS, SOURCE_KEY as _PROVENANCE_KEY,
     provenance_snapshot, verified_provenance, provenance_guard,
 )
+from eimemory.governance.evolution.code_evolution_provider_authority import (
+    SOURCE_KEY as _PROVIDER_AUTHORITY_KEY, validate_provider_authority,
+    transaction_provider_authority,
+)
 
 
 CODE_EVOLUTION_STORE_SCHEMA = "code_evolution_store.v1"
 TYPED_TRANSACTION_SCHEMA = 'code_evolution_transaction.v2'
+PROVIDER_TRANSACTION_SCHEMA = 'code_evolution_transaction.v3'
 MAX_SUMMARY_BYTES = 8 * 1024
 MAX_ARTIFACT_BYTES = 256 * 1024
 MAX_VERIFICATION_LOG_BYTES = 16 * 1024 * 1024
@@ -100,7 +105,7 @@ def _transaction_row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
         source = result.get('source_evidence')
         payload = result.get('payload')
         if (not isinstance(payload, Mapping) or payload.get('schema_version') != result.get('schema_version')
-                or result.get('schema_version') == TYPED_TRANSACTION_SCHEMA and (
+                or result.get('schema_version') in {TYPED_TRANSACTION_SCHEMA, PROVIDER_TRANSACTION_SCHEMA} and (
                     not isinstance(source, Mapping) or _PROVENANCE_KEY not in source)):
             raise CodeEvolutionStoreError('incident provenance encoding missing')
         if isinstance(source, Mapping) and _PROVENANCE_KEY in source:
@@ -132,6 +137,14 @@ def _transaction_row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
                     raise CodeEvolutionStoreError('legacy incident provenance projection invalid')
                 else:
                     result[key] = payload[key]
+        try:
+            authority = transaction_provider_authority(result)
+            if authority is not None:
+                if result['schema_version'] != PROVIDER_TRANSACTION_SCHEMA:
+                    raise ValueError('code_provider_authority_encoding_invalid')
+                result[_PROVIDER_AUTHORITY_KEY] = authority
+        except (TypeError, ValueError, KeyError) as exc:
+            raise CodeEvolutionStoreError('code provider authority evidence invalid') from exc
     return result
 
 
@@ -159,6 +172,14 @@ def _check_transaction_profile_update(row: sqlite3.Row, payload: Any) -> None:
     current = _transaction_row_dict(row) or {}
     if _transaction_profile_key(payload) != current.get("profile_key"):
         raise CodeEvolutionConflict("transaction profile_key identity is immutable")
+    authority = current.get(_PROVIDER_AUTHORITY_KEY)
+    if authority is not None:
+        nested = payload.get('payload') if isinstance(payload, Mapping) else None
+        if (not isinstance(payload, Mapping) or payload.get(_PROVIDER_AUTHORITY_KEY) != authority
+                or not isinstance(payload.get('source_evidence'), Mapping)
+                or payload['source_evidence'].get(_PROVIDER_AUTHORITY_KEY) != authority
+                or not isinstance(nested, Mapping) or nested.get(_PROVIDER_AUTHORITY_KEY) != authority):
+            raise CodeEvolutionConflict('transaction code provider authority is immutable')
     source = current.get('source_evidence')
     if isinstance(source, Mapping) and _PROVENANCE_KEY in source:
         if (not isinstance(payload, Mapping) or any(payload.get(k) != current.get(k)
@@ -468,6 +489,20 @@ class CodeEvolutionStore:
             normalized.update(snapshot['facts'])
         except (TypeError, ValueError) as exc:
             raise CodeEvolutionStoreError('incident provenance facts invalid') from exc
+        proposal = normalized.get('payload')
+        authority = normalized.get(_PROVIDER_AUTHORITY_KEY)
+        if (authority is not None or _PROVIDER_AUTHORITY_KEY in normalized
+                or _PROVIDER_AUTHORITY_KEY in source
+                or isinstance(proposal, Mapping) and _PROVIDER_AUTHORITY_KEY in proposal):
+            try:
+                authority = validate_provider_authority(authority, owner_scope=normalized['scope'])
+                if (source.get(_PROVIDER_AUTHORITY_KEY) != authority
+                        or not isinstance(proposal, Mapping) or proposal.get(_PROVIDER_AUTHORITY_KEY) != authority
+                        or normalized.get('profile_key') != authority['profile_key']):
+                    raise ValueError('code_provider_authority_projection_mismatch')
+                normalized['schema_version'] = PROVIDER_TRANSACTION_SCHEMA
+            except (TypeError, ValueError, KeyError) as exc:
+                raise CodeEvolutionStoreError('code provider authority facts invalid') from exc
         incident_id = _text(incident.get("incident_id") or incident.get("id"), field="incident_id", required=True)
         repository_root = _text(repository.get("repository_root") or repository.get("root"), field="repository.root", required=True, max_chars=4096)
         repository_remote = _text(repository.get("repository_remote") or repository.get("remote") or "", field="repository.remote", max_chars=4096)
@@ -532,7 +567,7 @@ class CodeEvolutionStore:
                 "SELECT * FROM code_evolution_transactions WHERE transaction_id=? OR idempotency_key=?",
                 (transaction_id, idempotency_key),
             ).fetchone()
-            if existing is not None and existing['schema_version'] != TYPED_TRANSACTION_SCHEMA:
+            if existing is not None and existing['schema_version'] not in {TYPED_TRANSACTION_SCHEMA, PROVIDER_TRANSACTION_SCHEMA}:
                 # A retry of an authenticated legacy identity is a read, never
                 # a migration. Compare the original declarations rather than
                 # the new conservative SQL guards or added typed snapshot.
@@ -732,6 +767,11 @@ class CodeEvolutionStore:
             if stored_for_provenance is not None:
                 decoded = _transaction_row_dict(stored_for_provenance)
                 protected_source = decoded.get('source_evidence')
+                if decoded.get(_PROVIDER_AUTHORITY_KEY) is not None and 'source_evidence_json' in update_values:
+                    incoming = update_values['source_evidence_json']
+                    incoming = _parse_json(incoming, field='source_evidence_json') if isinstance(incoming, str) else incoming
+                    if not isinstance(incoming, Mapping) or incoming.get(_PROVIDER_AUTHORITY_KEY) != decoded[_PROVIDER_AUTHORITY_KEY]:
+                        raise CodeEvolutionConflict('transaction code provider authority is immutable')
                 if isinstance(protected_source, Mapping) and _PROVENANCE_KEY in protected_source:
                     if any(update_values.get(k, decoded.get(k)) != decoded.get(k) for k in _PROVENANCE_FIELDS):
                         raise CodeEvolutionConflict('transaction incident provenance is immutable')
@@ -1458,6 +1498,10 @@ class CodeEvolutionStore:
         if current is None:
             raise CodeEvolutionStoreError('transaction not found')
         source = current.get('source_evidence')
+        if isinstance(source, Mapping) and _PROVIDER_AUTHORITY_KEY in source:
+            if _PROVIDER_AUTHORITY_KEY in receipt and receipt[_PROVIDER_AUTHORITY_KEY] != source[_PROVIDER_AUTHORITY_KEY]:
+                raise CodeEvolutionStoreError('terminal code provider authority mismatch')
+            receipt = {**dict(receipt), _PROVIDER_AUTHORITY_KEY: source[_PROVIDER_AUTHORITY_KEY]}
         if isinstance(source, Mapping) and _PROVENANCE_KEY in source:
             if _PROVENANCE_KEY in receipt and receipt[_PROVENANCE_KEY] != source[_PROVENANCE_KEY]:
                 raise CodeEvolutionStoreError('terminal incident provenance mismatch')
@@ -1572,6 +1616,9 @@ class CodeEvolutionStore:
             tx = self.conn.execute('SELECT * FROM code_evolution_transactions WHERE transaction_id=?', (tx_id,)).fetchone()
             transaction = _transaction_row_dict(tx)
             source = transaction.get('source_evidence') if transaction is not None else None
+            if isinstance(source, Mapping) and _PROVIDER_AUTHORITY_KEY in source:
+                if payload.get(_PROVIDER_AUTHORITY_KEY) != source[_PROVIDER_AUTHORITY_KEY]:
+                    raise CodeEvolutionStoreError('terminal code provider authority mismatch')
             if isinstance(source, Mapping) and _PROVENANCE_KEY in source:
                 if payload.get(_PROVENANCE_KEY) != source[_PROVENANCE_KEY]:
                     raise CodeEvolutionStoreError('terminal incident provenance mismatch')

@@ -1203,7 +1203,9 @@ def sample_code_evolution_observation(
     from eimemory.governance.release.evidence_contract import current_release_identity, release_identity_payload
     from eimemory.governance.l5.l5_reader import build_l5_effective_report
     from eimemory.governance.evolution.code_evolution_observation import observation_phase, parse_observation_time
-    from eimemory.adapters.hermes.code_implementation import resolve_code_implementation_provider
+    from eimemory.governance.evolution.code_evolution_provider_authority import (
+        resolve_provider_authority, transaction_provider_authority, verify_provider_authority,
+    )
     from eimemory.governance.release.deployment_receipt import inspect_immutable_deployment
 
     checked_at = str(observed_at or utc_now())
@@ -1228,22 +1230,27 @@ def sample_code_evolution_observation(
     sample_key = f"phase-{phase}:{checked_at}"
     try:
         release = current_release_identity(runtime, scope)
+        authority = transaction_provider_authority(transaction)
+        provider_scope = scope
+        if authority is not None:
+            authority = verify_provider_authority(runtime, authority, owner_scope=scope, profile_key=profile_key)
+            provider_scope = authority['provider_scope']
         report = build_l5_effective_report(
             runtime,
             scope=scope,
-            runtime_scope=scope,
+            runtime_scope=provider_scope,
             profile_key=profile_key,
             reader_mode="v3",
             persist=False,
             repo_root=str(_trusted_root()),
             limit=500,
         )
-        provider = resolve_code_implementation_provider(
+        provider = resolve_provider_authority(
             runtime,
-            runtime_scope=scope,
-            capability_scope="global",
+            owner_scope=scope,
             checked_at=checked_at,
             probe=True,
+            snapshot=authority,
         )
         deployment = inspect_immutable_deployment(
             runtime,
@@ -1618,19 +1625,21 @@ def _cleanup_recovered_worktree(transaction: Mapping[str, Any]) -> None:
 
 
 def _live_proposal_authority_error(runtime: Any, transaction: Mapping[str, Any]) -> str:
-    from eimemory.adapters.hermes.code_implementation import resolve_code_implementation_provider
+    from eimemory.governance.evolution.code_evolution_provider_authority import (
+        resolve_provider_authority, transaction_provider_authority,
+    )
 
     proposal = _proposal(transaction)
     response = proposal.get("response") if isinstance(proposal.get("response"), Mapping) else None
     if response is None or digest_json(response) != str(transaction.get("proposal_digest") or ""):
         return "code_evolution_proposal_digest_stale"
     try:
-        live = resolve_code_implementation_provider(
+        live = resolve_provider_authority(
             runtime,
-            runtime_scope=_transaction_scope(transaction),
-            capability_scope="global",
+            owner_scope=_transaction_scope(transaction),
             checked_at=utc_now(),
             probe=True,
+            snapshot=transaction_provider_authority(transaction),
         )
     except Exception as exc:
         return f"code_evolution_provider_authority_unavailable:{type(exc).__name__}"
@@ -1670,6 +1679,20 @@ def _live_provider_authority_error(
     """Require original authority and current liveness, not identical TTL ads."""
 
     from eimemory.governance.l5.l5_reader import _historical_advertisement_evidence_error
+    from eimemory.governance.evolution.code_evolution_provider_authority import (
+        transaction_provider_authority, verify_provider_authority,
+    )
+
+    provider_scope = _transaction_scope(transaction)
+    try:
+        authority = transaction_provider_authority(transaction)
+        if authority is not None:
+            authority = verify_provider_authority(runtime, authority, owner_scope=provider_scope)
+            if live.get('capability_authority') != authority:
+                return 'code_evolution_provider_authority_mismatch'
+            provider_scope = authority['provider_scope']
+    except (TypeError, ValueError, RuntimeError):
+        return 'code_evolution_provider_authority_unverified'
 
     expected = {
         "implementation_digest": str(transaction.get("implementation_digest") or ""),
@@ -1685,7 +1708,8 @@ def _live_provider_authority_error(
         return "code_evolution_live_proposal_authority_mismatch"
     return _historical_advertisement_evidence_error(
         getattr(runtime, "capabilities", None), transaction_row=transaction,
-        runtime_scope=_transaction_scope(transaction), capability_scope="global",
+        runtime_scope=provider_scope, capability_scope="global",
+        runtime=runtime,
     )
 
 

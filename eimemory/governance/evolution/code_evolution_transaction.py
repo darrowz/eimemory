@@ -451,6 +451,14 @@ class CodeEvolutionTransactionManager:
         base_tree_digest = str(repository.get("base_tree_digest") or "").strip().lower()
         if len(base_tree_digest) != 64 or any(char not in "0123456789abcdef" for char in base_tree_digest):
             raise CodeEvolutionTransactionError("code evolution base tree digest invalid")
+        authority = None
+        if 'capability_authority' in proposal:
+            from eimemory.governance.evolution.code_evolution_provider_authority import verify_provider_authority
+            try:
+                authority = verify_provider_authority(self.runtime, proposal['capability_authority'],
+                    owner_scope=scope, profile_key=str(proposal.get('profile_key') or ''))
+            except (TypeError, ValueError, RuntimeError) as exc:
+                raise CodeEvolutionTransactionError('code provider authority invalid') from exc
         payload = {
             "schema_version": CODE_EVOLUTION_TRANSACTION_SCHEMA,
             "transaction_id": transaction_id,
@@ -482,6 +490,9 @@ class CodeEvolutionTransactionManager:
             "authorization_digest": "",
             "payload": dict(proposal),
         }
+        if authority is not None:
+            payload['capability_authority'] = authority
+            payload['source_evidence'] = {'capability_authority': authority}
         current = self.create_detected(payload)
         milestones = (
             ("DIAGNOSED", "diagnosis"),

@@ -665,6 +665,7 @@ def _code_evolution_evidence(
                 capabilities=getattr(runtime, "capabilities", None),
                 runtime_scope=runtime_scope,
                 capability_scope=capability_scope,
+                runtime=runtime,
             )
             transaction.update({
                 "transaction_id": latest.get("transaction_id"),
@@ -1044,6 +1045,7 @@ def _qualifying_ledger_evidence_error(
     capabilities: Any,
     runtime_scope: Mapping[str, Any] | ScopeRef,
     capability_scope: str,
+    runtime: Any = None,
 ) -> str:
     """Revalidate one terminal candidate from append-only authorities only."""
 
@@ -1080,11 +1082,30 @@ def _qualifying_ledger_evidence_error(
             return f"terminal_{field}_mismatch"
     if str(transaction_row.get("implementation_digest") or "") != str(current_provider.get("implementation_digest") or ""):
         return "terminal_provider_digest_mismatch"
+    from eimemory.governance.evolution.code_evolution_provider_authority import (
+        transaction_provider_authority, verify_provider_authority,
+    )
+    try:
+        authority = transaction_provider_authority(transaction_row)
+        if authority is not None:
+            if runtime is None:
+                return 'terminal_provider_authority_unavailable'
+            owner = {key: transaction_row[key] for key in ('tenant_id','agent_id','workspace_id','user_id')}
+            verify_provider_authority(runtime, authority, owner_scope=owner,
+                profile_key=str(transaction_row.get('profile_key') or ''))
+            if (dict(runtime_scope) if isinstance(runtime_scope, Mapping) else
+                    {key:getattr(runtime_scope,key) for key in owner}) != authority['provider_scope']:
+                return 'terminal_provider_authority_scope_mismatch'
+            if terminal_receipt.get('payload', {}).get('capability_authority') != authority:
+                return 'terminal_provider_authority_receipt_mismatch'
+    except (TypeError, ValueError, KeyError, RuntimeError):
+        return 'terminal_provider_authority_unverified'
     advertisement_error = _historical_advertisement_evidence_error(
         capabilities,
         transaction_row=transaction_row,
         runtime_scope=runtime_scope,
         capability_scope=capability_scope,
+        runtime=runtime,
     )
     if advertisement_error:
         return advertisement_error
@@ -1184,6 +1205,7 @@ def _historical_advertisement_evidence_error(
     transaction_row: Mapping[str, Any],
     runtime_scope: Mapping[str, Any] | ScopeRef,
     capability_scope: str,
+    runtime: Any = None,
 ) -> str:
     """Revalidate the transaction-time ad while current liveness refreshes.
 
@@ -1203,15 +1225,27 @@ def _historical_advertisement_evidence_error(
     context = getattr(capabilities, "advertisement_context", None)
     if not callable(context):
         return "terminal_advertisement_authority_unavailable"
-    if isinstance(runtime_scope, Mapping):
-        scope = dict(runtime_scope)
-    else:
-        scope = {
-            "tenant_id": runtime_scope.tenant_id,
-            "agent_id": runtime_scope.agent_id,
-            "workspace_id": runtime_scope.workspace_id,
-            "user_id": runtime_scope.user_id,
-        }
+    from eimemory.governance.evolution.code_evolution_provider_authority import (
+        transaction_provider_authority, verify_provider_authority,
+    )
+    try:
+        authority = transaction_provider_authority(transaction_row)
+        owner = {key: transaction_row[key] for key in ('tenant_id','agent_id','workspace_id','user_id')
+                 if key in transaction_row}
+        if authority is not None:
+            if runtime is None:
+                return 'terminal_provider_authority_unavailable'
+            verify_provider_authority(runtime, authority, owner_scope=owner)
+            scope = authority['provider_scope']
+        elif len(owner) == 4:
+            # Older transactions retain their original exact registry authority.
+            scope = owner
+        elif isinstance(runtime_scope, Mapping):
+            scope = dict(runtime_scope)
+        else:
+            scope = {key:getattr(runtime_scope,key) for key in ('tenant_id','agent_id','workspace_id','user_id')}
+    except (TypeError, ValueError, KeyError, RuntimeError):
+        return 'terminal_provider_authority_unverified'
     try:
         advertisement = context(
             advertisement_id,
