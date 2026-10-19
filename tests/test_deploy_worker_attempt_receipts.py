@@ -38,11 +38,17 @@ def harness(tmp_path, deploy_worker_environment):
         f'import json; print(json.dumps({{"ok": True, "commit": "{COMMIT}"}}))\n')
     (repo / "deploy" / "refresh_release_scope_bindings.py").write_text("print('bindings ok')\n")
     (repo / "deploy" / "clean_release_bytecode.py").write_text("print('bytecode clean')\n")
+    # The worker uses the registered manager CLI, not a PATH systemctl. Stub
+    # only that OS boundary; every receipt/settings step below remains real.
+    (repo / "deploy" / "runtime_manager_control.py").write_text(
+        "import sys\n"
+        "assert sys.argv[1:] == ['systemctl', 'is-active', 'eimemory-rpc.service']\n"
+        "print('active')\n")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "git").write_text(
         f'#!/usr/bin/env bash\ncase "$1" in\n  rev-parse) echo {COMMIT};;\n  status) ;;\n  *) ;;\nesac\n')
-    (bin_dir / "systemctl").write_text('#!/usr/bin/env bash\necho active\n')
+    (bin_dir / "systemctl").write_text('#!/usr/bin/env bash\necho unexpected_direct_systemctl >&2\nexit 99\n')
     for tool in ("git", "systemctl"):
         (bin_dir / tool).chmod(0o755)
     script = SOURCE.read_text()
@@ -98,7 +104,8 @@ def test_first_failure_is_published_and_later_success_replaces_it(harness):
     run, state = harness
     assert run(2).returncode != 0
     receipt = state / f"{COMMIT}.json"
-    assert json.loads(receipt.read_text())["ok"] is False
+    failed = json.loads(receipt.read_text())
+    assert failed["ok"] is False and failed["installer_exit_code"] == 2
     assert run(0).returncode == 0
     published = json.loads(receipt.read_text())
     assert published["ok"] is True

@@ -335,6 +335,11 @@ def test_actual_installer_generates_shared_startup_guard_for_all_four_gateways(t
              "hermes-gateway-hongxin.service", "hermes-gateway-xiaomage.service"]
     for unit in units:
         (systemd / unit).write_text("[Service]\nExecStart=/usr/bin/python gateway\n", encoding="utf-8")
+    (systemd / "hermes-gateway-unregistered.service").write_text("[Service]\n", encoding="utf-8")
+    control = tmp_path / "registered-runtime-control.py"
+    control.write_text("import sys\n"
+                       "assert sys.argv[1:] == ['systemctl', 'list-units']\n"
+                       f"print('\\n'.join({units!r}))\n", encoding="utf-8")
     home = tmp_path / "home"
     host = home / ".hermes/hermes-agent"
     _host(host, REAL_HOST.read_text(encoding="utf-8"))
@@ -344,12 +349,14 @@ def test_actual_installer_generates_shared_startup_guard_for_all_four_gateways(t
     name = "_install_hermes_integration"
     function = name + "() {" + installer.split(name + "() {", 1)[1].split("\n}", 1)[0] + "\n}\n"
     values = {"REPO_DIR": ROOT, "RELEASE_DIR": ROOT, "PYTHON_BIN": sys.executable,
+              "EIMEMORY_RUNTIME_MANAGER_CONTROL": control,
               "HERMES_PYTHON": sys.executable, "HERMES_HOME_DIR": home / ".hermes",
               "SERVICE_HOME": home, "SERVICE_USER": getpass.getuser(), "USER_SYSTEMD_DIR": systemd,
               "INSTALL_ROOT": tmp_path / "install", "EVIDENCE_RECEIPT_ENV_FILE": tmp_path / "evidence.env",
               "USER_SYSTEMD_ENABLE_SERVICE": "1", "COMMIT": "a" * 40}
     setup = "\n".join(key + "=" + shlex.quote(str(value)) for key, value in values.items())
     setup += '''
+export EIMEMORY_RUNTIME_MANAGER_CONTROL
 _hermes_is_installed() { return 0; }
 systemctl() { return 0; }
 _user_systemctl() { return 0; }
@@ -367,4 +374,5 @@ _install_as_service_user() { local mode="$1"; shift; install -m "$mode" "$@"; }
     assert result.returncode == 0, (result.stdout, result.stderr)
     guards = list(systemd.glob("*.service.d/94-eimemory-hermes-profile-boundary.conf"))
     assert {guard.parent.name.removesuffix(".d") for guard in guards} == set(units)
+    assert not (systemd / "hermes-gateway-unregistered.service.d").exists()
     assert all(str(ROOT / "deploy/ensure_hermes_profile_boundary.py") in guard.read_text() for guard in guards)

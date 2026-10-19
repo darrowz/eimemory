@@ -26,8 +26,16 @@ def _setup(tmp_path: Path, deploy_worker_environment):
     installer = origin / "deploy" / "install_immutable_release.sh"
     installer.write_text('#!/usr/bin/env bash\necho "installer head=$(git rev-parse HEAD)"\n')
     installer.chmod(0o755)
-    (origin / "deploy" / "collect_release_health.py").write_text("import json; print(json.dumps({'ok': True}))\n")
+    (origin / "deploy" / "collect_release_health.py").write_text(
+        "import json,subprocess\n"
+        "commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()\n"
+        "print(json.dumps({'ok': True,'commit': commit}))\n")
     (origin / "deploy" / "refresh_release_scope_bindings.py").write_text("print('ok')\n")
+    (origin / "deploy" / "clean_release_bytecode.py").write_text("print('bytecode clean')\n")
+    (origin / "deploy" / "runtime_manager_control.py").write_text(
+        "import sys\n"
+        "assert sys.argv[1:] == ['systemctl', 'is-active', 'eimemory-rpc.service']\n"
+        "print('active')\n")
     _git(origin, "add", "-A")
     _git(origin, "commit", "-q", "-m", "one")
     repo = tmp_path / "repo"
@@ -44,7 +52,7 @@ def _setup(tmp_path: Path, deploy_worker_environment):
     link.symlink_to(current)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (bin_dir / "systemctl").write_text("#!/usr/bin/env bash\necho active\n")
+    (bin_dir / "systemctl").write_text("#!/usr/bin/env bash\necho unexpected_direct_systemctl >&2\nexit 99\n")
     (bin_dir / "systemctl").chmod(0o755)
     script = (SOURCE.read_text()
               .replace("STATE_DIR=/var/lib/eimemory/state/deploy-jobs", f"STATE_DIR={state}")
@@ -70,10 +78,14 @@ def test_check_reports_and_deploy_fast_forwards_clean_checkout(tmp_path, deploy_
     assert _git(repo, "rev-parse", "HEAD") == before
 
     deploy = subprocess.run([str(worker), "deploy", target], env=env, capture_output=True, text=True, timeout=60)
+    assert deploy.returncode == 0, deploy.stderr
     assert f"checkout_fast_forward={before}..{target}" in deploy.stderr
     assert _git(repo, "rev-parse", "HEAD") == target
     log = next(state.glob(f"{target}.attempt-*.log")).read_text()
     assert f"installer head={target}" in log
+    receipt = json.loads((state / f"{target}.json").read_text())
+    assert receipt["ok"] is True and receipt["rpc_service"] == "active"
+    assert receipt["current_commit"] == receipt["health"]["commit"] == target
     assert json.loads(deploy_worker_environment[1].read_text()) == {"trusted_repository_root": str(repo), "preserve": True}
 
 

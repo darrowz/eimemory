@@ -17,7 +17,7 @@ from eimemory.version import __version__
 
 INSTALLER = Path("deploy/install_immutable_release.sh")
 COMMIT = "a" * 40
-OWNER = ScopeRef(agent_id="receipt-owner", workspace_id="workspace", user_id="operator")
+OWNER = ScopeRef(tenant_id="receipt-tenant", agent_id="receipt-owner", workspace_id="workspace", user_id="operator")
 
 
 def _function(name):
@@ -57,7 +57,8 @@ def _run_checker(monkeypatch, root, receipt_id):
     from eimemory.governance.release import evidence_contract
     monkeypatch.setattr(evidence_contract, "_runtime_commit", lambda _runtime: COMMIT)
     monkeypatch.setattr("eimemory.config.loader.load_settings", lambda: SimpleNamespace(root=root))
-    monkeypatch.setattr(sys, "argv", ["-", COMMIT, receipt_id, OWNER.agent_id, OWNER.workspace_id, OWNER.user_id])
+    monkeypatch.setattr(sys, "argv", ["-", COMMIT, receipt_id, OWNER.agent_id, OWNER.workspace_id,
+                                    OWNER.user_id, OWNER.tenant_id])
     exec(compile(_checker(), str(INSTALLER), "exec"), {})
 
 
@@ -73,7 +74,7 @@ def test_native_receipt_recheck_reads_a_separate_committed_store_and_no_runtime(
     assert result == {"current_deployment_receipt_verified": True, "commit": COMMIT, "receipt_id": record.record_id}
 
 
-@pytest.mark.parametrize("invalid", ["absent", "old_commit", "old_version", "revoked", "wrong_id", "unverified"])
+@pytest.mark.parametrize("invalid", ["absent", "old_commit", "old_version", "revoked", "wrong_id", "unverified", "wrong_tenant"])
 def test_native_receipt_recheck_rejects_missing_or_different_authority(tmp_path, monkeypatch, invalid):
     store = RuntimeStore(tmp_path)
     try:
@@ -83,6 +84,9 @@ def test_native_receipt_recheck_rejects_missing_or_different_authority(tmp_path,
             record.status = "revoked"
         if invalid == "unverified":
             record.content["gate"]["receipt_verified"] = False
+        if invalid == "wrong_tenant":
+            record.scope = ScopeRef(tenant_id="other-tenant", agent_id=OWNER.agent_id,
+                                    workspace_id=OWNER.workspace_id, user_id=OWNER.user_id)
         if invalid != "absent":
             store.append(record)
     finally:
@@ -231,6 +235,7 @@ if _record_deployment_receipt; then echo success >> "$TRACE"; else echo rejected
 '''
     result = _shell(body, USER_SYSTEMD_ENABLE_SERVICE=1, BASELINE_PRIOR_COMMIT="b" * 40, COMMIT=COMMIT,
                     REPO_DIR=tmp_path, CURRENT_LINK=tmp_path / "current", EIMEMORY_HEALTH_URL="http://127.0.0.1/health",
+                    EIMEMORY_DEPLOY_SCOPE_TENANT=OWNER.tenant_id,
                     EIMEMORY_DEPLOY_SCOPE_AGENT=OWNER.agent_id, EIMEMORY_DEPLOY_SCOPE_WORKSPACE=OWNER.workspace_id,
                     EIMEMORY_DEPLOY_SCOPE_USER=OWNER.user_id, EIMEMORY_ROOT=tmp_path, EIMEMORY_CONFIG_DIR=tmp_path,
                     EVIDENCE_RECEIPT_ENV_FILE=tmp_path / "receipt.env", RELEASE_DIR=release,

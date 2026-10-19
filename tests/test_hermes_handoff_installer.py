@@ -224,10 +224,18 @@ def test_release_installer_applies_private_umask_to_main_and_discovered_profile_
     systemctl = binaries / "systemctl"
     systemctl.write_text("#!/bin/sh\nexit 1\n")
     systemctl.chmod(0o755)
+    # Discovery now reads the explicit manager declaration, not disk globs.
+    # Keep a narrow list-units seam; do not bypass the real discovery script.
+    control = tmp_path / "registered-runtime-control.py"
+    declared_units = [*hermes_units, *other_units[:2]]
+    control.write_text("import sys\n"
+                       "assert sys.argv[1:] == ['systemctl', 'list-units']\n"
+                       f"print('\\n'.join({declared_units!r}))\n")
     environment = {
         **os.environ,
         "PATH": str(binaries) + os.pathsep + os.environ.get("PATH", ""),
         "REPO_DIR": str(repository),
+        "EIMEMORY_RUNTIME_MANAGER_CONTROL": str(control),
         "COMMIT": "a" * 40,
         "SERVICE_HOME": str(tmp_path),
         "SERVICE_USER": getpass.getuser(),

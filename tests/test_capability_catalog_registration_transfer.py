@@ -12,18 +12,37 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import tempfile
 from threading import RLock
 from typing import Any, Mapping
 import unittest
 
 
-METHOD_RANGES = {
-    '_require_mutable': (436, 443),
-    '_locked_mutation': (445, 455),
-    'register_executor': (458, 521),
-    'register_case': (523, 535),
-    'publish_into': (1082, (1105, 1108)),
+METHOD_SIGNATURES = {
+    '_require_mutable': 'def _require_mutable(self) -> None: pass',
+    '_locked_mutation': 'def _locked_mutation(self): pass',
+    'register_executor': '''def register_executor(self, *, executor_id: str, revision: str,
+        handler: ProbeExecutor, contract_descriptor: Mapping[str, Any] | None = None,
+        recorded_execution_validator_id: str = "",
+        recorded_execution_validator: RecordedExecutionValidator | None = None) -> ExecutorRegistration: pass''',
+    'register_case': 'def register_case(self, case: CatalogCase) -> CatalogCase: pass',
+    'publish_into': 'def publish_into(self, destination: "CapabilityEvaluationCatalog") -> None: pass',
 }
+METHOD_CALLS = {
+    '_require_mutable': {'CatalogResolutionError'},
+    '_locked_mutation': {'_cm', 'self._require_mutable'},
+    'register_executor': {'CatalogResolutionError', 'ExecutorRegistration', '_safe_mapping',
+        'bool', 'callable', 'contract_digest', 'normalize_opaque_id', 'self._executors.get',
+        'self._locked_mutation', 'str', "str(recorded_execution_validator_id or '').strip"},
+    'register_case': {'CatalogResolutionError', 'isinstance', 'self._cases.get', 'self._locked_mutation'},
+    'publish_into': {'CatalogResolutionError', 'destination._executors.get', 'destination._require_mutable',
+        'destination.graders.register', 'destination.register_case', 'self._cases.values',
+        'self._executors.values', 'self.graders.registrations'},
+}
+METHOD_GLOBALS = {'CatalogResolutionError', 'CapabilityContractError', 'ExecutorRegistration',
+    'CatalogCase', 'ProbeExecutor', 'RecordedExecutionValidator', 'Mapping', 'Any',
+    'normalize_opaque_id', '_safe_mapping', 'contract_digest', 'CATALOG_SCHEMA_VERSION',
+    'str', 'bool', 'callable', 'isinstance', 'contextmanager'}
 
 
 class FakeContractError(Exception):
@@ -67,21 +86,46 @@ class NeverCalled:
 def load_catalog(path):
     """Extract only explicitly allowed DTO/methods; every dependency is fake."""
     tree = ast.parse(Path(path).read_text(encoding='utf-8'), filename=str(path))
-    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+    classes = {}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name in {'ExecutorRegistration', 'CapabilityEvaluationCatalog'}:
+            assert node.name not in classes, node.name
+            classes[node.name] = node
     dto = classes['ExecutorRegistration']
-    assert (dto.lineno, dto.end_lineno) == (343, 349)
+    assert not dto.bases and not dto.keywords
     assert len(dto.decorator_list) == 1
     assert ast.unparse(dto.decorator_list[0]) == 'dataclass(frozen=True, slots=True)'
     assert all(isinstance(node, ast.AnnAssign) for node in dto.body)
-    methods = {node.name: node for node in classes['CapabilityEvaluationCatalog'].body
-               if isinstance(node, ast.FunctionDef)}
+    expected_fields = [('executor_id', 'str', None), ('revision', 'str', None),
+        ('contract_digest', 'str', None), ('handler', 'ProbeExecutor', None),
+        ('recorded_execution_validator_id', 'str', "''"),
+        ('recorded_execution_validator', 'RecordedExecutionValidator | None', 'None')]
+    assert [(ast.unparse(n.target), ast.unparse(n.annotation),
+             None if n.value is None else ast.unparse(n.value)) for n in dto.body] == expected_fields
+    methods = {}
+    for node in classes['CapabilityEvaluationCatalog'].body:
+        if isinstance(node, ast.FunctionDef) and node.name in METHOD_SIGNATURES:
+            assert node.name not in methods, node.name
+            methods[node.name] = node
     selected = []
-    for name, (start, end) in METHOD_RANGES.items():
+    for name, signature in METHOD_SIGNATURES.items():
         method = methods[name]
-        allowed_ends = end if isinstance(end, tuple) else (end,)
-        assert method.lineno == start and method.end_lineno in allowed_ends, name
+        expected = ast.parse(signature).body[0]
+        assert ast.dump(method.args) == ast.dump(expected.args), name
+        assert (None if method.returns is None else ast.dump(method.returns)) == (
+            None if expected.returns is None else ast.dump(expected.returns)), name
         assert not method.decorator_list, name
+        local_names = {n.id for n in ast.walk(method) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+        local_names.update(n.arg for n in ast.walk(method) if isinstance(n, ast.arg))
+        local_names.update(n.name for n in ast.walk(method) if isinstance(n, ast.FunctionDef))
+        local_names.update(n.name for n in ast.walk(method) if isinstance(n, ast.ExceptHandler) and n.name)
         for node in ast.walk(method):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                assert node.id in local_names | METHOD_GLOBALS, (name, node.id)
+            if isinstance(node, ast.Attribute):
+                assert not node.attr.startswith('__'), (name, node.attr)
+            if isinstance(node, ast.Call):
+                assert ast.unparse(node.func) in METHOD_CALLS[name], (name, ast.unparse(node.func))
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 assert (name == '_locked_mutation' and isinstance(node, ast.ImportFrom)
                         and node.module == 'contextlib' and node.level == 0
@@ -128,6 +172,33 @@ def load_catalog(path):
 
     catalog.__init__ = fake_init
     return catalog, operands
+
+
+class ExtractionBoundaryTests(unittest.TestCase):
+    def source(self):
+        target = os.environ.get('CATALOG_SOURCE_PATH') or (
+            Path(__file__).resolve().parents[1] / 'eimemory/evaluation/capability_catalog.py')
+        return Path(target).read_text(encoding='utf-8')
+
+    def test_line_changes_and_unselected_module_body_do_not_execute(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'catalog.py'
+            path.write_text('\n' * 23 + self.source() + '\nraise AssertionError("unselected module body")\n',
+                            encoding='utf-8')
+            catalog, operands = load_catalog(path)
+            self.assertEqual(catalog()._executors, {})
+            self.assertEqual(operands, [])
+
+    def test_selected_method_cannot_add_an_unlisted_call(self):
+        tree = ast.parse(self.source())
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'CapabilityEvaluationCatalog')
+        method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'publish_into')
+        method.body.append(ast.parse('open("must-not-open", "w")').body[0])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'catalog.py'
+            path.write_text(ast.unparse(tree), encoding='utf-8')
+            with self.assertRaisesRegex(AssertionError, 'open'):
+                load_catalog(path)
 
 
 class RegistrationTransferTests(unittest.TestCase):

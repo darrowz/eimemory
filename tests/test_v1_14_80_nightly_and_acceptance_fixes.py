@@ -204,20 +204,31 @@ def _receipt_harness(tmp_path, outputs, *, persisted="deployed"):
     bootstrap.write_text("import sys\n"
         f"sys.path.insert(0, {str(release)!r})\n"
         "exec(compile(sys.stdin.read(), 'installer-native-receipt-checker', 'exec'), {})\n", encoding="utf-8")
+    cache = tmp_path / "empty-cache"
+    cache.mkdir()
     fake = release / ".venv" / "bin" / "python"
     fake.write_text(f"""#!/usr/bin/env bash
-if [ "$3" = - ]; then
-  printf '%s\\n' "$5" > {shlex.quote(str(readback))}
-  exec {shlex.quote(sys.executable)} -I -B {shlex.quote(str(bootstrap))} "${{@:4}}"
+set -euo pipefail
+if [ "$#" -lt 5 ] || [ "$1" != -I ] || [ "$2" != -B ] || [ "$3" != -X ] || [ "$4" != pycache_prefix=/var/lib/eimemory-manager/empty-pycache ]; then
+  echo unexpected_interpreter_argv >&2; exit 64
 fi
+shift 4
+if [ "$1" = - ]; then
+  [ "$#" = 7 ] || exit 64
+  printf '%s\\n' "$3" > {shlex.quote(str(readback))}
+  exec {shlex.quote(sys.executable)} -I -B -X {shlex.quote('pycache_prefix='+str(cache))} {shlex.quote(str(bootstrap))} "${{@:2}}"
+fi
+[ "$1" = {shlex.quote(str(tmp_path / 'deploy/record_deployment_receipt.py'))} ] || exit 64
 n=$(cat {shlex.quote(str(counter))}); n=$((n+1)); echo $n > {shlex.quote(str(counter))}
 line=$(sed -n "${{n}}p" {shlex.quote(str(plan))})
+[ -n "$line" ] || {{ echo unplanned_recorder_call >&2; exit 97; }}
 echo "${{line#*|}}"; exit "${{line%%|*}}"
 """, encoding="utf-8")
     fake.chmod(0o755)
     values = {"RELEASE_DIR": release, "REPO_DIR": tmp_path, "COMMIT": RECEIPT_COMMIT,
               "CURRENT_LINK": current, "EIMEMORY_ROOT": root, "EIMEMORY_CONFIG_DIR": config,
               "EVIDENCE_RECEIPT_ENV_FILE": tmp_path / "receipt.env",
+              "EIMEMORY_DEPLOY_SCOPE_TENANT": OWNER.tenant_id,
               "EIMEMORY_DEPLOY_SCOPE_AGENT": OWNER.agent_id,
               "EIMEMORY_DEPLOY_SCOPE_WORKSPACE": OWNER.workspace_id,
               "EIMEMORY_DEPLOY_SCOPE_USER": OWNER.user_id}
