@@ -294,14 +294,21 @@ def qualification_report(
 
     from eimemory.contracts.code_incident_provenance import qualification_provenance
     tx = qualification_provenance(transaction) if isinstance(transaction, Mapping) else {}
+    from eimemory.governance.evolution.managed_code_incident_proof import qualification_evidence
+    managed_error=False
+    try:provenance=qualification_evidence(tx)
+    except (TypeError,ValueError,RuntimeError,OSError):
+        managed_error=True;provenance={'qualification_domain':'registered_code_defect_knowledge.v1',
+            'facts':{key:None for key in ('known_before_detection','prior_user_reported','manual_bootstrap')}}
+    facts=provenance['facts']
     receipt = terminal_receipt if isinstance(terminal_receipt, Mapping) else {}
     lineage = current_lineage if isinstance(current_lineage, Mapping) else {}
     outcome = str(receipt.get("outcome") or tx.get("qualifying_terminal_outcome") or tx.get("outcome") or "")
     checks = {
         "system_origin": str(tx.get("origin") or "") == "system_detector",
-        "unknown_before_detection": tx.get("known_before_detection") is False,
-        "not_prior_user_reported": tx.get("prior_user_reported") is False,
-        "not_manual_bootstrap": tx.get("manual_bootstrap") is False,
+        "unknown_before_detection": facts.get("known_before_detection") is False,
+        "not_prior_user_reported": facts.get("prior_user_reported") is False,
+        "not_manual_bootstrap": facts.get("manual_bootstrap") is False,
         "qualifying_outcome": outcome in QUALIFYING_OUTCOMES,
         "not_quarantined": tx.get("quarantined") is not True and outcome != "recovery_quarantined",
         "observation_valid": tx.get("observation_valid") is True,
@@ -310,6 +317,8 @@ def qualification_report(
     if outcome == "rolled_back_healthy":
         checks["rollback_executed"] = tx.get("rollback_executed") is True or receipt.get("rollback_executed") is True
         checks["candidate_pushed_and_deployed"] = tx.get("candidate_pushed_and_deployed") is True or receipt.get("candidate_pushed_and_deployed") is True
+    if 'managed_incident_proof' in tx:
+        checks['managed_incident_proof_verified']=not managed_error
     reasons = [name for name, passed in checks.items() if not passed]
     return {
         "qualifies_for_product_completion": not reasons,
@@ -317,6 +326,7 @@ def qualification_report(
         "checks": checks,
         "reason": reasons[0] if reasons else "qualifying_production_transaction",
         "reasons": reasons,
+        **({'qualification_domain':provenance['qualification_domain']} if 'managed_incident_proof' in tx else {}),
     }
 
 

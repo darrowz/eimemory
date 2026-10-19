@@ -1275,7 +1275,7 @@ def _dynamic_readiness_status(readiness: dict[str, Any]) -> str:
 
     if (
         not isinstance(readiness, dict)
-        or readiness.get("schema_version") not in {"l5_readiness.v3", "l5_readiness.v4"}
+        or readiness.get("schema_version") not in {"l5_readiness.v3", "l5_readiness.v4", "l5_readiness.v5"}
         or readiness.get("reader_mode") != "v3"
         or readiness.get("ok") is not True
         or readiness.get("status") != "ready"
@@ -1283,12 +1283,19 @@ def _dynamic_readiness_status(readiness: dict[str, Any]) -> str:
         or readiness.get("adapter_ready") is not True
     ):
         return ""
-    if readiness.get("schema_version") == "l5_readiness.v4" and (
+    if readiness.get("schema_version") in {"l5_readiness.v4","l5_readiness.v5"} and (
         readiness.get("product_l5_complete") is not True
         or readiness.get("completion_status") != "complete"
         or readiness.get("gaps")
     ):
         return ""
+    if readiness.get('schema_version')=='l5_readiness.v5':
+        from eimemory.governance.evolution.managed_code_incident_proof import qualification_evidence
+        try:
+            evidence=qualification_evidence(readiness.get('transaction_evidence',{}))
+            if (readiness.get('qualification_domain')!='registered_code_defect_knowledge.v1'
+                    or any(value is not False for value in evidence['facts'].values())):return ''
+        except (TypeError,ValueError,RuntimeError,OSError):return ''
     if readiness.get("deployment_blocking") is True:
         return ""
     assessment = readiness.get("assessment") if isinstance(readiness.get("assessment"), dict) else {}

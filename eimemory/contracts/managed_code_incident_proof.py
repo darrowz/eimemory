@@ -15,6 +15,7 @@ SCHEMA = 'managed_code_incident_proof.v1'
 REFERENCE_SCHEMA = 'managed_code_incident_proof_ref.v1'
 MANIFEST_SCHEMA = 'managed_code_incident_manifest.v1'
 KEY_SCHEMA = 'managed_code_defect_key.v1'
+KEY_SEMANTICS = 'conservative_native_symptom_signature.v1'
 SOURCE_KEY = 'managed_incident_proof'
 TRANSACTION_SCHEMA = 'code_evolution_transaction.v4'
 FIELDS = ('known_before_detection', 'prior_user_reported', 'manual_bootstrap')
@@ -74,11 +75,12 @@ def validate_reference(value):
 
 def validate_snapshot(value):
     fields = {'schema', 'qualification_domain', 'reference', 'scope', 'source_record_id', 'source_digest',
-        'incident_id', 'incident_digest', 'defect_key', 'activation_reference', 'manifest_digest',
+        'incident_id', 'incident_digest', 'defect_key', 'defect_key_semantics', 'activation_reference', 'manifest_digest',
         'history_watermark', 'source_sequence', 'managed_facts', 'global_facts', 'external_knowledge',
         'external_user_reports', 'status', 'reason', 'digest'}
     if (not isinstance(value, Mapping) or set(value) != fields or value.get('schema') != SCHEMA
             or value.get('qualification_domain') != DOMAIN or value.get('external_knowledge') is not None
+            or value.get('defect_key_semantics') != KEY_SEMANTICS
             or value.get('external_user_reports') is not None or value.get('status') not in {'proven', 'unproven', 'adverse'}):
         raise ValueError('managed_incident_snapshot_invalid')
     exact_scope(value['scope']); validate_reference(value['reference'])

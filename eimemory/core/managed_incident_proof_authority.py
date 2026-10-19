@@ -18,13 +18,16 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import time
 
 DOMAIN = 'registered_code_defect_knowledge.v1'
+KEY_SEMANTICS = 'conservative_native_symptom_signature.v1'
 SCHEMA = 'managed_code_incident_proof.v1'
 MANIFEST_PATH = '/etc/eimemory-code-automation-authority/managed-code-incident-manifest.v1.json'
 DATABASE_PATH = '/var/lib/eimemory/state/eimemory.sqlite'
 KEY_PATH = '/etc/eimemory-code-automation-authority/managed-incident-proof.key'
 RECEIPT_DIRECTORY = '/var/lib/eimemory-manager/managed-incident-receipts'
+PYCACHE_DIRECTORY = RECEIPT_DIRECTORY + '/empty-pycache'
 FIELDS = ('known_before_detection', 'prior_user_reported', 'manual_bootstrap')
 SCOPE_FIELDS = ('tenant_id', 'agent_id', 'workspace_id', 'user_id')
 INGRESS = ('eimemory.release_closure_failure', 'eimemory.runtime_identity_drift',
@@ -89,7 +92,8 @@ def _identity(meta):
             meta.st_nlink, meta.st_size, meta.st_mtime_ns, meta.st_ctime_ns)
 
 
-def _read(path, *, owners=(0,), gid=None, limit=16*1024*1024, mode=None):
+def _read(path, *, owners=(0,), gid=None, limit=16*1024*1024, mode=None,
+          allow_empty=False, with_identity=False):
     """No-follow every component, with descriptor/name identity revalidation."""
     path = Path(path)
     if not path.is_absolute() or '..' in path.parts: raise ValueError('managed_authority_path_invalid')
@@ -101,16 +105,18 @@ def _read(path, *, owners=(0,), gid=None, limit=16*1024*1024, mode=None):
             fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
             descriptors.append(fd); names.append(part)
         before_dirs = [os.fstat(item) for item in descriptors]
-        for meta in before_dirs:
-            if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid not in owners or meta.st_mode & 0o002
-                    or meta.st_mode & 0o020 and not (gid is not None and meta.st_gid == gid and meta.st_uid in owners)):
+        for index,meta in enumerate(before_dirs):
+            sticky=(index<len(before_dirs)-1 and meta.st_uid==0 and bool(meta.st_mode&stat.S_ISVTX))
+            if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid not in owners or meta.st_mode & 0o002 and not sticky
+                    or meta.st_mode & 0o020 and not sticky and not (gid is not None and meta.st_gid == gid and meta.st_uid in owners)):
                 raise ValueError('managed_authority_parent_untrusted')
         leaf = path.name
         fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=descriptors[-1])
         descriptors.append(fd); before = os.fstat(fd)
         if (not stat.S_ISREG(before.st_mode) or before.st_uid not in owners or before.st_nlink != 1
                 or before.st_mode & 0o002 or before.st_mode & 0o020 and not (gid is not None and before.st_gid == gid)
-                or mode is not None and stat.S_IMODE(before.st_mode) != mode or not 0 < before.st_size <= limit):
+                or mode is not None and stat.S_IMODE(before.st_mode) != mode
+                or not (0 if allow_empty else 1) <= before.st_size <= limit):
             raise ValueError('managed_authority_file_untrusted')
         raw = bytearray()
         while len(raw) <= limit:
@@ -124,7 +130,8 @@ def _read(path, *, owners=(0,), gid=None, limit=16*1024*1024, mode=None):
                 raise ValueError('managed_authority_parent_changed')
             if index and _identity(old) != _identity(os.stat(names[index-1], dir_fd=descriptors[index-1], follow_symlinks=False)):
                 raise ValueError('managed_authority_parent_replaced')
-        return bytes(raw)
+        identity=(_identity(before),tuple(_identity(meta) for meta in before_dirs))
+        return (bytes(raw),identity) if with_identity else bytes(raw)
     finally:
         for fd in reversed(descriptors): os.close(fd)
 
@@ -143,9 +150,11 @@ def _configuration(registry):
         raise ValueError('managed_authority_manifest_not_reviewed')
     manifest = _json(raw)
     fields = {'schema', 'qualification_domain', 'enabled', 'scopes', 'source_directory', 'producer_files',
-        'ingress_sources', 'historical_domain', 'schema_digest', 'previous_manifest_digest'}
+        'ingress_sources', 'historical_domain', 'schema_digest', 'previous_manifest_digest', 'release_commit', 'defect_key_semantics'}
     if (not isinstance(manifest, dict) or set(manifest) != fields
             or manifest['schema'] != 'managed_code_incident_manifest.v1' or manifest['qualification_domain'] != DOMAIN
+            or manifest['defect_key_semantics'] != KEY_SEMANTICS
+            or manifest['release_commit'] != registry['runtime_commit']
             or manifest['enabled'] is not True or manifest['ingress_sources'] != list(INGRESS)
             or manifest['historical_domain'] != 'retained_typed_history_and_complete_registered_ingress'
             or not isinstance(manifest['scopes'], list) or not 1 <= len(manifest['scopes']) <= 32
@@ -168,34 +177,74 @@ def _configuration(registry):
     return manifest, key
 
 
-def _producer_guard(manifest, registry):
-    root=Path(manifest['source_directory']); inventory=set()
+def validate_configuration(*,registry):
+    """Root installer preflight. No proof/Runtime/SQLite/child issuance writes."""
+    manifest,_key=_configuration(registry)
+    before=_producer_guard(manifest,registry)
+    pycache=_empty_pycache()
+    if before!=_producer_guard(manifest,registry):raise ValueError('managed_authority_producer_identity_changed')
+    return {'qualification_domain':DOMAIN,'manifest_digest':digest(manifest),
+        'manifest_sha256':registry['managed_incident_authority']['manifest_sha256'],
+        'release_commit':manifest['release_commit'],'scopes':manifest['scopes'],
+        'producer_file_count':len(before),'defect_key_semantics':KEY_SEMANTICS,
+        'empty_pycache_directory':pycache,'key_material_returned':False}
+
+
+def python_source_inventory(root):
+    """The fixed -I -S worker never searches the candidate virtualenv/cache."""
+    root=Path(root); inventory=set()
     for directory,dirs,files in os.walk(root,followlinks=False):
-        dirs[:]=[name for name in dirs if name!='.git']
+        dirs[:]=[name for name in dirs if name!='__pycache__'
+            and not (Path(directory)==root and name in {'.git','.venv'})]
         for name in dirs:
             if (Path(directory)/name).is_symlink():raise ValueError('managed_authority_source_directory_linked')
         for name in files:
             if name.endswith('.py'):
                 inventory.add((Path(directory)/name).relative_to(root).as_posix())
                 if len(inventory)>5000:raise ValueError('managed_authority_source_inventory_exceeded')
+    return inventory
+
+
+def _producer_guard(manifest, registry):
+    deadline=time.monotonic()+10
+    inventory=python_source_inventory(manifest['source_directory'])
     if inventory!=set(manifest['producer_files']):raise ValueError('managed_authority_source_inventory_changed')
+    identities={}
     for name, expected in manifest['producer_files'].items():
-        raw = _read(Path(manifest['source_directory']) / name,
-            owners=(0, registry['runtime_uid']), gid=registry['runtime_gid'], limit=4*1024*1024)
+        if time.monotonic()>deadline:raise ValueError('managed_authority_source_guard_budget_exhausted')
+        raw,identity = _read(Path(manifest['source_directory']) / name,
+            owners=(0, registry['runtime_uid']), gid=registry['runtime_gid'], limit=4*1024*1024,
+            allow_empty=True,with_identity=True)
         if sha256(raw).hexdigest() != expected: raise ValueError('managed_authority_producer_changed')
+        identities[name]=identity
+    return identities
+
+
+def _empty_pycache():
+    path=Path(PYCACHE_DIRECTORY)
+    for index,parent in enumerate((path,*path.parents)):
+        meta=parent.lstat()
+        if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid!=0
+                or meta.st_mode&0o022 and not (index>0 and meta.st_mode&stat.S_ISVTX)):
+            raise ValueError('managed_authority_pycache_untrusted')
+    if any(path.iterdir()):raise ValueError('managed_authority_pycache_not_empty')
+    return str(path)
 
 
 def _worker(manifest, registry, source_id, source_digest, after):
-    _producer_guard(manifest, registry)
+    before=_producer_guard(manifest, registry)
+    pycache=_empty_pycache()
     worker_manifest={key:manifest[key] for key in ('scopes','source_directory','schema_digest')}
     request = {'manifest': worker_manifest, 'runtime_uid': registry['runtime_uid'], 'database_path': DATABASE_PATH,
         'source_record_id': source_id, 'source_digest': source_digest, 'after': after}
     completed = subprocess.run(['/usr/sbin/runuser', '-u', registry['runtime_user'], '--',
-        '/usr/bin/python3', '-I', '-B', str(Path(__file__).absolute()), '--readonly-worker'],
+        '/usr/bin/python3', '-I', '-S', '-B', '-X', 'pycache_prefix='+pycache,
+        str(Path(__file__).absolute()), '--readonly-worker'],
         input=canonical(request), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60,
         env={'PATH':'/usr/bin:/bin', 'LANG':'C.UTF-8', 'EIMEMORY_CONFIG_DIR':'/etc/eimemory',
              'PYTHONDONTWRITEBYTECODE':'1'}, check=False)
-    _producer_guard(manifest, registry)
+    if before!=_producer_guard(manifest, registry):raise ValueError('managed_authority_producer_identity_changed')
+    _empty_pycache()
     if completed.returncode != 0 or len(completed.stdout) > 16*1024*1024:
         raise ValueError('managed_authority_readonly_worker_failed')
     facts = _json(completed.stdout)
@@ -210,9 +259,10 @@ def _worker(manifest, registry, source_id, source_digest, after):
 def _state(registry, manifest):
     root = Path(RECEIPT_DIRECTORY)
     # Bootstrap owns directory creation. Runtime code cannot create authority.
-    for parent in (root, *root.parents):
+    for index,parent in enumerate((root, *root.parents)):
         meta = parent.lstat()
-        if not stat.S_ISDIR(meta.st_mode) or meta.st_uid != 0 or meta.st_mode & 0o022:
+        if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid != 0
+                or meta.st_mode & 0o022 and not (index>0 and meta.st_mode&stat.S_ISVTX)):
             raise ValueError('managed_authority_state_directory_untrusted')
     lock_fd = os.open(root / '.authority.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
@@ -220,7 +270,13 @@ def _state(registry, manifest):
         if not stat.S_ISREG(lock_meta.st_mode) or lock_meta.st_uid != 0 or lock_meta.st_nlink != 1 or stat.S_IMODE(lock_meta.st_mode) != 0o600:
             raise ValueError('managed_authority_lock_untrusted')
         import fcntl
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        deadline=time.monotonic()+10
+        while True:
+            try:
+                fcntl.flock(lock_fd,fcntl.LOCK_EX|fcntl.LOCK_NB);break
+            except BlockingIOError:
+                if time.monotonic()>=deadline:raise ValueError('managed_authority_lock_timeout')
+                time.sleep(.025)
         state_path = root / 'knowledge.sqlite'
         fd = os.open(state_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         try:
@@ -281,6 +337,8 @@ def _known(conn, facts):
                 except ValueError: late = True
                 if late: return None, None, cutoff, 'late_prior_typed_knowledge'
         if prior:
+            if row['defect_key']=='*':
+                return None,None,cutoff,'unclassified_typed_prehistory'
             known = True; reported = reported or bool(row['human_input'])
     return known, reported, cutoff, ''
 
@@ -324,6 +382,7 @@ def _ingest(conn, facts, manifest):
             key = digest({'schema':'managed_code_defect_key.v1','affected_contract':row['incident_class'],
                           'diagnostic_codes':sorted(set(code))})
         except (ValueError, TypeError): key = '*'
+        if row['human_input']:key='*'  # no native defect mapping can be inferred from manual prose
         add({'scope':owner,'defect_key':key,'record_id':row['record_id'],'source_digest':row['payload_digest'],
             'source_time':row['source_time'],'human_input':bool(row['human_input'])}, row['sequence'])
     conn.execute("INSERT OR REPLACE INTO authority_meta VALUES('high_water',?)", (str(through),))
@@ -332,6 +391,12 @@ def _ingest(conn, facts, manifest):
 def _activation_facts(facts, activation, registry, peer):
     """A signed unknown remains unknown; no Unit/TriggeredBy inference here."""
     reference = facts.get('activation_reference')
+    first=facts.get('first_source_evidence')
+    if (not isinstance(first,dict) or set(first)!={'schema','activation_reference','created_at'}
+            or first.get('schema')!='managed_native_first_physical_source.v1'
+            or first.get('activation_reference')!=reference or first.get('created_at')!=facts.get('source_created_at')
+            or not isinstance(first.get('created_at'),str) or re.search(r'T\d\d:\d\d:\d\d\.\d+',first['created_at']) is None):
+        return None,'original_first_physical_source_unproven'
     if (not isinstance(activation, dict) or activation.get('schema') != 'eimemory.runtime_activation_attestation.v1'
             or activation.get('signature_verified') is not True or activation.get('reference') != reference
             or activation.get('registry_generation') != registry['generation']
@@ -398,6 +463,7 @@ def issue(source_record_id, source_digest, *, verified_activation_receipt, regis
         snapshot = dict(schema=SCHEMA,qualification_domain=DOMAIN,scope=facts['scope'],source_record_id=source_record_id,
             source_digest=source_digest,incident_id=facts['incident']['incident_id'],incident_digest=facts['incident']['incident_digest'],
             defect_key=facts['defect_key'],activation_reference=facts['activation_reference'],manifest_digest=digest(manifest),
+            defect_key_semantics=KEY_SEMANTICS,
             history_watermark=facts['through'],source_sequence=source_sequence,managed_facts=managed,global_facts=globals_,
             external_knowledge=None,external_user_reports=None,status=status,reason=reason or cause_reason)
         receipt = {'schema':'root_managed_code_incident_receipt.v1','snapshot':snapshot,
@@ -416,13 +482,37 @@ def issue(source_record_id, source_digest, *, verified_activation_receipt, regis
         return {'schema':'managed_code_incident_proof_ref.v1','receipt_id':receipt_id,'digest':raw_digest}
 
 
+def checkpoint(*,registry,peer):
+    """Explicit positive accumulation, including a healthy no-incident run.
+
+    This creates no incident, causal receipt, negative fact or child authority.
+    A readback verifier never invokes this maintenance operation implicitly.
+    """
+    manifest,_key=_configuration(registry)
+    if peer.get('uid')!=registry['runtime_uid']:
+        raise ValueError('managed_authority_checkpoint_peer_invalid')
+    with _state(registry,manifest) as conn:
+        row=conn.execute("SELECT value FROM authority_meta WHERE key='high_water'").fetchone()
+        facts=_worker(manifest,registry,'','',int(row[0]) if row else 0)
+        if facts.get('incident') is not None or facts.get('scope') is not None:
+            raise ValueError('managed_authority_checkpoint_no_source_expected')
+        _ingest(conn,facts,manifest)
+        uncertain=conn.execute("SELECT value FROM authority_meta WHERE key='uncertainty'").fetchone()
+        return {'schema':'managed_code_knowledge_checkpoint.v1','qualification_domain':DOMAIN,
+            'status':'unproven' if uncertain else 'ready' if facts['complete'] else 'accumulating',
+            'high_water':facts['through'],'physical_high_water':facts['high_water'],
+            'reason':uncertain[0] if uncertain else '', 'qualifies_for_product_completion':False,
+            'incident_created':False,'child_authority_created':False}
+
+
 @contextmanager
 def _readonly_state(snapshot, manifest):
     """Snapshot only relevant positives into memory; root files remain read-only."""
     root=Path(RECEIPT_DIRECTORY)
-    for parent in (root,*root.parents):
+    for index,parent in enumerate((root,*root.parents)):
         meta=parent.lstat()
-        if not stat.S_ISDIR(meta.st_mode) or meta.st_uid!=0 or meta.st_mode&0o022:
+        if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid!=0
+                or meta.st_mode&0o022 and not (index>0 and meta.st_mode&stat.S_ISVTX)):
             raise ValueError('managed_authority_state_directory_untrusted')
     path=root/'knowledge.sqlite'
     meta=path.lstat()
@@ -488,16 +578,19 @@ def verify(receipt_id, digest_value, *, registry):
                 or facts['activation_reference']!=snapshot['activation_reference']):
             raise ValueError('managed_authority_original_source_identity_changed')
         _ingest(conn,facts,manifest)
-        if not facts['complete']:raise ValueError('managed_authority_readback_prefix_incomplete')
         known,reported,sequence,reason=_known(conn,facts)
+        uncertain=conn.execute("SELECT value FROM authority_meta WHERE key='uncertainty'").fetchone()
+        if uncertain:known=reported=None;reason=uncertain[0]
         if facts['global_facts']['known_before_detection'] is True:known=True
         if facts['global_facts']['prior_user_reported'] is True:reported=True
-        if (conn.execute("SELECT 1 FROM authority_meta WHERE key='uncertainty'").fetchone()
-                or sequence!=snapshot['source_sequence'] or reason
-                or known is not snapshot['managed_facts']['known_before_detection']
-                or reported is not snapshot['managed_facts']['prior_user_reported']):
-            raise ValueError('managed_authority_historical_knowledge_changed')
-    return _snapshot(receipt,{'schema':'managed_code_incident_proof_ref.v1','receipt_id':receipt_id,'digest':digest_value})
+        if sequence!=snapshot['source_sequence']:raise ValueError('managed_authority_original_sequence_changed')
+        if not facts['complete']:known=reported=None;reason='managed_history_accumulation_incomplete'
+        current_facts={'known_before_detection':known,'prior_user_reported':reported,
+            'manual_bootstrap':snapshot['managed_facts']['manual_bootstrap']}
+        original=_snapshot(receipt,{'schema':'managed_code_incident_proof_ref.v1','receipt_id':receipt_id,'digest':digest_value})
+        return {'schema':'managed_code_incident_proof_verification.v1','snapshot':original,
+            'qualification_current':snapshot['status']=='proven' and all(value is False for value in current_facts.values()),
+            'current_managed_facts':current_facts,'current_watermark':facts['through'],'reason':reason}
 
 
 def _readonly_worker():

@@ -55,6 +55,8 @@ def run_system_code_maintenance(
     )
 
     ingress_checkpoint = checkpoint_native_ingress(runtime, scope=scope_ref)
+    from eimemory.governance.evolution.managed_code_incident_proof import checkpoint_managed_ingress
+    managed_checkpoint=checkpoint_managed_ingress()
     # This native acquisition follows the precise ingress checkpoint. Keeping
     # its actual subsecond instant avoids declaring it before that checkpoint.
     detected_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -120,6 +122,7 @@ def run_system_code_maintenance(
         "reason": "" if execution_ok else "system_maintenance_incomplete",
         "runtime_identity": detector, "system_code_repair": route,
         "native_policy_owner": policy_owner,
+        "managed_knowledge_checkpoint":managed_checkpoint,
         "system_code_repair_failure": failure, "code_evolution": recovery,
         # Coverage diagnostics never replace repair permission, original global
         # provenance, or the product's terminal/8-hour qualification gates.

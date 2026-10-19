@@ -310,6 +310,8 @@ def _v3_readiness_envelope(
         current_lineage=lineage,
     )
     envelope.update(completion)
+    if completion.get('schema_version')=='l5_readiness.v5':
+        envelope['schema']='l5.reader.v5'
     from eimemory.governance.l5.l5_scope_authority import evidence_partition
 
     envelope["evidence_partition"] = evidence_partition()
@@ -361,6 +363,10 @@ def _completion_evidence_refs(
             str(transaction["transaction_id"]),
             str(transaction["terminal_receipt_digest"]),
         ]
+    if isinstance(transaction.get('managed_incident_proof'),Mapping):
+        reference=transaction['managed_incident_proof'].get('reference')
+        if isinstance(reference,Mapping):
+            refs['managed_incident_proof']=[str(reference.get('receipt_id') or ''),str(reference.get('digest') or '')]
     if lineage.get("ok") is True and lineage.get("compatible") is True:
         refs["lineage"] = [
             str(value)
@@ -658,6 +664,10 @@ def _code_evolution_evidence(
                 ),
                 "nonterminal": True,
             })
+            if 'managed_incident_proof' in active:
+                transaction.update(managed_incident_proof=active['managed_incident_proof'],
+                    transaction_schema_version=active['schema_version'],incident_digest=active['incident_digest'],
+                    **{key:active[key] for key in ('tenant_id','agent_id','workspace_id','user_id')})
         if latest is not None:
             receipt = ledger.get_terminal_receipt(str(latest.get("transaction_id") or "")) or {}
             receipt_payload = receipt.get("payload") if isinstance(receipt.get("payload"), Mapping) else {}
@@ -694,6 +704,10 @@ def _code_evolution_evidence(
                 "evidence_verified": not evidence_error,
                 "evidence_error": evidence_error,
             })
+            if 'managed_incident_proof' in latest:
+                transaction.update(managed_incident_proof=latest['managed_incident_proof'],
+                    transaction_schema_version=latest['schema_version'],incident_digest=latest['incident_digest'],
+                    **{key:latest[key] for key in ('tenant_id','agent_id','workspace_id','user_id')})
     except Exception as exc:
         ledger_complete = False
         transaction["ledger_error"] = type(exc).__name__
@@ -1067,6 +1081,14 @@ def _qualifying_ledger_evidence_error(
         or transaction_row.get("terminal_receipt_digest") != terminal_receipt.get("receipt_digest")
     ):
         return "terminal_receipt_identity_mismatch"
+    if 'managed_incident_proof' in transaction_row:
+        from eimemory.governance.evolution.managed_code_incident_proof import qualification_evidence
+        try:
+            qualified=qualification_evidence(transaction_row)
+            if terminal_receipt.get('payload',{}).get('managed_incident_proof')!=qualified['snapshot']:
+                return 'terminal_managed_incident_proof_mismatch'
+        except (TypeError,ValueError,KeyError,RuntimeError,OSError):
+            return 'terminal_managed_incident_proof_unverified'
     from eimemory.adapters.hermes.code_implementation import (
         BINDING_ID,
         CAPABILITY_ID,

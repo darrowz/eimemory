@@ -46,6 +46,15 @@ def build_product_completion(
     provider_data = _mapping(provider)
     from eimemory.contracts.code_incident_provenance import qualification_provenance
     transaction_data = qualification_provenance(_mapping(transaction))
+    from eimemory.governance.evolution.managed_code_incident_proof import qualification_evidence
+    managed_domain='managed_incident_proof' in transaction_data
+    managed_error=False
+    try:provenance=qualification_evidence(transaction_data)
+    except (TypeError,ValueError,RuntimeError,OSError):
+        managed_error=True;provenance={'qualification_domain':'registered_code_defect_knowledge.v1',
+            'facts':{key:None for key in ('known_before_detection','prior_user_reported','manual_bootstrap')},
+            'global_facts':{key:transaction_data.get(key) for key in ('known_before_detection','prior_user_reported','manual_bootstrap')}}
+    provenance_facts=provenance['facts']
     lineage = _mapping(current_lineage)
     control_plane_ok = _bool(raw.get("ok")) and str(raw.get("status") or "") not in {"blocked", "degraded"}
     control_plane_status = "ready" if control_plane_ok else str(raw.get("status") or "blocked")
@@ -59,6 +68,7 @@ def build_product_completion(
         "deployment_assurance": _deployment_status(raw),
     }
     gaps: list[str] = []
+    if managed_error:gaps.append('managed_incident_proof_unverified')
     if not control_plane_ok:
         gaps.append("raw_control_plane_not_ready")
 
@@ -95,9 +105,9 @@ def build_product_completion(
         or transaction_data.get("outcome")
         or ""
     ) or None
-    manual_bootstrap = _bool(transaction_data.get("manual_bootstrap"))
-    known_before_detection = _bool(transaction_data.get("known_before_detection"))
-    prior_user_reported = _bool(transaction_data.get("prior_user_reported"))
+    manual_bootstrap = _bool(provenance_facts.get("manual_bootstrap"))
+    known_before_detection = _bool(provenance_facts.get("known_before_detection"))
+    prior_user_reported = _bool(provenance_facts.get("prior_user_reported"))
     origin = str(transaction_data.get("origin") or "")
     quarantined = _bool(transaction_data.get("quarantined")) or outcome == "recovery_quarantined"
     observation_valid = _bool(transaction_data.get("observation_valid"))
@@ -105,15 +115,15 @@ def build_product_completion(
         gaps.append("no_qualifying_terminal_receipt")
     if manual_bootstrap:
         gaps.append("manual_bootstrap_nonqualifying")
-    elif not _explicit_false(transaction_data.get('manual_bootstrap')):
+    elif not _explicit_false(provenance_facts.get('manual_bootstrap')):
         gaps.append('incident_not_manual_bootstrap_unproven')
     if known_before_detection:
         gaps.append("incident_known_before_system_detection")
     if prior_user_reported or origin != "system_detector":
         gaps.append("incident_not_system_originated")
-    if not _explicit_false(transaction_data.get("known_before_detection")):
+    if not _explicit_false(provenance_facts.get("known_before_detection")):
         gaps.append("incident_prior_knowledge_unproven")
-    if not _explicit_false(transaction_data.get("prior_user_reported")):
+    if not _explicit_false(provenance_facts.get("prior_user_reported")):
         gaps.append("incident_not_user_reported_unproven")
     if quarantined:
         gaps.append("transaction_quarantined")
@@ -138,9 +148,10 @@ def build_product_completion(
         outcome in QUALIFYING_OUTCOMES
         and terminal_receipt_bound
         and transaction_evidence_verified
-        and _explicit_false(transaction_data.get('manual_bootstrap'))
-        and _explicit_false(transaction_data.get("known_before_detection"))
-        and _explicit_false(transaction_data.get("prior_user_reported"))
+        and not managed_error
+        and _explicit_false(provenance_facts.get('manual_bootstrap'))
+        and _explicit_false(provenance_facts.get("known_before_detection"))
+        and _explicit_false(provenance_facts.get("prior_user_reported"))
         and origin == "system_detector"
         and not quarantined
         and not _bool(transaction_data.get("nonterminal"))
@@ -159,7 +170,10 @@ def build_product_completion(
         and lineage_ok
     )
     return {
-        "schema_version": "l5_readiness.v4",
+        "schema_version": "l5_readiness.v5" if managed_domain else "l5_readiness.v4",
+        **({'qualification_domain':provenance['qualification_domain'],
+            'qualification_key_semantics':'conservative_native_symptom_signature.v1',
+            'global_provenance':provenance['global_facts'],'managed_provenance':provenance_facts} if managed_domain else {}),
         "control_plane_ok": control_plane_ok,
         "control_plane_status": control_plane_status,
         "axes": axes,

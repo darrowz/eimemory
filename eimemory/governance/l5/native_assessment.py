@@ -84,6 +84,11 @@ def _negative_evidence(envelope: dict[str, Any]) -> bool:
         if any(transaction.get(key) is True for key in
                 ('known_before_detection', 'prior_user_reported', 'manual_bootstrap')):
             return True
+        if 'managed_incident_proof' in transaction:
+            from eimemory.governance.evolution.managed_code_incident_proof import qualification_evidence
+            try:
+                if any(value is True for value in qualification_evidence(transaction)['facts'].values()):return True
+            except (TypeError,ValueError,RuntimeError,OSError):return True
         # Existing immutable proof rejected by the native verifier is not the
         # same claim as having no terminal proof yet. Retain that distinction.
         error = transaction.get("evidence_error")
@@ -144,8 +149,12 @@ def run_native_l5_assessment(runtime: Any, *, scope: Mapping[str, Any],
             verify_provider_authority(runtime, authority, owner_scope=owner, profile_key=profile)
             envelope['capability_authority'] = authority
         stage = "envelope_validation"
-        if (not isinstance(envelope, dict) or envelope.get("schema") != "l5.reader.v4"
-                or envelope.get("schema_version") != "l5_readiness.v4"
+        domain_pair=(envelope.get('schema'),envelope.get('schema_version')) if isinstance(envelope,dict) else None
+        if (not isinstance(envelope, dict) or domain_pair not in {
+                    ('l5.reader.v4','l5_readiness.v4'),('l5.reader.v5','l5_readiness.v5')}
+                or domain_pair==('l5.reader.v5','l5_readiness.v5') and (
+                    envelope.get('qualification_domain')!='registered_code_defect_knowledge.v1'
+                    or 'managed_incident_proof' not in envelope.get('transaction_evidence',{}))
                 or envelope.get("reader_mode") != "v3"
                 or envelope.get("scope") != asdict(owner)
                 or envelope.get("profile_key") != profile
