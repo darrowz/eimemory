@@ -60,6 +60,22 @@ def test_deny_self_never_allowed_under_default_globs() -> None:
         assert reason == "deny_self"
 
 
+def test_post_resume_business_validator_cannot_authorize_its_own_patch() -> None:
+    for path in (
+        "eimemory/governance/release/release_closure.py",
+        "eimemory/governance/release_closure.py",
+    ):
+        # Even a directory-radius policy or an exact pin cannot amend the
+        # post-resume authority/business admission executing that policy.
+        assert path_denied_by_self(path)
+        for exact in ((), (path,)):
+            assert path_allowed_for_evolution(path,allowed_path_globs=("**",),
+                denied_path_globs=(),exact_allow_files=exact)==(False,"deny_self")
+    assert path_allowed_for_evolution("eimemory/governance/l5/l5_reader.py",
+        allowed_path_globs=DEFAULT_ALLOWED_PATH_GLOBS,
+        denied_path_globs=DEFAULT_DENIED_PATH_GLOBS)==(True,"")
+
+
 def test_default_globs_keep_deploy_and_tests_closed() -> None:
     for path in (
         "deploy/install_immutable_release.sh",
@@ -89,7 +105,7 @@ def test_governance_and_exact_runtime_identity_paths_allowed() -> None:
         allowed_path_globs=DEFAULT_ALLOWED_PATH_GLOBS,
         denied_path_globs=DEFAULT_DENIED_PATH_GLOBS,
     )
-    assert ok is True
+    assert ok is False and reason == "deny_self"
 
     for path in DEFAULT_EXACT_ALLOW_FILES:
         ok, reason = path_allowed_for_evolution(
@@ -101,9 +117,9 @@ def test_governance_and_exact_runtime_identity_paths_allowed() -> None:
         assert ok is True, (path, reason)
 
 
-def test_release_plan_reaches_release_closure_but_not_effects() -> None:
+def test_release_plan_reaches_evidence_builder_but_not_admission_or_effects() -> None:
     plan = plans.RELEASE_CLOSURE_FAILURE_TEST_PLAN
-    assert plan.allows_path("eimemory/governance/release_closure.py")
+    assert not plan.allows_path("eimemory/governance/release_closure.py")
     assert plan.allows_path("eimemory/governance/release_closure_gate_evidence.py")
     assert plan.allows_path("eimemory/ops/release_closure_failure.py")
     assert not plan.allows_path("eimemory/governance/code_evolution_effects.py")
