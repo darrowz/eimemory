@@ -24,6 +24,21 @@ runtime UID. The deployment worker is a separate PID1 cgroup and is not a
 storage writer. It remains runnable while the storage transaction start guard
 blocks writers. The worker closes its DB before installation.
 
+Receipt and post-resume business validation use separate fixed PID1 child
+units. Their controller entry is pinned, while all release source and
+interpreters are mounted read-only. The target remains the actual serving
+release, including a legacy rollback; controller identity cannot substitute for
+target identity. Submission is one-shot, and repeated status reads cannot
+restart an ambiguous validation. Before exiting, the actual child cgroup seals
+the exact result bytes through the bridge. Root stores an exclusive immutable
+copy and digest, then records PID1's exit outcome independently. Replacing the
+runtime user's output afterwards cannot replace the accepted evidence.
+
+Every managed Python entry, including the root daemon, uses an explicit
+`-X pycache_prefix=/var/lib/eimemory-manager/empty-pycache` with `-B`. The prefix
+is an empty root-owned directory with mode 0555. `-B` alone still reads existing
+bytecode and is insufficient to bind execution to reviewed source.
+
 Automatic installation requests background resume but defers it. The worker
 must persist and reread the real deployment/rollback ledger outcome before
 calling `finalize_deployment_job(job_key)`. This resumes the captured set but
@@ -55,6 +70,10 @@ without reviewing the actual source/bundle and current manager inventory.
    It preserves original root bytes and exact old active states before stopping
    old user product owners. It starts the root bridge and only the RPC initially;
    automatic jobs stay paused until the new release transition completes.
+   Previously failed user units are disabled without stopping or resetting
+   their failed invocation. The install entry rejects an existing manager
+   registry: upgrading a live root daemon requires a separately reviewed
+   authority handoff and cannot replace its modules in place.
 5. Build the initial bundle with the actual current commit as its initial
    controller coordinate, while reviewing all new template/helper bytes. It
    intentionally does not dispatch an automatic worker absent from an old
@@ -65,6 +84,9 @@ without reviewing the actual source/bundle and current manager inventory.
    supply a root command. Activation verifies the new worker entry and every
    protected consumer byte, then atomically advances controller/runtime before
    watchers resume. Resume restores the original captured set.
+   If the actual serving release is legacy or otherwise incompatible after a
+   failed manual attempt, background services remain held with the original
+   active set retained. This does not count as a completed owner migration.
 6. If a manual attempt fails, retain its original root record and Invocation.
    A new attempt requires a new reviewed nonce and `--prior-job-key OLD_KEY`;
    root checks the original unit is physically failed/inactive, the current

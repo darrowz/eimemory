@@ -9,7 +9,7 @@ import stat
 import struct
 from typing import Any
 from eimemory.contracts.runtime_manager import (REGISTRY_PATH,SOCKET_PATH,MAX_REQUEST_BYTES,MAX_RESPONSE_BYTES,
- REQUEST_SCHEMA,RESPONSE_SCHEMA,READ_PROPERTIES,canonical,strict_json,validate_registry,hex_value,job_unit)
+ REQUEST_SCHEMA,RESPONSE_SCHEMA,READ_PROPERTIES,canonical,strict_json,validate_registry,hex_value,job_unit,validation_unit)
 
 class RuntimeManagerError(RuntimeError):pass
 
@@ -130,3 +130,23 @@ def verify_managed_incident_proof(receipt_id: str, digest: str) -> dict:
 
 def checkpoint_managed_incident_knowledge() -> dict:
  return request('checkpoint_managed_incident_knowledge')['checkpoint']
+
+
+def validate_deployment_job(job_key: str, operation: str) -> dict:
+ validation_unit(job_key,operation)
+ response=request('validate_deployment_job',job_key=job_key,validation_operation=operation)
+ return {**response['validation'],'registry_generation':response['registry_generation']}
+
+
+def deployment_validation_status(job_key: str, operation: str) -> dict:
+ validation_unit(job_key,operation)
+ response=request('deployment_validation_status',job_key=job_key,validation_operation=operation)
+ return {**response['validation'],'registry_generation':response['registry_generation']}
+
+
+def seal_deployment_validation_result(job_key: str, operation: str, invocation: str, artifact_digest: str) -> dict:
+ validation_unit(job_key,operation)
+ hex_value(invocation,32,'manager_validation_invocation_invalid');hex_value(artifact_digest,64,'manager_validation_artifact_digest_invalid')
+ response=request('seal_deployment_validation_result',job_key=job_key,validation_operation=operation,
+     invocation=invocation,artifact_digest=artifact_digest)
+ return {**response['validation'],'registry_generation':response['registry_generation']}

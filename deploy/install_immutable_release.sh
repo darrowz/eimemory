@@ -124,7 +124,7 @@ fi
 if [ -n "${EIMEMORY_STORAGE_ATTEMPT_ID:-}" ]; then
   STORAGE_ATTEMPT_ID="$EIMEMORY_STORAGE_ATTEMPT_ID"
 else
-  STORAGE_ATTEMPT_ID="${COMMIT}-$($PYTHON_BIN -I -B -c 'import uuid; print(uuid.uuid4().hex)')"
+  STORAGE_ATTEMPT_ID="${COMMIT}-$($PYTHON_BIN -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c 'import uuid; print(uuid.uuid4().hex)')"
 fi
 STORAGE_SNAPSHOT_DIR="$EIMEMORY_STORAGE_SNAPSHOT_ROOT/$STORAGE_ATTEMPT_ID"
 
@@ -201,7 +201,7 @@ _preflight_release_readonly() {
       DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$service_uid/bus" \
       systemd-run --user --quiet --wait --collect --pipe \
       --property=PrivateUsers=yes --property="ReadOnlyPaths=$INSTALL_ROOT/releases" \
-      "$RELEASE_DIR/.venv/bin/python" -I -B -c \
+      "$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
       'import os,sys; sys.exit(0 if os.statvfs(sys.argv[1]).f_flag & os.ST_RDONLY else "immutable_release_mount_not_readonly")' \
       "$RELEASE_DIR"; then
     echo "release_readonly_preflight=failed current_not_switched" >&2
@@ -214,7 +214,7 @@ _preflight_release_readonly() {
 # JSON files outside the release delimit the FIRST observed failure interval.
 _source_checkpoint() {
   local source_root="$1" phase="$2"
-  if ! "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/release_source_checkpoint.py" \
+  if ! "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/release_source_checkpoint.py" \
       --release-dir "$source_root" --releases-root "$INSTALL_ROOT/releases" \
       --repo-root "$REPO_DIR" --commit "$COMMIT" --phase "$phase" \
       --attempt-id "$STORAGE_ATTEMPT_ID" \
@@ -228,7 +228,7 @@ _source_checkpoint() {
 _clean_existing_release_and_validate_source() {
   # Reuse must not erase evidence of a prior runtime write. The separate
   # clean_release_bytecode.py CLI remains an explicit operator action only.
-  "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/clean_release_bytecode.py" \
     --validate-source --release-dir "$RELEASE_DIR" \
     --releases-root "$INSTALL_ROOT/releases" --repo-root "$REPO_DIR" --commit "$COMMIT"
 }
@@ -398,15 +398,15 @@ _install_openclaw_bundled_bridge() {
     return 2
   fi
   # Historical helper filename; it now uses only official external loading.
-  "$PYTHON_BIN" -I -B "$helper_release/deploy/ensure_openclaw_bundled_bridge.py" \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$helper_release/deploy/ensure_openclaw_bundled_bridge.py" \
     --bin "$OPENCLAW_BIN" \
     --bridge-dir "$target_release/integrations/openclaw/eimemory-bridge" \
     --config "$OPENCLAW_LOOP_CONFIG_PATH" --preflight || return $?
   # External conversation hooks require explicit host authorization. Apply
   # the same trusted policy during rollback as during forward deployment.
-  "$PYTHON_BIN" -I -B "$helper_release/deploy/ensure_openclaw_bridge_config.py" \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$helper_release/deploy/ensure_openclaw_bridge_config.py" \
     --path "$OPENCLAW_LOOP_CONFIG_PATH" || return $?
-  "$PYTHON_BIN" -I -B "$helper_release/deploy/ensure_openclaw_bundled_bridge.py" \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$helper_release/deploy/ensure_openclaw_bundled_bridge.py" \
     --bin "$OPENCLAW_BIN" \
     --bridge-dir "$target_release/integrations/openclaw/eimemory-bridge" \
     --config "$OPENCLAW_LOOP_CONFIG_PATH"
@@ -423,7 +423,7 @@ _preflight_openclaw_adapter() {
 # All reads use the root-reviewed declaration. Lifecycle changes require the
 # independent registered deployment job; there is no --user/system fallback.
 _runtime_manager_control() {
-  _run_as_service_user "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/runtime_manager_control.py" "$@"
+  _run_as_service_user "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/runtime_manager_control.py" "$@"
 }
 
 _runtime_manager_enabled() {
@@ -695,7 +695,7 @@ _install_storage_release_transaction_helper() {
     echo "storage_release_transaction=failed helper_source_missing" >&2
     return 2
   fi
-  "$PYTHON_BIN" -I -B - "$REPO_DIR" "$helper_source" "$INSTALL_ROOT" \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache - "$REPO_DIR" "$helper_source" "$INSTALL_ROOT" \
     "$STORAGE_TRANSACTION_LIBEXEC" <<'PY'
 from pathlib import Path
 import os
@@ -731,7 +731,7 @@ PY
     return 2
   fi
   mv -Tf "$staged_helper" "$STORAGE_TRANSACTION_HELPER"
-  "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" fsync-path \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$STORAGE_TRANSACTION_HELPER" fsync-path \
     --path "$STORAGE_TRANSACTION_HELPER" --boundary "$INSTALL_ROOT"
 }
 
@@ -755,7 +755,7 @@ _acquire_storage_deploy_lock() {
     return 2
   fi
   coproc EIMEMORY_STORAGE_DEPLOY_HOLDER {
-    exec "$PYTHON_BIN" -I -B \
+    exec "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
       "$REPO_DIR/deploy/hold_parent_bound_lock.py" \
       --path "$STORAGE_DEPLOY_LOCK_PATH" --parent-pid "$$" \
       --label storage_deploy_lock
@@ -807,7 +807,7 @@ _acquire_candidate_validation_lock() {
     return 2
   fi
   coproc EIMEMORY_CANDIDATE_VALIDATION_HOLDER {
-    exec "$PYTHON_BIN" -I -B \
+    exec "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
       "$RELEASE_DIR/deploy/hold_parent_bound_lock.py" \
       --path "$CANDIDATE_VALIDATION_LOCK_PATH" --parent-pid "$$" \
       --label candidate_validation_lock
@@ -848,14 +848,14 @@ _install_storage_release_guards() {
     return
   fi
   if [ "$(id -u)" -eq 0 ]; then
-    "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/install_managed_systemd_dropin.py" \
+    "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/install_managed_systemd_dropin.py" \
       --source "$REPO_DIR/deploy/systemd/eimemory-storage-release-guard.conf" \
       --target "$SYSTEM_RPC_DROPIN_DIR/05-eimemory-storage-release-guard.conf" \
       --root "$SYSTEM_SYSTEMD_DIR" --owner-uid 0 \
       --render-storage-transaction-python "$PYTHON_BIN" \
       --render-storage-transaction-helper "$STORAGE_TRANSACTION_HELPER" \
       --render-storage-transaction-marker "$STORAGE_TRANSACTION_MARKER"
-    "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" fsync-path \
+    "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$STORAGE_TRANSACTION_HELPER" fsync-path \
       --path "$SYSTEM_RPC_DROPIN_DIR/05-eimemory-storage-release-guard.conf" \
       --boundary "$SYSTEM_SYSTEMD_DIR"
     systemctl daemon-reload
@@ -889,14 +889,14 @@ _install_storage_release_guards() {
     fi
   done
   for unit in "${!guard_units[@]}"; do
-    "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/install_managed_systemd_dropin.py" \
+    "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/install_managed_systemd_dropin.py" \
       --source "$REPO_DIR/deploy/systemd/eimemory-storage-release-guard.conf" \
       --target "$USER_SYSTEMD_DIR/$unit.d/05-eimemory-storage-release-guard.conf" \
       --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" \
       --render-storage-transaction-python "$PYTHON_BIN" \
       --render-storage-transaction-helper "$STORAGE_TRANSACTION_HELPER" \
       --render-storage-transaction-marker "$STORAGE_TRANSACTION_MARKER"
-    "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" fsync-path \
+    "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$STORAGE_TRANSACTION_HELPER" fsync-path \
       --path "$USER_SYSTEMD_DIR/$unit.d/05-eimemory-storage-release-guard.conf" \
       --boundary "$SERVICE_HOME"
   done
@@ -909,7 +909,7 @@ _begin_storage_release_transaction() {
   for unit in "${ACTIVE_STORAGE_WRITER_UNITS[@]}"; do
     active_args+=(--active-unit "$unit")
   done
-  if ! "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" begin \
+  if ! "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$STORAGE_TRANSACTION_HELPER" begin \
     --marker "$STORAGE_TRANSACTION_MARKER" \
     --prior-commit "$PREVIOUS_COMMIT" --candidate-commit "$COMMIT" \
     --current-link "$CURRENT_LINK" --attempt-id "$STORAGE_ATTEMPT_ID" \
@@ -937,11 +937,11 @@ _update_storage_release_transaction() {
   if [ -n "$vacuum_backup" ]; then
     args+=(--vacuum-backup-path "$vacuum_backup")
   fi
-  "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" "${args[@]}" >/dev/null
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$STORAGE_TRANSACTION_HELPER" "${args[@]}" >/dev/null
 }
 
 _clear_storage_release_transaction() {
-  if ! "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" clear \
+  if ! "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$STORAGE_TRANSACTION_HELPER" clear \
     --marker "$STORAGE_TRANSACTION_MARKER" --attempt-id "$STORAGE_ATTEMPT_ID"; then
     echo "storage_release_transaction=failed clear" >&2
     return 2
@@ -951,10 +951,10 @@ _clear_storage_release_transaction() {
 
 _load_storage_release_transaction() {
   local transaction_json
-  transaction_json="$("$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" show \
+  transaction_json="$("$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$STORAGE_TRANSACTION_HELPER" show \
     --marker "$STORAGE_TRANSACTION_MARKER")"
   mapfile -t STORAGE_TRANSACTION_FIELDS < <(printf '%s' "$transaction_json" | \
-    "$PYTHON_BIN" -I -B -c \
+    "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
       'import json,sys; p=json.load(sys.stdin); print(p["attempt_id"]); print(p["candidate_commit"]); print(p["prior_commit"]); print(p["snapshot_dir"]); print(p["snapshot_manifest_sha256"]); print(p.get("vacuum_backup_path") or ""); print(p["current_link"]); print(p["phase"])')
   if [ "${#STORAGE_TRANSACTION_FIELDS[@]}" -ne 8 ]; then
     echo "storage_release_transaction=failed invalid_fields" >&2
@@ -969,7 +969,7 @@ _load_storage_release_transaction() {
   STORAGE_TRANSACTION_CURRENT_LINK="${STORAGE_TRANSACTION_FIELDS[6]}"
   STORAGE_TRANSACTION_PHASE="${STORAGE_TRANSACTION_FIELDS[7]}"
   mapfile -t ACTIVE_STORAGE_WRITER_UNITS < <(
-    "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" active-units \
+    "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$STORAGE_TRANSACTION_HELPER" active-units \
       --marker "$STORAGE_TRANSACTION_MARKER"
   )
   STORAGE_WRITERS_CAPTURED=0
@@ -979,7 +979,7 @@ _load_storage_release_transaction() {
 }
 
 _fsync_install_root() {
-  "$PYTHON_BIN" -I -B - "$INSTALL_ROOT" <<'PY'
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache - "$INSTALL_ROOT" <<'PY'
 import os
 import sys
 
@@ -1031,7 +1031,7 @@ _reconcile_interrupted_storage_release() {
   if current_target="$(realpath -e -- "$CURRENT_LINK" 2>/dev/null)"; then
     current_commit="$(basename "$current_target")"
   elif [ ! -e "$CURRENT_LINK" ] && [ ! -L "$CURRENT_LINK" ] && [ ! -d "$CURRENT_LINK" ]; then
-    expected_commit="$("$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" expected-current \
+    expected_commit="$("$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$STORAGE_TRANSACTION_HELPER" expected-current \
       --marker "$STORAGE_TRANSACTION_MARKER")"
     if [ "$expected_commit" = "$STORAGE_TRANSACTION_CANDIDATE_COMMIT" ]; then
       expected_release="$RELEASE_DIR"
@@ -1058,7 +1058,7 @@ _reconcile_interrupted_storage_release() {
   if [ "$current_commit" = "$STORAGE_TRANSACTION_CANDIDATE_COMMIT" ]; then
     migrations_complete=1
   fi
-  action="$("$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" classify \
+  action="$("$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$STORAGE_TRANSACTION_HELPER" classify \
     --marker "$STORAGE_TRANSACTION_MARKER" --current-commit "$current_commit" \
     --migrations-complete "$migrations_complete")"
   case "$action" in
@@ -1116,7 +1116,7 @@ _storage_release_action() {
     return 2
   fi
   _run_as_service_user env EIMEMORY_ROOT="$EIMEMORY_ROOT" \
-    "$RELEASE_DIR/.venv/bin/python" -I -B \
+    "$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
       "$RELEASE_DIR/deploy/migrate_storage_release.py" "$action" \
       --root "$EIMEMORY_ROOT" \
       --snapshot-root "$EIMEMORY_STORAGE_SNAPSHOT_ROOT" \
@@ -1139,7 +1139,7 @@ _prepare_storage_for_release() {
   needs_report="$(_storage_release_action needs)"
   printf '%s\n' "$needs_report"
   storage_needed="$(printf '%s' "$needs_report" | \
-    "$RELEASE_DIR/.venv/bin/python" -I -B -c \
+    "$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
       'import json,sys; print("1" if json.load(sys.stdin).get("needed") is True else "0")')"
   if [ "$EIMEMORY_STORAGE_MIGRATION" != "1" ]; then
     if [ "$storage_needed" = "1" ]; then
@@ -1186,7 +1186,7 @@ _prepare_storage_for_release() {
   fi
   printf '%s\n' "$snapshot_report"
   STORAGE_SNAPSHOT_MANIFEST_SHA256="$(printf '%s' "$snapshot_report" | \
-    "$RELEASE_DIR/.venv/bin/python" -I -B -c \
+    "$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
       'import json,re,sys; value=str(json.load(sys.stdin).get("manifest_sha256") or ""); sys.exit(2) if re.fullmatch(r"[0-9a-f]{64}", value) is None else print(value)')"
   # The snapshot operation itself is read-only against live storage. Arm the
   # rollback trap only after its immutable identity has been parsed safely.
@@ -1205,7 +1205,7 @@ _prepare_storage_for_release() {
   vacuum_report="$(_storage_release_action vacuum)"
   printf '%s\n' "$vacuum_report"
   STORAGE_VACUUM_BACKUP="$(printf '%s' "$vacuum_report" | \
-    "$RELEASE_DIR/.venv/bin/python" -I -B -c \
+    "$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
       'import json,sys; print(str(json.load(sys.stdin).get("backup_path") or ""))')"
   _update_storage_release_transaction vacuum_complete 1 "$STORAGE_VACUUM_BACKUP"
   _maybe_fail_stage storage_vacuum
@@ -1251,7 +1251,7 @@ _maybe_fail_stage() {
 
 _release_version() {
   local target_release="$1"
-  "$PYTHON_BIN" -I -B -c \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
     'import pathlib, sys, tomllib; print(tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["project"]["version"])' \
     "$target_release/pyproject.toml"
 }
@@ -1273,7 +1273,7 @@ _inspect_openclaw_plugin_runtime() {
   inspect_json="$(_run_as_service_user env HOME="$SERVICE_HOME" OPENCLAW_CONFIG_PATH="$OPENCLAW_LOOP_CONFIG_PATH" \
     "$OPENCLAW_BIN" plugins inspect eimemory-bridge --runtime --json)"
   printf '%s' "$inspect_json" | \
-    "$PYTHON_BIN" -I -B "$verifier_release/deploy/verify_openclaw_plugin_runtime.py" \
+    "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$verifier_release/deploy/verify_openclaw_plugin_runtime.py" \
       --expected-root "$target_release/integrations/openclaw/eimemory-bridge" \
       "${legacy_arg[@]}"
 }
@@ -1502,7 +1502,7 @@ _install_current_runtime_metadata() {
     return 2
   fi
   local runtime_dropin_name retired_runtime_dropin_name
-  if ! runtime_dropin_name="$("$PYTHON_BIN" -I -B \
+  if ! runtime_dropin_name="$("$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
       "$target_release/deploy/runtime_identity_policy.py" dropin-name)" || \
      [[ ! "$runtime_dropin_name" =~ ^[A-Za-z0-9_.-]+\.conf$ ]]; then
     echo "Unable to resolve the managed runtime identity drop-in" >&2
@@ -1520,7 +1520,7 @@ _install_current_runtime_metadata() {
   mapfile -t PYTHON_RUNTIME_UNITS <<< "$PYTHON_RUNTIME_UNIT_OUTPUT"
   for runtime_unit in "${PYTHON_RUNTIME_UNITS[@]}"; do
     if _is_unselected_openclaw_unit "$runtime_unit"; then continue; fi
-    "$PYTHON_BIN" -I -B "$metadata_release/deploy/install_managed_systemd_dropin.py" \
+    "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$metadata_release/deploy/install_managed_systemd_dropin.py" \
       --source "$metadata_release/deploy/systemd/eimemory-python-runtime.conf" \
       --target "$USER_SYSTEMD_DIR/$runtime_unit.d/$runtime_dropin_name" \
       --retire-target "$USER_SYSTEMD_DIR/$runtime_unit.d/$retired_runtime_dropin_name" \
@@ -1543,7 +1543,7 @@ _provision_hermes_attestation() {
     echo "hermes_attestation=skipped hermes_not_installed"
     return
   fi
-  "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/ensure_attestation_profile.py" \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$RELEASE_DIR/deploy/ensure_attestation_profile.py" \
     --registry "$HERMES_ATTESTATION_REGISTRY" \
     --hermes-token "$HERMES_ATTESTATION_TOKEN_FILE" \
     --user "$SERVICE_USER" --group "$SERVICE_GROUP"
@@ -1561,12 +1561,12 @@ _install_hermes_integration() {
   # Preserve the committed turn before Hermes queues asynchronous providers.
   # Use the current controller helper for old-release rollback too; it is
   # backwards compatible and refuses an unknown host sync contract.
-  _run_as_service_user "$HERMES_PYTHON" -I -B \
+  _run_as_service_user "$HERMES_PYTHON" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
     "$REPO_DIR/deploy/ensure_hermes_sync_snapshot.py" \
     --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent" --apply || return 2
   # The shared host ingress must retain each standalone Feishu profile before
   # admission/session setup, including the four independently launched gateways.
-  _run_as_service_user "$HERMES_PYTHON" -I -B \
+  _run_as_service_user "$HERMES_PYTHON" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
     "$REPO_DIR/deploy/ensure_hermes_profile_boundary.py" \
     --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent" --apply || return 2
   local helper_args=(
@@ -1576,7 +1576,7 @@ _install_hermes_integration() {
     helper_args+=(--allow-provider-only)
   fi
   _run_as_service_user env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME_DIR" \
-    "$HERMES_PYTHON" -I -B "$metadata_release/deploy/install_hermes_integration.py" \
+    "$HERMES_PYTHON" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$metadata_release/deploy/install_hermes_integration.py" \
       "${helper_args[@]}"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return 0
@@ -1584,7 +1584,7 @@ _install_hermes_integration() {
   local service_uid
   service_uid="$(id -u "$SERVICE_USER")"
   local runtime_dropin_name retired_runtime_dropin_name
-  if ! runtime_dropin_name="$("$PYTHON_BIN" -I -B \
+  if ! runtime_dropin_name="$("$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
       "$target_release/deploy/runtime_identity_policy.py" dropin-name)" || \
      [[ ! "$runtime_dropin_name" =~ ^[A-Za-z0-9_.-]+\.conf$ ]]; then
     echo "Unable to resolve the managed Hermes runtime identity drop-in" >&2
@@ -1626,7 +1626,7 @@ _install_hermes_integration() {
       continue
     fi
     _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/$unit.d"
-    "$PYTHON_BIN" -I -B "$metadata_release/deploy/install_managed_systemd_dropin.py" \
+    "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$metadata_release/deploy/install_managed_systemd_dropin.py" \
       --source "$metadata_release/deploy/systemd/eimemory-python-runtime.conf" \
       --target "$USER_SYSTEMD_DIR/$unit.d/$runtime_dropin_name" \
       --retire-target "$USER_SYSTEMD_DIR/$unit.d/$retired_runtime_dropin_name" \
@@ -1641,7 +1641,7 @@ _install_hermes_integration() {
         # The controller outlives the target application release on rollback.
         # It also reapplies a recognized seam after an independent Hermes
         # upgrade, before this gateway can admit a real conversation.
-        "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/install_managed_systemd_dropin.py" \
+        "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/install_managed_systemd_dropin.py" \
           --source "$REPO_DIR/deploy/systemd/hermes-profile-boundary.conf" \
           --target "$USER_SYSTEMD_DIR/$unit.d/94-eimemory-hermes-profile-boundary.conf" \
           --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" \
@@ -1679,7 +1679,7 @@ _refresh_openclaw_gateway_metadata() {
   fi
   local service_uid
   service_uid="$(id -u "$SERVICE_USER")"
-  "$PYTHON_BIN" -I -B "$metadata_release/deploy/install_managed_systemd_dropin.py" \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$metadata_release/deploy/install_managed_systemd_dropin.py" \
     --source "$metadata_release/deploy/systemd/openclaw-gateway-eimemory.conf" \
     --target "$USER_SYSTEMD_DIR/openclaw-gateway.service.d/90-eimemory-runtime.conf" \
     --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" --render-commit "$target_commit" \
@@ -1689,7 +1689,7 @@ _refresh_openclaw_gateway_metadata() {
 }
 
 _provision_evidence_receipt_key() {
-  "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/ensure_evidence_receipt_key.py" \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/ensure_evidence_receipt_key.py" \
     --path "$EVIDENCE_RECEIPT_ENV_FILE" \
     --user "$SERVICE_USER" \
     --group "$SERVICE_GROUP"
@@ -1697,7 +1697,7 @@ _provision_evidence_receipt_key() {
 
 _find_prior_release_commit_for() {
   local deployed_commit="$1"
-  "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/find_prior_immutable_release.py" \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/find_prior_immutable_release.py" \
     --releases-root "$INSTALL_ROOT/releases" \
     --repo-root "$REPO_DIR" \
     --deployed-commit "$deployed_commit" \
@@ -1825,7 +1825,7 @@ _wait_openclaw_gateway_ready() {
   # Recovery can target an old release without this helper. Use the verified
   # deployment control checkout, including for rollback/recover-only.
   _run_as_service_user env HOME="$SERVICE_HOME" \
-    "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/wait_openclaw_gateway_ready.py" \
+    "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/wait_openclaw_gateway_ready.py" \
     --binary "$OPENCLAW_BIN" --config "$OPENCLAW_LOOP_CONFIG_PATH"
 }
 
@@ -1879,7 +1879,7 @@ _restart_gateway_unit() {
     main_pid="$(_user_systemctl show "$unit" --property=MainPID --value)"
     gateway_pid=""
     if [ -r "$pid_file" ]; then
-      gateway_pid="$("$PYTHON_BIN" -I -B -c '
+      gateway_pid="$("$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c '
 import json
 from pathlib import Path
 import sys
@@ -1974,7 +1974,7 @@ _verify_effective_runtime_metadata() {
     verification_args+=(--include-hermes)
   fi
   if ! verification_output="$(printf '%s\n' "$discovered_output" | \
-      "$PYTHON_BIN" -I -B "$policy_release/deploy/runtime_identity_policy.py" \
+      "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$policy_release/deploy/runtime_identity_policy.py" \
         "${verification_args[@]}")"; then
     echo "runtime_identity=failed reason=policy_unavailable" >&2
     return 2
@@ -1992,7 +1992,7 @@ _verify_effective_runtime_metadata() {
     fi
     seen_runtime_units["$unit"]=1
   done
-  if ! runtime_dropin_name="$("$PYTHON_BIN" -I -B \
+  if ! runtime_dropin_name="$("$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
       "$policy_release/deploy/runtime_identity_policy.py" dropin-name)"; then
     echo "runtime_identity=failed reason=policy_unavailable" >&2
     return 2
@@ -2030,7 +2030,7 @@ _verify_effective_runtime_metadata() {
     esac
     if ! effective_commit="$(
       _user_systemctl show "$unit" --property=Environment --value |
-        "$PYTHON_BIN" -I -B -c '
+        "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c '
 import shlex
 import sys
 
@@ -2067,16 +2067,16 @@ _verify_hermes_integration() {
     echo "hermes_closed_loop=skipped hermes_not_installed"
     return
   fi
-  _run_as_service_user "$HERMES_PYTHON" -I -B \
+  _run_as_service_user "$HERMES_PYTHON" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
     "$REPO_DIR/deploy/ensure_hermes_profile_boundary.py" \
     --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent" --check || return 2
   local rpc_token rpc_url adapter_timeout hermes_runtime_env
   local -a hermes_runtime_values=()
-  rpc_token="$("$PYTHON_BIN" -I -B -c \
+  rpc_token="$("$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
     'from pathlib import Path; import sys; line=Path(sys.argv[1]).read_text(encoding="utf-8").strip(); key,sep,value=line.partition("="); sys.exit(2) if key != "EIMEMORY_RPC_AUTH_TOKEN" or not sep or not value else print(value)' \
     "$EIMEMORY_CONFIG_DIR/rpc.env")"
   hermes_runtime_env="$(_user_systemctl show hermes-gateway.service --property=MainPID --value | \
-    "$PYTHON_BIN" -I -B -c '
+    "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c '
 import sys
 from pathlib import Path
 
@@ -2138,7 +2138,7 @@ print(f"{timeout:g}")
     EIMEMORY_AGENT_ID="$EIMEMORY_DEPLOY_SCOPE_AGENT" \
     EIMEMORY_WORKSPACE_ID="$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
     EIMEMORY_USER_ID="$EIMEMORY_DEPLOY_SCOPE_USER" \
-    "$HERMES_PYTHON" -I -B "$target_release/deploy/verify_hermes_integration.py" \
+    "$HERMES_PYTHON" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$target_release/deploy/verify_hermes_integration.py" \
       "${hermes_verify_args[@]}"
   unset rpc_token rpc_url adapter_timeout hermes_runtime_env
 }
@@ -2201,7 +2201,7 @@ _verify_release_health() {
   fi
   local attempt
   for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    if "$target_release/.venv/bin/python" -I -B \
+    if "$target_release/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
       "$verifier" \
       --url "$EIMEMORY_HEALTH_URL" --commit "$target_commit" \
       --version "$target_version" --release-dir "$target_release"; then
@@ -2216,9 +2216,9 @@ _prepare_release_receipt_source() {
   # Plugin discovery can import through the current symlink after staging.
   # Normalize generated bytecode at the receipt boundary, never ignore it in
   # the verifier. The full Git tree must still match, including integrations.
-  "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/clean_release_bytecode.py" \
     --release-dir "$RELEASE_DIR" --releases-root "$INSTALL_ROOT/releases" || return $?
-  "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/clean_release_bytecode.py" \
     --validate-source --release-dir "$RELEASE_DIR" \
     --releases-root "$INSTALL_ROOT/releases" --repo-root "$REPO_DIR" \
     --commit "$COMMIT" || return $?
@@ -2232,7 +2232,7 @@ _verify_current_deployment_receipt() {
   env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
     EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
     EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
-    "$RELEASE_DIR/.venv/bin/python" -I -B - "$COMMIT" "$receipt_id" \
+    "$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache - "$COMMIT" "$receipt_id" \
       "$EIMEMORY_DEPLOY_SCOPE_AGENT" "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
       "$EIMEMORY_DEPLOY_SCOPE_USER" "$EIMEMORY_DEPLOY_SCOPE_TENANT" <<'PY'
 import json
@@ -2304,12 +2304,12 @@ _record_deployment_receipt() {
     receipt_output="$(env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
       EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
       EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
-      "$RELEASE_DIR/.venv/bin/python" -I -B "$REPO_DIR/deploy/record_deployment_receipt.py" \
+      "$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/record_deployment_receipt.py" \
         "${args[@]}")" || receipt_rc=$?
     printf '%s\n' "$receipt_output"
     if [ "$receipt_rc" -eq 0 ]; then
       local receipt_id
-      receipt_id="$(printf '%s' "$receipt_output" | /usr/bin/env python3 -I -c 'import json,re,sys
+      receipt_id="$(printf '%s' "$receipt_output" | /usr/bin/env python3 -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c 'import json,re,sys
 try:
     d=json.loads(sys.stdin.read())
 except Exception:
@@ -2344,7 +2344,7 @@ _record_release_lineage() {
   env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
     EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
     EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
-    "$RELEASE_DIR/.venv/bin/python" -I -B \
+    "$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
       "$RELEASE_DIR/deploy/record_release_lineage.py" \
       --repo-root "$REPO_DIR" --current-commit "$COMMIT" \
       --scope-tenant "$EIMEMORY_DEPLOY_SCOPE_TENANT" --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
@@ -2372,7 +2372,7 @@ _capture_prior_health_snapshot() {
     echo "prior_health_capture=failed" >&2
     return 2
   fi
-  if ! "$RELEASE_DIR/.venv/bin/python" -I -B \
+  if ! "$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
       "$RELEASE_DIR/deploy/capture_prior_health_snapshot.py" \
       --health-url "$EIMEMORY_HEALTH_URL" >"$snapshot_file"; then
     rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
@@ -2396,7 +2396,7 @@ _preflight_research_review_configuration() {
   fi
   # Check durable service configuration, never the controller's transient env.
   # This validates configuration only; it does not call or certify a provider.
-  _run_as_service_user "$RELEASE_DIR/.venv/bin/python" -I -B \
+  _run_as_service_user "$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
     "$RELEASE_DIR/deploy/run_with_governance_env.py" \
     --env-file "$GOVERNANCE_ENV_FILE" --optional --check-research-review
 }
@@ -2421,12 +2421,12 @@ _run_pre_switch_production_recall_bootstrap() {
     EIMEMORY_ROOT="$EIMEMORY_ROOT" \
     EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
     EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
-    "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/run_with_governance_env.py" \
+    "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$RELEASE_DIR/deploy/run_with_governance_env.py" \
       --env-file "$GOVERNANCE_ENV_FILE" --optional \
       --runtime-recall-config-dir "$EIMEMORY_CONFIG_DIR" \
       --runtime-recall-root "$EIMEMORY_ROOT" \
       --optional-runtime-authority-env-file "$EIMEMORY_CONFIG_DIR/runtime-authority.env" -- \
-      "$RELEASE_DIR/.venv/bin/python" -I -B \
+      "$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
         "$RELEASE_DIR/deploy/bootstrap_production_recall.py" \
         --candidate-commit "$COMMIT" --prior-commit "$trusted_prior" \
         --current-link "$CURRENT_LINK" --health-url "$EIMEMORY_HEALTH_URL" \
@@ -2498,7 +2498,7 @@ _release_closure_requested() {
   fi
   local impact_status
   if RELEASE_IMPACT_JSON="$(
-    "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/release_impact.py" \
+    "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$RELEASE_DIR/deploy/release_impact.py" \
       --repository "$REPO_DIR" --prior-commit "$trusted_prior" \
       --current-commit "$COMMIT"
   )"; then
@@ -2541,7 +2541,7 @@ _run_post_switch_closure() {
   if _run_as_service_user env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
     EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
     EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
-    "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/run_with_governance_env.py" \
+    "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$RELEASE_DIR/deploy/run_with_governance_env.py" \
       --env-file "$GOVERNANCE_ENV_FILE" --optional \
       --runtime-recall-config-dir "$EIMEMORY_CONFIG_DIR" \
       --runtime-recall-root "$EIMEMORY_ROOT" \
@@ -2561,7 +2561,7 @@ _run_post_switch_closure() {
   # the summary and registers the incident from that same snapshot.
   if summary_json="$(
     _run_as_service_user env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
-      "$RELEASE_DIR/.venv/bin/python" -I -B "$RELEASE_DIR/deploy/record_release_closure_incident.py" \
+      "$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$RELEASE_DIR/deploy/record_release_closure_incident.py" \
       --path "$closure_output" --enforce-gate \
       --evidence-dir "$EIMEMORY_LOG_DIR/release-closure-captures" \
       --expected-commit "$COMMIT" --attempt-id "$STORAGE_ATTEMPT_ID" \
@@ -2579,7 +2579,7 @@ _run_post_switch_closure() {
   fi
   local closure_block
   closure_block="$(
-    printf '%s' "$summary_json" | "$PYTHON_BIN" -I -B -c \
+    printf '%s' "$summary_json" | "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
       'import json,re,sys
 data=json.load(sys.stdin)
 safe=lambda v: v if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,120}",v) else "unknown"
@@ -2588,7 +2588,7 @@ print(safe(data.get("blocked_stage")), safe(data.get("blocked_reason")))' 2>/dev
   CLOSURE_BLOCKED_STAGE="${closure_block%% *}"
   CLOSURE_BLOCKED_REASON="${closure_block#* }"
   if closure_outcome="$(
-    printf '%s' "$summary_json" | "$PYTHON_BIN" -I -B -c \
+    printf '%s' "$summary_json" | "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
       'import json,sys; value=json.load(sys.stdin).get("business_closure_outcome"); allowed={"closure_complete","data_accumulating","ready_for_observation","failed"}; sys.exit(2) if value not in allowed else print(value)'
   )"; then
     :
@@ -2606,7 +2606,7 @@ print(safe(data.get("blocked_stage")), safe(data.get("blocked_reason")))' 2>/dev
   fi
   # Delete the temporary input only after the exact bytes were archived.
   # A processor/DB failure is not reclassified as evidence_waiting.
-  if printf '%s' "$summary_json" | "$PYTHON_BIN" -I -B -c \
+  if printf '%s' "$summary_json" | "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
       'import json,sys; sys.exit(0 if json.load(sys.stdin).get("capture_saved") is True else 1)'; then
     rm -f "$closure_output"
   else
@@ -2616,7 +2616,7 @@ print(safe(data.get("blocked_stage")), safe(data.get("blocked_reason")))' 2>/dev
   if [ "$summary_status" != "0" ] && [ -n "$summary_json" ]; then
     local ordinary_admission
     ordinary_admission="$(
-      printf '%s' "$summary_json" | "$PYTHON_BIN" -I -B -c \
+      printf '%s' "$summary_json" | "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
         'import json,sys
 data=json.load(sys.stdin)
 print("admitted" if data.get("ordinary_release_admission")=="admitted" and data.get("recording_ok") is True and data.get("blocked_reason") in {"bootstrap_pending_non_recall_l5_evidence_incomplete","readiness_not_l5","bootstrap_data_pending_readiness_invalid"} and not (data.get("failure_signals") or {}).get("hard_errors") and (data.get("execution") or {}).get("closure_exit_status") in (0,1) and data.get("l5_certification")!="certified" else "denied")' 2>/dev/null
@@ -2636,7 +2636,7 @@ _release_closure_retry_state() {
   # not_queued: none exists (or it belongs to another commit).
   # invalid/unknown: unreadable checkpoint or checker failure.
   local pending="${EIMEMORY_RELEASE_CLOSURE_PENDING_PATH:-$EIMEMORY_ROOT/state/release-closure-pending.json}"
-  "$PYTHON_BIN" -I -B -c \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
     'import json,sys
 path,commit=sys.argv[1],sys.argv[2].strip().lower()
 try:
@@ -3057,7 +3057,7 @@ _finish_managed_already_current() {
 # failures. A hostile same-UID process requires a separate deployment account.
 if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ]; } && \
    [[ -d "$RELEASE_DIR" && ! -L "$RELEASE_DIR" ]] && \
-   "$PYTHON_BIN" -I -B -c \
+   "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
    'from pathlib import Path; import sys; raise SystemExit(0 if Path(sys.argv[1]).resolve(strict=True) == Path(sys.argv[2]).resolve(strict=True) else 1)' \
   "$CURRENT_LINK" "$RELEASE_DIR"; then
   _clean_existing_release_and_validate_source
@@ -3111,7 +3111,7 @@ cleanup_stage() {
       echo "rollback_preserved_failed_release=$RELEASE_DIR" >&2
     fi
   elif [ "$COMMITTED" != "1" ] && [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
-    if "$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" abort-safe \
+    if "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$STORAGE_TRANSACTION_HELPER" abort-safe \
       --marker "$STORAGE_TRANSACTION_MARKER"; then
       if _clear_storage_release_transaction; then
         if ! _restart_storage_writers; then
@@ -3159,7 +3159,7 @@ cleanup_stage() {
     if [ "${PRESERVE_FAILED_SOURCE:-0}" = "1" ]; then
       echo "source_evidence_preserved=$STAGE_DIR" >&2
     else
-      "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
+      "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/clean_release_bytecode.py" \
         --remove-stage --release-dir "$STAGE_DIR" --releases-root "$INSTALL_ROOT/releases" || true
     fi
   fi
@@ -3172,22 +3172,22 @@ trap cleanup_stage EXIT
 
 git -C "$REPO_DIR" archive "$COMMIT" | tar -C "$STAGE_DIR" -xf -
 
-"$PYTHON_BIN" -I -B "$STAGE_DIR/deploy/clean_release_bytecode.py" \
+"$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$STAGE_DIR/deploy/clean_release_bytecode.py" \
   --validate-source --allow-stage \
   --release-dir "$STAGE_DIR" \
   --releases-root "$INSTALL_ROOT/releases" \
   --repo-root "$REPO_DIR" \
   --commit "$COMMIT"
 
-"$PYTHON_BIN" -I -B -m venv --clear "$STAGE_DIR/.venv"
+"$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -m venv --clear "$STAGE_DIR/.venv"
 
-"$STAGE_DIR/.venv/bin/python" -I -B -m pip install --no-compile --no-deps "$STAGE_DIR"
+"$STAGE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -m pip install --no-compile --no-deps "$STAGE_DIR"
 if [ "${EIMEMORY_INSTALL_POSTGRES_EXTRA+x}" != "x" ]; then
   EIMEMORY_INSTALL_POSTGRES_EXTRA=0
   if [ -n "${PREVIOUS_CURRENT:-}" ] && [ -x "$PREVIOUS_CURRENT/.venv/bin/python" ]; then
     # Preserve the prior release's optional driver without importing its code
     # or reading service environment files containing connection credentials.
-    EIMEMORY_INSTALL_POSTGRES_EXTRA="$("$PREVIOUS_CURRENT/.venv/bin/python" -I -B -c \
+    EIMEMORY_INSTALL_POSTGRES_EXTRA="$("$PREVIOUS_CURRENT/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
       'import importlib.util; print(int(importlib.util.find_spec("psycopg") is not None))')"
   fi
 fi
@@ -3196,14 +3196,14 @@ case "$EIMEMORY_INSTALL_POSTGRES_EXTRA" in
   *) echo "EIMEMORY_INSTALL_POSTGRES_EXTRA must be 0 or 1." >&2; exit 2 ;;
 esac
 if [ "$EIMEMORY_INSTALL_POSTGRES_EXTRA" = "1" ]; then
-  "$STAGE_DIR/.venv/bin/python" -I -B -m pip install --no-compile "$STAGE_DIR[postgres]"
+  "$STAGE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -m pip install --no-compile "$STAGE_DIR[postgres]"
 fi
 if [ "${EIMEMORY_INSTALL_PDF_EXTRA+x}" != "x" ]; then
   EIMEMORY_INSTALL_PDF_EXTRA=0
   if [ -n "${PREVIOUS_CURRENT:-}" ] && [ -x "$PREVIOUS_CURRENT/.venv/bin/python" ]; then
     # Preserve the prior release's optional PDF parser without importing its code
     # or reading service environment files containing connection credentials.
-    EIMEMORY_INSTALL_PDF_EXTRA="$("$PREVIOUS_CURRENT/.venv/bin/python" -I -B -c \
+    EIMEMORY_INSTALL_PDF_EXTRA="$("$PREVIOUS_CURRENT/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
       'import importlib.util; print(int(importlib.util.find_spec("pypdf") is not None))')"
   fi
 fi
@@ -3212,25 +3212,25 @@ case "$EIMEMORY_INSTALL_PDF_EXTRA" in
   *) echo "EIMEMORY_INSTALL_PDF_EXTRA must be 0 or 1." >&2; exit 2 ;;
 esac
 if [ "$EIMEMORY_INSTALL_PDF_EXTRA" = "1" ]; then
-  "$STAGE_DIR/.venv/bin/python" -I -B -m pip install --no-compile "$STAGE_DIR[pdf]"
+  "$STAGE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -m pip install --no-compile "$STAGE_DIR[pdf]"
 fi
-"$STAGE_DIR/.venv/bin/python" -I -B -m pip check
+"$STAGE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -m pip check
 if [ "$EIMEMORY_INSTALL_POSTGRES_EXTRA" = "1" ]; then
-  if ! "$STAGE_DIR/.venv/bin/python" -I -B -c \
+  if ! "$STAGE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
       'import psycopg; from psycopg.rows import dict_row' >/dev/null 2>&1; then
     echo "postgres_dependency=failed staged_import" >&2
     exit 2
   fi
 fi
 if [ "$EIMEMORY_INSTALL_PDF_EXTRA" = "1" ]; then
-  if ! "$STAGE_DIR/.venv/bin/python" -I -B -c \
+  if ! "$STAGE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c \
       'import pypdf' >/dev/null 2>&1; then
     echo "pdf_dependency=failed staged_import" >&2
     exit 2
   fi
 fi
 _source_checkpoint "$STAGE_DIR" build_outputs_checked
-"$PYTHON_BIN" -I -B "$REPO_DIR/deploy/verify_python_sources.py" --root "$STAGE_DIR/eimemory"
+"$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/verify_python_sources.py" --root "$STAGE_DIR/eimemory"
 _source_checkpoint "$STAGE_DIR" stage_built
 
 if [ -e "$RELEASE_DIR" ]; then
@@ -3248,7 +3248,7 @@ fi
 STAGE_DIR=""
 FINAL_REPLACED=1
 
-"$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/clean_release_bytecode.py" \
+"$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$RELEASE_DIR/deploy/clean_release_bytecode.py" \
   --relocate-venv \
   --release-dir "$RELEASE_DIR" \
   --releases-root "$INSTALL_ROOT/releases" \
@@ -3261,7 +3261,7 @@ for console_script in eimemory eimemory-qmd pip pip3; do
     exit 2
   fi
 done
-"$RELEASE_DIR/.venv/bin/python" -I -B "$RELEASE_DIR/.venv/bin/eimemory" --help >/dev/null
+"$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$RELEASE_DIR/.venv/bin/eimemory" --help >/dev/null
 _source_checkpoint "$RELEASE_DIR" console_verified
 _preflight_release_readonly
 _preflight_research_review_configuration
@@ -3270,14 +3270,14 @@ chmod 0755 "$INSTALL_ROOT" 2>/dev/null || true
 _ensure_runtime_dir "$EIMEMORY_ROOT" 0750
 _ensure_runtime_dir "$EIMEMORY_CONFIG_DIR" 0750
 _ensure_runtime_dir "$EIMEMORY_LOG_DIR" 0750
-"$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/ensure_rpc_auth.py" \
+"$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$RELEASE_DIR/deploy/ensure_rpc_auth.py" \
   --path "$EIMEMORY_CONFIG_DIR/rpc.env" \
   --user "$SERVICE_USER" \
   --group "$SERVICE_GROUP"
 _provision_evidence_receipt_key
 _provision_hermes_attestation
 if _openclaw_is_enabled; then
-  "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/ensure_openclaw_bridge_config.py" \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$RELEASE_DIR/deploy/ensure_openclaw_bridge_config.py" \
     --path "$OPENCLAW_LOOP_CONFIG_PATH"
   # Explicit immutable external source; upstream bundled/private boundaries
   # remain intact. Validate compatibility before baseline work or stopping IO.
@@ -3360,7 +3360,7 @@ COMMITTED=1
 echo "technical_commit_complete=1"
 # Disk hygiene: keep newest N releases/snapshots plus current and rollback target.
 if [ "${EIMEMORY_RELEASE_ROTATION:-1}" = "1" ] && [ -f "$RELEASE_DIR/deploy/rotate_releases.py" ]; then
-  if ! "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/rotate_releases.py" \
+  if ! "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$RELEASE_DIR/deploy/rotate_releases.py" \
       --releases-root "$INSTALL_ROOT/releases" \
       --snapshot-root "$EIMEMORY_STORAGE_SNAPSHOT_ROOT" \
       --current-commit "$COMMIT" --previous-commit "${PREVIOUS_COMMIT:-}"; then
@@ -3398,7 +3398,7 @@ fi
 _release_candidate_validation_lock
 _release_storage_deploy_lock
 if [ -n "$BACKUP_DIR" ] && [ -e "$BACKUP_DIR" ]; then
-  "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
+  "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/clean_release_bytecode.py" \
     --remove-stage --release-dir "$BACKUP_DIR" --releases-root "$INSTALL_ROOT/releases" || \
     echo "warning: unable to remove prior release backup: $BACKUP_DIR" >&2
 fi

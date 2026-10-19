@@ -27,10 +27,10 @@ readiness_exit=0
 EIMEMORY_ROOT="$EIMEMORY_ROOT" \
 EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
 PYTHONDONTWRITEBYTECODE=1 \
-PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime \
+PYTHONPYCACHEPREFIX=/var/lib/eimemory-manager/empty-pycache \
   "$EIMEMORY_BIN" learn l5-readiness --json >"$temporary" || readiness_exit=$?
 
-"$EIMEMORY_PYTHON_BIN" -I -B - "$temporary" "$readiness_exit" <<'PY'
+"$EIMEMORY_PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache - "$temporary" "$readiness_exit" <<'PY'
 import json
 from pathlib import Path
 import sys

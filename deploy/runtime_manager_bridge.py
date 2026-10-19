@@ -131,8 +131,7 @@ class Bridge:
         return self.c.validate_registry(self.c.strict_json(read_file(self.registry_path)))
 
     def systemctl(self,registry,unit,*args):
-        if unit.startswith(self.c.JOB_UNIT_PREFIX):
-            self.c.hex_value(unit[len(self.c.JOB_UNIT_PREFIX):-8],64,'manager_job_unit_invalid')
+        if self.c.is_dynamic_unit(unit):
             manager='system'
         else:
             if unit not in registry['units']:raise ValueError('manager_unit_not_registered')
@@ -158,7 +157,7 @@ class Bridge:
         if type(limit) is not int or not 1<=limit<=5000:raise ValueError('manager_journal_limit_invalid')
         actual=self.unit_state(registry,unit,['InvocationID'])['InvocationID']
         if actual!=invocation:raise ValueError('manager_journal_invocation_mismatch')
-        manager='system' if unit.startswith(self.c.JOB_UNIT_PREFIX) else registry['units'][unit]['manager']
+        manager='system' if self.c.is_dynamic_unit(unit) else registry['units'][unit]['manager']
         args=['/usr/bin/journalctl','--quiet','--no-pager','--output=json','--lines='+str(limit+1),
             '_SYSTEMD_INVOCATION_ID='+invocation]
         if manager=='system':args+=['_SYSTEMD_UNIT='+unit]
@@ -302,13 +301,15 @@ class Bridge:
         self.c.hex_value(state['InvocationID'],32,'manager_activation_invocation_invalid')
         if not cgroup.startswith('/system.slice/') or state['ControlGroup']!=cgroup:
             raise ValueError('manager_activation_native_cgroup_mismatch')
+        if CURRENT.resolve(strict=True)!=RELEASES/registry['runtime_commit']:
+            raise ValueError('manager_activation_current_registry_mismatch')
         boot=(self.proc/'sys/kernel/random/boot_id').read_text().strip()
         if re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',boot) is None:raise ValueError('manager_activation_boot_invalid')
         cause=self.activation_cause(registry,unit,state)
         if int((process/'stat').read_text().rsplit(')',1)[1].split()[19])!=start_ticks:
             raise ValueError('manager_activation_peer_changed')
         payload={'schema':'eimemory.runtime_activation_attestation.v1','registry_generation':registry['generation'],
-            'scope':scope,'manager':'system','unit':unit,'invocation_id':state['InvocationID'],'boot_id':boot,
+            'scope':scope,'manager':'system','unit':unit,'runtime_commit':registry['runtime_commit'],'controller_commit':registry['controller_commit'],'invocation_id':state['InvocationID'],'boot_id':boot,
             'observed_at':datetime.now(timezone.utc).isoformat(),'observed_monotonic_ns':time.monotonic_ns(),
             'service_start_monotonic_usec':int(state['ExecMainStartTimestampMonotonic']),
             'peer_pid':pid,'peer_uid':uid,'peer_start_ticks':start_ticks,'actual_unit_cgroup':cgroup,**cause}
@@ -407,6 +408,141 @@ class Bridge:
         return {'manager':'system','unit':record['unit'],'state':state,'phase':record['phase'],'job_key':key,
             'original_invocation':record.get('original_invocation'),'resumed':record.get('resumed') is True,
             'complete':record.get('finalized') is True,'held_background':record.get('held_background',[])}
+
+    def validation_record_path(self,key,operation):
+        self.c.validation_unit(key,operation)
+        return self.state/'validations'/(key+'-'+operation+'.json')
+
+    def validation_artifact(self,registry,key,operation):
+        self.c.validation_unit(key,operation)
+        parent=Path(self.c.JOB_ROOT)/key
+        for directory in (parent,parent.parent):
+            meta=directory.lstat()
+            if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid!=registry['runtime_uid']
+                    or stat.S_IMODE(meta.st_mode)!=0o700):raise ValueError('manager_validation_artifact_parent_untrusted')
+        path=parent/('validation-'+operation+'-result.json')
+        if not path.exists() and not path.is_symlink():return None
+        return read_file(path,uid=registry['runtime_uid'],mode=0o600,maximum=4*1024*1024)
+
+    def validation_status(self,registry,key,operation):
+        path=self.validation_record_path(key,operation)
+        trusted_directory(path.parent,mode=0o750)
+        record=self.c.strict_json(read_file(path))
+        parent=self.record(key)
+        if (record.get('job_key')!=key or record.get('operation')!=operation
+                or record.get('unit')!=self.c.validation_unit(key,operation)
+                or record.get('parent_original_invocation')!=parent.get('original_invocation')):
+            raise ValueError('manager_validation_record_binding_invalid')
+        state=self.unit_state(record['registry'],record['unit'],['LoadState','ActiveState','SubState','Result','InvocationID','ExecMainStatus','MainPID','ControlGroup'])
+        actual=state.get('InvocationID')
+        if actual:
+            self.c.hex_value(actual,32,'manager_validation_invocation_invalid')
+            if record.get('original_invocation') not in {None,actual}:raise ValueError('manager_validation_invocation_changed')
+            if record.get('original_invocation') is None:
+                record['original_invocation']=actual;atomic_json(path,record,gid=registry['runtime_gid'])
+        seal=self.validation_seal(registry,key,operation,record)
+        terminal=(state.get('LoadState')=='loaded' and state.get('ActiveState') in {'inactive','failed'}
+            and actual and state.get('Result') in {'success','exit-code','signal','timeout','core-dump','watchdog','start-limit-hit'})
+        if terminal:
+            if seal is None and state['Result']=='success' and state.get('ExecMainStatus')=='0':
+                raise ValueError('manager_validation_success_artifact_not_sealed')
+            if record.get('terminal_state') is not None:
+                old=record['terminal_state']
+                # PID1 may release the exited cgroup before garbage collecting
+                # the unit. Preserve the original exit identity; transient PID
+                # and cgroup disappearance cannot replace that sealed outcome.
+                stable=('LoadState','ActiveState','SubState','Result','InvocationID','ExecMainStatus')
+                if any(old.get(name)!=state.get(name) for name in stable):
+                    raise ValueError('manager_validation_terminal_state_changed')
+                if state.get('ControlGroup') not in {'',old.get('ControlGroup')} or state.get('MainPID') not in {'0',old.get('MainPID')}:
+                    raise ValueError('manager_validation_terminal_process_changed')
+            if record.get('terminal_state') is None:
+                record['terminal_state']=state;atomic_json(path,record,gid=registry['runtime_gid'])
+        return {'job_key':key,'operation':operation,'manager':'system','unit':record['unit'],'state':state,
+            'artifact_sha256':seal['artifact_sha256'] if seal else None,'sealed_artifact':seal['reference'] if seal else None,'terminal_state':record.get('terminal_state'),
+            'original_invocation':record.get('original_invocation'),'parent_original_invocation':record['parent_original_invocation'],
+            'target_commit':record['target_commit'],'controller_commit':record['controller_commit'],
+            'phase':parent['phase'],'artifact_basename':'validation-'+operation+'-result.json'}
+
+    def validation_seal(self,registry,key,operation,record):
+        directory=self.state/'validation-results';trusted_directory(directory,mode=0o750)
+        path=directory/(key+'-'+operation+'.json')
+        if not path.exists():return None
+        raw=read_file(path,maximum=9*1024*1024);value=self.c.strict_json(raw,max_bytes=9*1024*1024)
+        fields={'schema','job_key','operation','invocation','parent_invocation','artifact_sha256','raw_hex'}
+        if (not isinstance(value,dict) or set(value)!=fields or value['schema']!='eimemory.deployment_validation_seal.v1'
+                or value['job_key']!=key or value['operation']!=operation or value['invocation']!=record.get('original_invocation')
+                or value['parent_invocation']!=record['parent_original_invocation'] or self.c.canonical(value)!=raw):
+            raise ValueError('manager_validation_root_seal_invalid')
+        artifact=bytes.fromhex(value['raw_hex'])
+        if len(artifact)>4*1024*1024 or sha256(artifact).hexdigest()!=value['artifact_sha256']:
+            raise ValueError('manager_validation_root_seal_digest_invalid')
+        return {**value,'reference':{'schema':'eimemory.deployment_validation_artifact.v1',
+            'job_key':key,'operation':operation,'invocation':value['invocation'],
+            'parent_invocation':value['parent_invocation'],'artifact_sha256':value['artifact_sha256'],
+            'envelope_sha256':sha256(raw).hexdigest()}}
+
+    def seal_validation(self,registry,key,operation,invocation,digest,pid,uid):
+        self.c.hex_value(invocation,32,'manager_validation_invocation_invalid')
+        self.c.hex_value(digest,64,'manager_validation_artifact_digest_invalid')
+        path=self.validation_record_path(key,operation)
+        record=self.c.strict_json(read_file(path))
+        if record.get('job_key')!=key or record.get('operation')!=operation or record.get('unit')!=self.c.validation_unit(key,operation):
+            raise ValueError('manager_validation_record_binding_invalid')
+        process=self.proc/str(pid)
+        values=dict(line.split(':',1) for line in (process/'status').read_text().splitlines() if ':' in line)
+        if (uid!=registry['runtime_uid'] or values.get('Uid','').split()!=[str(uid)]*4
+                or values.get('NoNewPrivs','').strip()!='1' or re.fullmatch('0+',values.get('CapEff','').strip()) is None):
+            raise ValueError('manager_validation_seal_peer_invalid')
+        state=self.unit_state(record['registry'],record['unit'],['ActiveState','InvocationID','ControlGroup'])
+        cg=state['ControlGroup']
+        groups=(process/'cgroup').read_text().splitlines()
+        if (not cg.startswith('/system.slice/') or cg.rsplit('/',1)[-1]!=record['unit']
+                or not any(line.startswith('0::') and (line[3:]==cg or line[3:].startswith(cg+'/')) for line in groups)
+                or state['ActiveState'] not in {'active','activating'} or state['InvocationID']!=invocation
+                or record.get('original_invocation') not in {None,invocation}):
+            raise ValueError('manager_validation_seal_cgroup_or_invocation_invalid')
+        if record.get('original_invocation') is None:
+            record['original_invocation']=invocation;atomic_json(path,record,gid=registry['runtime_gid'])
+        previous=self.validation_seal(registry,key,operation,record)
+        if previous is not None:
+            if previous['artifact_sha256']!=digest:raise ValueError('manager_validation_seal_immutable')
+            return {'job_key':key,'operation':operation,'artifact_sha256':digest,'sealed_artifact':previous['reference'],'idempotent':True}
+        raw=self.validation_artifact(registry,key,operation)
+        if raw is None or sha256(raw).hexdigest()!=digest:raise ValueError('manager_validation_seal_artifact_mismatch')
+        value={'schema':'eimemory.deployment_validation_seal.v1','job_key':key,'operation':operation,
+            'invocation':invocation,'parent_invocation':record['parent_original_invocation'],
+            'artifact_sha256':digest,'raw_hex':raw.hex()}
+        destination=self.state/'validation-results'/(key+'-'+operation+'.json')
+        self.write_root_bytes(destination,self.c.canonical(value),registry['runtime_gid'],exclusive=True)
+        sealed=self.validation_seal(registry,key,operation,record)
+        return {'job_key':key,'operation':operation,'artifact_sha256':digest,'sealed_artifact':sealed['reference'],'idempotent':False}
+
+    def validate_job(self,registry,key,operation,pid,uid):
+        path=self.validation_record_path(key,operation)
+        if path.exists():return self.validation_status(registry,key,operation)
+        parent=self.record(key);self.verify_job_peer(registry,parent,pid,uid)
+        if parent.get('superseded_by') or parent.get('finalized') is True:raise ValueError('manager_validation_parent_not_current')
+        target=parent['request']['target_commit']
+        if CURRENT.resolve(strict=True)!=RELEASES/target or registry['runtime_commit']!=target:
+            raise ValueError('manager_validation_target_not_current')
+        if operation=='post_resume':
+            if parent['request']['operation']!='deploy' or parent.get('resumed') is not True or parent['phase']!='resumed_awaiting_business':
+                raise ValueError('manager_validation_business_before_resume')
+        elif parent.get('quiesced') is not True:
+            raise ValueError('manager_validation_receipt_before_quiesce')
+        pin=registry['validation_entry_digest']
+        if pin is None:raise ValueError('manager_validation_entry_not_reviewed')
+        source=RELEASES/parent['request']['controller_commit']/self.c.VALIDATION_ENTRY
+        raw=read_file(source,uid=registry['runtime_uid'],mode=stat.S_IMODE(source.stat().st_mode),maximum=1048576)
+        if sha256(raw).hexdigest()!=pin:raise ValueError('manager_validation_entry_digest_mismatch')
+        record={'job_key':key,'operation':operation,'unit':self.c.validation_unit(key,operation),'registry':registry,
+            'parent_original_invocation':parent['original_invocation'],'target_commit':target,
+            'controller_commit':parent['request']['controller_commit'],'entry_digest':pin}
+        trusted_directory(path.parent,mode=0o750)
+        atomic_json(path,record,gid=registry['runtime_gid'],exclusive=True)
+        self.systemctl(registry,record['unit'],'start','--no-block')
+        return self.validation_status(registry,key,operation)
 
     def verify_job_peer(self,registry,record,pid,uid):
         if uid!=registry['runtime_uid']:raise ValueError('manager_peer_uid_denied')
@@ -515,6 +651,17 @@ class Bridge:
             if record.get('manual_release') is not True:
                 record['resume_requested']=True;record['phase']='resume_deferred_until_terminal';self.save(registry,record)
                 return {'job_key':key,'phase':record['phase'],'resumed':False,'deferred':True}
+            target=CURRENT.resolve(strict=True)
+            if target.parent!=RELEASES or target.name not in {record['request']['base_commit'],record['request']['candidate_commit']}:
+                raise ValueError('manager_finalize_current_unbound')
+            if not self.runtime_compatible(registry,target):
+                record['held_background']=[unit for unit in record['active_before'] if unit not in {'eimemory-rpc.service','hermes-gateway.service','openclaw-gateway.service'}]
+                record['phase']='completed_held';record['finalized']=True;record['resume_requested']=True
+                self.save(registry,record)
+                atomic_json(self.state/'active-transition.json',{'job_key':key,'complete':True,'held':True},gid=registry['runtime_gid'])
+                return {'job_key':key,'phase':record['phase'],'resumed':False,'held_background':record['held_background'],
+                    'serving_commit':target.name,'controller_commit':registry['controller_commit'],
+                    'reason':'manager_legacy_runtime_requires_reviewed_controller_upgrade'}
             self.resume(registry,record)
             record['resumed']=True
             migration=self.state/'migration-prior-active.json'
@@ -524,6 +671,14 @@ class Bridge:
             atomic_json(self.state/'active-transition.json',{'job_key':key,'complete':True},gid=registry['runtime_gid'])
         record['phase']=phase;self.save(registry,record)
         return {'job_key':key,'phase':phase,'active_before':record['active_before'],'resumed':record['resumed']}
+
+    def runtime_compatible(self,registry,target):
+        for path,pin in registry['compatibility_hashes'].items():
+            source=target/path
+            if source.is_symlink() or not source.is_file():return False
+            if sha256(read_file(source,uid=registry['runtime_uid'],mode=stat.S_IMODE(source.stat().st_mode),maximum=4*1024*1024)).hexdigest()!=pin:
+                return False
+        return True
 
     def finalize(self,registry,key,pid,uid):
         record=self.record(key);self.verify_job_peer(registry,record,pid,uid)
@@ -535,13 +690,7 @@ class Bridge:
         target=CURRENT.resolve(strict=True)
         if target.parent!=RELEASES or target.name not in {record['request']['base_commit'],record['request']['candidate_commit']}:
             raise ValueError('manager_finalize_current_unbound')
-        compatible=True
-        for path,pin in registry['compatibility_hashes'].items():
-            source=target/path
-            if source.is_symlink() or not source.is_file():compatible=False;break
-            # Runtime bytes are compared as data. They are never imported by root.
-            if sha256(read_file(source,uid=registry['runtime_uid'],mode=stat.S_IMODE(source.stat().st_mode),maximum=4*1024*1024)).hexdigest()!=pin:
-                compatible=False;break
+        compatible=self.runtime_compatible(registry,target)
         if not compatible:
             record['held_background']=[unit for unit in record['active_before'] if unit not in {'eimemory-rpc.service','hermes-gateway.service','openclaw-gateway.service'}];record['phase']='held_incompatible_runtime'
             self.save(registry,record)
@@ -586,6 +735,8 @@ class Bridge:
                 if unit=='eimemory-code-deployment-job@.service':
                     controller=target if record.get('manual_release') is True and target==record['request']['candidate_commit'] else registry['controller_commit']
                     policy=read_file(ROOT/'job-runtime-policy.conf').replace(b'@COMMIT@',controller.encode())
+                elif unit.startswith('eimemory-code-validation-'):
+                    policy=read_file(ROOT/'validation-runtime-policy.conf')
                 else:
                     policy=read_file(ROOT/'runtime-policy.conf').replace(b'@COMMIT@',target.encode())
                 if unit in {'eimemory-rpc.service','eimemory-console.service'}:
@@ -594,7 +745,7 @@ class Bridge:
         self.command(['/usr/sbin/runuser','-u',registry['runtime_user'],'--','/usr/bin/env',
             'XDG_RUNTIME_DIR=/run/user/'+str(registry['runtime_uid']),
             'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/'+str(registry['runtime_uid'])+'/bus',
-            '/usr/bin/python3','-I','-B',str(ROOT/'runtime_manager_user_policy.py'),target])
+            '/usr/bin/python3','-I','-B','-X','pycache_prefix='+self.c.EMPTY_PYCACHE,str(ROOT/'runtime_manager_user_policy.py'),target])
         self.command(['/usr/bin/systemctl','daemon-reload'])
         if activate:
             fresh=dict(registry);fresh['runtime_commit']=target
@@ -610,13 +761,14 @@ class Bridge:
             atomic_json(self.registry_path,fresh,gid=registry['runtime_gid'])
 
     @staticmethod
-    def write_root_bytes(path,raw,gid):
+    def write_root_bytes(path,raw,gid,*,exclusive=False):
         temporary=path.with_name(path.name+'.tmp.'+str(os.getpid()))
         fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o640)
         try:
             os.fchown(fd,0,gid);os.write(fd,raw);os.fsync(fd)
             if path.exists():read_file(path)
-            os.replace(temporary,path)
+            if exclusive:os.link(temporary,path,follow_symlinks=False)
+            else:os.replace(temporary,path)
             directory=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
             try:os.fsync(directory)
             finally:os.close(directory)
@@ -642,7 +794,7 @@ class Bridge:
         fields={'unit_state':{'unit','properties'},'unit_journal':{'unit','invocation','limit'},
             'issue_managed_incident_proof':{'source_record_id','source_digest'},'verify_managed_incident_proof':{'receipt_id','digest'},'checkpoint_managed_incident_knowledge':set(),
             'runtime_identity':{'unit'},'activation_attestation':set(),'verify_activation_attestation':{'receipt_id','digest'},'error_window':set(),'single_rpc_owner':set(),'readonly_probe':{'job_key'},'submit_job':{'job_key'},'job_status':{'job_key'},
-            'job_journal':{'job_key','invocation'},'finalize_job':{'job_key'},'complete_job':{'job_key'},'transition':{'job_key','phase'}}
+            'job_journal':{'job_key','invocation'},'validate_deployment_job':{'job_key','validation_operation'},'seal_deployment_validation_result':{'job_key','validation_operation','invocation','artifact_digest'},'deployment_validation_status':{'job_key','validation_operation'},'finalize_job':{'job_key'},'complete_job':{'job_key'},'transition':{'job_key','phase'}}
         if op not in fields or set(value)!=base|fields[op]:raise ValueError('manager_request_shape_invalid')
         if op=='issue_managed_incident_proof':
             return {'reference':self.managed_authority(registry).issue(value['source_record_id'],value['source_digest'],
@@ -679,6 +831,9 @@ class Bridge:
             return {'runtime_commit':values[0]}
         # Serialize durable transitions. Reads never cause a lifecycle action.
         with self.mutex,self.lifecycle_lock():
+            if op=='seal_deployment_validation_result':return {'validation':self.seal_validation(registry,value['job_key'],value['validation_operation'],value['invocation'],value['artifact_digest'],pid,uid)}
+            if op=='validate_deployment_job':return {'validation':self.validate_job(registry,value['job_key'],value['validation_operation'],pid,uid)}
+            if op=='deployment_validation_status':return {'validation':self.validation_status(registry,value['job_key'],value['validation_operation'])}
             if op=='complete_job':return self.complete(registry,value['job_key'],pid,uid)
             if op=='finalize_job':return self.finalize(registry,value['job_key'],pid,uid)
             if op=='readonly_probe':
@@ -691,7 +846,7 @@ class Bridge:
                     '--property=User=darrow','--property=Group=darrow','--property=PrivateUsers=self',
                     '--property=NoNewPrivileges=yes','--property=CapabilityBoundingSet=',
                     '--property=ReadOnlyPaths=/opt/eimemory/releases',
-                    str(root/'.venv/bin/python'),'-I','-B','-c',
+                    str(root/'.venv/bin/python'),'-I','-B','-X','pycache_prefix='+self.c.EMPTY_PYCACHE,'-c',
                     'import os,sys;sys.exit(0 if os.statvfs(sys.argv[1]).f_flag & os.ST_RDONLY else 1)',str(root)])
                 return {'readonly':True,'target_commit':target}
             if op=='submit_job':return self.submit(registry,value['job_key'])

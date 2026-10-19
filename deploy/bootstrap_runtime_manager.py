@@ -234,6 +234,19 @@ def restore_owner(args):
             if state.get('LoadState')!='loaded' or state.get('ActiveState') not in {'inactive','failed'} or state.get('Result') in {None,'','success'}:
                 raise ValueError('bootstrap_active_or_unknown_job_cannot_be_abandoned')
             abandoned=key
+    jobs=STATE/'jobs'
+    if jobs.exists():
+        records=sorted(jobs.glob('*.json'))
+        if len(records)>1000:raise ValueError('bootstrap_owner_restore_job_inventory_limit')
+        for path in records:
+            key=path.stem;c.hex_value(key,64,'bootstrap_job_record_name_invalid')
+            record=c.strict_json(read(path))
+            if record.get('job_key')!=key:raise ValueError('bootstrap_job_record_binding_invalid')
+            status=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',c.job_unit(key),'--property=LoadState,ActiveState,Result,InvocationID']).splitlines() if '=' in line)
+            if status.get('ActiveState') not in {'inactive','failed'} or status.get('LoadState') not in {'loaded','not-found'}:
+                raise ValueError('bootstrap_owner_restore_job_still_running_or_unknown')
+            if (record.get('phase')=='submitted' and record.get('original_invocation') is None
+                    and args.abandon_failed_job_key!=key):raise ValueError('bootstrap_owner_restore_ambiguous_submission')
     prior=original['prior_user_state'];prior_system=original['prior_system_state']
     if set(prior_system)!=c.REGISTERED_UNITS|{'eimemory-runtime-manager.service'}:raise ValueError('bootstrap_prior_system_inventory_invalid')
     if set(prior)!=c.REGISTERED_UNITS:raise ValueError('bootstrap_prior_owner_inventory_invalid')
@@ -250,7 +263,9 @@ def restore_owner(args):
         state=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',unit,'--property=LoadState,ActiveState']).splitlines() if '=' in line)
         if state.get('LoadState')=='not-found':continue
         if state.get('LoadState')!='loaded':raise ValueError('bootstrap_new_owner_state_unknown')
-        call(['/usr/bin/systemctl','disable','--now',unit])
+        call(['/usr/bin/systemctl','disable',unit])
+        if state['ActiveState'] in {'active','activating','reloading','deactivating'}:
+            call(['/usr/bin/systemctl','stop',unit])
         after=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',unit,'--property=ActiveState']).splitlines() if '=' in line)
         if after.get('ActiveState') not in {'inactive','failed'}:raise ValueError('bootstrap_new_owner_still_active')
     call(['/usr/bin/systemctl','disable','--now','eimemory-runtime-manager.service'])
@@ -293,6 +308,12 @@ def restore_owner(args):
         query=user_command(account,'show',item['unit'],'--property=ActiveState') if item['manager']=='user' else ['/usr/bin/systemctl','show',item['unit'],'--property=ActiveState']
         state=dict(line.split('=',1) for line in call(query).splitlines() if '=' in line)
         if state.get('ActiveState') not in {'active','activating'}:raise ValueError('bootstrap_legacy_active_set_not_restored')
+    migration=STATE/'migration-prior-active.json'
+    if migration.exists():
+        capture=c.strict_json(read(migration))
+        if capture.get('history_id')!=args.history_id:raise ValueError('bootstrap_restore_migration_history_mismatch')
+        capture['restored']=True;capture['owner_restore_history']=args.history_id
+        write(migration,c.canonical(capture),gid=account.pw_gid)
     write(history/'restore-complete.json',c.canonical({'ok':True,'manager':manager,'commit':original['commit'],'active_before':active_before,'health':health}),gid=0,mode=0o600,exclusive=True)
     print(json.dumps({'ok':True,'manager':manager,'history_id':args.history_id,'commit':original['commit']}))
 
@@ -333,6 +354,27 @@ def configure_managed_authority(args,registry,history,c,account):
 
 
 
+def retire_legacy_user_owners(account,prior,units):
+    active=[]
+    # Timers first prevent a new old-owner invocation between the snapshot and
+    # stopping services. Failed/inactive services are never stopped/reset.
+    for unit in sorted(units,key=lambda name:(not name.endswith(('.timer','.path')),name)):
+        before=prior[unit]
+        if before['LoadState']!='loaded':continue
+        running=before['ActiveState'] in {'active','activating','reloading','deactivating'}
+        if running:active.append(unit)
+        call(user_command(account,'disable',unit))
+        if running:call(user_command(account,'stop',unit))
+        after=dict(line.split('=',1) for line in call(user_command(account,'show',unit,
+            '--property=ActiveState,Result,InvocationID,ExecMainStatus')).splitlines() if '=' in line)
+        if after.get('ActiveState') not in {'inactive','failed'}:raise ValueError('bootstrap_legacy_owner_still_active')
+        if before['ActiveState']=='failed':
+            if after['ActiveState']!='failed' or any(before.get(key) not in {None,''} and after.get(key)!=before[key]
+                    for key in ('Result','InvocationID','ExecMainStatus')):
+                raise ValueError('bootstrap_legacy_failed_prefix_changed')
+    return active
+
+
 def install(args):
     import pwd
     account=pwd.getpwnam('darrow')
@@ -346,8 +388,19 @@ def install(args):
         active=STATE/'active-transition.json'
         if active.exists() and json.loads(read(active)).get('complete') is not True:
             raise ValueError('bootstrap_transition_still_active')
+        # Replacing a running daemon's reviewed modules does not update its
+        # loaded authority. A manager upgrade needs its own reviewed handoff;
+        # this first-owner migration entry must not silently perform one.
+        raise ValueError('bootstrap_existing_manager_upgrade_requires_reviewed_handoff')
     elif args.expected_registry_sha256 is not None:
         raise ValueError('bootstrap_expected_registry_missing')
+    cache=STATE/'empty-pycache'
+    if not cache.exists():directory(cache,gid=0,mode=0o555)
+    if cache.is_symlink() or cache.stat().st_uid!=0 or stat.S_IMODE(cache.stat().st_mode)!=0o555 or any(cache.iterdir()):
+        raise ValueError('bootstrap_manager_empty_pycache_invalid')
+    migration=STATE/'migration-prior-active.json'
+    if migration.exists() and json.loads(read(migration)).get('restored') is not True:
+        raise ValueError('bootstrap_previous_migration_capture_unrestored')
     files,manifest=bundle(read(args.bundle),args.expected_bundle_sha256)
     commit=manifest['controller_commit']
     scope_raw=read(args.unit_scope_manifest)
@@ -356,7 +409,7 @@ def install(args):
     if set(scopes)!={'schema','units'} or scopes['schema']!='eimemory.runtime_unit_scopes.v1':raise ValueError('bootstrap_unit_scope_manifest_invalid')
     if CURRENT.resolve(strict=True)!=RELEASES/commit:
         raise ValueError('bootstrap_controller_must_be_current')
-    directory(ROOT,gid=account.pw_gid);directory(STATE,gid=account.pw_gid);directory(STATE/'jobs',gid=account.pw_gid)
+    directory(ROOT,gid=account.pw_gid);directory(STATE,gid=account.pw_gid);directory(STATE/'jobs',gid=account.pw_gid);directory(STATE/'validations',gid=account.pw_gid);directory(STATE/'validation-results',gid=account.pw_gid)
     lock=os.open(STATE/'bootstrap.lock',os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600)
     import fcntl
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -364,6 +417,7 @@ def install(args):
     # Original root bytes are exclusive history, including a failed migration.
     for path in [REGISTRY,*[SYSTEM_UNITS/n.split('/')[-1] for n in files if n.startswith('templates/')]]:
         if path.exists():write(history/(path.name+'.original'),read(path),gid=0,mode=0o600,exclusive=True)
+    if migration.exists():write(history/'migration-prior-active.original',read(migration),gid=0,mode=0o600,exclusive=True)
     before_root=root_snapshot(files)
     for name,raw in files.items():
         if name=='eimemory-runtime-manager.service':continue
@@ -375,7 +429,7 @@ def install(args):
     units={}
     prior={}
     for unit in sorted(c.REGISTERED_UNITS):
-        command=user_command(account,'show',unit,'--property=ActiveState,LoadState,UnitFileState')
+        command=user_command(account,'show',unit,'--property=ActiveState,LoadState,UnitFileState,Result,InvocationID,ExecMainStatus')
         values=dict(line.split('=',1) for line in call(command).splitlines() if '=' in line)
         if not {'ActiveState','LoadState','UnitFileState'}<=set(values):raise ValueError('bootstrap_legacy_state_incomplete')
         prior[unit]=values
@@ -395,21 +449,15 @@ def install(args):
         'user_files':user_original,'prior_user_state':prior,'prior_system_state':prior_system}
     write(history/'owner-snapshot.json',c.canonical(owner_original),gid=0,mode=0o600,exclusive=True)
     storage_clean()
-    authority_preview=configure_managed_authority(args,{'managed_incident_authority':{'enabled':False},'runtime_uid':account.pw_uid,'runtime_gid':account.pw_gid,'runtime_user':'darrow'},history,c,account)
+    authority_preview=configure_managed_authority(args,{'managed_incident_authority':{'enabled':False},'runtime_uid':account.pw_uid,'runtime_gid':account.pw_gid,'runtime_user':'darrow','runtime_commit':commit,'controller_commit':commit},history,c,account)
     # Stop/disable the old product owner before publishing any system owner.
     # No parallel RPC owner is ever started as part of a migration.
-    active=[]
-    for unit in sorted(set(c.REGISTERED_UNITS)-set(c.USER_COMPAT_UNITS)):
-        if prior[unit]['LoadState']=='loaded':
-            if prior[unit]['ActiveState'] in {'active','activating','reloading','deactivating'}:active.append(unit)
-            call(user_command(account,'disable','--now',unit))
-            state=dict(line.split('=',1) for line in call(user_command(account,'show',unit,'--property=ActiveState')).splitlines() if '=' in line)
-            if state.get('ActiveState') not in {'inactive','failed'}:raise ValueError('bootstrap_legacy_owner_still_active')
+    active=retire_legacy_user_owners(account,prior,set(c.REGISTERED_UNITS)-set(c.USER_COMPAT_UNITS))
     write(history/'active-before.json',c.canonical(active),gid=0,mode=0o600,exclusive=True)
     for name,raw in files.items():
         if not name.startswith('templates/'):continue
         unit=name.split('/')[-1]
-        if unit!='eimemory-code-deployment-job@.service' and unit not in c.REGISTERED_UNITS:raise ValueError('bootstrap_unit_not_registered')
+        if unit not in {'eimemory-code-deployment-job@.service','eimemory-code-validation-receipt@.service','eimemory-code-validation-post-resume@.service'} and unit not in c.REGISTERED_UNITS:raise ValueError('bootstrap_unit_not_registered')
         # Every product command must remain non-root, including ExecStartPre.
         if unit.endswith('.service'):
             text=raw.decode()
@@ -418,7 +466,7 @@ def install(args):
             if re.search(r'^Exec[^=]*=[+!]',text,re.M):raise ValueError('bootstrap_product_privilege_prefix_forbidden')
         write(SYSTEM_UNITS/unit,raw,gid=account.pw_gid)
         if unit.endswith('.service'):
-            policy=files['job-runtime-policy.conf' if unit=='eimemory-code-deployment-job@.service' else 'runtime-policy.conf'].replace(b'@COMMIT@',commit.encode())
+            policy=files['job-runtime-policy.conf' if unit=='eimemory-code-deployment-job@.service' else 'validation-runtime-policy.conf' if unit.startswith('eimemory-code-validation-') else 'runtime-policy.conf'].replace(b'@COMMIT@',commit.encode())
             # The independent installer needs candidate writes. Protect only
             # its registered controller; consumers protect the entire tree.
             if unit in {'eimemory-rpc.service','eimemory-console.service'}:
@@ -429,6 +477,7 @@ def install(args):
         'template_hashes':{name.split('/')[-1]:sha256(raw).hexdigest() for name,raw in files.items() if name.startswith('templates/')},
         'compatibility_hashes':json.loads(files['compatibility.json']),
         'controller_entry_digest':json.loads(files['controller-entry.json'])['sha256'],
+        'validation_entry_digest':json.loads(files['controller-entry.json'])['validation_sha256'],
         'unit_scopes':scopes['units'],'managed_incident_authority':{'enabled':False}}
     registry['managed_incident_authority']=authority_preview['managed_incident_authority']
     registry['generation']=c.digest(registry);c.validate_registry(registry)
@@ -444,7 +493,7 @@ def install(args):
     call(['/usr/bin/systemctl','enable','--now','eimemory-runtime-manager.service'])
     # Preserve the old active set for the first registered release transition.
     # Do not execute old automatic effects before the new source is installed.
-    write(STATE/'migration-prior-active.json',c.canonical({'active_before':active,'restored':False}),gid=account.pw_gid,exclusive=True)
+    write(STATE/'migration-prior-active.json',c.canonical({'active_before':active,'restored':False,'history_id':history.name}),gid=account.pw_gid,exclusive=not migration.exists())
     if 'eimemory-rpc.service' in active:
         call(['/usr/bin/systemctl','start','eimemory-rpc.service'])
     write(history/'complete.json',c.canonical({'registry_generation':registry['generation'],'controller_commit':commit,'old_active_retained':active,'automatic_jobs_paused_until_release_transition':True}),gid=0,mode=0o600,exclusive=True)

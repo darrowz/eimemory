@@ -31,7 +31,7 @@ def registry():
         units={name:dict(manager='user' if name in c.USER_COMPAT_UNITS else 'system', installed=False) for name in c.REGISTERED_UNITS},
         template_hashes={},compatibility_hashes={name:'0'*64 for name in c.COMPATIBILITY_PATHS},
         unit_scopes={name:dict(tenant_id='fixture',agent_id='fixture',workspace_id='fixture',user_id='fixture') for name in c.PRODUCT_SERVICES},
-        managed_incident_authority={'enabled':False},controller_entry_digest=None)
+        managed_incident_authority={'enabled':False},controller_entry_digest=None,validation_entry_digest=None)
     value['generation'] = c.digest(value)
     return value
 
@@ -554,8 +554,13 @@ def test_owner_restore_requires_no_storage_recovery_marker(monkeypatch,tmp_path,
 def test_root_owner_file_restore_preserves_exact_original_and_rejects_paths(tmp_path,monkeypatch):
     import os
     m=standalone('bootstrap_runtime_manager')
-    root=tmp_path/'root';units=tmp_path/'units';root.mkdir();units.mkdir()
-    monkeypatch.setattr(m,'ROOT',root);monkeypatch.setattr(m,'SYSTEM_UNITS',units);monkeypatch.setattr(m,'REGISTRY',tmp_path/'registry.json')
+    # The real bootstrap forbids world-writable ancestors. A root-only /run
+    # fixture exercises that boundary without relaxing it for pytest /tmp.
+    import tempfile
+    base=Path(tempfile.mkdtemp(prefix='eimemory-manager-root-fs-',dir='/run'))
+    assert base.parent==Path('/run') and base.name.startswith('eimemory-manager-root-fs-')
+    root=base/'root';units=base/'units';root.mkdir();units.mkdir()
+    monkeypatch.setattr(m,'ROOT',root);monkeypatch.setattr(m,'SYSTEM_UNITS',units);monkeypatch.setattr(m,'REGISTRY',base/'registry.json')
     old=root/'runtime_manager_bridge.py';old.write_bytes(b'original root bytes');old.chmod(0o640)
     manifest={'runtime_manager_bridge.py':b'reviewed new bytes','templates/eimemory-rpc.service':b'new template'}
     snapshot=m.root_snapshot(manifest)
@@ -564,6 +569,9 @@ def test_root_owner_file_restore_preserves_exact_original_and_rejects_paths(tmp_
     m.restore_root_files(snapshot)
     assert old.read_bytes()==b'original root bytes' and not new.exists()
     with pytest.raises(ValueError,match='path_invalid'):m.restore_root_files({'/root/arbitrary':None})
+    import shutil
+    assert base.resolve().parent==Path('/run') and base.name.startswith('eimemory-manager-root-fs-')
+    shutil.rmtree(base)
 
 
 @pytest.mark.skipif(sys.platform=='win32' or os.geteuid()!=0,reason='native root fixture for user-owned source and nofollow guards')
@@ -663,7 +671,7 @@ def test_restore_owner_requires_clean_original_release_and_stops_new_rpc_first(m
             return ''
         if len(args)==2:return ''
         action=args[1];unit=args[2]
-        if action=='disable':system_stopped.add(args[-1])
+        if action=='stop':system_stopped.add(args[-1])
         if action=='show':
             if unit.startswith(c.JOB_UNIT_PREFIX):return 'LoadState=loaded\nActiveState=active\nResult=success\nExecMainStatus=0\n'
             if '--property=LoadState,ActiveState' in args:return 'LoadState=loaded\nActiveState='+('inactive' if unit in system_stopped else 'active')+'\n'
@@ -689,4 +697,245 @@ def test_restore_owner_requires_clean_original_release_and_stops_new_rpc_first(m
         assert legacy_active=={'eimemory-rpc.service','eimemory-learn-watch.timer'}
         assert (history/'restore-complete.json').exists()
         first_start=next(i for i,cmd in enumerate(calls) if '--user' in cmd and 'start' in cmd)
-        assert any(cmd[:3]==('/usr/bin/systemctl','disable','--now') and cmd[-1]=='eimemory-rpc.service' for cmd in calls[:first_start])
+        assert any(cmd[:2]==('/usr/bin/systemctl','stop') and cmd[-1]=='eimemory-rpc.service' for cmd in calls[:first_start])
+
+
+
+def validation_fixture(monkeypatch,tmp_path):
+    from types import SimpleNamespace
+    module,b,r,calls=bridge_fixture(monkeypatch)
+    req=job();key=c.digest(req)
+    r['runtime_commit']=req['target_commit']
+    releases=tmp_path/'releases';releases.mkdir();controller=releases/req['controller_commit'];controller.mkdir()
+    target=releases/req['target_commit'];target.mkdir()
+    entry=controller/c.VALIDATION_ENTRY;entry.parent.mkdir();entry.write_bytes(b'fixed reviewed validation entry')
+    r['validation_entry_digest']=sha256(entry.read_bytes()).hexdigest()
+    parent=dict(job_key=key,request=req,registry=r,unit=c.job_unit(key),original_invocation='a'*32,
+        phase='activate',quiesced=True,resumed=False)
+    b.state=tmp_path;(tmp_path/'validations').mkdir();(tmp_path/'validation-results').mkdir()
+    store={};artifact={'raw':None};state={'LoadState':'loaded','ActiveState':'activating','SubState':'start',
+        'Result':'success','InvocationID':'b'*32,'ExecMainStatus':'0','MainPID':'123',
+        'ControlGroup':'/system.slice/'+c.validation_unit(key,'receipt')}
+    monkeypatch.setattr(module,'RELEASES',releases)
+    monkeypatch.setattr(module,'CURRENT',SimpleNamespace(resolve=lambda **_:target))
+    monkeypatch.setattr(module,'trusted_directory',lambda *_a,**_k:None)
+    monkeypatch.setattr(b,'record',lambda _:deepcopy(parent))
+    monkeypatch.setattr(b,'verify_job_peer',lambda *_:None)
+    monkeypatch.setattr(b,'unit_state',lambda *_:deepcopy(state))
+    monkeypatch.setattr(b,'validation_artifact',lambda *_:artifact['raw'])
+    monkeypatch.setattr(module,'read_file',lambda path,**_:c.canonical(store[str(path)]) if str(path) in store else Path(path).read_bytes())
+    def atomic(path,value,**kwargs):
+        if kwargs.get('exclusive') and str(path) in store:raise FileExistsError(path)
+        Path(path).touch();store[str(path)]=deepcopy(value)
+    monkeypatch.setattr(module,'atomic_json',atomic)
+    def copy(path,raw,gid,exclusive=False):
+        if exclusive and str(path) in store:raise FileExistsError(path)
+        Path(path).touch();store[str(path)]=c.strict_json(raw,max_bytes=9*1024*1024)
+    monkeypatch.setattr(b,'write_root_bytes',copy)
+    b.proc=tmp_path/'proc';process=b.proc/'42';process.mkdir(parents=True)
+    (process/'status').write_text('Uid: 1001 1001 1001 1001\nNoNewPrivs: 1\nCapEff: 0000000000000000\n')
+    (process/'cgroup').write_text('0::/system.slice/'+c.validation_unit(key,'receipt')+'\n')
+    return module,b,r,req,key,parent,store,state,artifact,calls
+
+
+def test_validation_submission_is_one_shot_and_readonly_status_never_requires_parent_cgroup(monkeypatch,tmp_path):
+    _m,b,r,_req,key,_parent,_store,_state,_artifact,calls=validation_fixture(monkeypatch,tmp_path)
+    first=b.validate_job(r,key,'receipt',42,1001)
+    assert first['operation']=='receipt' and first['original_invocation']=='b'*32
+    assert first['parent_original_invocation']=='a'*32
+    assert first['artifact_basename']=='validation-receipt-result.json'
+    assert len(calls)==1 and calls[0][1:3]==['start','--no-block']
+    monkeypatch.setattr(b,'verify_job_peer',lambda *_:pytest.fail('existing validation is readback only'))
+    assert b.validate_job(r,key,'receipt',43,1001)==first
+    assert b.validation_status(r,key,'receipt')==first and len(calls)==1
+
+
+def test_validation_ambiguous_dispatch_is_not_restarted(monkeypatch,tmp_path):
+    _m,b,r,_req,key,_parent,store,_state,_artifact,_calls=validation_fixture(monkeypatch,tmp_path)
+    dispatched=[]
+    def start(*args):
+        dispatched.append(args)
+        assert store
+        raise ValueError('manager_command_failed')
+    monkeypatch.setattr(b,'systemctl',start)
+    with pytest.raises(ValueError,match='command_failed'):b.validate_job(r,key,'receipt',42,1001)
+    assert b.validate_job(r,key,'receipt',42,1001)['original_invocation']=='b'*32
+    assert len(dispatched)==1
+
+
+@pytest.mark.parametrize('fault',['business_before_resume','entry_tamper','different_current','receipt_before_quiesce','retired_parent','wrong_operation'])
+def test_validation_cannot_choose_entry_scope_current_or_early_business(monkeypatch,tmp_path,fault):
+    from types import SimpleNamespace
+    m,b,r,_req,key,parent,_store,_state,_artifact,calls=validation_fixture(monkeypatch,tmp_path)
+    operation='receipt'
+    if fault=='business_before_resume':operation='post_resume'
+    elif fault=='entry_tamper':r['validation_entry_digest']='0'*64
+    elif fault=='different_current':monkeypatch.setattr(m,'CURRENT',SimpleNamespace(resolve=lambda **_:m.RELEASES/('c'*40)))
+    elif fault=='receipt_before_quiesce':parent['quiesced']=False
+    elif fault=='retired_parent':parent['finalized']=True
+    elif fault=='wrong_operation':operation='shell'
+    with pytest.raises(ValueError):b.validate_job(r,key,operation,42,1001)
+    assert calls==[]
+
+
+def test_business_validation_requires_resumed_phase_and_preserves_controller_serving_distinction(monkeypatch,tmp_path):
+    _m,b,r,req,key,parent,_store,state,_artifact,_calls=validation_fixture(monkeypatch,tmp_path)
+    parent.update(resumed=True,phase='resumed_awaiting_business')
+    state['ControlGroup']='/system.slice/'+c.validation_unit(key,'post_resume')
+    result=b.validate_job(r,key,'post_resume',42,1001)
+    assert result['target_commit']==req['candidate_commit']
+    assert result['controller_commit']==req['base_commit']
+    assert result['phase']=='resumed_awaiting_business'
+
+
+def test_terminal_validation_seals_original_artifact_and_survives_unit_gc(monkeypatch,tmp_path):
+    _m,b,r,_req,key,_parent,_store,state,artifact,_calls=validation_fixture(monkeypatch,tmp_path)
+    b.validate_job(r,key,'receipt',42,1001)
+    artifact['raw']=c.canonical({'fixture':'actual original report bytes'})
+    before=sha256(artifact['raw']).hexdigest()
+    original=b.seal_validation(r,key,'receipt','b'*32,before,42,1001)
+    assert original['sealed_artifact']['artifact_sha256']==before
+    state.update(ActiveState='inactive',SubState='dead',MainPID='0')
+    sealed=b.validation_status(r,key,'receipt')
+    assert sealed['artifact_sha256']==sha256(artifact['raw']).hexdigest()
+    assert sealed['terminal_state']['InvocationID']=='b'*32
+    state.update(ControlGroup='')
+    assert b.validation_status(r,key,'receipt')['terminal_state']==sealed['terminal_state']
+    state.update(LoadState='not-found',InvocationID='')
+    old=b.validation_status(r,key,'receipt')
+    assert old['original_invocation']=='b'*32 and old['terminal_state']==sealed['terminal_state']
+    artifact['raw']=c.canonical({'fixture':'replaced report'})
+    assert b.validation_status(r,key,'receipt')['artifact_sha256']==before
+    # The root-owned immutable copy remains the actual original bytes even if
+    # another same-UID process replaces its own mutable output after sealing.
+
+
+def test_native_success_without_result_cannot_be_sealed(monkeypatch,tmp_path):
+    _m,b,r,_req,key,_parent,_store,state,_artifact,_calls=validation_fixture(monkeypatch,tmp_path)
+    b.validate_job(r,key,'receipt',42,1001)
+    state.update(ActiveState='inactive',SubState='dead',MainPID='0')
+    with pytest.raises(ValueError,match='success_artifact_not_sealed'):b.validation_status(r,key,'receipt')
+
+
+def test_validation_wire_operation_cannot_overwrite_validation_enum(monkeypatch):
+    monkeypatch.setattr(client,'request',lambda operation,**fields:{'schema':c.RESPONSE_SCHEMA,'operation':operation,
+        'registry_generation':'1'*64,'validation':{'operation':fields['validation_operation'],'job_key':fields['job_key']}})
+    assert client.validate_deployment_job('a'*64,'receipt')['operation']=='receipt'
+    assert client.deployment_validation_status('a'*64,'post_resume')['operation']=='post_resume'
+
+
+def test_actual_existing_timestamp_pyc_is_ignored_with_explicit_empty_prefix(tmp_path):
+    import py_compile
+    import subprocess
+    source=tmp_path/'cacheprobe.py';cache=tmp_path/'protected-empty';cache.mkdir()
+    poisoned="value='poison'\n";reviewed="value='source'\n"
+    assert len(poisoned)==len(reviewed)
+    source.write_text(poisoned);os.utime(source,(1000000000,1000000000))
+    py_compile.compile(str(source),doraise=True)
+    source.write_text(reviewed);os.utime(source,(1000000000,1000000000))
+    command="import sys;sys.path.insert(0,sys.argv[1]);import cacheprobe;print(cacheprobe.value)"
+    def value(flags):
+        return subprocess.check_output([sys.executable,'-I','-B',*flags,'-c',command,str(tmp_path)],text=True).strip()
+    assert value([])=='poison'  # -B alone still executes existing bytecode.
+    assert value(['-X','pycache_prefix='+str(cache)])=='source'
+    assert not any(cache.iterdir()) and source.read_text()==reviewed
+
+
+@pytest.mark.skipif(sys.platform=='win32' or os.geteuid()!=0,reason='actual protected root-only POSIX pycache fixture')
+@pytest.mark.parametrize('fault',[None,'nonempty','writable','symlink'])
+def test_fixed_empty_pycache_rejects_cached_or_untrusted_directory(monkeypatch,fault):
+    import tempfile,shutil
+    m=standalone('runtime_manager_launch')
+    base=Path(tempfile.mkdtemp(prefix='eimemory-manager-cache-fs-',dir='/run'))
+    assert base.resolve().parent==Path('/run')
+    cache=base/'cache';cache.mkdir(mode=0o555)
+    monkeypatch.setattr(m,'EMPTY_PYCACHE',cache)
+    monkeypatch.setenv('PYTHONPYCACHEPREFIX','preexisting-fixture')
+    monkeypatch.setenv('PYTHONDONTWRITEBYTECODE','1')
+    if fault=='nonempty':(cache/'injected.pyc').write_bytes(b'untrusted cached instructions')
+    elif fault=='writable':cache.chmod(0o777)
+    elif fault=='symlink':cache.rmdir();cache.symlink_to(base,target_is_directory=True)
+    try:
+        if fault:
+            with pytest.raises(ValueError):m.protected_cache()
+        else:
+            flags=m.protected_cache()
+            assert flags==['-I','-B','-X','pycache_prefix='+str(cache)]
+            assert os.environ['PYTHONPYCACHEPREFIX']==str(cache)
+    finally:
+        assert base.resolve().parent==Path('/run') and base.name.startswith('eimemory-manager-cache-fs-')
+        shutil.rmtree(base)
+
+
+def test_root_reviewed_templates_apply_explicit_pyc_flags_and_real_readonly_validator_mounts():
+    builder=standalone('build_runtime_manager_bundle');files=builder.build(ROOT,'a'*40)
+    for unit in ('eimemory-learn-watch.service','eimemory-nightly.service','eimemory-rpc.service'):
+        source=files['templates/'+unit].decode()
+        start=next(line for line in source.splitlines() if line.startswith('ExecStart='))
+        assert '-I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache' in start
+    for op,prefix in c.VALIDATION_PREFIXES.items():
+        source=files['templates/'+prefix+'.service'].decode()
+        assert 'ReadOnlyPaths=/opt/eimemory/releases /usr/libexec/eimemory-manager' in source
+        assert 'runtime_manager_launch.py --validation %i '+op in source
+        assert 'User=darrow' in source and 'PrivateUsers=self' in source and 'NoNewPrivileges=yes' in source
+    assert 'ExecCondition=' not in files['validation-runtime-policy.conf'].decode()
+
+
+@pytest.mark.parametrize('fault',['wrong_cgroup','wrong_invocation','wrong_digest','nonzero_caps','no_nnp'])
+def test_validation_root_seal_requires_actual_child_identity_and_its_exact_bytes(monkeypatch,tmp_path,fault):
+    _m,b,r,_req,key,_parent,_store,state,artifact,calls=validation_fixture(monkeypatch,tmp_path)
+    b.validate_job(r,key,'receipt',42,1001)
+    artifact['raw']=c.canonical({'fixture':'original child raw bytes'})
+    digest=sha256(artifact['raw']).hexdigest();invocation='b'*32
+    if fault=='wrong_cgroup':(b.proc/'42'/'cgroup').write_text('0::/system.slice/'+c.job_unit(key)+'\n')
+    elif fault=='wrong_invocation':invocation='c'*32
+    elif fault=='wrong_digest':digest='0'*64
+    elif fault=='nonzero_caps':(b.proc/'42'/'status').write_text('Uid: 1001 1001 1001 1001\nNoNewPrivs: 1\nCapEff: 0000000000000001\n')
+    elif fault=='no_nnp':(b.proc/'42'/'status').write_text('Uid: 1001 1001 1001 1001\nNoNewPrivs: 0\nCapEff: 0000000000000000\n')
+    with pytest.raises(ValueError):b.seal_validation(r,key,'receipt',invocation,digest,42,1001)
+    assert not (tmp_path/'validation-results'/(key+'-receipt.json')).exists()
+
+
+def test_manual_resume_of_legacy_target_holds_background_and_keeps_original_set(monkeypatch,tmp_path):
+    _m,b,r,_req,key,records,stored,_target,calls,persist=lifecycle_fixture(monkeypatch,tmp_path)
+    original=['eimemory-rpc.service','eimemory-learn-watch.timer']
+    records[key].update(manual_release=True,quiesced=True,active_before=original)
+    result=b.transition(r,key,'resume',42,1001)
+    assert result['phase']=='completed_held' and result['resumed'] is False
+    assert result['held_background']==['eimemory-learn-watch.timer'] and calls==[]
+    assert records[key]['active_before']==original and records[key]['finalized'] is True
+    assert stored[str(tmp_path/'active-transition.json')]['held'] is True
+
+
+
+def test_legacy_failed_prefix_is_disabled_without_stop_or_reset(monkeypatch):
+    from types import SimpleNamespace
+    m=standalone('bootstrap_runtime_manager');calls=[]
+    failed='eimemory-nightly.service';active='eimemory-learn-watch.timer'
+    prior={failed:{'LoadState':'loaded','ActiveState':'failed','Result':'exit-code','InvocationID':'a'*32,'ExecMainStatus':'1'},
+        active:{'LoadState':'loaded','ActiveState':'active'}}
+    def call(args):
+        calls.append(args)
+        if 'show' in args:
+            if failed in args:return 'ActiveState=failed\nResult=exit-code\nInvocationID='+('a'*32)+'\nExecMainStatus=1\n'
+            return 'ActiveState=inactive\n'
+        return ''
+    monkeypatch.setattr(m,'call',call)
+    account=SimpleNamespace(pw_name='darrow',pw_uid=1001)
+    captured=m.retire_legacy_user_owners(account,prior,set(prior))
+    assert captured==[active]
+    assert any('disable' in args and failed in args for args in calls)
+    assert not any(('stop' in args or 'reset-failed' in args or '--now' in args) and failed in args for args in calls)
+    assert next(args for args in calls if 'disable' in args)[-1]==active
+
+
+def test_manager_reinstall_cannot_replace_live_root_authority_in_place(monkeypatch,tmp_path):
+    from types import SimpleNamespace
+    m=standalone('bootstrap_runtime_manager');repository=tmp_path/'repo';repository.mkdir()
+    path=tmp_path/'registry.json';path.write_bytes(b'protected original root registry')
+    monkeypatch.setattr(m,'REGISTRY',path);monkeypatch.setattr(m,'STATE',tmp_path)
+    monkeypatch.setattr(m,'read',lambda p:Path(p).read_bytes())
+    monkeypatch.setitem(sys.modules,'pwd',SimpleNamespace(getpwnam=lambda _:SimpleNamespace(pw_uid=1001,pw_gid=1001,pw_dir='/home/darrow')))
+    monkeypatch.setattr(m,'write',lambda *_args,**_kwargs:pytest.fail('root source must not be replaced'))
+    with pytest.raises(ValueError,match='existing_manager_upgrade_requires_reviewed_handoff'):
+        m.install(SimpleNamespace(repository_root=str(repository),expected_registry_sha256=sha256(path.read_bytes()).hexdigest()))

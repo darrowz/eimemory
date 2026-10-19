@@ -4,6 +4,7 @@ export HOME="${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6)}"
 export EIMEMORY_ROOT=/var/lib/eimemory
 export EIMEMORY_CONFIG_DIR=/etc/eimemory
 export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPYCACHEPREFIX=/var/lib/eimemory-manager/empty-pycache
 CURRENT="${EIMEMORY_DEPLOYMENT_CURRENT_LINK:-/opt/eimemory/current}"
 BIN="${CURRENT}/.venv/bin/python"
 REPO="${EIMEMORY_TRUSTED_REPOSITORY_ROOT:-${EIMEMORY_DEPLOYMENT_REPO_ROOT:-}}"

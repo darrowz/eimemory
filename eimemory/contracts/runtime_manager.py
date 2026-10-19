@@ -18,6 +18,9 @@ SOCKET_PATH = '/run/eimemory-manager/bridge.sock'
 JOB_ROOT = '/var/lib/eimemory/state/code-deployment-jobs'
 JOB_UNIT_PREFIX = 'eimemory-code-deployment-job@'
 CONTROLLER_ENTRY = 'deploy/run_code_deployment_job.py'
+VALIDATION_ENTRY = 'deploy/run_code_deployment_validation.py'
+EMPTY_PYCACHE = '/var/lib/eimemory-manager/empty-pycache'
+VALIDATION_PREFIXES = {'receipt':'eimemory-code-validation-receipt@','post_resume':'eimemory-code-validation-post-resume@'}
 MAX_REQUEST_BYTES = 65536
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 READ_PROPERTIES = frozenset({'ActiveState','SubState','Result','InvocationID','MainPID','ExecMainStatus',
@@ -97,7 +100,7 @@ def validate_job(value: Any, job_key: str) -> dict:
  return value
 
 def validate_registry(value: Any) -> dict:
- fields={'schema','generation','runtime_user','runtime_uid','runtime_gid','controller_commit','runtime_commit','repository_root','units','template_hashes','compatibility_hashes','unit_scopes','managed_incident_authority','controller_entry_digest'}
+ fields={'schema','generation','runtime_user','runtime_uid','runtime_gid','controller_commit','runtime_commit','repository_root','units','template_hashes','compatibility_hashes','unit_scopes','managed_incident_authority','controller_entry_digest','validation_entry_digest'}
  if not isinstance(value,dict) or set(value)!=fields or value.get('schema')!=REGISTRY_SCHEMA:raise ValueError('manager_registry_schema_invalid')
  hex_value(value['generation'],64,'manager_registry_generation_invalid')
  hex_value(value['controller_commit'],40,'manager_registry_controller_invalid')
@@ -111,7 +114,7 @@ def validate_registry(value: Any) -> dict:
  for name,item in units.items():
   if not isinstance(item,dict) or set(item)!={'manager','installed'} or type(item['installed']) is not bool or item['manager'] not in {'system','user'}:raise ValueError('manager_registry_unit_invalid')
   if item['manager']!=('user' if name in USER_COMPAT_UNITS else 'system'):raise ValueError('manager_registry_unit_manager_mismatch')
- if not isinstance(value['template_hashes'],dict) or any(name not in REGISTERED_UNITS and name!='eimemory-code-deployment-job@.service' for name in value['template_hashes']):raise ValueError('manager_registry_template_invalid')
+ if not isinstance(value['template_hashes'],dict) or any(name not in REGISTERED_UNITS and name not in {'eimemory-code-deployment-job@.service','eimemory-code-validation-receipt@.service','eimemory-code-validation-post-resume@.service'} for name in value['template_hashes']):raise ValueError('manager_registry_template_invalid')
  for item in value['template_hashes'].values():hex_value(item,64,'manager_registry_template_digest_invalid')
  if not isinstance(value['compatibility_hashes'],dict) or set(value['compatibility_hashes'])!=set(COMPATIBILITY_PATHS):raise ValueError('manager_registry_compatibility_invalid')
  for item in value['compatibility_hashes'].values():hex_value(item,64,'manager_registry_compatibility_digest_invalid')
@@ -120,6 +123,7 @@ def validate_registry(value: Any) -> dict:
  for scope in scopes.values():validate_scope(scope)
  validate_managed_authority(value['managed_incident_authority'])
  if value['controller_entry_digest'] is not None:hex_value(value['controller_entry_digest'],64,'manager_registry_controller_entry_digest_invalid')
+ if value['validation_entry_digest'] is not None:hex_value(value['validation_entry_digest'],64,'manager_registry_validation_entry_digest_invalid')
  if value['generation']!=digest({k:v for k,v in value.items() if k!='generation'}):raise ValueError('manager_registry_digest_mismatch')
  return value
 
@@ -141,3 +145,17 @@ def validate_managed_authority(value: Any) -> dict:
  if not isinstance(value,dict) or set(value)!={'enabled','manifest_sha256',*fixed} or value.get('enabled') is not True or any(value[k]!=v for k,v in fixed.items()):raise ValueError('manager_managed_authority_registry_invalid')
  hex_value(value['manifest_sha256'],64,'manager_managed_authority_manifest_digest_invalid')
  return value
+
+
+def validation_unit(job_key: str, operation: str) -> str:
+ if operation not in VALIDATION_PREFIXES:raise ValueError('manager_validation_operation_invalid')
+ return VALIDATION_PREFIXES[operation]+hex_value(job_key,64,'manager_job_key_invalid')+'.service'
+
+
+def is_dynamic_unit(unit: str) -> bool:
+ if not isinstance(unit,str):return False
+ if unit.startswith(JOB_UNIT_PREFIX):
+  return unit==job_unit(unit[len(JOB_UNIT_PREFIX):-8])
+ for operation,prefix in VALIDATION_PREFIXES.items():
+  if unit.startswith(prefix):return unit==validation_unit(unit[len(prefix):-8],operation)
+ return False
