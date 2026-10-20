@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 import sqlite3
-from collections import OrderedDict
+import tempfile
 from pathlib import Path
 from typing import Iterable
 
@@ -29,7 +29,7 @@ def export_records(runtime: Runtime, path: str | Path) -> int:
     target.parent.mkdir(parents=True, exist_ok=True)
     total = 0
     with target.open("w", encoding="utf-8") as handle:
-        for record in _iter_runtime_records(runtime):
+        for record in _iter_runtime_records(runtime, scratch_directory=target.parent):
             handle.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
             total += 1
     return total
@@ -63,7 +63,7 @@ def backup_create(runtime: Runtime, path: str | Path) -> dict:
     record_count = 0
     sha256 = hashlib.sha256()
     with data_path.open("wb") as handle:
-        for record in _iter_runtime_records(runtime):
+        for record in _iter_runtime_records(runtime, scratch_directory=data_path.parent):
             line = json.dumps(record.to_dict(), ensure_ascii=False).encode("utf-8") + b"\n"
             handle.write(line)
             sha256.update(line)
@@ -472,43 +472,69 @@ def _candidate_payload(
     }
 
 
-def _iter_runtime_records(runtime: Runtime) -> Iterable[RecordEnvelope]:
+def _iter_runtime_records(runtime: Runtime, *, scratch_directory: Path | None = None) -> Iterable[RecordEnvelope]:
     log_path = getattr(getattr(runtime.store, "log", None), "path", None)
     # A compacted/rotated journal can contain only the recent tail. Enumerate
     # current authority first; retain log-only recovery entries without letting
     # an older journal payload replace a hydrated authoritative record.
-    records = OrderedDict((_record_storage_key(record), record)
-                          for record in _records_from_sqlite(runtime))
-    for record in _records_from_jsonl_log(log_path):
-        records.setdefault(_record_storage_key(record), record)
-    return list(records.values())
+    # Preserve authority precedence and insertion order without retaining every
+    # hydrated SQL/log envelope in RAM. This private scratch index is not an
+    # authority and is removed before the completed backup is published.
+    with tempfile.TemporaryDirectory(prefix='.eimemory-export-',dir=scratch_directory) as folder:
+        path=Path(folder)/'records.sqlite'
+        connection=sqlite3.connect(path)
+        try:
+            path.chmod(0o600)
+            connection.executescript('''PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
+                PRAGMA cache_size=-4096; PRAGMA temp_store=FILE;
+                CREATE TABLE export_records(position INTEGER PRIMARY KEY,key TEXT UNIQUE,payload TEXT NOT NULL);''')
+            for record in _records_from_sqlite(runtime):
+                connection.execute('''INSERT INTO export_records(key,payload) VALUES(?,?)
+                    ON CONFLICT(key) DO UPDATE SET payload=excluded.payload''',
+                    (_record_storage_key(record),json.dumps(record.to_dict(),ensure_ascii=False)))
+            for record in _records_from_jsonl_log(log_path):
+                connection.execute('INSERT OR IGNORE INTO export_records(key,payload) VALUES(?,?)',
+                    (_record_storage_key(record),json.dumps(record.to_dict(),ensure_ascii=False)))
+            connection.commit()
+            for row in connection.execute('SELECT payload FROM export_records ORDER BY position'):
+                yield RecordEnvelope.from_dict(json.loads(row[0]))
+        finally:
+            connection.close()
 
 
-def _records_from_sqlite(runtime: Runtime) -> list[RecordEnvelope]:
-    records: list[RecordEnvelope] = []
-    batch_size = 1000
+def _records_from_sqlite(runtime: Runtime) -> Iterable[RecordEnvelope]:
+    batch_size = 100
     offset = 0
     while True:
         page = runtime.store.list_records(limit=batch_size, offset=offset)
         if not page:
             break
-        records.extend(page)
+        yield from page
         offset += len(page)
-    return records
+        del page
 
 
-def _records_from_jsonl_log(path: Path | None) -> list[RecordEnvelope]:
+def _records_from_jsonl_log(path: Path | None) -> Iterable[RecordEnvelope]:
     if path is None:
-        return []
-    latest_by_key: "OrderedDict[str, RecordEnvelope]" = OrderedDict()
+        return
+    latest_by_key = {}
     log = JsonlLog(path, create_parent=False)
     for entry in log.scan_strict():
         record = RecordEnvelope.from_dict(entry.payload)
         key = _record_storage_key(record)
-        if key in latest_by_key:
-            del latest_by_key[key]
-        latest_by_key[key] = record
-    return list(latest_by_key.values())
+        latest_by_key[key]=(str(entry.path),entry.line,entry.offset,entry.payload_digest)
+    wanted={value[:3]:(key,value[3]) for key,value in latest_by_key.items()}
+    found=set()
+    for entry in log.scan_strict():
+        position=(str(entry.path),entry.line,entry.offset)
+        expected=wanted.get(position)
+        if expected is None:continue
+        record=RecordEnvelope.from_dict(entry.payload)
+        if entry.payload_digest!=expected[1] or _record_storage_key(record)!=expected[0]:
+            raise ValueError('backup_journal_changed_during_export')
+        found.add(position)
+        yield record
+    if len(found)!=len(wanted):raise ValueError('backup_journal_changed_during_export')
 
 
 def _record_storage_key(record: RecordEnvelope) -> str:

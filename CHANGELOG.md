@@ -15,6 +15,7 @@ AIGC:
 
 - Observe actual runtime-owned process environments through the fixed host manager across private user namespaces, with native PID, invocation and cgroup fences.
 - Exec the reviewed runtime settings before product entry so native process observations include the applied configuration; retain namespace, capability and privilege restrictions.
+- Stream backup exports through a private disk index and a lean store reader, retaining authority precedence, journal recovery and complete verification within the existing memory limit.
 
 ## [1.15.7] — 2026-10-21
 
