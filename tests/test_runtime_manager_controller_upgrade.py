@@ -31,7 +31,7 @@ def test_upgrade_manifest_requires_exact_current_source_and_prior_link(tmp_path,
         with pytest.raises(ValueError):m.configure_upgrade_inputs(args,files,commit)
 
 
-@pytest.mark.parametrize('fault',['none','registry','release','dual_owner','template','configure','not_stopped'])
+@pytest.mark.parametrize('fault',['none','registry','release','dual_owner','template','configure','not_stopped','rollback_not_active'])
 def test_controller_upgrade_preserves_business_owner_and_rolls_back_fixed_code(tmp_path,monkeypatch,fault):
     m=module();commit='b'*40
     source=tmp_path/'releases'/commit;source.mkdir(parents=True)
@@ -73,6 +73,8 @@ def test_controller_upgrade_preserves_business_owner_and_rolls_back_fixed_code(t
     def native(_a,manager,unit,*_):
         if unit=='eimemory-rpc.service':
             return dict(ActiveState='active' if manager=='system' or fault=='dual_owner' else 'inactive')
+        if fault=='rollback_not_active' and actions and actions[-1]=='start':
+            return dict(ActiveState='failed',MainPID='0')
         return dict(ActiveState='inactive' if stopped['value'] and fault!='not_stopped' else 'active',
             MainPID='0' if stopped['value'] and fault!='not_stopped' else '123')
     monkeypatch.setattr(m,'_handoff_unit_state',native)
@@ -85,7 +87,7 @@ def test_controller_upgrade_preserves_business_owner_and_rolls_back_fixed_code(t
     def restore(value):restored.append(value);path.write_bytes(original)
     monkeypatch.setattr(m,'restore_root_files',restore)
     def configure(_args,value,*_):
-        if fault=='configure':raise ValueError('invalid_producer_guard')
+        if fault in {'configure','rollback_not_active'}:raise ValueError('invalid_producer_guard')
         value['managed_incident_authority']={'enabled':True,'reviewed':'new'}
     monkeypatch.setattr(m,'configure_managed_authority',configure)
     if fault=='none':
@@ -96,5 +98,8 @@ def test_controller_upgrade_preserves_business_owner_and_rolls_back_fixed_code(t
         with pytest.raises(ValueError):m.upgrade_controller(args)
         assert path.read_bytes()==original
         if fault=='configure':assert restored==[snapshot] and actions==['stop','stop','start']
+        if fault=='rollback_not_active':
+            assert restored==[snapshot] and actions==['stop','stop','start']
+            assert not list(state.glob('*/rollback-complete.json'))
         if fault in {'registry','release','dual_owner','template'}:assert actions==[] and writes==[]
         if fault=='not_stopped':assert not restored and not any(str(root) in p for p in writes)

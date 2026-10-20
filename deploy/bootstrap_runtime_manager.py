@@ -956,6 +956,10 @@ def upgrade_controller(args):
             restore_root_files(snapshot)
             write(manifest_path,old_manifest,gid=account.pw_gid)
         call(['/usr/bin/systemctl','start','eimemory-runtime-manager.service'])
+        restored=_handoff_unit_state(account,'system','eimemory-runtime-manager.service')
+        if (restored['ActiveState']!='active' or restored['MainPID'] in {'0',''}
+                or read(REGISTRY)!=original):
+            raise ValueError('bootstrap_upgrade_controller_restore_unverified') from exc
         healthy_original(commit)
         write(history/'rollback-complete.json',c.canonical({'ok':True,'runtime_commit':commit,
             'restored_registry_sha256':sha256(original).hexdigest(),'original_failure_retained':True}),gid=0,mode=0o600,exclusive=True)
