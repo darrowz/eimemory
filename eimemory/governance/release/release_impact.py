@@ -34,6 +34,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/governance/learning/effect_dataset.py",
         "eimemory/governance/learning/effect_hypotheses.py",
         "eimemory/core/budgets.py",
+        "eimemory/storage/migrations/capability_v3.py",
         "eimemory/llm/gateway_pool.py",
         "eimemory/llm/openclaw_gateway.mjs",
         "eimemory/llm/bridge_pool.py",
