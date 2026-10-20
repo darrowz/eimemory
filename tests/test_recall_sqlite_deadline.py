@@ -11,6 +11,42 @@ from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
 from eimemory.storage.runtime_store import RuntimeStore
 
 
+def test_existing_schema_first_recall_preserves_native_deadline_connection(tmp_path):
+    from eimemory.models.records import RecordEnvelope
+
+    scope = ScopeRef(user_id='cold-reader')
+    record = RecordEnvelope.create(kind='memory', scope=scope, title='Cedar project decision',
+                                   content={'text': 'Cedar project decision retained for recall'})
+    with closing(RuntimeStore(tmp_path)) as store:
+        store.append(record)
+    with closing(RuntimeStore(tmp_path, bootstrap_schema=False)) as store:
+        request = CandidateRequest.create(query='Cedar project decision', scope=scope, limit=5,
+            recall_filters={'_recall_collection_deadline_monotonic': monotonic() + 5})
+        result = SQLiteCandidateSource(store).search(request)
+        assert any(hit.ref.record_id == record.record_id for hit in result.hits)
+
+
+def test_capability_schema_probe_keeps_deadline_wrapper_and_rejects_fake_connections(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from eimemory.storage.migrations.capability_v3 import _sqlite_connection, capability_v3_backfill_state
+    from eimemory.storage.recall_deadline import _ReadConnection, RecallReadDeadlineExceeded, recall_read_scope
+
+    with closing(RuntimeStore(tmp_path)) as store:
+        clock = [100.0]
+        monkeypatch.setattr('eimemory.storage.recall_deadline.monotonic', lambda: clock[0])
+        with recall_read_scope(store, {'_recall_collection_deadline_monotonic': 101.0}):
+            wrapped = store.sqlite.conn
+            assert _sqlite_connection(wrapped) is wrapped
+            assert _sqlite_connection(SimpleNamespace(conn=wrapped)) is wrapped
+            assert isinstance(capability_v3_backfill_state(wrapped), dict)
+            clock[0] = 102.0
+            with pytest.raises(RecallReadDeadlineExceeded):
+                capability_v3_backfill_state(wrapped)
+        for fake in (SimpleNamespace(execute=lambda *_: None), _ReadConnection(object(), 101.0)):
+            with pytest.raises(TypeError, match='sqlite_connection_required'):
+                _sqlite_connection(fake)
+
+
 LONG_READ = ('WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000000) '
              'SELECT sum(x) FROM n')
 

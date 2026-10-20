@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.9] — 2026-10-21
+
+- Accept the native SQLite deadline connection during cold read-only schema checks without unwrapping its busy timeout or execution deadline.
+- Verify the lean backup reader's executable and real/effective UID boundaries.
+
 ## [1.15.8] — 2026-10-21
 
 - Observe actual runtime-owned process environments through the fixed host manager across private user namespaces, with native PID, invocation and cgroup fences.

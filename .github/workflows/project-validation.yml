@@ -82,6 +82,8 @@ jobs:
           tests/test_independent_evidence_architecture.py
           tests/test_independent_evidence_repo_integration.py
           tests/test_recall_budget_reserve.py
+          tests/test_recall_sqlite_deadline.py
+          tests/test_capability_v3_backfill_state_rows.py
           tests/test_sqlite_sparse_fts.py
           tests/test_proactive_proof_delivery.py
           tests/test_storage.py
