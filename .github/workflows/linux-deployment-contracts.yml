@@ -115,6 +115,7 @@ jobs:
           tests/test_managed_code_incident_proof.py
           tests/test_runtime_manager_handoff.py
           tests/test_runtime_manager_controller_upgrade.py
+          tests/test_runtime_manager_manual_release.py
           tests/test_version.py
           tests/test_hermes_plugin_package.py
           tests/test_codex_plugin_package.py

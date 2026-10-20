@@ -146,3 +146,18 @@ require an ownership handoff instead. The controller is stopped before its
 modules are replaced; a failure restores its private original snapshot and
 manifest. Successful controller installation supplies no incident, terminal
 transaction or elapsed observation evidence.
+
+Manual release jobs keep the fixed UID-only launcher alive after the repository
+worker exits. The launcher admits the independent receipt child, restores the
+captured automation, admits the independent post-resume business child and asks
+root to verify both original seals before completing the transition. Installer
+success alone never completes a manual release. A failed worker retains its
+actual nonzero native result and cannot enter successful admission.
+
+For an already failed manual job whose storage and current release have really
+returned to its base, `recover-failed-manual` requires the exact job, current
+commit, registry SHA and transition SHA. It fences original native exits,
+verifies sole-owner health and restores only that job's captured active set.
+Failed units are preserved. The pointer is marked explicitly abandoned with a
+private recovery history; the deployment, receipt and native job remain failed.
+An active effect, dirty storage or a candidate still serving blocks this entry.

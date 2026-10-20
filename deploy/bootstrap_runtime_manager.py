@@ -966,6 +966,57 @@ def upgrade_controller(args):
         raise
 
 
+def recover_failed_manual(args):
+    """Restore a failed manual job's captured automation, preserving failure."""
+    import pwd
+    from types import SimpleNamespace
+    account=pwd.getpwnam('darrow');c=load_contract();original=read(REGISTRY)
+    if sha256(original).hexdigest()!=args.expected_registry_sha256:
+        raise ValueError('bootstrap_manual_recovery_registry_cas_mismatch')
+    registry=c.validate_registry(c.strict_json(original));commit=args.expected_current_commit
+    if CURRENT.resolve(strict=True)!=RELEASES/commit or registry['runtime_commit']!=commit:
+        raise ValueError('bootstrap_manual_recovery_current_changed')
+    storage_clean()
+    jobs=_handoff_jobs(c,SimpleNamespace(expected_transition_sha256=args.expected_transition_sha256,
+        abandon_failed_job_key=args.job_key),allow_retained_terminal=True)
+    if jobs['abandoned']!=args.job_key:raise ValueError('bootstrap_manual_recovery_not_current')
+    path=STATE/'jobs'/(args.job_key+'.json');record=c.strict_json(read(path))
+    active=record.get('active_before')
+    if (record.get('manual_release') is not True or record['request']['base_commit']!=commit
+            or record.get('resume_requested') is not True or not isinstance(active,list)
+            or len(active)!=len(set(active)) or not set(active)<=c.REGISTERED_UNITS):
+        raise ValueError('bootstrap_manual_recovery_capture_invalid')
+    if (_handoff_unit_state(account,'system','eimemory-rpc.service')['ActiveState']!='active'
+            or _handoff_unit_state(account,'user','eimemory-rpc.service')['ActiveState'] not in {'inactive','failed'}):
+        raise ValueError('bootstrap_manual_recovery_requires_sole_system_owner')
+    healthy_original(commit)
+    history=directory(STATE/('manual-recovery-'+time.strftime('%Y%m%dT%H%M%SZ')+'-'+str(os.getpid())),gid=0,mode=0o700)
+    for name,raw in [('registry.original',original),('job.original',read(path)),('transition.original',jobs['original'])]:
+        write(history/name,raw,gid=0,mode=0o600,exclusive=True)
+    if read(REGISTRY)!=original or read(STATE/'active-transition.json')!=jobs['original']:
+        raise ValueError('bootstrap_manual_recovery_authority_changed')
+    restored=[]
+    for unit in sorted(active,key=lambda x:(x!='eimemory-rpc.service',not x.endswith(('.timer','.path')),x)):
+        manager=record['registry']['units'][unit]['manager']
+        state=_handoff_unit_state(account,manager,unit,_handoff_capture_properties(unit))
+        if state['ActiveState']=='failed':raise ValueError('bootstrap_manual_recovery_failed_unit_preserved')
+        if state['ActiveState']!='active':
+            call(user_command(account,'start',unit) if manager=='user' else ['/usr/bin/systemctl','start',unit])
+        now=_handoff_unit_state(account,manager,unit,_handoff_capture_properties(unit))
+        if now['ActiveState']!='active' and not _successful_oneshot_exit(c,account,manager,unit):
+            raise ValueError('bootstrap_manual_recovery_unit_not_restored')
+        restored.append(unit)
+    healthy_original(commit)
+    if read(REGISTRY)!=original or read(STATE/'active-transition.json')!=jobs['original']:
+        raise ValueError('bootstrap_manual_recovery_authority_changed')
+    result={'ok':True,'job_key':args.job_key,'runtime_commit':commit,'restored_units':restored,
+        'failed_deployment_preserved':True,'deployment_accepted':False,'l5_certified':False}
+    write(history/'complete.json',c.canonical(result),gid=0,mode=0o600,exclusive=True)
+    write(STATE/'active-transition.json',c.canonical({'complete':True,'job_key':args.job_key,
+        'outcome':'operator_abandoned_failed_manual_release','recovery_history':history.name}),gid=account.pw_gid)
+    print(json.dumps({**result,'history':str(history)}))
+
+
 def configure_upgrade_inputs(args,files,commit):
     """Check manifest/source coordinates and continuity before stopping root."""
     raw=read(args.managed_incident_manifest,limit=1048576)
@@ -1065,6 +1116,7 @@ def main():
     q=sub.add_parser('handoff-user-owner');q.add_argument('--bundle',type=Path,required=True);q.add_argument('--expected-bundle-sha256',required=True);q.add_argument('--repository-root',type=Path,required=True);q.add_argument('--unit-scope-manifest',type=Path,required=True);q.add_argument('--expected-unit-scope-sha256',required=True);q.add_argument('--expected-registry-sha256',required=True);q.add_argument('--expected-current-commit',required=True);q.add_argument('--expected-transition-sha256',required=True);q.add_argument('--abandon-failed-job-key');q.add_argument('--managed-incident-manifest',type=Path,required=True);q.add_argument('--expected-managed-incident-manifest-sha256',required=True)
     q=sub.add_parser('upgrade-controller');q.add_argument('--bundle',type=Path,required=True);q.add_argument('--expected-bundle-sha256',required=True);q.add_argument('--expected-registry-sha256',required=True);q.add_argument('--expected-current-commit',required=True);q.add_argument('--expected-transition-sha256',required=True);q.add_argument('--abandon-failed-job-key');q.add_argument('--managed-incident-manifest',type=Path,required=True);q.add_argument('--expected-managed-incident-manifest-sha256',required=True)
     q=sub.add_parser('enable-managed-authority');q.add_argument('--managed-incident-manifest',type=Path,required=True);q.add_argument('--expected-managed-incident-manifest-sha256',required=True);q.add_argument('--expected-registry-sha256',required=True)
+    q=sub.add_parser('recover-failed-manual');q.add_argument('--job-key',required=True);q.add_argument('--expected-current-commit',required=True);q.add_argument('--expected-registry-sha256',required=True);q.add_argument('--expected-transition-sha256',required=True)
     q=sub.add_parser('stage-release');q.add_argument('--target-commit',required=True);q.add_argument('--attempt-id',required=True);q.add_argument('--prior-job-key');q.add_argument('--scope-manifest',type=Path,required=True);q.add_argument('--expected-scope-sha256',required=True)
     q=sub.add_parser('restore-owner');q.add_argument('--history-id',required=True);q.add_argument('--expected-history-sha256',required=True);q.add_argument('--expected-current-commit',required=True);q.add_argument('--expected-registry-sha256',required=True);q.add_argument('--abandon-failed-job-key')
     a=p.parse_args()
@@ -1072,6 +1124,7 @@ def main():
         if a.operation=='install':install(a)
         elif a.operation=='handoff-user-owner':handoff(a)
         elif a.operation=='upgrade-controller':upgrade_controller(a)
+        elif a.operation=='recover-failed-manual':recover_failed_manual(a)
         elif a.operation=='stage-release':stage(a)
         elif a.operation=='enable-managed-authority':enable_managed(a)
         else:restore_owner(a)
