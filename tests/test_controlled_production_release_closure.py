@@ -516,7 +516,7 @@ def test_long_mutating_gates_are_followed_by_a_full_stability_window(pipeline, m
 
 
 @pytest.mark.parametrize('prior_failed', [False, True])
-def test_managed_controlled_entry_emits_complete_report_without_overwriting_failure(pipeline, prior_failed):
+def test_managed_controlled_entry_emits_complete_report_without_overwriting_failure(pipeline, prior_failed, tmp_path):
     from eimemory.governance.release.evidence_contract import ReleaseIdentity
     deployed=receipt()
     report={'deployment':deployed,'deployment_receipt':deployed,'storage_migrations':{'ok':True},
@@ -530,5 +530,13 @@ def test_managed_controlled_entry_emits_complete_report_without_overwriting_fail
     if prior_failed:assert result['readiness']['reason']=='retained_actual_failure'
     else:
         assert controlled_production_closure_report_ok(result)
+        assert summary(result)['ok'] is True
+        import json
+        from eimemory.ops.closure_capture import process_capture
+        source=tmp_path/'managed-report.json'
+        source.write_text(json.dumps(result),encoding='utf-8')
+        captured=process_capture(source,evidence_dir=tmp_path/'captures',scope=SCOPE,
+            expected_commit=deployed['commit'],attempt_id='managed-fixture',closure_exit_status=0,inspect_only=True)
+        assert captured['exit_code']==0 and captured['capture_saved'] is True and captured['recording_ok'] is True
         assert all(result[key]['status']=='not_run' for key in (
             'production_recall_gate','production_recall_strict_state','closure_rehearsal','readiness'))

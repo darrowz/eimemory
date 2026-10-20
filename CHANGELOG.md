@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.15] — 2026-10-21
+
+- Use the existing not-run reason contract for managed controlled reports so immutable capture and publication summaries retain a successful business result. Extend the managed workflow integration regression through the actual source capture and summary exit.
+
 ## [1.15.14] — 2026-10-21
 
 - Initialize explicit not-run gate states in the shared controlled business workflow for managed entry points. Preserve existing failures and retain the original complete-report validator.
