@@ -643,6 +643,10 @@ for _domain, _paths in _CURRENT_PRODUCTION_SURFACES.items():
 # admission semantics; do not inherit prior code/deployment evidence.
 for _domain in ("memory.governance", "code.evolution", "deployment.runtime"):
     DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain],
+        "deploy/bootstrap_runtime_manager.py",
+        "deploy/build_runtime_manager_bundle.py",
+        "eimemory/governance/evolution/managed_code_incident_proof.py",
+        "eimemory/core/managed_incident_proof_authority.py",
         "eimemory/governance/release/closure_verdict.py",
         "eimemory/ops/closure_capture.py",
         "eimemory/ops/release_closure_failure.py",

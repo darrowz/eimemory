@@ -276,13 +276,15 @@ bounded call never declares an unfinished prefix complete.
                     if digest(raw) != row['payload_digest']:
                         raise ValueError('managed_incident_history_digest_invalid')
                     content = raw.get('content', {})
-                    if raw.get('source') not in REGISTERED_INGRESS:
-                        raise ValueError('managed_incident_unclassified_code_input')
                     try:
+                        if raw.get('source') not in REGISTERED_INGRESS:
+                            raise ValueError('unregistered_history_source')
                         old_key = stable_defect_key(content.get('incident_class'), content.get('diagnostic_codes'))
                     except ValueError:
                         # A known manual report without an exact defect mapping
-                        # is adverse to every native class, never ignored.
+                        # or an unregistered historical source is retained as
+                        # unclassified knowledge. It cannot prove novelty, but
+                        # must not abort all subsequent receipt acquisition.
                         old_key = '*'
                     human=(raw.get('source')=='eimemory.code_maintenance'
                         or raw.get('provenance',{}).get('origin')=='user_reported')

@@ -97,3 +97,52 @@ one-shot machine authorization, protected tests, provider identity, actual effec
 receipts, current lineage and the real minimum 28800-second observation window
 remain independent requirements. No production incident, child policy, terminal
 receipt or observation is created by installing the provenance mechanism.
+
+## Restored user owner with a stale host manager
+
+`bootstrap_runtime_manager.py handoff-user-owner` is the explicit recovery
+entry for a healthy current user runtime and an older installed host manager.
+Ordinary `install` still rejects replacement of an existing manager. Copy the
+reviewed bootstrap and byte-pinned bundle into a root-controlled directory;
+prepare the current source manifest as the runtime user first.
+
+The handoff requires the exact current commit, registry SHA, original transition
+SHA, bundle SHA and both scope/managed-manifest SHAs. An incomplete transition
+also requires its exact `--abandon-failed-job-key`. Only an actually exited,
+failed **manual** deployment may be abandoned. Every retained job and validation
+must have independent native exit evidence; live or ambiguous effects block
+handoff. Automatic transactions retain their own recovery owner.
+
+Before replacing any loaded manager module, recovery saves the original root
+files, user unit files and both managers' native state in a private bootstrap
+history, then stops and verifies the old daemon. It preserves the current
+release pointer, normal business settings and original failed units/receipts.
+After the new sole RPC owner passes authenticated current-release health, it
+records the old transition as `operator_abandoned_failed_manual_release` and
+restores the captured timers and services. It never marks the old job successful.
+An exception uses that complete original snapshot through `restore-owner` and
+retains a separate failure record. The history is the rollback boundary, not a
+replacement deployment receipt or autonomous terminal proof.
+
+Verify a real subsequent watch/nightly checkpoint's `catchup_complete`, current
+registry/controller identity and sole RPC owner after handoff. Timer enablement
+alone proves neither checkpoint operation nor L5 completion. Original events
+without an activation receipt remain unproven, and an absent transaction or
+28,800-second observation cannot be reconstructed from business acceptance.
+
+## Retained history and controller upgrades
+
+An unregistered retained incident source is accumulated as wildcard positive
+knowledge with its original payload digest. It does not abort the physical
+history scan and is never reclassified as a registered source. Its uncertain
+provenance still prevents a claim that a defect was previously unknown.
+
+After a normal release, `bootstrap_runtime_manager.py upgrade-controller`
+updates the reviewed host controller without restarting product services.
+Require the current commit, registry/transition/bundle digests and an explicitly
+linked successor managed manifest for that immutable release. Scope grants,
+signing keys and accumulated knowledge remain intact. Changed service templates
+require an ownership handoff instead. The controller is stopped before its
+modules are replaced; a failure restores its private original snapshot and
+manifest. Successful controller installation supplies no incident, terminal
+transaction or elapsed observation evidence.

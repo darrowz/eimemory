@@ -453,7 +453,8 @@ def restore_owner(args):
     for item in active_before:
         query=user_command(account,'show',item['unit'],'--property=ActiveState') if item['manager']=='user' else ['/usr/bin/systemctl','show',item['unit'],'--property=ActiveState']
         state=dict(line.split('=',1) for line in call(query).splitlines() if '=' in line)
-        if state.get('ActiveState') not in {'active','activating'}:raise ValueError('bootstrap_legacy_active_set_not_restored')
+        if state.get('ActiveState') not in {'active','activating'} and not _successful_oneshot_exit(c,account,item['manager'],item['unit']):
+            raise ValueError('bootstrap_legacy_active_set_not_restored')
     migration=STATE/'migration-prior-active.json'
     if migration.exists():
         capture=c.strict_json(read(migration))
@@ -521,7 +522,7 @@ def retire_legacy_user_owners(account,prior,units):
     return active
 
 
-def install(args):
+def install(args, *, handoff=None):
     import pwd
     account=pwd.getpwnam('darrow')
     repository=Path(args.repository_root)
@@ -532,12 +533,13 @@ def install(args):
         if args.expected_registry_sha256 is None or sha256(original).hexdigest()!=args.expected_registry_sha256:
             raise ValueError('bootstrap_existing_registry_cas_required')
         active=STATE/'active-transition.json'
-        if active.exists() and json.loads(read(active)).get('complete') is not True:
+        if handoff is None and active.exists() and json.loads(read(active)).get('complete') is not True:
             raise ValueError('bootstrap_transition_still_active')
         # Replacing a running daemon's reviewed modules does not update its
         # loaded authority. A manager upgrade needs its own reviewed handoff;
         # this first-owner migration entry must not silently perform one.
-        raise ValueError('bootstrap_existing_manager_upgrade_requires_reviewed_handoff')
+        if handoff is None:
+            raise ValueError('bootstrap_existing_manager_upgrade_requires_reviewed_handoff')
     elif args.expected_registry_sha256 is not None:
         raise ValueError('bootstrap_expected_registry_missing')
     cache=STATE/'empty-pycache'
@@ -545,7 +547,7 @@ def install(args):
     if cache.is_symlink() or cache.stat().st_uid!=0 or stat.S_IMODE(cache.stat().st_mode)!=0o555 or any(cache.iterdir()):
         raise ValueError('bootstrap_manager_empty_pycache_invalid')
     migration=STATE/'migration-prior-active.json'
-    if migration.exists() and json.loads(read(migration)).get('restored') is not True:
+    if handoff is None and migration.exists() and json.loads(read(migration)).get('restored') is not True:
         raise ValueError('bootstrap_previous_migration_capture_unrestored')
     files,manifest=bundle(read(args.bundle),args.expected_bundle_sha256)
     commit=manifest['controller_commit']
@@ -566,6 +568,17 @@ def install(args):
         if path.exists():write(history/(path.name+'.original'),read(path),gid=0,mode=0o600,exclusive=True)
     if migration.exists():write(history/'migration-prior-active.original',read(migration),gid=0,mode=0o600,exclusive=True)
     before_root=root_snapshot(files)
+    if handoff is not None:
+        # Persist a complete rollback boundary BEFORE changing the daemon's
+        # loaded modules. Its real pre-stop activity belongs in this snapshot.
+        original={**handoff['owner'], 'root_files':before_root}
+        write(history/'owner-snapshot.json',json.dumps(original,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode(),gid=0,mode=0o600,exclusive=True)
+        handoff['history']=history
+        write(migration,json.dumps({'active_before':[], 'restored':False,'history_id':history.name}).encode(),gid=account.pw_gid)
+        call(['/usr/bin/systemctl','stop','eimemory-runtime-manager.service'])
+        state=_handoff_unit_state(account,'system','eimemory-runtime-manager.service')
+        if state.get('ActiveState') not in {'inactive','failed'} or state.get('MainPID') not in {'','0'}:
+            raise ValueError('bootstrap_handoff_manager_still_running')
     for name,raw in files.items():
         if name=='eimemory-runtime-manager.service':continue
         write(ROOT/name,raw,gid=account.pw_gid)
@@ -576,7 +589,7 @@ def install(args):
     units={}
     prior={}
     for unit in sorted(c.REGISTERED_UNITS):
-        command=user_command(account,'show',unit,'--property=ActiveState,LoadState,UnitFileState,Result,InvocationID,ExecMainStatus')
+        command=user_command(account,'show',unit,'--property='+_handoff_capture_properties(unit))
         values=dict(line.split('=',1) for line in call(command).splitlines() if '=' in line)
         if not {'ActiveState','LoadState','UnitFileState'}<=set(values):raise ValueError('bootstrap_legacy_state_incomplete')
         prior[unit]=values
@@ -588,13 +601,19 @@ def install(args):
         state=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',unit,'--property=LoadState,ActiveState,UnitFileState']).splitlines() if '=' in line)
         if not {'LoadState','ActiveState','UnitFileState'}<=set(state):raise ValueError('bootstrap_prior_system_state_unknown')
         prior_system[unit]=state
+    if handoff is not None:
+        prior_system['eimemory-runtime-manager.service']=handoff['owner']['prior_system_state']['eimemory-runtime-manager.service']
     active_states={'active','activating','reloading','deactivating'}
     if (prior_system['eimemory-rpc.service']['ActiveState'] in active_states
             and prior['eimemory-rpc.service']['ActiveState'] in active_states):raise ValueError('bootstrap_preexisting_dual_rpc_owner')
     user_original=owner_files(account,'snapshot',sorted(c.REGISTERED_UNITS))
     owner_original={'schema':'eimemory.runtime_owner_snapshot.v1','commit':commit,'root_files':before_root,
         'user_files':user_original,'prior_user_state':prior,'prior_system_state':prior_system}
-    write(history/'owner-snapshot.json',c.canonical(owner_original),gid=0,mode=0o600,exclusive=True)
+    if handoff is None:
+        write(history/'owner-snapshot.json',c.canonical(owner_original),gid=0,mode=0o600,exclusive=True)
+    elif (not _handoff_user_states_unchanged(c,account,handoff['owner']['prior_user_state'],prior) or user_original!=handoff['owner']['user_files']
+          or prior_system!=handoff['owner']['prior_system_state']):
+        raise ValueError('bootstrap_handoff_owner_changed')
     settings,settings_preview=preview_runtime_settings(account,user_original,c.PRODUCT_SERVICES)
     write(history/'runtime-settings-preview.json',settings_preview,gid=0,mode=0o600,exclusive=True)
     storage_clean()
@@ -648,6 +667,319 @@ def install(args):
         call(['/usr/bin/systemctl','start','eimemory-rpc.service'])
     write(history/'complete.json',c.canonical({'registry_generation':registry['generation'],'controller_commit':commit,'old_active_retained':active,'automatic_jobs_paused_until_release_transition':True}),gid=0,mode=0o600,exclusive=True)
     print(json.dumps({'ok':True,'registry_generation':registry['generation'],'history':str(history),'owner_snapshot_sha256':sha256(c.canonical(owner_original)).hexdigest()}))
+    return history
+
+
+def _handoff_capture_properties(unit):
+    common='ActiveState,LoadState,UnitFileState'
+    return common+',Result,InvocationID,ExecMainStatus' if unit.endswith('.service') else common
+
+
+def _handoff_unit_state(account,manager,unit,properties=None):
+    if properties is None:
+        properties=('LoadState,ActiveState,SubState,MainPID,InvocationID,UnitFileState'
+                    if unit.endswith('.service') else 'LoadState,ActiveState,UnitFileState')
+    command=(user_command(account,'show',unit,'--property='+properties) if manager=='user'
+             else ['/usr/bin/systemctl','show',unit,'--property='+properties])
+    state=dict(line.split('=',1) for line in call(command).splitlines() if '=' in line)
+    if set(state)!=set(properties.split(',')):
+        raise ValueError('bootstrap_handoff_native_state_incomplete')
+    return state
+
+
+def _successful_oneshot_exit(c,account,manager,unit,invocation=None):
+    if not unit.endswith('.service'):return False
+    state=_handoff_unit_state(account,manager,unit,','.join((*c.NATIVE_EXIT_PROPERTIES,'Type')))
+    kind=state.pop('Type')
+    expected=state['InvocationID'] if invocation is None else invocation
+    # Deployment jobs intentionally require RemainAfterExit. Ordinary oneshot
+    # maintenance does not; its successful native state is inactive/dead.
+    return bool(kind=='oneshot' and state['LoadState']=='loaded'
+        and state['ActiveState']=='inactive' and state['SubState']=='dead'
+        and state['MainPID']=='0' and state['ControlGroup']==''
+        and state['Result']=='success' and state['ExecMainStatus']=='0'
+        and isinstance(expected,str) and re.fullmatch('[0-9a-f]{32}',expected)
+        and state['InvocationID']==expected
+        and state['ExecMainExitTimestampMonotonic'].isdigit()
+        and int(state['ExecMainExitTimestampMonotonic'])>0)
+
+
+def _handoff_user_states_unchanged(c,account,before,after):
+    if set(before)!=set(after):return False
+    for unit,old in before.items():
+        now=after[unit]
+        if old==now:continue
+        # A native oneshot finishing its SAME invocation is normal progress,
+        # not configuration replacement. Unknown/new invocations still deny.
+        if (not unit.endswith('.service') or old.get('ActiveState') not in {'active','activating'}
+                or now.get('ActiveState')!='inactive'
+                or any(old.get(key)!=now.get(key) for key in ('LoadState','UnitFileState','InvocationID'))
+                or now.get('Result')!='success' or now.get('ExecMainStatus')!='0'
+                or not _successful_oneshot_exit(c,account,'user',unit,old.get('InvocationID'))):
+            return False
+    return True
+
+
+def _handoff_jobs(c,args,*,allow_retained_terminal=False):
+    """A manual failed exit can be abandoned, never converted into success.
+
+    Keep the original job, invocation, child seals and native failed units.
+    An automatic transaction must use its own recovery owner instead.
+    """
+    path=STATE/'active-transition.json'
+    original=read(path) if path.exists() else b''
+    if sha256(original).hexdigest()!=args.expected_transition_sha256:
+        raise ValueError('bootstrap_handoff_transition_cas_mismatch')
+    active=c.strict_json(original) if original else None
+    abandoned=None
+    if active is not None and active.get('complete') is not True:
+        key=c.hex_value(active.get('job_key'),64,'bootstrap_handoff_active_job_invalid')
+        if args.abandon_failed_job_key!=key:
+            raise ValueError('bootstrap_handoff_active_job_requires_review')
+        abandoned=key
+    elif args.abandon_failed_job_key:
+        raise ValueError('bootstrap_handoff_abandonment_not_current')
+    paths=sorted((STATE/'jobs').glob('*.json'))
+    if len(paths)>1000:raise ValueError('bootstrap_handoff_job_inventory_limit')
+    found=False
+    for path in paths:
+        key=c.hex_value(path.stem,64,'bootstrap_handoff_job_key_invalid')
+        record=c.strict_json(read(path))
+        c.validate_registry(record.get('registry'))
+        if record.get('manual_release') is True:c.validate_manual_permit(record.get('request'),key)
+        else:c.validate_job(record.get('request'),key)
+        state,ended=exited_job_state(c,key,record)
+        retained=(allow_retained_terminal and ended and state.get('ActiveState')=='active'
+                  and state.get('SubState')=='exited' and state.get('MainPID')=='0')
+        if not ended or not (state.get('ActiveState') in {'inactive','failed'} or retained) or state.get('MainPID') not in {'','0'}:
+            raise ValueError('bootstrap_handoff_job_not_terminal')
+        if key==abandoned:
+            found=True
+            if record.get('manual_release') is not True or state.get('Result')=='success':
+                raise ValueError('bootstrap_handoff_only_failed_manual_job_abandonable')
+        for operation in c.VALIDATION_PREFIXES:
+            child_path=STATE/'validations'/(key+'-'+operation+'.json')
+            if child_path.exists():
+                child=c.strict_json(read(child_path))
+                fence_owner_validation(c,key,operation,child,record,allow_running=False)
+    if abandoned and not found:raise ValueError('bootstrap_handoff_active_job_missing')
+    return {'original':original,'abandoned':abandoned}
+
+
+def handoff_preflight(args,account):
+    c=load_contract()
+    registry_raw=read(REGISTRY)
+    if sha256(registry_raw).hexdigest()!=args.expected_registry_sha256:
+        raise ValueError('bootstrap_handoff_registry_cas_mismatch')
+    registry=c.validate_registry(c.strict_json(registry_raw))
+    files,manifest=bundle(read(args.bundle),args.expected_bundle_sha256)
+    commit=manifest['controller_commit']
+    if commit!=args.expected_current_commit or CURRENT.resolve(strict=True)!=RELEASES/commit:
+        raise ValueError('bootstrap_handoff_serving_release_changed')
+    if str(Path(args.repository_root).resolve(strict=True))!=registry['repository_root']:
+        raise ValueError('bootstrap_handoff_repository_changed')
+    scope_raw=read(args.unit_scope_manifest)
+    if sha256(scope_raw).hexdigest()!=args.expected_unit_scope_sha256:
+        raise ValueError('bootstrap_unit_scope_manifest_digest_mismatch')
+    scopes=c.strict_json(scope_raw)
+    if (set(scopes)!={'schema','units'} or scopes['schema']!='eimemory.runtime_unit_scopes.v1'
+            or not isinstance(scopes['units'],dict) or not set(scopes['units'])<=set(c.PRODUCT_SERVICES)):
+        raise ValueError('bootstrap_unit_scope_manifest_invalid')
+    for scope in scopes['units'].values():c.validate_scope(scope)
+    # Require the separately reviewed manifest rather than silently retaining a
+    # disabled provenance lane. Its complete byte/source validation is repeated
+    # by configure_managed_authority before any product owner is stopped.
+    if not args.managed_incident_manifest or not args.expected_managed_incident_manifest_sha256:
+        raise ValueError('bootstrap_handoff_managed_manifest_required')
+    if sha256(read(args.managed_incident_manifest,limit=1048576)).hexdigest()!=args.expected_managed_incident_manifest_sha256:
+        raise ValueError('bootstrap_managed_manifest_digest_mismatch')
+    storage_clean()
+    jobs=_handoff_jobs(c,args)
+    prior={unit:_handoff_unit_state(account,'user',unit,_handoff_capture_properties(unit)) for unit in sorted(c.REGISTERED_UNITS)}
+    system={unit:_handoff_unit_state(account,'system',unit,'LoadState,ActiveState,UnitFileState')
+        for unit in sorted(c.REGISTERED_UNITS|{'eimemory-runtime-manager.service'})}
+    active_states={'active','activating','reloading','deactivating'}
+    if prior['eimemory-rpc.service']['ActiveState']!='active':
+        raise ValueError('bootstrap_handoff_requires_healthy_user_owner')
+    if any(system[unit]['ActiveState'] in active_states for unit in set(c.REGISTERED_UNITS)-set(c.USER_COMPAT_UNITS)):
+        raise ValueError('bootstrap_handoff_system_product_owner_running')
+    user=owner_files(account,'snapshot',sorted(c.REGISTERED_UNITS))
+    healthy_original(commit)
+    if read(REGISTRY)!=registry_raw or CURRENT.resolve(strict=True)!=RELEASES/commit:
+        raise ValueError('bootstrap_handoff_authority_changed')
+    return {'owner':{'schema':'eimemory.runtime_owner_snapshot.v1','commit':commit,
+        'user_files':user,'prior_user_state':prior,'prior_system_state':system},
+        'jobs':jobs,'registry_raw':registry_raw,'files':files}
+
+
+def handoff(args):
+    """Explicit root-reviewed migration from a restored user runtime owner.
+
+    No release pointer, business evidence, incident or code transaction is
+    manufactured. A failed old manual deployment is recorded as abandoned.
+    """
+    import pwd
+    from types import SimpleNamespace
+    account=pwd.getpwnam('darrow')
+    context=handoff_preflight(args,account)
+    c=load_contract()
+    try:
+        install(args,handoff=context)
+        history=context['history']
+        healthy_original(args.expected_current_commit)
+        if (read(STATE/'active-transition.json') if (STATE/'active-transition.json').exists() else b'')!=context['jobs']['original']:
+            raise ValueError('bootstrap_handoff_transition_changed')
+        if context['jobs']['abandoned']:
+            write(history/'abandoned-transition.original',context['jobs']['original'],gid=0,mode=0o600,exclusive=True)
+            write(STATE/'active-transition.json',c.canonical({'complete':True,'job_key':context['jobs']['abandoned'],
+                'outcome':'operator_abandoned_failed_manual_release','handoff_history':history.name}),gid=account.pw_gid)
+        current=c.validate_registry(c.strict_json(read(REGISTRY)))
+        restored=[]
+        for unit,before in sorted(context['owner']['prior_user_state'].items(),key=lambda item:(not item[0].endswith(('.timer','.path')),item[0])):
+            if unit in c.USER_COMPAT_UNITS:continue
+            if before['LoadState']!='loaded':continue
+            if before['UnitFileState'] in {'enabled','enabled-runtime'}:
+                call(['/usr/bin/systemctl','enable',*(['--runtime'] if before['UnitFileState']=='enabled-runtime' else []),unit])
+            if before['ActiveState'] in {'active','activating','reloading','deactivating'}:
+                call(['/usr/bin/systemctl','start',unit]);restored.append(unit)
+        if _handoff_unit_state(account,'user','eimemory-rpc.service')['ActiveState'] not in {'inactive','failed'}:
+            raise ValueError('bootstrap_handoff_old_rpc_still_running')
+        healthy_original(args.expected_current_commit)
+        for unit in restored:
+            state=_handoff_unit_state(account,'system',unit)
+            if unit.endswith(('.timer','.path')) or unit=='eimemory-rpc.service':
+                if state['ActiveState']!='active':raise ValueError('bootstrap_handoff_active_set_not_restored')
+            elif state['ActiveState']!='active' and not _successful_oneshot_exit(c,account,'system',unit):
+                raise ValueError('bootstrap_handoff_restored_service_failed')
+        write(history/'handoff-complete.json',c.canonical({'ok':True,'commit':args.expected_current_commit,
+            'registry_generation':current['generation'],'restored_units':restored,
+            'abandoned_failed_job':context['jobs']['abandoned'],'managed_authority_enabled':True,
+            'l5_certified':False}),gid=0,mode=0o600,exclusive=True)
+        print(json.dumps({'ok':True,'handoff_history':str(history),'managed_authority_enabled':True,'l5_certified':False}))
+    except Exception as exc:
+        history=context.get('history')
+        if history is not None:
+            write(history/'handoff-failure.json',c.canonical({'error_type':type(exc).__name__,
+                'reason':str(exc) if isinstance(exc,ValueError) else 'handoff_failed'}),gid=0,mode=0o600,exclusive=True)
+            # Retain the original failure; rollback is a separately recorded
+            # effect and never resets failed systemd invocations or receipts.
+            restore_owner(SimpleNamespace(history_id=history.name,
+                expected_history_sha256=sha256(read(history/'owner-snapshot.json')).hexdigest(),
+                expected_current_commit=args.expected_current_commit,
+                expected_registry_sha256=sha256(read(REGISTRY)).hexdigest(),
+                abandon_failed_job_key=context['jobs']['abandoned']))
+        raise
+
+
+def upgrade_controller(args):
+    """Replace a stopped fixed controller for the current system runtime.
+
+    Product units, settings, scope grants and the release pointer stay intact.
+    A root-only snapshot restores controller bytes/configuration on failure;
+    neither a deployment success nor L5 completion is inferred from this job.
+    """
+    import pwd
+    account=pwd.getpwnam('darrow');c=load_contract()
+    original=read(REGISTRY)
+    if sha256(original).hexdigest()!=args.expected_registry_sha256:
+        raise ValueError('bootstrap_upgrade_registry_cas_mismatch')
+    registry=c.validate_registry(c.strict_json(original))
+    files,manifest=bundle(read(args.bundle),args.expected_bundle_sha256)
+    commit=manifest['controller_commit']
+    if (commit!=args.expected_current_commit or registry['runtime_commit']!=commit
+            or CURRENT.resolve(strict=True)!=RELEASES/commit):
+        raise ValueError('bootstrap_upgrade_serving_release_changed')
+    storage_clean()
+    jobs=_handoff_jobs(c,args,allow_retained_terminal=True)
+    if jobs['abandoned']:
+        raise ValueError('bootstrap_upgrade_incomplete_manual_release')
+    system=_handoff_unit_state(account,'system','eimemory-rpc.service')
+    user=_handoff_unit_state(account,'user','eimemory-rpc.service')
+    if system['ActiveState']!='active' or user['ActiveState'] not in {'inactive','failed'}:
+        raise ValueError('bootstrap_upgrade_requires_sole_system_owner')
+    healthy_original(commit)
+    # Template changes need the ownership migration entry. This controller-only
+    # operation must not silently replace a running service's configuration.
+    templates={name.split('/')[-1]:sha256(raw).hexdigest() for name,raw in files.items() if name.startswith('templates/')}
+    if templates!=registry['template_hashes']:
+        raise ValueError('bootstrap_upgrade_template_change_requires_handoff')
+    if read(SYSTEM_UNITS/'eimemory-runtime-manager.service')!=files['eimemory-runtime-manager.service']:
+        raise ValueError('bootstrap_upgrade_manager_unit_change_requires_handoff')
+    preview=configure_upgrade_inputs(args,files,commit)
+    history=directory(STATE/('controller-'+time.strftime('%Y%m%dT%H%M%SZ')+'-'+str(os.getpid())),gid=0,mode=0o700)
+    snapshot={name:value for name,value in root_snapshot(files).items()
+              if Path(name)==REGISTRY or Path(name).is_relative_to(ROOT)}
+    write(history/'controller-snapshot.json',c.canonical(snapshot),gid=0,mode=0o600,exclusive=True)
+    manifest_path=Path('/etc/eimemory-code-automation-authority/managed-code-incident-manifest.v1.json')
+    old_manifest=read(manifest_path,limit=1048576)
+    write(history/'managed-manifest.snapshot',old_manifest,gid=0,mode=0o600,exclusive=True)
+    if read(REGISTRY)!=original or CURRENT.resolve(strict=True)!=RELEASES/commit:
+        raise ValueError('bootstrap_upgrade_authority_changed')
+    replacing=False
+    try:
+        call(['/usr/bin/systemctl','stop','eimemory-runtime-manager.service'])
+        stopped=_handoff_unit_state(account,'system','eimemory-runtime-manager.service')
+        if stopped['ActiveState'] not in {'inactive','failed'} or stopped['MainPID'] not in {'0',''}:
+            raise ValueError('bootstrap_upgrade_old_daemon_not_stopped')
+        replacing=True
+        for name,raw in files.items():
+            if name!='eimemory-runtime-manager.service':write(ROOT/name,raw,gid=account.pw_gid)
+        updated={**registry,'controller_commit':commit,
+            'compatibility_hashes':json.loads(files['compatibility.json']),
+            'controller_entry_digest':json.loads(files['controller-entry.json'])['sha256'],
+            'validation_entry_digest':json.loads(files['controller-entry.json'])['validation_sha256']}
+        # This retains the signing key and positive knowledge database, and
+        # checks the explicit previous-manifest link before replacing authority.
+        configure_managed_authority(args,updated,history,c,account)
+        updated['generation']=c.digest({k:v for k,v in updated.items() if k!='generation'})
+        c.validate_registry(updated)
+        if read(REGISTRY)!=original or CURRENT.resolve(strict=True)!=RELEASES/commit:
+            raise ValueError('bootstrap_upgrade_authority_changed')
+        write(REGISTRY,c.canonical(updated),gid=account.pw_gid)
+        call(['/usr/bin/systemctl','start','eimemory-runtime-manager.service'])
+        state=_handoff_unit_state(account,'system','eimemory-runtime-manager.service')
+        if state['ActiveState']!='active' or state['MainPID'] in {'0',''}:
+            raise ValueError('bootstrap_upgrade_daemon_not_active')
+        healthy_original(commit)
+        write(history/'complete.json',c.canonical({'ok':True,'controller_commit':commit,
+            'registry_generation':updated['generation'],'manifest_sha256':preview,
+            'runtime_restarted':False,'l5_certified':False}),gid=0,mode=0o600,exclusive=True)
+        print(json.dumps({'ok':True,'controller_commit':commit,'history':str(history),'l5_certified':False}))
+    except Exception as exc:
+        write(history/'failure.json',c.canonical({'error_type':type(exc).__name__,
+            'reason':str(exc) if isinstance(exc,ValueError) else 'controller_upgrade_failed'}),gid=0,mode=0o600,exclusive=True)
+        if replacing:
+            call(['/usr/bin/systemctl','stop','eimemory-runtime-manager.service'])
+            stopped=_handoff_unit_state(account,'system','eimemory-runtime-manager.service')
+            if stopped['ActiveState'] not in {'inactive','failed'} or stopped['MainPID'] not in {'0',''}:
+                raise ValueError('bootstrap_upgrade_rollback_daemon_not_stopped') from exc
+            restore_root_files(snapshot)
+            write(manifest_path,old_manifest,gid=account.pw_gid)
+        call(['/usr/bin/systemctl','start','eimemory-runtime-manager.service'])
+        restored=_handoff_unit_state(account,'system','eimemory-runtime-manager.service')
+        if (restored['ActiveState']!='active' or restored['MainPID'] in {'0',''}
+                or read(REGISTRY)!=original):
+            raise ValueError('bootstrap_upgrade_controller_restore_unverified') from exc
+        healthy_original(commit)
+        write(history/'rollback-complete.json',c.canonical({'ok':True,'runtime_commit':commit,
+            'restored_registry_sha256':sha256(original).hexdigest(),'original_failure_retained':True}),gid=0,mode=0o600,exclusive=True)
+        raise
+
+
+def configure_upgrade_inputs(args,files,commit):
+    """Check manifest/source coordinates and continuity before stopping root."""
+    raw=read(args.managed_incident_manifest,limit=1048576)
+    if sha256(raw).hexdigest()!=args.expected_managed_incident_manifest_sha256:
+        raise ValueError('bootstrap_managed_manifest_digest_mismatch')
+    c=load_contract();candidate=c.strict_json(raw,max_bytes=1048576)
+    prior=c.strict_json(read('/etc/eimemory-code-automation-authority/managed-code-incident-manifest.v1.json',limit=1048576),max_bytes=1048576)
+    if (candidate.get('release_commit')!=commit or candidate.get('source_directory')!=str(RELEASES/commit)
+            or candidate.get('previous_manifest_digest')!=c.digest(prior)
+            or candidate.get('scopes')!=prior.get('scopes') or candidate.get('enabled') is not True):
+        raise ValueError('bootstrap_upgrade_managed_manifest_continuity_invalid')
+    if 'managed_incident_proof_authority.py' not in files:
+        raise ValueError('bootstrap_managed_authority_module_missing')
+    return sha256(raw).hexdigest()
 
 
 def enable_managed(args):
@@ -730,12 +1062,16 @@ def main():
     read(__file__)
     p=argparse.ArgumentParser();sub=p.add_subparsers(dest='operation',required=True)
     q=sub.add_parser('install');q.add_argument('--bundle',type=Path,required=True);q.add_argument('--expected-bundle-sha256',required=True);q.add_argument('--repository-root',type=Path,required=True);q.add_argument('--unit-scope-manifest',type=Path,required=True);q.add_argument('--expected-unit-scope-sha256',required=True);q.add_argument('--expected-registry-sha256');q.add_argument('--managed-incident-manifest',type=Path);q.add_argument('--expected-managed-incident-manifest-sha256')
+    q=sub.add_parser('handoff-user-owner');q.add_argument('--bundle',type=Path,required=True);q.add_argument('--expected-bundle-sha256',required=True);q.add_argument('--repository-root',type=Path,required=True);q.add_argument('--unit-scope-manifest',type=Path,required=True);q.add_argument('--expected-unit-scope-sha256',required=True);q.add_argument('--expected-registry-sha256',required=True);q.add_argument('--expected-current-commit',required=True);q.add_argument('--expected-transition-sha256',required=True);q.add_argument('--abandon-failed-job-key');q.add_argument('--managed-incident-manifest',type=Path,required=True);q.add_argument('--expected-managed-incident-manifest-sha256',required=True)
+    q=sub.add_parser('upgrade-controller');q.add_argument('--bundle',type=Path,required=True);q.add_argument('--expected-bundle-sha256',required=True);q.add_argument('--expected-registry-sha256',required=True);q.add_argument('--expected-current-commit',required=True);q.add_argument('--expected-transition-sha256',required=True);q.add_argument('--abandon-failed-job-key');q.add_argument('--managed-incident-manifest',type=Path,required=True);q.add_argument('--expected-managed-incident-manifest-sha256',required=True)
     q=sub.add_parser('enable-managed-authority');q.add_argument('--managed-incident-manifest',type=Path,required=True);q.add_argument('--expected-managed-incident-manifest-sha256',required=True);q.add_argument('--expected-registry-sha256',required=True)
     q=sub.add_parser('stage-release');q.add_argument('--target-commit',required=True);q.add_argument('--attempt-id',required=True);q.add_argument('--prior-job-key');q.add_argument('--scope-manifest',type=Path,required=True);q.add_argument('--expected-scope-sha256',required=True)
     q=sub.add_parser('restore-owner');q.add_argument('--history-id',required=True);q.add_argument('--expected-history-sha256',required=True);q.add_argument('--expected-current-commit',required=True);q.add_argument('--expected-registry-sha256',required=True);q.add_argument('--abandon-failed-job-key')
     a=p.parse_args()
     with lifecycle_lock():
         if a.operation=='install':install(a)
+        elif a.operation=='handoff-user-owner':handoff(a)
+        elif a.operation=='upgrade-controller':upgrade_controller(a)
         elif a.operation=='stage-release':stage(a)
         elif a.operation=='enable-managed-authority':enable_managed(a)
         else:restore_owner(a)
