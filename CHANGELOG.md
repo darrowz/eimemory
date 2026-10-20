@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.4] — 2026-10-20
+
+- Bind managed-discovery contract fixtures to explicit transition jobs, retaining registry failure rejection alongside ordinary user-manager discovery tests.
+
 ## [1.15.3] — 2026-10-20
 
 - Discover ordinary deployment runtime units from user systemd, excluding absent identity-only units while preserving fail-closed query errors and explicit managed-job registry selection.

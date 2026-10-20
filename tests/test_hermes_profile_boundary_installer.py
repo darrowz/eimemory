@@ -357,6 +357,7 @@ def test_actual_installer_generates_shared_startup_guard_for_all_four_gateways(t
     setup = "\n".join(key + "=" + shlex.quote(str(value)) for key, value in values.items())
     setup += '''
 export EIMEMORY_RUNTIME_MANAGER_CONTROL
+export EIMEMORY_RUNTIME_TRANSITION_JOB=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 _hermes_is_installed() { return 0; }
 systemctl() { return 0; }
 _user_systemctl() { return 0; }

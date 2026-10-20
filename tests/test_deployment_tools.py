@@ -1584,7 +1584,8 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
     assert "Environment=EIMEMORY_RPC_URL=http://127.0.0.1:8091/" in runtime_dropin
     from eimemory.contracts.runtime_manager import REGISTERED_UNITS
     assert 'python3 -I -B "$CONTROL" systemctl list-units' in discovery
-    assert 'find ' not in discovery and 'grep ' not in discovery
+    managed = discovery.split('if [ -n "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" ]; then', 1)[1].split('\nfi', 1)[0]
+    assert 'find ' not in managed and 'grep ' not in managed
     assert expected_units <= REGISTERED_UNITS
 
 
@@ -3498,7 +3499,8 @@ def _registered_discovery_fixture(tmp_path, installed, *, fault=None):
         +'except (ValueError,RuntimeError) as exc:\n'
         +'    print(str(exc),file=sys.stderr);raise SystemExit(2)\n',
         encoding='utf-8',newline='\n')
-    return {'EIMEMORY_RUNTIME_MANAGER_CONTROL':_bash_path(adapter)}
+    return {'EIMEMORY_RUNTIME_MANAGER_CONTROL':_bash_path(adapter),
+            'EIMEMORY_RUNTIME_TRANSITION_JOB': 'a' * 64}
 
 
 def test_python_runtime_unit_discovery_uses_only_registered_installed_services(tmp_path) -> None:
