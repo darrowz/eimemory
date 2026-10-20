@@ -28,6 +28,7 @@ DATABASE_PATH = '/var/lib/eimemory/state/eimemory.sqlite'
 KEY_PATH = '/etc/eimemory-code-automation-authority/managed-incident-proof.key'
 RECEIPT_DIRECTORY = '/var/lib/eimemory-manager/managed-incident-receipts'
 PYCACHE_DIRECTORY = RECEIPT_DIRECTORY + '/empty-pycache'
+CONTROLLER_HISTORY_DIRECTORY = '/var/lib/eimemory-manager'
 RELEASES_DIRECTORY = '/opt/eimemory/releases'
 FIELDS = ('known_before_detection', 'prior_user_reported', 'manual_bootstrap')
 SCOPE_FIELDS = ('tenant_id', 'agent_id', 'workspace_id', 'user_id')
@@ -431,6 +432,50 @@ def _anchor_gap(conn, anchor, high_water):
     return 'receive_prefix_anchor_unavailable' if high_water and anchor is None else ''
 
 
+def _reviewed_manifest_archive():
+    """Only completed Root bootstrap histories can bridge skipped checkpoints."""
+    archive={}
+    try:
+        histories=sorted(path for path in Path(CONTROLLER_HISTORY_DIRECTORY).iterdir()
+            if re.fullmatch(r'(controller|authority)-[0-9]{8}T[0-9]{6}Z-[0-9]+',path.name))
+        if len(histories)>4096:raise ValueError('managed_authority_manifest_archive_limit')
+        for history in histories:
+            try:complete=_json(_read(history/'complete.json',limit=65536,mode=0o600))
+            except FileNotFoundError:continue
+            controller=(isinstance(complete,dict) and complete.get('ok') is True
+                and re.fullmatch('[0-9a-f]{40}',str(complete.get('controller_commit',''))))
+            authority=(isinstance(complete,dict) and
+                set(complete)=={'registry_generation','manifest_sha256'})
+            if not (controller or authority):
+                continue
+            _hex(complete.get('registry_generation'));_hex(complete.get('manifest_sha256'))
+            for name in ('managed-manifest.snapshot','managed-manifest.original'):
+                try:value=_json(_read(history/name,limit=1048576,mode=0o600))
+                except FileNotFoundError:continue
+                if (not isinstance(value,dict) or value.get('schema')!='managed_code_incident_manifest.v1'
+                        or value.get('qualification_domain')!=DOMAIN or value.get('enabled') is not True
+                        or value.get('defect_key_semantics')!=KEY_SEMANTICS):
+                    continue
+                archive[digest(value)]=value
+        return archive
+    except (OSError,ValueError) as exc:
+        raise ValueError('managed_authority_manifest_continuity_unverified') from exc
+
+
+def _reviewed_manifest_chain(manifest, prior, archive):
+    chain=[];seen=set();current=manifest
+    for _ in range(128):
+        token=digest(current)
+        if token in seen:break
+        seen.add(token);chain.append(current)
+        previous=current.get('previous_manifest_digest')
+        if previous==prior:return list(reversed(chain))
+        if not isinstance(previous,str) or previous not in archive:break
+        current=archive[previous]
+        if digest(current)!=previous:break
+    raise ValueError('managed_authority_manifest_continuity_unverified')
+
+
 def _prepare_manifest_catchup(conn, manifest):
     """Re-register a complete history domain without erasing any known fact.
 
@@ -442,7 +487,13 @@ def _prepare_manifest_catchup(conn, manifest):
     token=digest(manifest)
     prior=conn.execute("SELECT value FROM authority_meta WHERE key='manifest'").fetchone()
     if prior and prior[0]!=token and manifest.get('previous_manifest_digest')!=prior[0]:
-        raise ValueError('managed_authority_manifest_continuity_unverified')
+        chain=_reviewed_manifest_chain(manifest,prior[0],_reviewed_manifest_archive())
+        # The existing transaction and Root authority lock cover the full chain.
+        # Register boundaries only: never create facts, receipts or absence proof.
+        for intermediate in chain[:-1]:
+            _prepare_manifest_catchup(conn,intermediate)
+            conn.execute('INSERT OR IGNORE INTO managed_manifest_history(digest) VALUES(?)',(digest(intermediate),))
+        prior=conn.execute("SELECT value FROM authority_meta WHERE key='manifest'").fetchone()
     marker=conn.execute("SELECT value FROM authority_meta WHERE key='catchup_manifest'").fetchone()
     if prior and prior[0]==token and marker is not None:
         if marker[0]!=token:raise ValueError('managed_authority_catchup_manifest_mismatch')
