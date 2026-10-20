@@ -24,6 +24,27 @@ def _module():
     return module
 
 
+@pytest.mark.skipif(os.name!='posix',reason='Native registered backup unit')
+def test_registered_backup_reads_store_without_application_or_schema_bootstrap(tmp_path,monkeypatch):
+    from eimemory.api.runtime import Runtime
+    from eimemory.models.records import RecordEnvelope,ScopeRef
+    module=_module();root=tmp_path/'runtime'
+    with Runtime.create(root=root) as runtime:
+        record=RecordEnvelope.create(kind='memory',title='Native store snapshot',scope=ScopeRef())
+        runtime.store.append(record)
+    original=Path.read_text
+    monkeypatch.setattr(Path,'read_text',lambda p,*a,**kw:'0::/system.slice/eimemory-backup.service\n'
+        if p==Path('/proc/self/cgroup') else original(p,*a,**kw))
+    monkeypatch.setattr(module.os,'getuid',lambda:1001);monkeypatch.setattr(module.os,'geteuid',lambda:1001)
+    monkeypatch.setattr(Runtime,'create',lambda **_:pytest.fail('backup must not bootstrap Runtime'))
+    monkeypatch.setattr(module.subprocess,'run',lambda *a,**kw:pytest.fail('native backup must not launch a full application'))
+    output=tmp_path/'records';output.mkdir()
+    result=module._run_cli('untrusted', ['backup','create',str(output)],{'EIMEMORY_ROOT':str(root)},30)
+    assert result['exit_code']==0 and result['payload']['record_count']==1
+    checked=module._run_cli('untrusted',['backup','verify',str(output/'backup')],{},30)
+    assert checked['exit_code']==0 and checked['payload']['ok']
+
+
 def _main_with_restored_process_state(module, argv):
     # The real CLI deliberately installs private process defaults. These tests
     # call it in pytest's process, so retain those defaults during the call and

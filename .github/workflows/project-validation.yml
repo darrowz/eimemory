@@ -53,6 +53,8 @@ jobs:
           tests/test_recall_identity_window_and_query_terms.py
           tests/test_intake_persona_audit_closure.py
           tests/test_scheduled_backup.py
+          tests/test_backup_streaming_memory.py
+          tests/test_migration.py
           tests/test_l5_fused_closure.py
           tests/test_native_l5_assessment_maintenance.py
           tests/test_l5_exact_evidence_pages.py

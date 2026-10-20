@@ -221,11 +221,22 @@ def _run_cli(eimemory_bin: str, args: list[str], env: dict[str, str], timeout: i
             or line.startswith("0::/system.slice/eimemory-backup.service/")
             for line in Path("/proc/self/cgroup").read_text().splitlines()
         )
-    command = (
-        [sys.executable, "-I", "-B", "-X", "pycache_prefix=/var/lib/eimemory-manager/empty-pycache",
-         "/usr/libexec/eimemory-manager/runtime_manager_launch.py", "--product-module", "eimemory.cli.main", *args]
-        if managed else [eimemory_bin, *args]
-    )
+    if managed:
+        # Native backups need a store reader, not application/schema bootstrap.
+        # The same logical format and complete verification remain mandatory.
+        if os.getuid()!=1001 or os.geteuid()!=1001 or len(args)!=3 or args[:2] not in (
+                ['backup','create'],['backup','verify']):
+            raise ValueError('backup_native_reader_context_invalid')
+        from types import SimpleNamespace
+        from eimemory.compatibility.migration_helpers import backup_create,backup_verify
+        from eimemory.storage.runtime_store import RuntimeStore
+        if args[1]=='create':
+            store=RuntimeStore(Path(env['EIMEMORY_ROOT']),bootstrap_schema=False)
+            try:payload=backup_create(SimpleNamespace(store=store),args[2])
+            finally:store.close()
+        else:payload=backup_verify(args[2])
+        return {'exit_code':0 if payload.get('ok') is True else 1,'payload':payload}
+    command = [eimemory_bin, *args]
     completed = subprocess.run(
         command,
         env=env,
