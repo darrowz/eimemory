@@ -149,15 +149,7 @@ class Bridge:
             raise ValueError('manager_property_not_allowlisted')
         optional={'openclaw-loop-watch.timer','openclaw-loop-compact.timer',
             'openclaw-loop-watch.service','openclaw-loop-compact.service'}
-        if unit in optional:
-            allowed={'LoadState','ActiveState','SubState','UnitFileState','LastTriggerUSec','NextElapseUSecRealtime','Result'}
-            if not set(properties)<=allowed:raise ValueError('manager_property_not_allowlisted')
-            uid=registry['runtime_uid']
-            raw=self.command(['/usr/sbin/runuser','-u',registry['runtime_user'],'--','/usr/bin/env',
-                'XDG_RUNTIME_DIR=/run/user/'+str(uid),'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/'+str(uid)+'/bus',
-                '/usr/bin/systemctl','--user','show','--no-pager','--property='+','.join(properties),unit])
-        else:
-            raw=self.systemctl(registry,unit,'show','--no-pager','--property='+','.join(properties))
+        raw=self.systemctl(registry,unit,'show','--no-pager','--property='+','.join(properties))
         state=dict(line.split('=',1) for line in raw.splitlines() if '=' in line)
         if unit in optional and state.get('LoadState')=='not-found':
             return {p:state.get(p,'') for p in properties}
@@ -910,6 +902,30 @@ class Bridge:
                 return False
         return True
 
+    def recover_release_observers(self,registry,record):
+        if record.get('manual_release') is not True:return
+        # A failed prior nightly cannot be required to have already published
+        # the new release's first lineage. Start real observations after the
+        # storage commit/resume, retaining the failed invocations as evidence.
+        fixed=(('eimemory-code-implementation-refresh.service',True),
+            ('eimemory-l5-effect-review.service',False),('eimemory-nightly.service',False),
+            ('eimemory-timer-monitor.service',False))
+        for unit,refresh in fixed:
+            timer=unit.replace('.service','.timer')
+            if timer not in record['active_before'] or not registry['units'][unit]['installed']:continue
+            before=self.unit_state(registry,unit,list(self.c.NATIVE_EXIT_PROPERTIES))
+            if before['ActiveState'] not in {'inactive','failed'}:continue
+            failed=before['Result'] in {'exit-code','signal','timeout','core-dump','watchdog'}
+            if not failed and not refresh:continue
+            if (before['MainPID']!='0' or before['ControlGroup']!=''
+                    or failed and not self.c.native_terminal_exit(before,before['InvocationID'],unit)):
+                raise ValueError('manager_observer_recovery_not_terminal')
+            attempts=record.setdefault('observer_recovery',{})
+            if unit in attempts:continue
+            attempts[unit]={'before':before,'action':'start_submitted','execution_verified':False}
+            self.save(registry,record)
+            self.systemctl(registry,unit,'start','--no-block')
+
     def finalize(self,registry,key,pid,uid):
         record=self.record(key);self.verify_job_peer(registry,record,pid,uid)
         if record.get('resumed') is True:
@@ -928,6 +944,7 @@ class Bridge:
                 'serving_commit':target.name,'controller_commit':registry['controller_commit'],'reason':'manager_legacy_runtime_requires_reviewed_controller_upgrade'}
         self.resume(registry,record);record['resumed']=True;record['phase']='resumed_awaiting_business'
         self.save(registry,record)
+        self.recover_release_observers(registry,record)
         return {'job_key':key,'resumed':True,'phase':record['phase'],'serving_commit':target.name,'controller_commit':registry['controller_commit']}
 
     def cleanup_validation_units(self,registry,key):

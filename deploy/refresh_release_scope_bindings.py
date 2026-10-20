@@ -27,33 +27,38 @@ def deployment_receipt_id(text: str, commit: str) -> str:
     return next(iter(receipt_ids))
 
 
+def rpc_process_environment(commit: str) -> dict[str, str]:
+    from eimemory.ops.runtime_service_observation import service_state
+    from eimemory.ops.controlled_stability import _process_environment
+
+    state={'Id':'eimemory-rpc.service',**service_state('eimemory-rpc.service',('MainPID',))}
+    _pid,_process,values=_process_environment(state)
+    if values.get('EIMEMORY_RUNTIME_COMMIT')!=commit:
+        raise ValueError('rpc_process_release_mismatch')
+    return values
+
+
 def main():
     commit, log_path = sys.argv[1:]
     live = Path('/opt/eimemory/current').resolve()
     if live.name != commit:
         raise ValueError('live_commit_mismatch')
     sys.path.insert(0,str(live))
-    from eimemory.ops.runtime_service_observation import service_state
-    pid = service_state('eimemory-rpc.service', ('MainPID',))['MainPID']
-    if not pid.isdigit() or int(pid)<=0 or Path('/proc',pid).stat().st_uid!=os.geteuid():
-        raise ValueError('registered_rpc_process_owner_mismatch')
-    values = dict(part.split(b'=', 1) for part in Path('/proc', pid, 'environ').read_bytes().split(b'\0') if b'=' in part)
-    if values.get(b'EIMEMORY_RUNTIME_COMMIT') != commit.encode():
-        raise ValueError('rpc_process_release_mismatch')
-    binding = values.get(b'EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE')
+    values = rpc_process_environment(commit)
+    binding = values.get('EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE')
     if not binding:
         print(json.dumps({'binding_refresh': 'not_configured'}))
         return
     for key, value in values.items():
-        if key.startswith(b'EIMEMORY_'):
-            os.environ[key.decode()] = value.decode()
+        if key.startswith('EIMEMORY_'):
+            os.environ[key] = value
     receipt_id = deployment_receipt_id(Path(log_path).read_text(), commit)
     sys.path.insert(0, str(live))
     from eimemory.api.runtime import Runtime
     from eimemory.governance.release_binding_refresh import refresh_bindings
-    runtime = Runtime.create(root=Path('/var/lib/eimemory'))
+    runtime = Runtime.create(root=Path('/var/lib/eimemory'),bootstrap_schema=False)
     try:
-        count = refresh_bindings(runtime, Path(binding.decode()), receipt_id)
+        count = refresh_bindings(runtime, Path(binding), receipt_id)
         print(json.dumps({'binding_refresh': 'verified', 'scope_count': count, 'commit': commit}))
     finally:
         runtime.close()

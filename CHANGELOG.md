@@ -13,6 +13,9 @@ AIGC:
 
 ## [1.15.10] — 2026-10-21
 
+- Recover genuinely failed observers after manual release restoration and refresh the provider once, so initial lineage creation does not depend on a previously failed nightly already succeeding.
+- Refresh scope pins from the authenticated native RPC environment across private user namespaces, using the existing schema without application bootstrap.
+- Keep a positively absent initial lineage as incomplete evidence, while unreadable, mismatched or corrupt lineage remains an execution failure.
 - Bind the trusted repository for registered product entry points and L5 effect capture to the protected host registry.
 - Observe only the four fixed optional adapter units through their native user owner without granting lifecycle actions; preserve query failures.
 - Capture valid managed L5 v5 incomplete reports without claiming completion, and permit reviewed current-release revalidation after an identified failed manual business gate.
