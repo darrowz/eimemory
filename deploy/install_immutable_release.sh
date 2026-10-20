@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+EIMEMORY_MANAGED_CURRENT_REVALIDATION_CONTRACT=independent-post-resume.v1
 export PYTHONDONTWRITEBYTECODE=1
 
 REPO_DIR="${REPO_DIR:-$(pwd)}"

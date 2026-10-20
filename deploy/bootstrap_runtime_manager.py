@@ -1091,6 +1091,15 @@ def revalidation_parent(c,registry,key,scope):
     native,ended=exited_job_state(c,key,record)
     if not ended or native.get('Result') not in {'exit-code','signal','timeout','core-dump','watchdog'}:
         raise ValueError('bootstrap_revalidation_parent_not_failed')
+    release=RELEASES/registry['runtime_commit']
+    installer=release/'deploy/install_immutable_release.sh'
+    raw=read(installer,root=False,limit=4*1024*1024)
+    # Read-only enforcement is proved in the new job's native pre-start
+    # namespace. The host's bind source legitimately remains a writable mount.
+    if (installer.resolve(strict=True)!=installer
+            or sha256(raw).hexdigest()!=registry['compatibility_hashes']['deploy/install_immutable_release.sh']
+            or b'EIMEMORY_MANAGED_CURRENT_REVALIDATION_CONTRACT=independent-post-resume.v1' not in raw.splitlines()):
+        raise ValueError('bootstrap_revalidation_contract_unavailable')
     healthy_original(registry['runtime_commit'])
     return key
 

@@ -45,7 +45,7 @@ def test_shell_repository_coordinate_is_root_registered_and_runtime_uid_only(tmp
         with pytest.raises(ValueError,match='runtime_uid_required'):launcher.repository_root()
 
 
-@pytest.mark.parametrize('fault',['none','scope','target','automatic','unresumed','phase','running','success'])
+@pytest.mark.parametrize('fault',['none','scope','target','automatic','unresumed','phase','running','success','legacy','drift','linked'])
 def test_current_release_revalidation_preserves_failed_parent(tmp_path,monkeypatch,fault):
     bootstrap=module();commit='b'*40
     scope=dict(tenant_id='t',agent_id='a',workspace_id='w',user_id='u')
@@ -60,10 +60,19 @@ def test_current_release_revalidation_preserves_failed_parent(tmp_path,monkeypat
     state=tmp_path/'state';(state/'jobs').mkdir(parents=True)
     parent=state/'jobs'/(key+'.json');parent.write_bytes(c.canonical(record));original=parent.read_bytes()
     monkeypatch.setattr(bootstrap,'STATE',state)
-    monkeypatch.setattr(bootstrap,'read',lambda path:Path(path).read_bytes())
+    monkeypatch.setattr(bootstrap,'read',lambda path,**_:Path(path).read_bytes())
     monkeypatch.setattr(bootstrap,'exited_job_state',lambda *_:({'Result':'success' if fault=='success' else 'exit-code'},fault!='running'))
     checks=[];monkeypatch.setattr(bootstrap,'healthy_original',lambda current:checks.append(current))
-    registry={'runtime_commit':'c'*40 if fault=='target' else commit}
+    release=tmp_path/'releases'/commit
+    (release/'deploy').mkdir(parents=True)
+    installer=release/'deploy/install_immutable_release.sh'
+    installer.write_bytes(b'legacy installer\n' if fault=='legacy' else b'EIMEMORY_MANAGED_CURRENT_REVALIDATION_CONTRACT=independent-post-resume.v1\n')
+    monkeypatch.setattr(bootstrap,'RELEASES',release.parent)
+    if fault=='linked':
+        original_resolve=Path.resolve
+        monkeypatch.setattr(Path,'resolve',lambda path,*a,**kw:tmp_path/'other-installer' if path==installer else original_resolve(path,*a,**kw))
+    registry={'runtime_commit':'c'*40 if fault=='target' else commit,'compatibility_hashes':{
+        'deploy/install_immutable_release.sh':'0'*64 if fault=='drift' else c.sha256(installer.read_bytes()).hexdigest()}}
     supplied={**scope,'user_id':'other'} if fault=='scope' else scope
     if fault=='none':
         assert bootstrap.revalidation_parent(c,registry,key,supplied)==key
