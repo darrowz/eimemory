@@ -147,12 +147,11 @@ modules are replaced; a failure restores its private original snapshot and
 manifest. Successful controller installation supplies no incident, terminal
 transaction or elapsed observation evidence.
 
-Manual release jobs keep the fixed UID-only launcher alive after the repository
-worker exits. The launcher admits the independent receipt child, restores the
-captured automation, admits the independent post-resume business child and asks
-root to verify both original seals before completing the transition. Installer
-success alone never completes a manual release. A failed worker retains its
-actual nonzero native result and cannot enter successful admission.
+Manual release jobs use the existing fixed installer gate transport to admit
+the independent receipt child, restore captured automation and admit the
+post-resume business child. Root verifies both original seals before completing
+the transition. There is one completion owner, with no duplicate continuation
+after installer exit. A failed worker retains its actual nonzero native result.
 
 For an already failed manual job whose storage and current release have really
 returned to its base, `recover-failed-manual` requires the exact job, current
@@ -160,7 +159,10 @@ commit, registry SHA and transition SHA. It fences original native exits,
 verifies sole-owner health and restores only that job's captured active set.
 Failed units are preserved. The pointer is marked explicitly abandoned with a
 private recovery history; the deployment, receipt and native job remain failed.
-An active effect, dirty storage or a candidate still serving blocks this entry.
+An active effect or dirty storage blocks this entry. A technically healthy
+candidate is recoverable only after the job actually resumed its captured
+automation and then failed business admission. This abandons the failed attempt
+without declaring its business acceptance or deployment successful.
 
 Controller upgrades also render the fixed deployment job's controller sandbox
 policy and reload systemd, restoring that policy on failure. This prevents a
@@ -168,3 +170,22 @@ stale withdrawn release from blocking a later job before its main process.
 An actually failed pre-start is retained as distinct native pre-start evidence
 with no live main/control PID and zero main start/exit timestamps. It is never
 represented as a main-process exit or an accepted deployment.
+
+Private user namespaces prevent one runtime process from directly reading a
+sibling's `/proc` environment. The fixed host manager exposes a UID-only local
+observation for the RPC and four named Hermes processes owned by that same
+runtime UID. It fences native unit, invocation, cgroup, PID and start time;
+arbitrary PIDs, units and root processes are denied. Environment values stay
+inside this private measurement path and are not logged or copied into reports.
+Registered stability probes use these original process facts without a
+configuration-file fallback. Ordinary user-manager probes keep their original
+local observation path.
+
+The product launcher execs once after applying the reviewed settings overlay.
+The exec environment carries its exact settings/launcher digest; the host
+observer verifies it before exposing RPC observations. This makes the actual
+applied values visible natively instead of guessing them from current files.
+Namespace, NNP and empty capability constraints remain intact. A separately
+reviewed controller bundle may advance the protected compatibility hashes for
+an explicitly recorded forward manual release; automatic work remains blocked
+on incompatible source until the real current release and manifest align.

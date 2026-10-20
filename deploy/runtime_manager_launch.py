@@ -12,8 +12,6 @@ import struct
 import importlib
 import runpy
 import ast
-import subprocess
-import time
 from hashlib import sha256
 
 
@@ -172,7 +170,7 @@ def product_module(module,args):
     if len(args)>128 or sum(len(v) for v in args)>65536 or any('\0' in v for v in args):
         raise ValueError('manager_product_argv_invalid')
     release=prepare_product_module(module)
-    args=apply_runtime_settings(module,args)
+    args=exec_runtime_settings(module,args)
     sys.argv=[module,*args]
     try:
         runpy.run_module(module,run_name='__main__',alter_sys=True)
@@ -184,6 +182,23 @@ def product_module(module,args):
         raise
     else:
         assert_product_origins(release)
+
+
+def exec_runtime_settings(module,args):
+    """Make the reviewed UID overlay part of the actual exec environment."""
+    path=Path(__file__).parent/'runtime-settings.v1.json'
+    if not path.exists() and not path.is_symlink():return args
+    token=sha256(read_root(path,raw=True)+read_root(__file__,raw=True)).hexdigest()
+    marker='EIMEMORY_RUNTIME_SETTINGS_APPLIED'
+    prior=os.environ.get(marker)
+    if prior is not None:
+        if prior!=token:raise ValueError('manager_settings_exec_identity_changed')
+        return args
+    args=apply_runtime_settings(module,args)
+    environment={**os.environ,marker:token}
+    os.execve(sys.executable,[sys.executable,*protected_cache(),str(Path(__file__).resolve()),
+        '--product-module',module,*args],environment)
+    raise ValueError('manager_settings_exec_returned')
 
 
 def protected_cache():
@@ -275,90 +290,6 @@ def validate(key,operation):
     os.execv(str(controller/'.venv/bin/python'),[str(controller/'.venv/bin/python'),*flags,str(entry),'--job-key',key,'--operation',operation])
 
 
-def manual_request(operation,key,**values):
-    """Fixed UID-only calls; root independently verifies the native parent CG."""
-    c=root_contract();registry=c.validate_registry(read_root(REGISTRY))
-    if os.getuid()!=registry['runtime_uid'] or os.geteuid()!=registry['runtime_uid']:
-        raise ValueError('manager_launcher_runtime_uid_required')
-    c.job_unit(key)
-    if operation not in {'validate_deployment_job','deployment_validation_status','finalize_job','complete_job'}:
-        raise ValueError('manager_launcher_manual_operation_invalid')
-    path=Path(c.SOCKET_PATH)
-    for parent in (path.parent,*path.parent.parents):
-        st=parent.lstat()
-        if not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or st.st_mode&0o022:
-            raise ValueError('manager_launcher_socket_parent_untrusted')
-    st=path.lstat()
-    if (not stat.S_ISSOCK(st.st_mode) or st.st_uid!=0 or st.st_gid!=registry['runtime_gid']
-            or stat.S_IMODE(st.st_mode)!=0o660 or st.st_nlink!=1):
-        raise ValueError('manager_launcher_socket_untrusted')
-    body={'schema':c.REQUEST_SCHEMA,'operation':operation,'registry_generation':registry['generation'],'job_key':key,**values}
-    raw=c.canonical(body)
-    def receive(stream,size):
-        data=b''
-        while len(data)<size:
-            chunk=stream.recv(size-len(data))
-            if not chunk:raise ValueError('manager_launcher_response_truncated')
-            data+=chunk
-        return data
-    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as stream:
-        stream.settimeout(610);stream.connect(str(path))
-        if struct.unpack('3i',stream.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))[1]!=0:
-            raise ValueError('manager_launcher_host_root_peer_required')
-        stream.sendall(struct.pack('>I',len(raw))+raw)
-        size=struct.unpack('>I',receive(stream,4))[0]
-        if size>c.MAX_RESPONSE_BYTES:raise ValueError('manager_launcher_response_too_large')
-        result=c.strict_json(receive(stream,size),max_bytes=c.MAX_RESPONSE_BYTES)
-    if (result.get('schema')!=c.RESPONSE_SCHEMA or result.get('operation')!=operation
-            or result.get('registry_generation')!=registry['generation'] or result.get('ok') is not True):
-        raise ValueError('manager_launcher_manual_request_failed')
-    return result
-
-
-def manual_validation(key,operation):
-    c=root_contract();deadline=time.monotonic()+c.VALIDATION_RUNTIME_SECONDS[operation]+60
-    native=manual_request('validate_deployment_job',key,validation_operation=operation)['validation']
-    while True:
-        terminal=native.get('terminal_state')
-        if terminal is not None:
-            if (terminal.get('Result')!='success' or terminal.get('ExecMainStatus')!='0'
-                    or terminal.get('MainPID')!='0' or not native.get('sealed_artifact')):
-                raise ValueError('manager_launcher_manual_validation_failed')
-            return native
-        if time.monotonic()>=deadline:raise ValueError('manager_launcher_manual_validation_timeout')
-        time.sleep(1)
-        native=manual_request('deployment_validation_status',key,validation_operation=operation)['validation']
-
-
-def manual_worker(repository,request,key):
-    c=root_contract();root=Path(c.JOB_ROOT)
-    root.mkdir(parents=True,mode=0o700,exist_ok=True)
-    st=root.lstat()
-    if root.is_symlink() or not stat.S_ISDIR(st.st_mode) or st.st_uid!=os.geteuid() or stat.S_IMODE(st.st_mode)!=0o700:
-        raise ValueError('manager_launcher_manual_artifact_root_untrusted')
-    (root/key).mkdir(mode=0o700)  # An ambiguous old invocation is never replayed.
-    result=subprocess.run([str(repository/'deploy/eimemory-deploy-worker'),'deploy',request['target_commit']],check=False)
-    if result.returncode!=0:
-        # The installer may have restored the base and durably requested resume.
-        # Keep this parent alive while restoring its captured automation; retain
-        # the failed native exit and explicit root recovery for pointer cleanup.
-        record=read_root('/var/lib/eimemory-manager/jobs/'+key+'.json')
-        if record.get('resume_requested') is True and CURRENT.resolve(strict=True)==RELEASES/request['base_commit']:
-            manual_request('finalize_job',key)
-        return result.returncode
-    manual_validation(key,'receipt')
-    resumed=manual_request('finalize_job',key)
-    if resumed.get('resumed') is not True or resumed.get('phase')!='resumed_awaiting_business':
-        raise ValueError('manager_launcher_manual_resume_unverified')
-    manual_validation(key,'post_resume')
-    completed=manual_request('complete_job',key)
-    if (completed.get('complete') is not True or completed.get('operational_complete') is not True
-            or completed.get('phase')!='completed' or completed.get('resumed') is not True):
-        raise ValueError('manager_launcher_manual_completion_unverified')
-    print(json.dumps({'job_key':key,'manual_release_complete':True,'l5_certified':False}),flush=True)
-    return 0
-
-
 def launch(key,*,preflight=False):
     if re.fullmatch('[0-9a-f]{64}',key) is None:raise ValueError('manager_launcher_key_invalid')
     flags=protected_cache()
@@ -386,7 +317,8 @@ def launch(key,*,preflight=False):
         os.environ['EIMEMORY_TRUSTED_REPOSITORY_ROOT']=str(repository)
         for coordinate,suffix in (('tenant_id','TENANT'),('agent_id','AGENT'),('workspace_id','WORKSPACE'),('user_id','USER')):
             os.environ['EIMEMORY_DEPLOY_SCOPE_'+suffix]=request['scope'][coordinate]
-        raise SystemExit(manual_worker(repository,request,key))
+        worker=repository/'deploy/eimemory-deploy-worker'
+        os.execv(str(worker),[str(worker),'deploy',request['target_commit']])
     os.execv(str(release/'.venv/bin/python'),
         [str(release/'.venv/bin/python'),*flags,str(release/'deploy/run_code_deployment_job.py'),'--job-key',key])
 

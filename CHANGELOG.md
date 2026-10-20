@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.8] — 2026-10-21
+
+- Observe actual runtime-owned process environments through the fixed host manager across private user namespaces, with native PID, invocation and cgroup fences.
+- Exec the reviewed runtime settings before product entry so native process observations include the applied configuration; retain namespace, capability and privilege restrictions.
+
 ## [1.15.7] — 2026-10-21
 
 - Accumulate unclassified retained incident history without rewriting its source or claiming autonomous novelty.
