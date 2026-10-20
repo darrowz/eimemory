@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.13] — 2026-10-21
+
+- Accept the registered-manager journal observation contract in stability assessment while retaining positive zero-error and complete-window requirements.
+- Recognize a captured native oneshot that is already running during failed manual recovery; verify its type, PID, invocation and exact system cgroup without claiming terminal success.
+
 ## [1.15.12] — 2026-10-21
 
 - Re-read supplied manual deployment receipts with exact physical owner, release/session, immutable source and live health validation; preserve the strict autonomous transaction reader and never reissue or upgrade manual evidence.

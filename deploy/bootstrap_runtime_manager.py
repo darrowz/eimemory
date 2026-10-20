@@ -724,6 +724,17 @@ def _successful_oneshot_exit(c,account,manager,unit,invocation=None):
         and int(state['ExecMainExitTimestampMonotonic'])>0)
 
 
+def _running_captured_oneshot(c,account,manager,unit):
+    if manager!='system' or unit not in c.PRODUCT_SERVICES:return False
+    state=_handoff_unit_state(account,manager,unit,
+        'LoadState,ActiveState,SubState,Type,MainPID,InvocationID,ControlGroup')
+    return bool(state['LoadState']=='loaded' and state['ActiveState']=='activating'
+        and state['SubState'] in {'start','start-post'} and state['Type']=='oneshot'
+        and state['MainPID'].isdigit() and int(state['MainPID'])>0
+        and re.fullmatch('[0-9a-f]{32}',state['InvocationID'])
+        and c.fixed_system_unit_cgroup(state['ControlGroup'],unit))
+
+
 def _handoff_user_states_unchanged(c,account,before,after):
     if set(before)!=set(after):return False
     for unit,old in before.items():
@@ -1048,8 +1059,10 @@ def recover_failed_manual(args):
                 if _successful_oneshot_exit(c,account,manager,unit):break
                 time.sleep(.05)
                 now=_handoff_unit_state(account,manager,unit,_handoff_capture_properties(unit))
-        if now['ActiveState']!='active' and not (observer and now['ActiveState']=='activating') and not _successful_oneshot_exit(c,account,manager,unit):
-            raise ValueError('bootstrap_manual_recovery_unit_not_restored')
+        if (now['ActiveState']!='active' and not (observer and now['ActiveState']=='activating')
+                and not _running_captured_oneshot(c,account,manager,unit)
+                and not _successful_oneshot_exit(c,account,manager,unit)):
+            raise ValueError('bootstrap_manual_recovery_unit_not_restored:'+unit)
         restored.append(unit)
     healthy_original(commit)
     if read(REGISTRY)!=original or read(STATE/'active-transition.json')!=jobs['original']:

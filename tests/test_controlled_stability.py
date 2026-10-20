@@ -625,3 +625,27 @@ def test_standalone_cli_deadline_race_never_sleeps_negative(monkeypatch, capsys)
     assert probe.main(["--expected-commit", COMMIT, "--database-path", "/fixture/eimemory.sqlite"]) == 0
     assert sleeps == [0.0]
     assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+@pytest.mark.parametrize('message', ['', 'database is locked', 'Out of memory'])
+def test_root_journal_collector_output_is_consumable_without_losing_error_gate(monkeypatch, message):
+    from test_runtime_manager import standalone
+    from eimemory.contracts import runtime_manager as contract
+    bridge = standalone('runtime_manager_bridge').Bridge(contract)
+    monkeypatch.setattr(bridge, 'journal_output', lambda _: json.dumps({'MESSAGE':message}) if message else '')
+    report = bridge.error_window({'runtime_uid':1001,'units':{
+        'eimemory-rpc.service':{'installed':True,'manager':'system'}}})
+    value = samples()
+    for sample in value:
+        sample['journal'] = deepcopy(report)
+        seal(sample)
+    result = assess(value)
+    assert result['ok'] is (not message)
+    if message: assert 'sample_error_observation_unverified' in result['blocked_reasons']
+
+
+def test_unknown_journal_scope_cannot_claim_a_verified_window():
+    value = samples()
+    value[-1]['journal']['observation_scope'] = 'unregistered_global_journal'
+    seal(value[-1])
+    assert 'sample_error_observation_unverified' in assess(value)['blocked_reasons']
