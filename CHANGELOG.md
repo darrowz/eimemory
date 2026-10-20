@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.15.7] — 2026-10-21
+
+- Accumulate unclassified retained incident history without rewriting its source or claiming autonomous novelty.
+- Add reviewed host-controller upgrades and restored-owner handoff, preserving failed jobs, signing keys, knowledge and recovery evidence.
+- Register the affected release gates and verify all managed plugin versions in both CI lanes.
+
 ## [1.15.6] — 2026-10-20
 
 - Register runtime service observation in the deployment runtime impact domain so release lineage classifies the shared observation path explicitly.

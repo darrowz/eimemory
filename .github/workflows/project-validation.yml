@@ -60,6 +60,9 @@ jobs:
           tests/test_code_incident_coverage.py
           tests/test_code_incident_coverage_archive.py
           tests/test_managed_code_incident_proof.py
+          tests/test_version.py
+          tests/test_hermes_plugin_package.py
+          tests/test_codex_plugin_package.py
           tests/test_code_policy_operator.py
           tests/test_code_automation_policy_issue.py
           tests/test_runtime_identity_drift.py
