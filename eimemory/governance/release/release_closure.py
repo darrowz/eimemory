@@ -548,7 +548,7 @@ def run_manual_post_resume_closure(runtime: Any, *, job_key: str, validation_con
     bind_prompt_safety_from_service(runtime)
     identity_kwargs = dict(scope=scope, repo_root=registry["repository_root"],
         current_link="/opt/eimemory/current", health_url="http://127.0.0.1:8091/health",
-        prior_commit=body["base_commit"], deployed_commit=body["target_commit"], deployment_receipt=receipt)
+        prior_commit=body.get("rollback_commit", body["base_commit"]), deployed_commit=body["target_commit"], deployment_receipt=receipt)
     report = _run_controlled_operational_closure(runtime, report=report, scope=scope,
         identity_kwargs=identity_kwargs, release=actual, policy=policy)
     report["business_qualified"] = controlled_production_closure_report_ok(report)

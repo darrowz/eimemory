@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.15.11] — 2026-10-21
+
+- Preserve the authenticated original rollback predecessor during same-release manual revalidation.
+- Recover captured observers after a failed already-current activation, retaining their native failed exits and starting real new invocations.
+- Refresh timer-monitor after release resume so a storage guard skip cannot remain as the current acceptance result.
+
 ## [1.15.10] — 2026-10-21
 
 - Recover genuinely failed observers after manual release restoration and refresh the provider once, so initial lineage creation does not depend on a previously failed nightly already succeeding.

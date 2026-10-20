@@ -1009,8 +1009,11 @@ def recover_failed_manual(args):
     bound=(record['request']['base_commit']==commit or
         (record['request']['candidate_commit']==commit and record.get('resumed') is True
          and record.get('phase')=='resumed_awaiting_business'))
+    restore_intent=(record.get('resume_requested') is True or
+        record.get('quiesced') is True and record['request']['base_commit']==commit
+        and record.get('phase') in {'publish','activate'})
     if (record.get('manual_release') is not True or not bound
-            or record.get('resume_requested') is not True or not isinstance(active,list)
+            or not restore_intent or not isinstance(active,list)
             or len(active)!=len(set(active)) or not set(active)<=c.REGISTERED_UNITS):
         raise ValueError('bootstrap_manual_recovery_capture_invalid')
     if (_handoff_unit_state(account,'system','eimemory-rpc.service')['ActiveState']!='active'
@@ -1026,11 +1029,26 @@ def recover_failed_manual(args):
     for unit in sorted(active,key=lambda x:(x!='eimemory-rpc.service',not x.endswith(('.timer','.path')),x)):
         manager=record['registry']['units'][unit]['manager']
         state=_handoff_unit_state(account,manager,unit,_handoff_capture_properties(unit))
-        if state['ActiveState']=='failed':raise ValueError('bootstrap_manual_recovery_failed_unit_preserved')
-        if state['ActiveState']!='active':
-            call(user_command(account,'start',unit) if manager=='user' else ['/usr/bin/systemctl','start',unit])
+        observer=unit in {'eimemory-nightly.service','eimemory-timer-monitor.service',
+            'eimemory-l5-effect-review.service','eimemory-code-implementation-refresh.service'}
+        if state['ActiveState']=='failed':
+            if not observer:raise ValueError('bootstrap_manual_recovery_failed_unit_preserved')
+            native=_handoff_unit_state(account,manager,unit,','.join((*c.NATIVE_EXIT_PROPERTIES,'Type')))
+            kind=native.pop('Type')
+            if kind!='oneshot' or not c.native_terminal_exit(native,native['InvocationID'],unit):
+                raise ValueError('bootstrap_manual_recovery_observer_not_terminal')
+            write(history/(unit+'.prior-exit.json'),c.canonical(native),gid=0,mode=0o600,exclusive=True)
+        if state['ActiveState'] not in {'active','activating'}:
+            options=['start','--no-block',unit] if observer else ['start',unit]
+            call(user_command(account,*options) if manager=='user' else ['/usr/bin/systemctl',*options])
         now=_handoff_unit_state(account,manager,unit,_handoff_capture_properties(unit))
-        if now['ActiveState']!='active' and not _successful_oneshot_exit(c,account,manager,unit):
+        if observer:
+            deadline=time.monotonic()+2
+            while now['ActiveState'] not in {'active','activating'} and time.monotonic()<deadline:
+                if _successful_oneshot_exit(c,account,manager,unit):break
+                time.sleep(.05)
+                now=_handoff_unit_state(account,manager,unit,_handoff_capture_properties(unit))
+        if now['ActiveState']!='active' and not (observer and now['ActiveState']=='activating') and not _successful_oneshot_exit(c,account,manager,unit):
             raise ValueError('bootstrap_manual_recovery_unit_not_restored')
         restored.append(unit)
     healthy_original(commit)

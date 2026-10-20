@@ -8,7 +8,7 @@ from eimemory.contracts import runtime_manager as c
 from test_runtime_manager_handoff import module
 
 
-@pytest.mark.parametrize('fault',['none','registry','current','automatic','unclean','no_resume','failed_unit','candidate','candidate_unresumed'])
+@pytest.mark.parametrize('fault',['none','registry','current','automatic','unclean','no_resume','failed_unit','candidate','candidate_unresumed','quiesced_activation'])
 def test_failed_manual_recovery_restores_capture_without_forging_success(tmp_path,monkeypatch,fault):
     m=module();key='a'*64;commit='b'*40
     state=tmp_path/'state';(state/'jobs').mkdir(parents=True)
@@ -19,6 +19,7 @@ def test_failed_manual_recovery_restores_capture_without_forging_success(tmp_pat
     record={'manual_release':fault!='automatic','request':{'base_commit':commit},'resume_requested':fault!='no_resume',
         'active_before':['eimemory-rpc.service','eimemory-nightly.timer'],
         'registry':{'units':{'eimemory-rpc.service':{'manager':'system'},'eimemory-nightly.timer':{'manager':'system'}}}}
+    if fault=='quiesced_activation':record.update(resume_requested=False,quiesced=True,phase='activate')
     if fault.startswith('candidate'):
         record.update(request={'base_commit':'c'*40,'candidate_commit':commit},resumed=fault=='candidate',phase='resumed_awaiting_business')
     job=state/'jobs'/(key+'.json');job.write_bytes(c.canonical(record));job_original=job.read_bytes()
@@ -44,7 +45,7 @@ def test_failed_manual_recovery_restores_capture_without_forging_success(tmp_pat
     monkeypatch.setattr(m,'_handoff_unit_state',native)
     monkeypatch.setattr(m,'directory',lambda p,**_:Path(p).mkdir(parents=True,exist_ok=True) or Path(p))
     monkeypatch.setattr(m,'write',lambda p,data,**_:Path(p).write_bytes(data))
-    if fault in {'none','candidate'}:
+    if fault in {'none','candidate','quiesced_activation'}:
         m.recover_failed_manual(args)
         outcome=c.strict_json((state/'active-transition.json').read_bytes())
         assert outcome['complete'] and outcome['outcome']=='operator_abandoned_failed_manual_release'
