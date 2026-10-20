@@ -453,7 +453,8 @@ def restore_owner(args):
     for item in active_before:
         query=user_command(account,'show',item['unit'],'--property=ActiveState') if item['manager']=='user' else ['/usr/bin/systemctl','show',item['unit'],'--property=ActiveState']
         state=dict(line.split('=',1) for line in call(query).splitlines() if '=' in line)
-        if state.get('ActiveState') not in {'active','activating'}:raise ValueError('bootstrap_legacy_active_set_not_restored')
+        if state.get('ActiveState') not in {'active','activating'} and not _successful_oneshot_exit(c,account,item['manager'],item['unit']):
+            raise ValueError('bootstrap_legacy_active_set_not_restored')
     migration=STATE/'migration-prior-active.json'
     if migration.exists():
         capture=c.strict_json(read(migration))
@@ -610,7 +611,7 @@ def install(args, *, handoff=None):
         'user_files':user_original,'prior_user_state':prior,'prior_system_state':prior_system}
     if handoff is None:
         write(history/'owner-snapshot.json',c.canonical(owner_original),gid=0,mode=0o600,exclusive=True)
-    elif (prior!=handoff['owner']['prior_user_state'] or user_original!=handoff['owner']['user_files']
+    elif (not _handoff_user_states_unchanged(c,account,handoff['owner']['prior_user_state'],prior) or user_original!=handoff['owner']['user_files']
           or prior_system!=handoff['owner']['prior_system_state']):
         raise ValueError('bootstrap_handoff_owner_changed')
     settings,settings_preview=preview_runtime_settings(account,user_original,c.PRODUCT_SERVICES)
@@ -684,6 +685,39 @@ def _handoff_unit_state(account,manager,unit,properties=None):
     if set(state)!=set(properties.split(',')):
         raise ValueError('bootstrap_handoff_native_state_incomplete')
     return state
+
+
+def _successful_oneshot_exit(c,account,manager,unit,invocation=None):
+    if not unit.endswith('.service'):return False
+    state=_handoff_unit_state(account,manager,unit,','.join((*c.NATIVE_EXIT_PROPERTIES,'Type')))
+    kind=state.pop('Type')
+    expected=state['InvocationID'] if invocation is None else invocation
+    # Deployment jobs intentionally require RemainAfterExit. Ordinary oneshot
+    # maintenance does not; its successful native state is inactive/dead.
+    return bool(kind=='oneshot' and state['LoadState']=='loaded'
+        and state['ActiveState']=='inactive' and state['SubState']=='dead'
+        and state['MainPID']=='0' and state['ControlGroup']==''
+        and state['Result']=='success' and state['ExecMainStatus']=='0'
+        and isinstance(expected,str) and re.fullmatch('[0-9a-f]{32}',expected)
+        and state['InvocationID']==expected
+        and state['ExecMainExitTimestampMonotonic'].isdigit()
+        and int(state['ExecMainExitTimestampMonotonic'])>0)
+
+
+def _handoff_user_states_unchanged(c,account,before,after):
+    if set(before)!=set(after):return False
+    for unit,old in before.items():
+        now=after[unit]
+        if old==now:continue
+        # A native oneshot finishing its SAME invocation is normal progress,
+        # not configuration replacement. Unknown/new invocations still deny.
+        if (not unit.endswith('.service') or old.get('ActiveState') not in {'active','activating'}
+                or now.get('ActiveState')!='inactive'
+                or any(old.get(key)!=now.get(key) for key in ('LoadState','UnitFileState','InvocationID'))
+                or now.get('Result')!='success' or now.get('ExecMainStatus')!='0'
+                or not _successful_oneshot_exit(c,account,'user',unit,old.get('InvocationID'))):
+            return False
+    return True
 
 
 def _handoff_jobs(c,args):
@@ -813,7 +847,7 @@ def handoff(args):
             state=_handoff_unit_state(account,'system',unit)
             if unit.endswith(('.timer','.path')) or unit=='eimemory-rpc.service':
                 if state['ActiveState']!='active':raise ValueError('bootstrap_handoff_active_set_not_restored')
-            elif state['ActiveState'] not in {'active','inactive'}:
+            elif state['ActiveState']!='active' and not _successful_oneshot_exit(c,account,'system',unit):
                 raise ValueError('bootstrap_handoff_restored_service_failed')
         write(history/'handoff-complete.json',c.canonical({'ok':True,'commit':args.expected_current_commit,
             'registry_generation':current['generation'],'restored_units':restored,

@@ -30,6 +30,23 @@ def test_timer_and_path_handoff_does_not_require_service_only_properties(monkeyp
     assert 'MainPID' not in queries[0][-1] and 'ExecMainStatus' not in m._handoff_capture_properties(unit)
 
 
+@pytest.mark.parametrize('fault',['none','different_invocation','failed','simple','missing_exit'])
+def test_same_oneshot_can_finish_during_snapshot_without_masking_real_changes(monkeypatch,fault):
+    m=module();unit='eimemory-vector-sync.service'
+    before={unit:dict(ActiveState='activating',LoadState='loaded',UnitFileState='static',
+        InvocationID='a'*32,Result='success',ExecMainStatus='0')}
+    after={unit:{**before[unit],'ActiveState':'inactive'}}
+    state=dict(LoadState='loaded',ActiveState='inactive',SubState='dead',MainPID='0',
+        InvocationID='a'*32,ControlGroup='',Result='success',ExecMainStatus='0',
+        ExecMainExitTimestampMonotonic='12345',Type='oneshot')
+    if fault=='different_invocation':after[unit]['InvocationID']='b'*32;state['InvocationID']='b'*32
+    if fault=='failed':state['ExecMainStatus']='1';state['Result']='exit-code'
+    if fault=='simple':state['Type']='simple'
+    if fault=='missing_exit':state['ExecMainExitTimestampMonotonic']='0'
+    monkeypatch.setattr(m,'_handoff_unit_state',lambda *_args:dict(state))
+    assert m._handoff_user_states_unchanged(c,SimpleNamespace(),before,after) is (fault=='none')
+
+
 @pytest.fixture
 def jobs(tmp_path,monkeypatch):
     m=module();(tmp_path/'jobs').mkdir();(tmp_path/'validations').mkdir()
