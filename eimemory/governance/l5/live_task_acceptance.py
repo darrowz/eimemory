@@ -316,6 +316,11 @@ def _verified_deployment_identity(
     deployment_receipt: dict | None = None,
 ) -> dict[str, Any]:
     if deployment_receipt is not None:
+        if (deployment_receipt.get('strict_transaction') is False
+                and deployment_receipt.get('transaction_id') == ''):
+            return _read_supplied_manual_receipt(runtime, scope=scope, repo_root=repo_root,
+                current_link=current_link, health_url=health_url, prior_commit=prior_commit,
+                deployed_commit=deployed_commit, supplied=deployment_receipt)
         from eimemory.governance.release.release_closure import read_strict_deployment_receipt
         actual = read_strict_deployment_receipt(runtime, scope=scope, repo_root=repo_root,
             current_link=current_link, health_url=health_url,
@@ -364,6 +369,40 @@ def _verified_deployment_identity(
     ):
         return {"ok": False, "error": "acceptance_deployment_receipt_invalid"}
     return identity
+
+
+def _read_supplied_manual_receipt(runtime, *, scope, repo_root, current_link,
+                                   health_url, prior_commit, deployed_commit, supplied):
+    """Read an exact current physical receipt without issuing or upgrading it."""
+    from eimemory.governance.release.deployment_receipt import (
+        _deployment_receipt_response, inspect_immutable_deployment, normalize_health_url,
+    )
+    from eimemory.governance.release.evidence_contract import (
+        current_deployment_receipt_for_owner, current_release_identity,
+    )
+    error = {'ok':False, 'error':'acceptance_manual_receipt_readback_failed'}
+    commit = str(deployed_commit or supplied.get('commit') or '')
+    reference = str(supplied.get('promotion_request_id') or '')
+    record = runtime.store.get_by_id(reference, scope=scope) if reference else None
+    if (record is None or record.scope != scope
+            or not _same_path(supplied.get('current_link'), current_link)
+            or supplied.get('health_url') != normalize_health_url(health_url)
+            or supplied.get('prior_commit') != prior_commit
+            or not _valid_deployment_receipt(record, commit=commit, receipt_id=reference,
+                session_id=str(supplied.get('release_session_id') or ''),
+                release_path=str(supplied.get('release_path') or ''))):
+        return error
+    actual = _deployment_receipt_response(record)
+    physical = current_deployment_receipt_for_owner(runtime, reference, scope,
+        expected_commit=commit, expected_version=str(actual.get('version') or ''))
+    if (actual != supplied or not _runtime_matches_identity(actual) or physical is None
+            or not same_release_authority(current_release_identity(runtime, scope), physical)):
+        return error
+    live = inspect_immutable_deployment(runtime, scope=scope, repo=repo_root,
+        current_link=current_link, health_url=health_url, expected_commit=commit)
+    if live.get('ok') is not True or live.get('deployment_version') != actual.get('version'):
+        return error
+    return actual
 
 
 def _runtime_matches_identity(identity: dict[str, Any]) -> bool:
