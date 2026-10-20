@@ -148,3 +148,27 @@ def test_damaged_native_receipt_cannot_be_repaired_by_scope_resolution(native_re
     result = _lineage(runtime, owner, repo)
     assert result["ok"] is False
     assert result["reason"] == "current_release_identity_unavailable"
+
+
+@pytest.mark.parametrize('fault', ['', 'session', 'scope', 'receipt', 'prior', 'health', 'transaction'])
+def test_live_acceptance_reads_native_manual_receipt_without_reissuing(native_receipt, monkeypatch, fault):
+    from eimemory.governance.l5 import live_task_acceptance as live
+    from eimemory.governance.release import deployment_receipt as native
+    runtime, owner, other, repo, record = native_receipt
+    supplied = native._deployment_receipt_response(record)
+    expected = dict(supplied)
+    # The native fixture serves its own immutable test tree.
+    monkeypatch.setattr(live, 'runtime_package_tree_digest', lambda: record.content['side_effect']['post_deploy_health']['package_tree_digest'])
+    monkeypatch.setattr(live, 'package_import_root', lambda: __import__('pathlib').Path(supplied['release_path'])/'eimemory')
+    monkeypatch.setenv('EIMEMORY_RUNTIME_COMMIT', supplied['commit'])
+    monkeypatch.setattr(runtime, 'verify_and_record_deployment', lambda **kw: pytest.fail('must not reissue the manual receipt'))
+    if fault == 'session': supplied['release_session_id'] = 'changed'
+    elif fault == 'receipt': supplied['promotion_request_id'] = 'missing'
+    elif fault == 'prior': supplied['prior_commit'] = 'f'*40
+    elif fault == 'transaction': supplied['transaction_id'] = 'forged-automatic'
+    if fault == 'health': monkeypatch.setattr(native, '_fetch_health', lambda _: {'ok':False})
+    result = live._verified_deployment_identity(runtime, scope=other if fault=='scope' else owner,
+        repo_root=str(repo), current_link=expected['current_link'], health_url=expected['health_url'],
+        prior_commit=expected['prior_commit'], deployed_commit=expected['commit'], deployment_receipt=supplied)
+    if fault: assert result['ok'] is False
+    else: assert result == expected and result['strict_transaction'] is False

@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.12] — 2026-10-21
+
+- Re-read supplied manual deployment receipts with exact physical owner, release/session, immutable source and live health validation; preserve the strict autonomous transaction reader and never reissue or upgrade manual evidence.
+
 ## [1.15.11] — 2026-10-21
 
 - Preserve the authenticated original rollback predecessor during same-release manual revalidation.
