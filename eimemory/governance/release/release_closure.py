@@ -572,6 +572,12 @@ def _run_controlled_operational_closure(
     from eimemory.ops.controlled_rpc_probe import run_controlled_rpc_probe
     import time
 
+    # Managed entry points do not pass through run_release_closure's report
+    # initializer. These gates are not executed by this controlled workflow.
+    # Preserve any existing verdict so a prior failure cannot be overwritten.
+    for key in ('production_recall_gate', 'production_recall_strict_state', 'closure_rehearsal', 'readiness'):
+        report.setdefault(key, {'ok':False, 'status':'not_run',
+            'reason':'controlled_operational_workflow'})
     report.update(
         report_type="controlled_production_release_closure", legacy_compatibility=False,
         acceptance_basis="controlled_existing_memory", evidence_class="operator_controlled_existing_memory",

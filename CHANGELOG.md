@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.14] — 2026-10-21
+
+- Initialize explicit not-run gate states in the shared controlled business workflow for managed entry points. Preserve existing failures and retain the original complete-report validator.
+
 ## [1.15.13] — 2026-10-21
 
 - Accept the registered-manager journal observation contract in stability assessment while retaining positive zero-error and complete-window requirements.
