@@ -333,3 +333,34 @@ _start_managed_runtime_timers() {{ echo timers; }}
     else:
         assert result.returncode == 0, result.stderr
         assert lines[-1] == 'boundary-complete'
+
+
+def test_ordinary_deploy_uses_user_manager_and_rejects_system_rpc(tmp_path):
+    unit = tmp_path / 'eimemory-rpc.service'
+    unit.write_text('[Service]\n')
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    systemctl = bin_dir / 'systemctl'
+    systemctl.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$SYSTEMCTL_LOG"\nexit 0\n')
+    systemctl.chmod(0o755)
+    log = tmp_path / 'systemctl.log'
+    script = function('_runtime_manager_job_bound') + function('_runtime_manager_enabled')
+    script += function('_reject_unsupported_system_rpc_owner')
+    script += f'''
+set -eu
+SYSTEM_RPC_UNIT_PATH={shlex.quote(str(unit))}
+DEPLOY_MODE=deploy
+export PATH={shlex.quote(str(bin_dir))}:$PATH
+export SYSTEMCTL_LOG={shlex.quote(str(log))}
+unset EIMEMORY_RUNTIME_TRANSITION_JOB
+if _runtime_manager_enabled; then echo manager-enabled; exit 3; fi
+_reject_unsupported_system_rpc_owner
+'''
+    result = _run_bash(script, tmp_path=tmp_path)
+    assert result.returncode == 2, (result.returncode, result.stdout, result.stderr)
+    assert 'legacy_system_rpc=unsupported_owner' in result.stderr
+    assert 'ordinary_deploy=blocked user_systemd_required' in result.stderr
+    assert 'probe' not in log.read_text()
+    body = function('_user_systemctl')
+    assert 'systemctl --user "$@"' in body
+    assert '_runtime_manager_job_bound' in function('_runtime_manager_enabled')

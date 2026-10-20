@@ -233,6 +233,27 @@ _clean_existing_release_and_validate_source() {
     --releases-root "$INSTALL_ROOT/releases" --repo-root "$REPO_DIR" --commit "$COMMIT"
 }
 
+_reject_unsupported_system_rpc_owner() {
+  # Ordinary promotion owns RPC through the user manager. An active system
+  # unit is the unsupported owner from docs/deployment.md. Do not build or
+  # switch a release while it is still the listener.
+  if _runtime_manager_job_bound || [ "$DEPLOY_MODE" = "--recover-only" ]; then
+    return 0
+  fi
+  if [ ! -e "$SYSTEM_RPC_UNIT_PATH" ] && [ ! -L "$SYSTEM_RPC_UNIT_PATH" ]; then
+    return 0
+  fi
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "legacy_system_rpc=state_failed systemd_unavailable" >&2
+    return 2
+  fi
+  if systemctl is-active --quiet eimemory-rpc.service; then
+    echo "legacy_system_rpc=unsupported_owner active_system_unit=$SYSTEM_RPC_UNIT_PATH" >&2
+    echo "ordinary_deploy=blocked user_systemd_required" >&2
+    return 2
+  fi
+}
+
 _retire_system_rpc_unit() {
   if _runtime_manager_enabled; then
     # PID1 is the registered owner. Retiring it would destroy the new owner.
@@ -420,14 +441,18 @@ _preflight_openclaw_adapter() {
   echo "openclaw_adapter_preflight=verified"
 }
 
-# All reads use the root-reviewed declaration. Lifecycle changes require the
-# independent registered deployment job; there is no --user/system fallback.
+# A bound 64-hex transition job is the root registry controller path.
+# Ordinary promotion has no such key and must use the user manager directly.
 _runtime_manager_control() {
   _run_as_service_user "$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache "$REPO_DIR/deploy/runtime_manager_control.py" "$@"
 }
 
+_runtime_manager_job_bound() {
+  [[ "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" =~ ^[0-9a-f]{64}$ ]]
+}
+
 _runtime_manager_enabled() {
-  [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ]
+  _runtime_manager_job_bound
 }
 
 _runtime_manager_phase() {
@@ -435,7 +460,11 @@ _runtime_manager_phase() {
 }
 
 _user_systemctl() {
-  _runtime_manager_control systemctl "$@"
+  if _runtime_manager_job_bound; then
+    _runtime_manager_control systemctl "$@"
+    return
+  fi
+  systemctl --user "$@"
 }
 
 
@@ -2982,6 +3011,7 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && \
   echo "fix: fast-forward the deploy checkout first: git -C $REPO_DIR merge --ff-only $COMMIT" >&2
   exit 2
 fi
+_reject_unsupported_system_rpc_owner
 
 mkdir -p "$INSTALL_ROOT/releases"
 if [ -L "$INSTALL_ROOT/releases" ] || [ -L "$RELEASE_DIR" ]; then

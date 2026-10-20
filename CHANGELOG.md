@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.2] — 2026-10-20
+
+- Ordinary promotion uses the user service manager directly. A root transition job is no longer implied just because user systemd is enabled. An active system `eimemory-rpc.service` blocks that path before the release tree is copied.
+- This does not retire a live system unit, certify production L5, or change recall gates.
+
 ## [1.15.1] — 2026-10-20
 
 - Keep external deployment-validation artifacts writable when the child cwd is the immutable release. The open audit event omits dir_fd, so relocate only that external open and restore cwd. Writes inside the release remain denied.
