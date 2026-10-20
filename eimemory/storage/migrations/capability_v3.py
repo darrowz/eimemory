@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 import sqlite3
 from typing import Any
 
+from eimemory.storage.recall_deadline import _ReadConnection
+
 
 CAPABILITY_V3_SCHEMA_MIGRATION = "capability.v3.schema.v1"
 CAPABILITY_V3_BACKFILL_MIGRATION = "capability.v3.backfill.v1"
@@ -853,13 +855,14 @@ def _assert_capability_v3_schema(conn: sqlite3.Connection) -> None:
                 )
 
 
-def _sqlite_connection(conn_or_store: Any) -> sqlite3.Connection:
-    """Accept a raw connection or SqliteRecordStore-like ``.conn`` owner."""
-    if isinstance(conn_or_store, sqlite3.Connection):
-        return conn_or_store
-    conn = getattr(conn_or_store, "conn", None)
-    if isinstance(conn, sqlite3.Connection):
-        return conn
+def _sqlite_connection(conn_or_store: Any) -> sqlite3.Connection | _ReadConnection:
+    """Keep the native recall deadline when inspecting schema/backfill state."""
+    for conn in (conn_or_store, getattr(conn_or_store, "conn", None)):
+        if isinstance(conn, sqlite3.Connection):
+            return conn
+        if type(conn) is _ReadConnection and isinstance(conn.raw, sqlite3.Connection):
+            # Do not unwrap: every statement must retain its busy/deadline fence.
+            return conn
     raise TypeError("sqlite_connection_required")
 
 
