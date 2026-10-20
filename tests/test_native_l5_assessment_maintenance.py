@@ -28,6 +28,14 @@ def envelope(complete=False):
         "gaps": [] if complete else ["no_qualifying_terminal_receipt"]}
 
 
+@pytest.fixture(autouse=True)
+def isolated_provider_grants(tmp_path,monkeypatch):
+    from eimemory.governance.evolution import code_evolution_provider_authority
+    # These synthetic owners exercise assessment/archive contracts, not the
+    # host's protected deployment-provider grants.
+    monkeypatch.setattr(code_evolution_provider_authority,'DELEGATION_PATH',tmp_path/'no-provider-delegations.json')
+
+
 @pytest.fixture
 def producer(tmp_path, monkeypatch):
     monkeypatch.delenv("EIMEMORY_L5_V3_PROFILE", raising=False)
@@ -64,6 +72,30 @@ def test_incomplete_native_reading_is_archived_without_certifying_product(produc
     assert diagnostics["l5_evidence_waits"] == ["native_l5_assessment"]
     assert diagnostics["evidence_waits"] == []
     assert diagnostics["native_l5_assessment"]["product_l5_complete"] is False
+
+
+@pytest.mark.parametrize('error',['current_release_lineage_not_found','lineage_attestation_mismatch','database_read_failed'])
+def test_initial_lineage_absence_is_distinct_from_failed_or_invalid_reads(producer,error):
+    from eimemory.governance.l5.l5_reader import _initial_lineage_observation
+    raw={'ok':False,'error':error}
+    observed=_initial_lineage_observation(raw)
+    producer.value['current_lineage']=observed
+    producer.value['gaps'].append('current_lineage_incompatible')
+    result=native.run_native_l5_assessment(producer,scope=asdict(SCOPE),loop_id='initial-lineage-'+error)
+    assert result['execution_ok'] is (error=='current_release_lineage_not_found')
+    assert result['product_l5_complete'] is False
+    if error=='current_release_lineage_not_found':
+        assert observed['compatible'] is False and observed['awaiting_initial_lineage'] is True
+        assert result['awaiting_evidence'] is True
+        assert result['envelope']['current_lineage']['reason']==error
+    else:assert observed==raw and result['status']=='failed'
+    assert raw=={'ok':False,'error':error}
+
+
+def test_ambiguous_lineage_absence_cannot_hide_a_retained_record_failure():
+    from eimemory.governance.l5.l5_reader import _initial_lineage_observation
+    raw={'ok':False,'error':'current_release_lineage_not_found','record_id':'retained-invalid-proof'}
+    assert _initial_lineage_observation(raw)==raw
 
 
 def test_native_product_completion_preserves_actual_true_bit(producer):

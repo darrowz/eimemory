@@ -435,6 +435,16 @@ def _eligible_incubation(events: Any) -> tuple[int, str]:
     return passes, str(event.get("state_digest") or "")
 
 
+def _initial_lineage_observation(value):
+    # An authority read that positively found no current record is missing
+    # evidence, not an execution exception. No compatibility is granted.
+    if (type(value) is dict and set(value)=={'ok','error'} and value['ok'] is False
+            and value['error']=='current_release_lineage_not_found'):
+        return {'ok':False,'compatible':False,'reason':'current_release_lineage_not_found',
+                'awaiting_initial_lineage':True}
+    return value
+
+
 def _code_evolution_evidence(
     runtime: Any,
     *,
@@ -801,6 +811,7 @@ def _code_evolution_evidence(
                         and legacy_lineage.get("compatible") is True
                     ):
                         lineage = {**dict(legacy_lineage), "lineage_contract": "legacy_compatibility"}
+                lineage = _initial_lineage_observation(lineage)
                 if isinstance(lineage, Mapping):
                     lineage = dict(lineage)
                     lineage["report_scope"] = {

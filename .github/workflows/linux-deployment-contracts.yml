@@ -120,6 +120,7 @@ jobs:
           tests/test_runtime_manager_manual_release.py
           tests/test_runtime_process_environment.py
           tests/test_runtime_observer_recovery.py
+          tests/test_scope_binding_deploy_log.py
           tests/test_runtime_service_observation.py
           tests/test_timer_monitor.py
           tests/test_version.py
