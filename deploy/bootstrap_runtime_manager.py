@@ -1084,7 +1084,7 @@ def revalidation_parent(c,registry,key,scope):
     record=c.strict_json(read(STATE/'jobs'/(key+'.json')))
     request=record.get('request',{})
     if (record.get('manual_release') is not True or record.get('resumed') is not True
-            or record.get('phase')!='resumed_awaiting_business'
+            or record.get('phase') not in {'resumed_awaiting_business','completed'}
             or request.get('target_commit')!=registry['runtime_commit'] or request.get('scope')!=scope):
         raise ValueError('bootstrap_revalidation_parent_not_eligible')
     c.validate_manual_permit(request,key)

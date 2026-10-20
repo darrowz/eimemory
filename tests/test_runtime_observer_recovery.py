@@ -84,7 +84,7 @@ def test_shell_repository_coordinate_is_root_registered_and_runtime_uid_only(tmp
         with pytest.raises(ValueError,match='runtime_uid_required'):launcher.repository_root()
 
 
-@pytest.mark.parametrize('fault',['none','scope','target','automatic','unresumed','phase','running','success','legacy','drift','linked'])
+@pytest.mark.parametrize('fault',['none','completed_worker_failed','scope','target','automatic','unresumed','phase','running','success','legacy','drift','linked'])
 def test_current_release_revalidation_preserves_failed_parent(tmp_path,monkeypatch,fault):
     bootstrap=module();commit='b'*40
     scope=dict(tenant_id='t',agent_id='a',workspace_id='w',user_id='u')
@@ -96,6 +96,7 @@ def test_current_release_revalidation_preserves_failed_parent(tmp_path,monkeypat
     if fault=='automatic':record['manual_release']=False
     if fault=='unresumed':record['resumed']=False
     if fault=='phase':record['phase']='submitted'
+    if fault=='completed_worker_failed':record['phase']='completed'
     state=tmp_path/'state';(state/'jobs').mkdir(parents=True)
     parent=state/'jobs'/(key+'.json');parent.write_bytes(c.canonical(record));original=parent.read_bytes()
     monkeypatch.setattr(bootstrap,'STATE',state)
@@ -113,7 +114,7 @@ def test_current_release_revalidation_preserves_failed_parent(tmp_path,monkeypat
     registry={'runtime_commit':'c'*40 if fault=='target' else commit,'compatibility_hashes':{
         'deploy/install_immutable_release.sh':'0'*64 if fault=='drift' else c.sha256(installer.read_bytes()).hexdigest()}}
     supplied={**scope,'user_id':'other'} if fault=='scope' else scope
-    if fault=='none':
+    if fault in {'none','completed_worker_failed'}:
         assert bootstrap.revalidation_parent(c,registry,key,supplied)==key
         assert checks==[commit]
     else:
