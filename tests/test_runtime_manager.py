@@ -1664,14 +1664,22 @@ def test_fused_restore_progress_never_replays_a_completed_oneshot_after_partial_
     assert sum(unit==service and args[0]=='start' for unit,args in calls)==1
 
 
+@pytest.mark.skipif(os.name!='posix',reason='native Unix backup identity')
 def test_pid1_backup_cli_ignores_mutable_console_script_override(monkeypatch):
     module=standalone('eimemory_backup');seen=[]
     original=module.Path.read_text
     monkeypatch.setattr(module.Path,'read_text',lambda path,*args,**kwargs:
         '0::/system.slice/eimemory-backup.service\n' if str(path)=='/proc/self/cgroup' else original(path,*args,**kwargs))
-    from types import SimpleNamespace
-    monkeypatch.setattr(module.subprocess,'run',lambda command,**kwargs:seen.append(command) or SimpleNamespace(returncode=0,stdout='{}'))
-    if os.name=='posix':
-        module._run_cli('/tmp/unreviewed-eimemory',['backup','verify','fixture'],{},30)
-        assert seen[0][1:6]==['-I','-B','-X','pycache_prefix=/var/lib/eimemory-manager/empty-pycache','/usr/libexec/eimemory-manager/runtime_manager_launch.py']
-        assert '--product-module' in seen[0] and '/tmp/unreviewed-eimemory' not in seen[0]
+    from eimemory.compatibility import migration_helpers
+    monkeypatch.setattr(module.os,'getuid',lambda:1001)
+    monkeypatch.setattr(module.os,'geteuid',lambda:1001)
+    monkeypatch.setattr(module.subprocess,'run',lambda *args,**kwargs:pytest.fail('native backup must not launch an executable'))
+    monkeypatch.setattr(migration_helpers,'backup_verify',lambda path:seen.append(path) or {'ok':True})
+    result=module._run_cli('/tmp/unreviewed-eimemory',['backup','verify','fixture'],{},30)
+    assert result=={'exit_code':0,'payload':{'ok':True}} and seen==['fixture']
+    for uid,euid in ((0,1001),(1001,0)):
+        monkeypatch.setattr(module.os,'getuid',lambda:uid)
+        monkeypatch.setattr(module.os,'geteuid',lambda:euid)
+        with pytest.raises(ValueError,match='backup_native_reader_context_invalid'):
+            module._run_cli('/tmp/unreviewed-eimemory',['backup','verify','fixture'],{},30)
+    assert seen==['fixture']
