@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.16] — 2026-10-21
+
+- Bridge skipped managed-knowledge checkpoints through the exact digest chain retained in completed Root controller histories. Require protected archive reads and keep unknown or broken chains blocked; preserve positive facts, receipts and receive anchors while replay cursors restart for reviewed boundaries.
+
 ## [1.15.15] — 2026-10-21
 
 - Use the existing not-run reason contract for managed controlled reports so immutable capture and publication summaries retain a successful business result. Extend the managed workflow integration regression through the actual source capture and summary exit.

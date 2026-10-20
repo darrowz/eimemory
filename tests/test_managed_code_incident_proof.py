@@ -923,3 +923,52 @@ def test_restored_sqlite_cannot_requalify_by_numerically_reattaining_old_waterma
         authority._ingest(root,original,manifest)
     assert authority._anchor_gap(root,None,anchor['sequence'])=='receive_prefix_anchor_unavailable'
     assert not authority._catchup_progress(root,manifest)['complete']
+
+
+@pytest.mark.parametrize('fault', ['', 'missing', 'digest', 'too_many'])
+def test_skipped_reviewed_manifests_preserve_knowledge_and_anchor(monkeypatch, fault):
+    conn=state();manifest={'scopes':[SCOPE]};facts=original_facts()
+    authority._ingest(conn,facts,manifest)
+    conn.execute('CREATE TABLE managed_manifest_history(digest TEXT PRIMARY KEY)')
+    before_knowledge=[tuple(row) for row in conn.execute('SELECT * FROM managed_knowledge')]
+    before_meta=dict(conn.execute('SELECT key,value FROM authority_meta'))
+    archive={};current=manifest
+    for index in range(130 if fault=='too_many' else 3):
+        following={'scopes':[SCOPE],'previous_manifest_digest':authority.digest(current),'release_index':index}
+        archive[authority.digest(current)]=current
+        current=following
+    if fault=='missing':archive.clear()
+    elif fault=='digest':archive[current['previous_manifest_digest']]={'tampered':True}
+    monkeypatch.setattr(authority,'_reviewed_manifest_archive',lambda:archive)
+    if fault:
+        with pytest.raises(ValueError,match='continuity_unverified'):authority._prepare_manifest_catchup(conn,current)
+        assert dict(conn.execute('SELECT key,value FROM authority_meta'))==before_meta
+    else:
+        authority._prepare_manifest_catchup(conn,current)
+        assert authority._catchup_progress(conn,current)=={'epoch':3,'cursor':0,'complete':False,'high_water':1}
+        after_meta=dict(conn.execute('SELECT key,value FROM authority_meta'))
+        assert after_meta['receive_anchor']==before_meta['receive_anchor']
+        assert after_meta.get('uncertainty')==before_meta.get('uncertainty')
+    assert [tuple(row) for row in conn.execute('SELECT * FROM managed_knowledge')]==before_knowledge
+
+
+def test_manifest_archive_requires_completed_root_history_and_protected_reads(tmp_path,monkeypatch):
+    completed=tmp_path/'controller-20261021T060000Z-123'
+    incomplete=tmp_path/'controller-20261021T060001Z-124'
+    unrelated=tmp_path/'config-repairs'
+    for p in (completed,incomplete,unrelated):p.mkdir()
+    manifest={'schema':'managed_code_incident_manifest.v1','qualification_domain':authority.DOMAIN,
+        'defect_key_semantics':authority.KEY_SEMANTICS,'enabled':True,'previous_manifest_digest':'a'*64}
+    (completed/'complete.json').write_text(json.dumps({'ok':True,'controller_commit':'a'*40,
+        'registry_generation':'b'*64,'manifest_sha256':'c'*64}),encoding='utf-8')
+    for p in (completed,incomplete,unrelated):
+        (p/'managed-manifest.snapshot').write_text(json.dumps(manifest),encoding='utf-8')
+    monkeypatch.setattr(authority,'CONTROLLER_HISTORY_DIRECTORY',str(tmp_path))
+    reads=[]
+    def protected_read(path,**kwargs):
+        reads.append((Path(path),kwargs));return Path(path).read_bytes()
+    monkeypatch.setattr(authority,'_read',protected_read)
+    assert authority._reviewed_manifest_archive()=={authority.digest(manifest):manifest}
+    assert all(kwargs.get('mode')==0o600 for _,kwargs in reads)
+    assert not any(path.parent==unrelated for path,_ in reads)
+    assert not any(path.name=='managed-manifest.snapshot' and path.parent==incomplete for path,_ in reads)
