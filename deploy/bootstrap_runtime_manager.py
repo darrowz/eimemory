@@ -1006,7 +1006,10 @@ def recover_failed_manual(args):
     if jobs['abandoned']!=args.job_key:raise ValueError('bootstrap_manual_recovery_not_current')
     path=STATE/'jobs'/(args.job_key+'.json');record=c.strict_json(read(path))
     active=record.get('active_before')
-    if (record.get('manual_release') is not True or record['request']['base_commit']!=commit
+    bound=(record['request']['base_commit']==commit or
+        (record['request']['candidate_commit']==commit and record.get('resumed') is True
+         and record.get('phase')=='resumed_awaiting_business'))
+    if (record.get('manual_release') is not True or not bound
             or record.get('resume_requested') is not True or not isinstance(active,list)
             or len(active)!=len(set(active)) or not set(active)<=c.REGISTERED_UNITS):
         raise ValueError('bootstrap_manual_recovery_capture_invalid')

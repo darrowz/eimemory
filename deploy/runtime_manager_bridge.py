@@ -1092,6 +1092,41 @@ class Bridge:
             if unit.endswith('.service') and unit not in core:args+=['--no-block']
             self.systemctl(record['registry'],unit,*args)
 
+    def runtime_process_environment(self,registry,unit):
+        # Only the runtime UID may observe its own registered runtime processes.
+        # Never accept an arbitrary PID, root unit, path or environment override.
+        allowed={'eimemory-rpc.service','hermes-gateway.service','hermes-gateway-hongtai.service',
+                 'hermes-gateway-hongxin.service','hermes-gateway-xiaomage.service'}
+        if unit not in allowed:raise ValueError('manager_process_unit_not_allowlisted')
+        properties=['Id','LoadState','ActiveState','MainPID','InvocationID','ControlGroup']
+        before=self.unit_state(registry,unit,properties)
+        if (before['Id']!=unit or before['LoadState']!='loaded' or before['ActiveState']!='active'
+                or not before['MainPID'].isdigit() or int(before['MainPID'])<=0 or not before['ControlGroup']):
+            raise ValueError('manager_process_unit_not_running')
+        self.c.hex_value(before['InvocationID'],32,'manager_process_invocation_invalid')
+        process=self.proc/before['MainPID']
+        status=dict(line.split(':',1) for line in (process/'status').read_text().splitlines() if ':' in line)
+        if (process.stat().st_uid!=registry['runtime_uid']
+                or status.get('Uid','').split()!=[str(registry['runtime_uid'])]*4):
+            raise ValueError('manager_process_owner_mismatch')
+        groups=(process/'cgroup').read_text().splitlines();group=before['ControlGroup']
+        if not any(row.startswith('0::') and (row[3:]==group or row[3:].startswith(group+'/')) for row in groups):
+            raise ValueError('manager_process_cgroup_mismatch')
+        def ticks():return int((process/'stat').read_text().rsplit(')',1)[1].split()[19])
+        start=ticks();raw=(process/'environ').read_bytes()
+        if len(raw)>1048576:raise ValueError('manager_process_environment_limit')
+        entries=[item.split('=',1) for item in raw.decode().split('\0') if '=' in item]
+        if len(entries)!=len({key for key,_ in entries}):raise ValueError('manager_process_environment_duplicate')
+        environment=dict(entries)
+        if unit=='eimemory-rpc.service':
+            token=sha256(read_file(ROOT/'runtime-settings.v1.json')+read_file(ROOT/'runtime_manager_launch.py')).hexdigest()
+            if environment.get('EIMEMORY_RUNTIME_SETTINGS_APPLIED')!=token:
+                raise ValueError('manager_process_settings_exec_unverified')
+        after=self.unit_state(registry,unit,properties)
+        if after!=before or ticks()!=start:raise ValueError('manager_process_identity_changed')
+        return {'schema':'eimemory.runtime_process_environment.v1','unit':unit,'pid':int(before['MainPID']),
+            'start_ticks':start,'invocation_id':before['InvocationID'],'environment':environment}
+
     def dispatch(self,value,*,pid,uid):
         registry=self.registry()
         if uid!=registry['runtime_uid']:raise ValueError('manager_peer_uid_denied')
@@ -1099,6 +1134,7 @@ class Bridge:
             raise ValueError('manager_request_registry_mismatch')
         op=value.get('operation');base={'schema','operation','registry_generation'}
         fields={'unit_state':{'unit','properties'},'unit_journal':{'unit','invocation','limit'},
+            'runtime_process_environment':{'unit'},
             'begin_fused_closure':set(),'end_fused_closure':{'context_key'},'recover_fused_closure':set(),
             'issue_managed_incident_proof':{'source_record_id','source_digest'},'verify_managed_incident_proof':{'receipt_id','digest'},'checkpoint_managed_incident_knowledge':set(),
             'runtime_identity':{'unit'},'activation_attestation':set(),'verify_activation_attestation':{'receipt_id','digest'},'error_window':set(),'single_rpc_owner':set(),'readonly_probe':{'job_key'},'submit_job':{'job_key'},'job_status':{'job_key'},'release_job':{'job_key'},
@@ -1138,6 +1174,8 @@ class Bridge:
             self.c.hex_value(values[0],40,'manager_identity_commit_invalid')
             return {'runtime_commit':values[0]}
         # Serialize durable transitions. Reads never cause a lifecycle action.
+        if op=='runtime_process_environment':
+            return {'observation':self.runtime_process_environment(registry,value['unit'])}
         with self.mutex,self.lifecycle_lock():
             # A different thread may have activated a release while this caller
             # waited for the lifecycle lock. Never mutate using stale authority.

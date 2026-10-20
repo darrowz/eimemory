@@ -47,6 +47,7 @@ def _commit(repo: Path, path: str, content: str, message: str) -> str:
             for path in (
                 "deploy/bootstrap_runtime_manager.py",
                 "deploy/runtime_manager_launch.py",
+                "deploy/runtime_manager_bridge.py",
                 "deploy/build_runtime_manager_bundle.py",
                 "eimemory/governance/evolution/managed_code_incident_proof.py",
                 "eimemory/core/managed_incident_proof_authority.py",
