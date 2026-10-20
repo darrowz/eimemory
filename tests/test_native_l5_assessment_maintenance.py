@@ -31,6 +31,10 @@ def envelope(complete=False):
 @pytest.fixture
 def producer(tmp_path, monkeypatch):
     monkeypatch.delenv("EIMEMORY_L5_V3_PROFILE", raising=False)
+    from eimemory.governance.evolution import code_evolution_provider_authority
+    # These synthetic owners exercise assessment/archive contracts, not the
+    # host's protected deployment-provider grants.
+    monkeypatch.setattr(code_evolution_provider_authority,'DELEGATION_PATH',tmp_path/'no-provider-delegations.json')
     monkeypatch.setattr(native, "current_release_identity", lambda *args: RELEASE)
     monkeypatch.setattr("eimemory.governance.release.evidence_contract.current_release_identity", lambda *args: RELEASE)
     with closing(RuntimeStore(tmp_path)) as store:
