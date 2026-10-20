@@ -63,9 +63,16 @@ def harness(tmp_path, deploy_worker_environment):
     worker.chmod(0o755)
     py_dir = Path(sys.executable).parent
 
-    def run(rc: int):
+    def run(rc: int, *, inactive=False):
         isolated, settings = deploy_worker_environment
+        if inactive:
+            (repo / 'deploy' / 'runtime_manager_control.py').write_text("import sys\nprint('inactive')\nsys.exit(3)\n")
+            (bin_dir / 'systemctl').write_text('#!/bin/sh\n[ "$1" = --user ] || exit 99\necho inactive\nexit 3\n')
         env = {**isolated, "PATH": f"{bin_dir}:{py_dir}:/usr/bin:/bin", "FAKE_INSTALLER_RC": str(rc), "REPO_DIR": str(repo)}
+        if not inactive:
+            env['EIMEMORY_RUNTIME_TRANSITION_JOB'] = 'a' * 64
+        else:
+            env.pop('EIMEMORY_RUNTIME_TRANSITION_JOB', None)
         result = subprocess.run([str(worker), "deploy", COMMIT], env=env, capture_output=True, text=True, timeout=60)
         if rc == 0:
             assert json.loads(settings.read_text()) == {"trusted_repository_root": str(repo), "preserve": True}
@@ -111,6 +118,19 @@ def test_first_failure_is_published_and_later_success_replaces_it(harness):
     assert published["ok"] is True
     assert b"rc=0" in (state / f"{COMMIT}.log").read_bytes()
     assert len(_attempts(state)) == 2
+
+
+def test_inactive_rpc_still_persists_failed_attempt(harness):
+    run, state = harness
+    result = run(2, inactive=True)
+    assert result.returncode != 0
+    attempts = _attempts(state)
+    assert len(attempts) == 1, result.stderr
+    payload = json.loads(attempts[0].read_text())
+    assert payload['ok'] is False
+    assert payload['installer_exit_code'] == 2
+    assert payload['rpc_service'] == 'inactive'
+    assert payload['rpc_service_exit_code'] == 3
 
 
 def test_success_receipt_records_bytecode_cleanup(harness):

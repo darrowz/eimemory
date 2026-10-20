@@ -27,3 +27,22 @@ def test_guard_only_dropin_is_not_a_runtime_identity_binding(tmp_path):
     assert 'retired-worker.service' not in discovered
     assert 'eimemory-experience-autopromote.service' not in discovered
     assert 'vendor-worker.service' in discovered
+
+
+def test_user_discovery_query_error_is_not_treated_as_absence(tmp_path):
+    units = tmp_path / 'systemd'
+    units.mkdir()
+    bound = units / 'vendor-worker.service.d'
+    bound.mkdir()
+    (bound / 'zzzz-eimemory-python-runtime.conf').write_text('[Service]\n')
+    command = 'unset EIMEMORY_RUNTIME_TRANSITION_JOB; systemctl() { return 42; }; export -f systemctl; bash "$1" "$2"'
+    result = subprocess.run(['bash', '-c', command, 'bash', 'deploy/discover_python_runtime_units.sh', str(units)], capture_output=True, text=True)
+    assert result.returncode == 42
+
+
+def test_malformed_managed_job_never_falls_back_to_user_discovery(tmp_path):
+    import os
+    env = {**os.environ, 'EIMEMORY_RUNTIME_TRANSITION_JOB': 'invalid'}
+    result = subprocess.run(['bash', 'deploy/discover_python_runtime_units.sh', str(tmp_path)], env=env, capture_output=True, text=True)
+    assert result.returncode == 2
+    assert result.stdout == ''

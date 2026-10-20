@@ -85,7 +85,15 @@ fi
 set -e
 
 current="$(basename "$(readlink -f /opt/eimemory/current 2>/dev/null || true)")"
-service="$(/usr/bin/python3 -I -B "$REPO/deploy/runtime_manager_control.py" systemctl is-active eimemory-rpc.service)"
+# Preserve status failures as evidence; never exit before writing the attempt.
+set +e
+if [[ -n "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" ]]; then
+  service="$(/usr/bin/python3 -I -B "$REPO/deploy/runtime_manager_control.py" systemctl is-active eimemory-rpc.service)"
+else
+  service="$(systemctl --user is-active eimemory-rpc.service 2>/dev/null)"
+fi
+service_rc=$?
+set -e
 # urllib collector: exits only 0/1/2. Never use curl redirect (exit 23 write/pipe).
 # Isolated interpreter still needs the repo on PYTHONPATH to import eimemory.
 set +e
@@ -138,10 +146,10 @@ PY
 fi
 set -e
 
-python3 - "$tmp" "$COMMIT" "$started" "$installer_rc" "$current" "$service" "$health_rc" "$health_json" "$log" "$binding_rc" "$attempt_id" "$bytecode_rc" <<'PY'
+python3 - "$tmp" "$COMMIT" "$started" "$installer_rc" "$current" "$service" "$health_rc" "$health_json" "$log" "$binding_rc" "$attempt_id" "$bytecode_rc" "$service_rc" <<'PY'
 import json, os, sys
 from datetime import datetime, timezone
-out, commit, started, installer_rc, current, service, health_rc, health_json, log, binding_rc, attempt_id, bytecode_rc = sys.argv[1:]
+out, commit, started, installer_rc, current, service, health_rc, health_json, log, binding_rc, attempt_id, bytecode_rc, service_rc = sys.argv[1:]
 try:
     health = json.loads(health_json)
     if not isinstance(health, dict):
@@ -154,7 +162,7 @@ health_ok = (
     and health.get("ok") is True
     and str(health.get("commit") or "") == commit
 )
-ok = int(bytecode_rc) == 0 and int(binding_rc) == 0 and int(installer_rc) == 0 and current == commit and service == "active" and health_ok
+ok = int(service_rc) == 0 and int(bytecode_rc) == 0 and int(binding_rc) == 0 and int(installer_rc) == 0 and current == commit and service == "active" and health_ok
 payload = {
     "ok": ok,
     "commit": commit,
@@ -166,6 +174,7 @@ payload = {
     "bytecode_cleanup_exit_code": int(bytecode_rc),
     "current_commit": current,
     "rpc_service": service,
+    "rpc_service_exit_code": int(service_rc),
     "health_exit_code": int(health_rc),
     "health": health,
     "log": log,

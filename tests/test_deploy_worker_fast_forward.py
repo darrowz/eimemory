@@ -52,7 +52,7 @@ def _setup(tmp_path: Path, deploy_worker_environment):
     link.symlink_to(current)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (bin_dir / "systemctl").write_text("#!/usr/bin/env bash\necho unexpected_direct_systemctl >&2\nexit 99\n")
+    (bin_dir / "systemctl").write_text('#!/bin/sh\n[ "$*" = "--user is-active eimemory-rpc.service" ] || exit 99\necho active\n')
     (bin_dir / "systemctl").chmod(0o755)
     script = (SOURCE.read_text()
               .replace("STATE_DIR=/var/lib/eimemory/state/deploy-jobs", f"STATE_DIR={state}")

@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.15.3] — 2026-10-20
+
+- Discover ordinary deployment runtime units from user systemd, excluding absent identity-only units while preserving fail-closed query errors and explicit managed-job registry selection.
+- Persist failed deployment attempt receipts even when RPC status checks return nonzero; ordinary workers query the user RPC owner.
+- Production acceptance and pending rollback recovery remain separately verified.
+
 ## [1.15.2] — 2026-10-20
 
 - Ordinary promotion uses the user service manager directly. A root transition job is no longer implied just because user systemd is enabled. An active system `eimemory-rpc.service` blocks that path before the release tree is copied.
