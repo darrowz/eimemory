@@ -31,12 +31,15 @@ def test_upgrade_manifest_requires_exact_current_source_and_prior_link(tmp_path,
         with pytest.raises(ValueError):m.configure_upgrade_inputs(args,files,commit)
 
 
-@pytest.mark.parametrize('fault',['none','registry','release','dual_owner','template','configure','not_stopped','rollback_not_active'])
+@pytest.mark.parametrize('fault',['none','registry','release','dual_owner','template','configure','reload','not_stopped','rollback_not_active'])
 def test_controller_upgrade_preserves_business_owner_and_rolls_back_fixed_code(tmp_path,monkeypatch,fault):
     m=module();commit='b'*40
     source=tmp_path/'releases'/commit;source.mkdir(parents=True)
     state=tmp_path/'state';state.mkdir();root=tmp_path/'root';root.mkdir()
     units=tmp_path/'units';units.mkdir();(units/'eimemory-runtime-manager.service').write_bytes(b'fixed unit')
+    policy=units/'eimemory-code-deployment-job@.service.d'/'90-eimemory-runtime.conf'
+    policy.parent.mkdir();policy.write_bytes(b'old missing controller policy')
+    old_policy=policy.read_bytes()
     path=tmp_path/'registry'
     registry={'runtime_commit':commit,'controller_commit':'a'*40,'generation':'d'*64,
         'template_hashes':{'eimemory-rpc.service':sha256(b'fixed RPC template').hexdigest()},
@@ -44,7 +47,8 @@ def test_controller_upgrade_preserves_business_owner_and_rolls_back_fixed_code(t
     original=c.canonical(registry);path.write_bytes(original)
     files={'templates/eimemory-rpc.service':b'fixed RPC template',
         'eimemory-runtime-manager.service':b'fixed unit','runtime_manager_bridge.py':b'new fixed bridge',
-        'compatibility.json':b'{}','controller-entry.json':b'{"sha256":null,"validation_sha256":null}'}
+        'compatibility.json':b'{}','controller-entry.json':b'{"sha256":null,"validation_sha256":null}',
+        'job-runtime-policy.conf':b'fixed @COMMIT@ policy'}
     if fault=='template':files['templates/eimemory-rpc.service']=b'different unit'
     args=SimpleNamespace(expected_registry_sha256='0'*64 if fault=='registry' else sha256(original).hexdigest(),
         bundle=tmp_path/'bundle',expected_bundle_sha256='e'*64,
@@ -62,13 +66,16 @@ def test_controller_upgrade_preserves_business_owner_and_rolls_back_fixed_code(t
     monkeypatch.setattr(m,'storage_clean',lambda:None)
     monkeypatch.setattr(m,'_handoff_jobs',lambda *_args,**kwargs:{'abandoned':None})
     monkeypatch.setattr(m,'healthy_original',lambda _:None)
-    snapshot={str(path):{'raw_hex':original.hex()}}
+    snapshot={str(path):{'raw_hex':original.hex()},str(policy):{'raw_hex':old_policy.hex()}}
     monkeypatch.setattr(m,'root_snapshot',lambda _:snapshot)
     monkeypatch.setattr(m,'directory',lambda p,**_:Path(p).mkdir(parents=True,exist_ok=True) or Path(p))
     actions=[];stopped={'value':False}
     def call(argv):
-        assert argv[-1]=='eimemory-runtime-manager.service'
-        actions.append(argv[1]);stopped['value']=argv[1]=='stop'
+        if argv[1]!='daemon-reload':
+            assert argv[-1]=='eimemory-runtime-manager.service'
+            stopped['value']=argv[1]=='stop'
+        actions.append(argv[1])
+        if fault=='reload' and argv[1]=='daemon-reload' and actions.count('daemon-reload')==1:raise ValueError('actual_daemon_reload_failed')
     monkeypatch.setattr(m,'call',call)
     def native(_a,manager,unit,*_):
         if unit=='eimemory-rpc.service':
@@ -84,7 +91,7 @@ def test_controller_upgrade_preserves_business_owner_and_rolls_back_fixed_code(t
         if Path(p)!=manifest_path:Path(p).parent.mkdir(parents=True,exist_ok=True);Path(p).write_bytes(raw)
     monkeypatch.setattr(m,'write',write)
     restored=[]
-    def restore(value):restored.append(value);path.write_bytes(original)
+    def restore(value):restored.append(value);path.write_bytes(original);policy.write_bytes(old_policy)
     monkeypatch.setattr(m,'restore_root_files',restore)
     def configure(_args,value,*_):
         if fault in {'configure','rollback_not_active'}:raise ValueError('invalid_producer_guard')
@@ -93,13 +100,17 @@ def test_controller_upgrade_preserves_business_owner_and_rolls_back_fixed_code(t
     if fault=='none':
         m.upgrade_controller(args)
         assert c.strict_json(path.read_bytes())['controller_commit']==commit
-        assert actions==['stop','start'] and not restored
+        assert actions==['stop','daemon-reload','start'] and not restored
+        assert policy.read_bytes()==b'fixed '+commit.encode()+b' policy'
     else:
         with pytest.raises(ValueError):m.upgrade_controller(args)
         assert path.read_bytes()==original
-        if fault=='configure':assert restored==[snapshot] and actions==['stop','stop','start']
+        if fault=='configure':assert restored==[snapshot] and actions==['stop','stop','daemon-reload','start']
+        if fault=='reload':
+            assert restored==[snapshot] and actions==['stop','daemon-reload','stop','daemon-reload','start']
         if fault=='rollback_not_active':
-            assert restored==[snapshot] and actions==['stop','stop','start']
+            assert restored==[snapshot] and actions==['stop','stop','daemon-reload','start']
             assert not list(state.glob('*/rollback-complete.json'))
         if fault in {'registry','release','dual_owner','template'}:assert actions==[] and writes==[]
         if fault=='not_stopped':assert not restored and not any(str(root) in p for p in writes)
+        assert policy.read_bytes()==old_policy

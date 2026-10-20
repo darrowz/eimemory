@@ -138,3 +138,28 @@ def test_failed_manual_recovery_restores_capture_without_forging_success(tmp_pat
         with pytest.raises(ValueError):m.recover_failed_manual(args)
         assert (state/'active-transition.json').read_bytes()==transition
     assert job.read_bytes()==job_original and reg.read_bytes()==raw
+
+
+@pytest.mark.parametrize('fault',['none','automatic','quiesced','control_alive','main_started','mutated','invocation'])
+def test_failed_prestart_has_distinct_native_evidence_and_never_a_main_exit(tmp_path,monkeypatch,fault):
+    m=module();key='a'*64
+    state={name:'' for name in c.NATIVE_EXIT_PROPERTIES}
+    state.update(LoadState='loaded',ActiveState='failed',SubState='failed',Result='exit-code',
+        InvocationID='b'*32,MainPID='0',ControlGroup='',ExecMainStatus='0',ExecMainExitTimestampMonotonic='0')
+    record={'job_key':key,'unit':c.job_unit(key),'manual_release':fault!='automatic','phase':'submitted',
+        'quiesced':fault=='quiesced','active_before':None,'original_invocation':'c'*32 if fault=='invocation' else None,
+        'registry':{'runtime_gid':1001}}
+    if fault=='mutated':record['prestart_failure']={'old':'different'}
+    extra={'ControlPID':'7' if fault=='control_alive' else '0',
+        'ExecMainStartTimestampMonotonic':'1' if fault=='main_started' else '0'}
+    monkeypatch.setattr(m,'call',lambda argv:'\n'.join(k+'='+v for k,v in
+        (extra if argv[-1].startswith('--property=ControlPID') else state).items()))
+    writes=[];monkeypatch.setattr(m,'write',lambda *_a,**_kw:writes.append(True))
+    if fault in {'control_alive','main_started','mutated','invocation'}:
+        with pytest.raises(ValueError):m.exited_job_state(c,key,record)
+        assert not writes
+    else:
+        _native,ended=m.exited_job_state(c,key,record)
+        assert ended is (fault=='none')
+        assert ('prestart_failure' in record) is (fault=='none')
+        assert 'terminal_state' not in record

@@ -161,3 +161,10 @@ verifies sole-owner health and restores only that job's captured active set.
 Failed units are preserved. The pointer is marked explicitly abandoned with a
 private recovery history; the deployment, receipt and native job remain failed.
 An active effect, dirty storage or a candidate still serving blocks this entry.
+
+Controller upgrades also render the fixed deployment job's controller sandbox
+policy and reload systemd, restoring that policy on failure. This prevents a
+stale withdrawn release from blocking a later job before its main process.
+An actually failed pre-start is retained as distinct native pre-start evidence
+with no live main/control PID and zero main start/exit timestamps. It is never
+represented as a main-process exit or an accepted deployment.
