@@ -64,7 +64,9 @@ def test_native_exact_owner_receipt_keeps_full_lineage_gate(native_receipt):
     result = _lineage(runtime, owner, repo)
     # A genuine receipt proves release identity; it does not invent an attestation.
     assert result["ok"] is False
-    assert result["error"] == "current_release_lineage_not_found"
+    assert result["reason"] == "current_release_lineage_not_found"
+    assert result["compatible"] is False and result["awaiting_initial_lineage"] is True
+    assert "error" not in result
     assert result["report_scope"] == asdict(owner)
     assert "shared_from_product_scope" not in result
 
@@ -78,7 +80,9 @@ def test_native_shared_service_receipt_selects_physical_lineage_owner(native_rec
     runtime.store.append(RecordEnvelope.create(kind="memory", title="Owner private business memory", scope=owner))
     result = _lineage(runtime, report_owner, repo)
     assert result["ok"] is False
-    assert result["error"] == "current_release_lineage_not_found"
+    assert result["reason"] == "current_release_lineage_not_found"
+    assert result["compatible"] is False and result["awaiting_initial_lineage"] is True
+    assert "error" not in result
     assert result["report_scope"] == asdict(report_owner)
     assert result["shared_from_product_scope"] is True
     assert runtime.store.get_by_id(receipt.record_id, scope=report_owner) is None
