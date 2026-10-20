@@ -463,10 +463,11 @@ def test_l5_effect_review_fails_closed_without_trusted_repository_root(tmp_path:
 
 
 @pytest.mark.parametrize("complete", [False, True])
-def test_l5_effect_review_preserves_v4_completion_result(tmp_path: Path, complete: bool) -> None:
+@pytest.mark.parametrize("version", ["v4", "v5"])
+def test_l5_effect_review_preserves_v4_completion_result(tmp_path: Path, complete: bool, version: str) -> None:
     payload = {
-        "schema": "l5.reader.v4",
-        "schema_version": "l5_readiness.v4",
+        "schema": "l5.reader."+version,
+        "schema_version": "l5_readiness."+version,
         "report_type": "l5_readiness_report",
         "ok": complete,
         "status": "ready" if complete else "incomplete",

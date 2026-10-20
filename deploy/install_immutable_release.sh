@@ -3110,6 +3110,16 @@ _finish_managed_already_current() {
   # receipt/ledger readback, is the only caller allowed to finalize the resume.
   _restart_storage_writers || return $?
   echo "managed_already_current=technical_verified_restore_deferred"
+  if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]; then
+    # A reviewed revalidation still needs the original independent owner to
+    # restore the captured units, validate business evidence and complete it.
+    # The serving immutable directory is reused; no storage snapshot is built.
+    COMMITTED=1
+    trap - EXIT
+    _release_candidate_validation_lock
+    _release_storage_deploy_lock
+    _run_post_deploy_validation || return $?
+  fi
 }
 
 # Threat boundary: the deployment UID and its same-UID processes are trusted.

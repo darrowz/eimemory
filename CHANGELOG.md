@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.15.10] — 2026-10-21
+
+- Bind the trusted repository for registered product entry points and L5 effect capture to the protected host registry.
+- Observe only the four fixed optional adapter units through their native user owner without granting lifecycle actions; preserve query failures.
+- Capture valid managed L5 v5 incomplete reports without claiming completion, and permit reviewed current-release revalidation after an identified failed manual business gate.
+
 ## [1.15.9] — 2026-10-21
 
 - Accept the native SQLite deadline connection during cold read-only schema checks without unwrapping its busy timeout or execution deadline.

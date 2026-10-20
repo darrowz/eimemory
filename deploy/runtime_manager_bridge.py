@@ -147,8 +147,20 @@ class Bridge:
     def unit_state(self,registry,unit,properties):
         if not isinstance(properties,list) or not properties or any(p not in self.c.READ_PROPERTIES for p in properties):
             raise ValueError('manager_property_not_allowlisted')
-        raw=self.systemctl(registry,unit,'show','--no-pager','--property='+','.join(properties))
+        optional={'openclaw-loop-watch.timer','openclaw-loop-compact.timer',
+            'openclaw-loop-watch.service','openclaw-loop-compact.service'}
+        if unit in optional:
+            allowed={'LoadState','ActiveState','SubState','UnitFileState','LastTriggerUSec','NextElapseUSecRealtime','Result'}
+            if not set(properties)<=allowed:raise ValueError('manager_property_not_allowlisted')
+            uid=registry['runtime_uid']
+            raw=self.command(['/usr/sbin/runuser','-u',registry['runtime_user'],'--','/usr/bin/env',
+                'XDG_RUNTIME_DIR=/run/user/'+str(uid),'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/'+str(uid)+'/bus',
+                '/usr/bin/systemctl','--user','show','--no-pager','--property='+','.join(properties),unit])
+        else:
+            raw=self.systemctl(registry,unit,'show','--no-pager','--property='+','.join(properties))
         state=dict(line.split('=',1) for line in raw.splitlines() if '=' in line)
+        if unit in optional and state.get('LoadState')=='not-found':
+            return {p:state.get(p,'') for p in properties}
         if any(p not in state for p in properties):raise ValueError('manager_state_incomplete')
         return {p:state[p] for p in properties}
 
