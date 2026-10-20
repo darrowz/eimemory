@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.15.0] — 2026-10-20
+
+- Integrate the L0/L1/L5 audit: evidence-based raw recall ranking, governed-recall.v4 page selection, durable L1 conflict recovery, fair queue draining, and exact L5 replay/channel evidence binding.
+- Independent targeted regression: 285 tests and 60 subtests passed. Production deployment and L5 completion require separate current-release verification.
+- Synchronize package and Hermes plugin versions to the 1.15.x mainline.
+
 ## [1.14.156] — 2026-10-19
 
 - Bind historical controlled business acceptance to all six release-lineage domains, independently reread physical evidence, and refresh signed nightly acceptance and replay high water without borrowing stale success.
