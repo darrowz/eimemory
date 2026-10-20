@@ -3155,6 +3155,11 @@ def test_immutable_release_installer_rejects_dangling_current_link_with_clear_er
     install_root = tmp_path / "install"
     (install_root / "releases").mkdir(parents=True)
     (install_root / "current").symlink_to(tmp_path / "missing-release", target_is_directory=True)
+    fake_bin = tmp_path / 'fixture-bin'
+    fake_bin.mkdir()
+    systemctl = fake_bin / 'systemctl'
+    systemctl.write_text('#!/bin/sh\n[ "$1" = is-active ] && exit 3\nexit 1\n', encoding='utf-8')
+    systemctl.chmod(0o755)
     env = dict(os.environ)
     env.update(
         {
@@ -3163,6 +3168,7 @@ def test_immutable_release_installer_rejects_dangling_current_link_with_clear_er
             "PYTHON_BIN": _bash_path(Path(sys.executable)),
             "USER_SYSTEMD_ENABLE_SERVICE": "0",
             "EIMEMORY_POST_SWITCH_GATES": "0",
+            "PATH": str(fake_bin) + os.pathsep + os.environ.get('PATH', ''),
         }
     )
 
