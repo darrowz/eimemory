@@ -276,6 +276,26 @@ def exited_job_state(c,key,record):
     if set(state)!=set(properties):raise ValueError('bootstrap_job_native_state_incomplete')
     original=record.get('original_invocation');actual=state['InvocationID']
     if actual and original not in {None,actual}:raise ValueError('bootstrap_job_invocation_changed')
+    # A failed fixed ExecStartPre has no main-process exit timestamp. Preserve
+    # this as distinct pre-start evidence, never as a successful/main exit.
+    prestart=record.get('prestart_failure')
+    if (record.get('manual_release') is True and record.get('phase')=='submitted'
+            and not record.get('quiesced') and record.get('active_before') is None
+            and state['LoadState']=='loaded' and state['ActiveState']=='failed'
+            and state['SubState']=='failed' and state['Result']=='exit-code'
+            and state['MainPID']=='0' and state['ControlGroup']==''
+            and state['ExecMainStatus']=='0' and state['ExecMainExitTimestampMonotonic']=='0'):
+        extra=dict(line.split('=',1) for line in call(['/usr/bin/systemctl','show',c.job_unit(key),
+            '--property=ControlPID,ExecMainStartTimestampMonotonic']).splitlines() if '=' in line)
+        c.hex_value(actual,32,'bootstrap_job_invocation_invalid')
+        proof={**state,**extra}
+        if extra!={'ControlPID':'0','ExecMainStartTimestampMonotonic':'0'}:
+            raise ValueError('bootstrap_job_prestart_exit_unproven')
+        if prestart is not None and prestart!=proof:raise ValueError('bootstrap_job_prestart_evidence_changed')
+        record['original_invocation']=actual;record['prestart_failure']=proof
+        write(STATE/'jobs'/(key+'.json'),c.canonical(record),gid=record['registry']['runtime_gid'])
+        return state,True
+    if prestart is not None:raise ValueError('bootstrap_job_prestart_evidence_changed')
     old=record.get('terminal_state')
     if old is not None and not c.native_terminal_readback(old,state,original,c.job_unit(key)):
         raise ValueError('bootstrap_job_terminal_state_changed')
@@ -907,8 +927,9 @@ def upgrade_controller(args):
         raise ValueError('bootstrap_upgrade_manager_unit_change_requires_handoff')
     preview=configure_upgrade_inputs(args,files,commit)
     history=directory(STATE/('controller-'+time.strftime('%Y%m%dT%H%M%SZ')+'-'+str(os.getpid())),gid=0,mode=0o700)
+    job_policy=SYSTEM_UNITS/'eimemory-code-deployment-job@.service.d'/'90-eimemory-runtime.conf'
     snapshot={name:value for name,value in root_snapshot(files).items()
-              if Path(name)==REGISTRY or Path(name).is_relative_to(ROOT)}
+              if Path(name) in {REGISTRY,job_policy} or Path(name).is_relative_to(ROOT)}
     write(history/'controller-snapshot.json',c.canonical(snapshot),gid=0,mode=0o600,exclusive=True)
     manifest_path=Path('/etc/eimemory-code-automation-authority/managed-code-incident-manifest.v1.json')
     old_manifest=read(manifest_path,limit=1048576)
@@ -936,6 +957,8 @@ def upgrade_controller(args):
         if read(REGISTRY)!=original or CURRENT.resolve(strict=True)!=RELEASES/commit:
             raise ValueError('bootstrap_upgrade_authority_changed')
         write(REGISTRY,c.canonical(updated),gid=account.pw_gid)
+        write(job_policy,files['job-runtime-policy.conf'].replace(b'@COMMIT@',commit.encode()),gid=account.pw_gid)
+        call(['/usr/bin/systemctl','daemon-reload'])
         call(['/usr/bin/systemctl','start','eimemory-runtime-manager.service'])
         state=_handoff_unit_state(account,'system','eimemory-runtime-manager.service')
         if state['ActiveState']!='active' or state['MainPID'] in {'0',''}:
@@ -955,6 +978,7 @@ def upgrade_controller(args):
                 raise ValueError('bootstrap_upgrade_rollback_daemon_not_stopped') from exc
             restore_root_files(snapshot)
             write(manifest_path,old_manifest,gid=account.pw_gid)
+            call(['/usr/bin/systemctl','daemon-reload'])
         call(['/usr/bin/systemctl','start','eimemory-runtime-manager.service'])
         restored=_handoff_unit_state(account,'system','eimemory-runtime-manager.service')
         if (restored['ActiveState']!='active' or restored['MainPID'] in {'0',''}
@@ -1082,7 +1106,7 @@ def stage(args):
         if record.get('manual_release') is not True or any(record['request'].get(k)!=v for k,v in pair.items()):raise ValueError('bootstrap_prior_attempt_binding_invalid')
         c.validate_manual_permit(record['request'],key)
         state,ended=exited_job_state(c,key,record)
-        terminal=record.get('terminal_state') or {}
+        terminal=record.get('terminal_state') or record.get('prestart_failure') or {}
         if not ended or terminal.get('Result') not in {'exit-code','signal','timeout','core-dump','watchdog'}:
             raise ValueError('bootstrap_prior_attempt_active_or_unknown')
         if previous.get('attempt_id')==args.attempt_id:raise ValueError('bootstrap_attempt_nonce_already_used')
