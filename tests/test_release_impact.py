@@ -42,6 +42,12 @@ def _commit(repo: Path, path: str, content: str, message: str) -> str:
     ("path", "expected_domains", "expected_unknown", "expected_reason"),
     [
         (
+            "eimemory/ops/runtime_service_observation.py",
+            ["deployment.runtime"],
+            [],
+            "classified_production_change",
+        ),
+        (
             "eimemory/retrieval/engine.py",
             ["memory.recall"],
             [],

@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.6] — 2026-10-20
+
+- Register runtime service observation in the deployment runtime impact domain so release lineage classifies the shared observation path explicitly.
+
 ## [1.15.5] — 2026-10-20
 
 - Observe ordinary user services and registered PID1 services through their actual execution context, covering maintenance, scope refresh, timer ownership and controlled stability. Failed reads remain distinct from absent units.
