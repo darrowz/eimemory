@@ -718,6 +718,25 @@ def test_manual_child_uses_root_permit_without_fabricated_automatic_transaction(
         assert "transaction_id" not in body and not list((root / key).iterdir())
 
 
+@pytest.mark.parametrize('fault', ['', 'scope', 'target', 'automatic', 'digest', 'cycle', 'missing'])
+def test_revalidation_retains_authenticated_predecessor_without_self_rollback(monkeypatch, fault):
+    from hashlib import sha256
+    permit = _manual_permit()
+    key = sha256(jobs.canonical_bytes(permit)).hexdigest()
+    record = dict(job_key=key, request=deepcopy(permit), manual_release=True)
+    if fault == 'scope': record['request']['scope']['user_id'] = 'other'
+    elif fault == 'target': record['request']['target_commit'] = 'f'*40
+    elif fault == 'automatic': record['manual_release'] = False
+    elif fault == 'digest': record['job_key'] = 'f'*64
+    elif fault == 'cycle': record.update(revalidation_of=key, request={**permit, 'base_commit':permit['target_commit']})
+    monkeypatch.setattr(jobs, '_root_file_bytes', lambda *a, **kw: jobs.canonical_bytes(record))
+    root = {} if fault == 'missing' else {'revalidation_of':key}
+    if fault:
+        with pytest.raises(ValueError):jobs._manual_revalidation_rollback(root, permit['target_commit'], permit['scope'])
+    else:
+        assert jobs._manual_revalidation_rollback(root, permit['target_commit'], permit['scope']) == permit['base_commit']
+
+
 def test_restored_database_attachment_keeps_schema_and_continues_real_ledger_dml(durable_job_fixture, tmp_path):
     """A controller reopens an actual restored DB, not a fresh-schema double."""
     import sqlite3

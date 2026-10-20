@@ -452,7 +452,28 @@ def validation_binding(key: str, operation: str, native: dict | None = None) -> 
             raise ValueError("deployment_validation_local_request_changed")
     body = {**original, "controller_commit": controller, "target_commit": target,
         "manual_release": manual, "launch_controller_commit": original["controller_commit"]}
+    if manual and original['base_commit'] == target:
+        body['rollback_commit'] = _manual_revalidation_rollback(root, target, original['scope'])
     return body, native
+
+
+def _manual_revalidation_rollback(record, target, scope):
+    """Retain the real predecessor through Root-bound same-release retries."""
+    seen = set()
+    for _ in range(16):
+        key = record.get('revalidation_of')
+        if not isinstance(key, str) or re.fullmatch(r'[0-9a-f]{64}', key) is None or key in seen:
+            raise ValueError('deployment_revalidation_predecessor_unbound')
+        seen.add(key)
+        record = json.loads(_root_file_bytes(Path('/var/lib/eimemory-manager/jobs') / (key + '.json'), maximum=65536))
+        permit = validate_manual_permit(record.get('request'))
+        if (record.get('job_key') != key or sha256(canonical_bytes(permit)).hexdigest() != key
+            or record.get('manual_release') is not True or permit['target_commit'] != target
+            or permit['candidate_commit'] != target or permit['scope'] != scope):
+            raise ValueError('deployment_revalidation_predecessor_changed')
+        if permit['base_commit'] != target:
+            return permit['base_commit']
+    raise ValueError('deployment_revalidation_predecessor_limit')
 
 
 def _validation_artifact_context(key, operation, body, native):
@@ -559,7 +580,7 @@ def run_validation(runtime, *, key: str, operation: str) -> dict:
             if operation == "receipt":
                 arguments = dict(scope=body["scope"], repo_root=registry["repository_root"],
                     current_link=policy["deployment"]["current_link"], health_url=policy["deployment"]["health_url"],
-                    prior_commit=body["base_commit"] if body["target_commit"] == body["candidate_commit"] else body["candidate_commit"],
+                    prior_commit=body.get("rollback_commit", body["base_commit"]) if body["target_commit"] == body["candidate_commit"] else body["candidate_commit"],
                     deployed_commit=body["target_commit"])
             else:
                 if body["target_commit"] != body["candidate_commit"]:

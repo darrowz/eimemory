@@ -24,12 +24,12 @@ def test_release_resume_starts_real_failed_observers_and_refreshes_provider_once
     monkeypatch.setattr(bridge,'save',lambda _r,value:saved.append(c.canonical(value)))
     monkeypatch.setattr(bridge,'systemctl',lambda _r,unit,*args:calls.append((unit,args)))
     bridge.recover_release_observers(registry,record)
-    assert calls==[(unit,('start','--no-block')) for unit in fixed[:3]]
+    assert calls==[(unit,('start','--no-block')) for unit in fixed]
     assert all(value['execution_verified'] is False for value in record['observer_recovery'].values())
     assert record['observer_recovery']['eimemory-nightly.service']['before']['Result']=='exit-code'
-    assert len(saved)==3
+    assert len(saved)==4
     bridge.recover_release_observers(registry,record)
-    assert len(calls)==3
+    assert len(calls)==4
 
 
 @pytest.mark.parametrize('fault',['automatic','uncaptured','uninstalled','running','remaining_process','unproven_exit'])

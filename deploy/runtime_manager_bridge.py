@@ -909,7 +909,7 @@ class Bridge:
         # storage commit/resume, retaining the failed invocations as evidence.
         fixed=(('eimemory-code-implementation-refresh.service',True),
             ('eimemory-l5-effect-review.service',False),('eimemory-nightly.service',False),
-            ('eimemory-timer-monitor.service',False))
+            ('eimemory-timer-monitor.service',True))
         for unit,refresh in fixed:
             timer=unit.replace('.service','.timer')
             if timer not in record['active_before'] or not registry['units'][unit]['installed']:continue
