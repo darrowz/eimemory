@@ -106,6 +106,8 @@ def test_external_acceptance_accepts_hermes_non_feishu_delivery_and_redacts_ids(
     [
         ({"runtime_commit": "b" * 40, "status": "failed"}, False),
         ({"status": "failed"}, False),
+        ({"status": "accepted"}, False),
+        ({"status": "200"}, False),
         ({"inbound_message_id": ""}, False),
         ({"delivery_receipt_id": ""}, False),
         ({"platform": "local"}, False),
@@ -113,6 +115,8 @@ def test_external_acceptance_accepts_hermes_non_feishu_delivery_and_redacts_ids(
         ({"transport_owner": "manual"}, False),
         ({"conversation_kind": "synthetic"}, False),
         ({"platform_accepted_at_ms": 1}, False),
+        ({"received_at_ms": True, "platform_accepted_at_ms": True}, False),
+        ({"received_at_ms": 1.5, "platform_accepted_at_ms": 2.5}, False),
     ],
 )
 def test_external_acceptance_rejects_untrusted_or_stale_delivery_shapes(
@@ -401,6 +405,119 @@ def test_external_acceptance_empty_ledger_stays_unbound(
         "ok": False,
         "error": "current_release_channel_receipt_not_found",
     }
+
+
+def test_external_acceptance_binds_idempotency_to_explicit_receipt_session(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    state_path = tmp_path / "external-delivery.json"
+    try:
+        first_release = _release(runtime, scope, monkeypatch)
+        _write_external(state_path, first_release)
+        first = runtime.record_external_channel_acceptance(
+            scope=scope, current_release=first_release,
+            openclaw_state_path=tmp_path / "missing.json", external_state_path=state_path,
+        )
+        # An isolated recorder may have only the supplied verified receipt,
+        # without independently discovering current_release_identity.
+        second_release = _release(runtime, scope, monkeypatch)
+        assert second_release.receipt_id != first_release.receipt_id
+        second = runtime.record_external_channel_acceptance(
+            scope=scope, current_release=second_release,
+            openclaw_state_path=tmp_path / "missing.json", external_state_path=state_path,
+        )
+        repeated = runtime.record_external_channel_acceptance(
+            scope=scope, current_release=second_release,
+            openclaw_state_path=tmp_path / "missing.json", external_state_path=state_path,
+        )
+        record = runtime.store.get_by_id(second["record_id"], scope=scope)
+    finally:
+        runtime.close()
+
+    assert first["ok"] is second["ok"] is repeated["ok"] is True
+    assert first["record_id"] != second["record_id"]
+    assert repeated["record_id"] == second["record_id"]
+    assert record.content["promotion_request_id"] == second_release.receipt_id
+
+
+def test_external_acceptance_does_not_report_quarantined_persisted_receipt_as_success(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    release = _release(runtime, scope, monkeypatch)
+    state_path = tmp_path / "external-delivery.json"
+    _write_external(state_path, release)
+    try:
+        first = runtime.record_external_channel_acceptance(
+            scope=scope, current_release=release,
+            openclaw_state_path=tmp_path / "missing.json", external_state_path=state_path,
+        )
+        stored = runtime.store.get_by_id(first["record_id"], scope=scope)
+        stored.status = "quarantined"
+        runtime.store.rewrite(stored)
+        repeated = runtime.record_external_channel_acceptance(
+            scope=scope, current_release=release,
+            openclaw_state_path=tmp_path / "missing.json", external_state_path=state_path,
+        )
+    finally:
+        runtime.close()
+
+    assert repeated["ok"] is False
+    assert repeated["error"] == "persisted_channel_acceptance_invalid"
+
+
+def test_external_acceptance_rejects_receipt_owned_by_another_scope(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    release = _release(runtime, scope, monkeypatch)
+    state_path = tmp_path / "external-delivery.json"
+    _write_external(state_path, release)
+    native_get = runtime.store.get_by_id
+
+    def shared_read(record_id, *args, **kwargs):
+        record = native_get(record_id, *args, **kwargs)
+        if record_id == release.receipt_id and record is not None:
+            record.scope = ScopeRef(agent_id=scope.agent_id, workspace_id="other", user_id=scope.user_id)
+        return record
+
+    monkeypatch.setattr(runtime.store, "get_by_id", shared_read)
+    try:
+        report = runtime.record_external_channel_acceptance(
+            scope=scope, current_release=release,
+            openclaw_state_path=tmp_path / "missing.json", external_state_path=state_path,
+        )
+    finally:
+        runtime.close()
+
+    assert report == {"ok": False, "error": "current_deployment_receipt_invalid"}
+
+
+def test_external_acceptance_readback_uses_exact_source_partition(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    release = _release(runtime, scope, monkeypatch)
+    state_path = tmp_path / "external-delivery.json"
+    _write_external(state_path, release)
+    native_get = runtime.store.get_by_id
+
+    def ambiguous_read(record_id, *args, **kwargs):
+        if record_id == release.receipt_id:
+            return native_get(record_id, *args, **kwargs)
+        # A direct ID read can be ambiguous across source partitions; it has
+        # no authority to select or reject the exact row just persisted.
+        return None
+
+    monkeypatch.setattr(runtime.store, "get_by_id", ambiguous_read)
+    try:
+        report = runtime.record_external_channel_acceptance(
+            scope=scope, current_release=release,
+            openclaw_state_path=tmp_path / "missing.json", external_state_path=state_path,
+        )
+        record = runtime.store.get_by_exact_ref(report["record_id"], scope=scope, source_id="default")
+    finally:
+        runtime.close()
+    assert report["ok"] is True
+    assert record.scope == scope
+    assert record.source_id == "default"
 
 
 def test_external_acceptance_inherits_openclaw_operator_channel(

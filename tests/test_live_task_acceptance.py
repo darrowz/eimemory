@@ -152,6 +152,124 @@ def test_live_task_acceptance_records_ten_current_deployment_tasks_idempotently(
     assert all(record.content["evidence_class"] == "operational_probe" for record in acceptance_records)
 
 
+@pytest.mark.parametrize("latest_status", ["active", "quarantined"])
+@pytest.mark.parametrize("success_sorts_first", [True, False])
+def test_live_acceptance_does_not_reuse_success_before_newer_same_session_failure(
+    tmp_path, monkeypatch, latest_status, success_sorts_first,
+) -> None:
+    from eimemory.core.clock import now_iso
+    from eimemory.models import records as record_models
+
+    # Exercise both random-ID orderings of native second-precision timestamps.
+    # Correct observation order cannot depend on their lexical order.
+    fixed_time = now_iso()
+    monkeypatch.setattr(record_models, "now_iso", lambda: fixed_time)
+    native_id = record_models.generate_record_id
+    first_ids = ["rec_ffffffffffff", "rec_000000000000"]
+    case_ids = iter([*(first_ids if success_sorts_first else reversed(first_ids)), "rec_eeeeeeeeeeee"])
+    monkeypatch.setattr(record_models, "generate_record_id", lambda kind:
+        next(case_ids) if kind == "learning_eval" else native_id(kind))
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef.from_dict(SCOPE)
+    runtime._test_runtime_commit = "a" * 40
+    receipt_id = _seed_deployment_receipt(runtime, commit="a" * 40)
+    identity = {
+        "ok": True, "commit": "a" * 40, "version": "1.9.24",
+        "release_path": "/opt/eimemory/releases/" + "a" * 40,
+        "promotion_request_id": receipt_id, "release_session_id": receipt_id,
+    }
+    case_id = live_task_acceptance.LIVE_ACCEPTANCE_CASE_IDS[0]
+    definition = {
+        "case_id": case_id,
+        "task_type": live_task_acceptance.live_acceptance_task_type(case_id),
+        "check": lambda: {"passed": True, "sample_count": 1},
+    }
+    try:
+        previous = live_task_acceptance._execute_and_record_case(
+            runtime, scope=scope, identity=identity, definition=definition,
+        )
+        assert previous["passed"] is True
+        assert live_task_acceptance._existing_passed_case(
+            runtime, scope=scope, identity=identity, definition=definition,
+        ).record_id == previous["record_id"]
+
+        latest = live_task_acceptance._execute_and_record_case(
+            runtime, scope=scope, identity=identity,
+            definition={**definition, "check": lambda: {"passed": False, "error_type": "regression"}},
+        )
+        assert latest["passed"] is False
+        assert latest["record_id"] != previous["record_id"]
+        assert (previous["record_id"] > latest["record_id"]) is success_sorts_first
+        latest_record = runtime.store.get_by_id(latest["record_id"], scope=scope)
+        assert latest_record.time.created_at == fixed_time
+        if latest_status != "active":
+            latest_record.status = latest_status
+            runtime.store.rewrite(latest_record)
+        assert live_task_acceptance._existing_passed_case(
+            runtime, scope=scope, identity=identity, definition=definition,
+        ) is None
+        # Updating an older success must not turn it into a new observation.
+        previous_record = runtime.store.get_by_id(previous["record_id"], scope=scope)
+        previous_record.time.updated_at = "9999-12-31T23:59:59Z"
+        runtime.store.rewrite(previous_record)
+        assert live_task_acceptance._existing_passed_case(
+            runtime, scope=scope, identity=identity, definition=definition,
+        ) is None
+
+        # A genuinely re-executed successful probe must persist new evidence;
+        # returning the pre-regression row would preserve a false old success.
+        recovered = live_task_acceptance._execute_and_record_case(
+            runtime, scope=scope, identity=identity, definition=definition,
+        )
+        assert recovered["passed"] is True
+        assert recovered["record_id"] not in {previous["record_id"], latest["record_id"]}
+        assert live_task_acceptance._existing_passed_case(
+            runtime, scope=scope, identity=identity, definition=definition,
+        ).record_id == recovered["record_id"]
+    finally:
+        runtime.close()
+
+
+def test_live_acceptance_does_not_reuse_legacy_case_without_observation_key(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef.from_dict(SCOPE)
+    runtime._test_runtime_commit = "a" * 40
+    receipt_id = _seed_deployment_receipt(runtime, commit="a" * 40)
+    identity = {
+        "ok": True, "commit": "a" * 40, "version": "1.9.24",
+        "release_path": "/opt/eimemory/releases/" + "a" * 40,
+        "promotion_request_id": receipt_id, "release_session_id": receipt_id,
+    }
+    case_id = live_task_acceptance.LIVE_ACCEPTANCE_CASE_IDS[0]
+    definition = {
+        "case_id": case_id,
+        "task_type": live_task_acceptance.live_acceptance_task_type(case_id),
+        "check": lambda: {"passed": True},
+    }
+    try:
+        previous = live_task_acceptance._execute_and_record_case(
+            runtime, scope=scope, identity=identity, definition=definition,
+        )
+        record = runtime.store.get_by_id(previous["record_id"], scope=scope)
+        for payload in (record.meta, record.content):
+            payload.pop("live_acceptance_case_key")
+            payload.pop("observation_execution_id")
+        runtime.store.rewrite(record)
+        assert live_task_acceptance._existing_passed_case(
+            runtime, scope=scope, identity=identity, definition=definition,
+        ) is None
+        current = live_task_acceptance._execute_and_record_case(
+            runtime, scope=scope, identity=identity, definition=definition,
+        )
+        assert current["passed"] is True
+        assert current["record_id"] != previous["record_id"]
+        assert live_task_acceptance._existing_passed_case(
+            runtime, scope=scope, identity=identity, definition=definition,
+        ).record_id == current["record_id"]
+    finally:
+        runtime.close()
+
+
 def test_live_task_acceptance_fails_closed_before_running_cases_when_identity_is_invalid(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     monkeypatch.setattr(

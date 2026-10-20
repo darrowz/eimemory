@@ -38,6 +38,7 @@ class ConflictDecision:
     target_ids: tuple[str, ...] = ()
     merged_content: str = ""
     merged_type: str = ""
+    origin: str = "fallback"
 
 
 def find_conflict_candidates(
@@ -57,6 +58,10 @@ def find_conflict_candidates(
         limit=max(1, min(16, int(limit) * 2)),
         source_ids=[source_id] if source_id else None,
     )
+    if getattr(records, "degraded", False):
+        # The search budget can return an empty or partial list. Neither proves
+        # that a new observation has no predecessor; retry before any writes.
+        raise L1ConflictJudgeUnavailable("l1_conflict_candidates_incomplete")
     excluded = {str(value) for value in exclude_record_ids if str(value).strip()}
     out = []
     for record in records:
@@ -112,7 +117,7 @@ def adjudicate_l1_atoms(
             ),
         ))
     if not any(candidates for _, candidates in matches):
-        return [ConflictDecision(action="store", atom=atom) for atom in atoms]
+        return [ConflictDecision(action="store", atom=atom, origin="no_candidates") for atom in atoms]
     if llm is None:
         if strict:
             raise L1ConflictJudgeUnavailable("l1_conflict_llm_unavailable")
@@ -213,6 +218,10 @@ def adjudicate_l1_atoms(
             if strict:
                 raise L1ConflictJudgeUnavailable("l1_conflict_invalid_merged_content")
             return [ConflictDecision(action="store", atom=atom) for atom in atoms]
+        # Accept the legacy single-ID shorthand as one reference. Iterating a
+        # string character by character loses the correction's actual target.
+        if isinstance(raw_targets, str):
+            raw_targets = [raw_targets] if raw_targets.strip() else []
         requested_targets = tuple(
             str(value) for value in (raw_targets or []) if str(value).strip()
         )
@@ -237,11 +246,13 @@ def adjudicate_l1_atoms(
                 target_ids=targets,
                 merged_content=(raw_content or atom.text).strip(),
                 merged_type=merged_type,
+                origin="judge",
             )
         )
     for index, atom in enumerate(atoms):
         if f"new-{index}" not in used:
             if strict and matches[index][1]:
                 raise L1ConflictJudgeUnavailable("l1_conflict_missing_decision")
-            decisions.append(ConflictDecision(action="store", atom=atom))
+            decisions.append(ConflictDecision(action="store", atom=atom,
+                origin="fallback" if matches[index][1] else "no_candidates"))
     return decisions

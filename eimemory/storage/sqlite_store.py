@@ -6442,25 +6442,32 @@ class SqliteRecordStore:
         *,
         kind: str,
         source: str,
-        status: str,
+        status: str | None = "active",
         scope: ScopeRef,
         meta_key: str,
         meta_value: object,
     ) -> RecordEnvelope | None:
-        """Return insertion high-water evidence without trusting wall clocks."""
+        """Return insertion high-water evidence without trusting wall clocks.
+
+        ``status=None`` includes invalidated observations so a reader can reject
+        the latest evidence instead of falling back to an older active success.
+        """
 
         if not str(meta_key or "").replace("_", "").isalnum():
             raise ValueError("meta_key must be a simple identifier")
+        where = [
+            "kind=?", "source=?", "tenant_id=?", "agent_id=?", "workspace_id=?", "user_id=?",
+            f"CAST(json_extract(meta_json, '$.{meta_key}') AS TEXT)=?",
+        ]
+        params = [str(kind), str(source), scope.tenant_id, scope.agent_id,
+                  scope.workspace_id, scope.user_id, str(meta_value)]
+        if status is not None:
+            where.append("status=?")
+            params.append(str(status))
         row = self.conn.execute(
             "SELECT source_id, payload_json, payload_pointer_json, payload_digest "
-            "FROM records WHERE kind=? AND source=? AND status=? "
-            "AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? "
-            f"AND CAST(json_extract(meta_json, '$.{meta_key}') AS TEXT)=? "
-            "ORDER BY rowid DESC LIMIT 1",
-            (
-                str(kind), str(source), str(status), scope.tenant_id, scope.agent_id,
-                scope.workspace_id, scope.user_id, str(meta_value),
-            ),
+            "FROM records WHERE " + " AND ".join(where) + " ORDER BY rowid DESC LIMIT 1",
+            params,
         ).fetchone()
         return None if row is None else self._record_from_storage_row(row, hydrate=True)
 

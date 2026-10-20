@@ -41,6 +41,7 @@ _FAILURE_REASONS = frozenset({
     "l1_conflict_action_missing", "l1_conflict_action_invalid", "l1_conflict_llm_invalid",
     "l1_conflict_invalid_output", "l1_conflict_invalid_target_ids", "l1_conflict_invalid_merged_content",
     "l1_conflict_unauthorized_target", "l1_conflict_update_without_target", "l1_conflict_missing_decision",
+    "l1_conflict_candidates_incomplete",
 })
 _ADJUDICATION_COUNTS = (
     "store_count", "skip_count", "update_count", "source_order_stale_count",

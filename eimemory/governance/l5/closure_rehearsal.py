@@ -19,6 +19,7 @@ from eimemory.governance.release.evidence_contract import (
 from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.l5.l5_readiness import _real_business_gate, readiness_gate_status, readiness_gate_status_diagnostics
 from eimemory.governance.l5.real_task_coverage import real_task_type_coverage_deficits
+from eimemory.governance.l5.real_replay_gate import REAL_REPLAY_AUTHENTICITY_REASONS
 from eimemory.models.records import ScopeRef
 
 
@@ -642,19 +643,7 @@ def _optional_rate_well_formed(value: Any) -> bool:
         return False
 
 
-_REPLAY_AUTHENTICITY_REASONS = frozenset({
-    "terminal_evidence_invalid",
-    "source_provenance_invalid",
-    "source_evidence_digest_mismatch",
-    "terminal_evidence_digest_mismatch",
-    "source_task_type_mismatch",
-    "malformed_sample",
-    "malformed_verdict",
-    "duplicate_terminal_evidence",
-    "duplicate_source_record",
-    "case_scope_mismatch",
-    "source_record_id_missing",
-})
+_REPLAY_AUTHENTICITY_REASONS = REAL_REPLAY_AUTHENTICITY_REASONS
 
 
 def _reported_collection_blocks(enabled_types: object, counts: object) -> bool:

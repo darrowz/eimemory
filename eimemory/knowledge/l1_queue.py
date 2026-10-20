@@ -111,16 +111,18 @@ class L1ExtractQueue:
         handler_completed: bool | None = None
         completion_recorded: bool | None = None
         last_claimed_job_id: str | None = None
+        attempted_job_ids: set[str] = set()
         try:
             newly_dead = self._recover_interrupted()
             for _ in range(max(0, int(limit))):
                 phase = "claim"
-                job = self._claim()
+                job = self._claim(exclude_job_ids=attempted_job_ids)
                 if job is None:
                     break
                 # These diagnostics belong to the last actual claimed job.
                 # Empty/failed next claims must not erase its confirmed result.
                 last_claimed_job_id = str(job.get("job_id") or "") or None
+                attempted_job_ids.add(str(job.get("job_id") or ""))
                 handler_error = None
                 claim_token = str(job.get("claim_token") or "")
                 handler_completed = False
@@ -220,11 +222,16 @@ class L1ExtractQueue:
             payload = self._load()
             return sum(1 for job in payload.get("jobs") or [] if job.get("status") in {"queued", "running"})
 
-    def _claim(self) -> dict[str, Any] | None:
+    def _claim(self, *, exclude_job_ids: set[str] | tuple[str, ...] = ()) -> dict[str, Any] | None:
         with interprocess_lock(self.lock_path):
             payload = self._load()
             for job in payload.get("jobs") or []:
                 if job.get("status") != "queued":
+                    continue
+                # A transient failure must wait for a later drain invocation.
+                # Otherwise one outage consumes all retries in a tight loop
+                # and keeps unrelated queued observations from progressing.
+                if str(job.get("job_id") or "") in exclude_job_ids:
                     continue
                 job["status"] = "running"
                 job["attempts"] = int(job.get("attempts") or 0) + 1

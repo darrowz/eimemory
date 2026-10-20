@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 from typing import Any, Callable
+from uuid import uuid4
 
 from eimemory.governance.release.deployment_receipt import (
     DEFAULT_DEPLOYMENT_CURRENT_LINK,
@@ -531,6 +532,14 @@ def _definition(case_id: str, check: Callable[[], dict[str, Any]]) -> dict[str, 
     return {"case_id": case_id, "task_type": live_acceptance_task_type(case_id), "check": check}
 
 
+def _live_acceptance_case_key(identity: dict[str, Any], case_id: str) -> str:
+    receipt_id = str(identity.get("promotion_request_id") or "")
+    return stable_semantic_key(
+        "live_acceptance_case.v1", str(identity.get("commit") or ""), receipt_id,
+        str(identity.get("release_session_id") or receipt_id), case_id,
+    )
+
+
 def _execute_and_record_case(
     runtime: Any,
     *,
@@ -551,11 +560,12 @@ def _execute_and_record_case(
     commit = str(identity.get("commit") or "")
     receipt_id = str(identity.get("promotion_request_id") or "")
     session_id = str(identity.get("release_session_id") or receipt_id)
-    # A new deployment session of the same commit is a new evidence identity.
-    # The shared record writer already adds release authority to its key.
-    # Bind the trace digest too, so its identifier is not shared by sessions.
+    # Each actual probe is a new observation, even when its result is identical
+    # to an earlier success. Cache hits never enter this execution path.
+    execution_id = uuid4().hex
     digest = _observation_digest({
-        "schema": "live_acceptance_observation.v2",
+        "schema": "live_acceptance_observation.v3",
+        "execution_id": execution_id,
         "scope": asdict(scope), "commit": commit,
         "receipt_id": receipt_id, "session_id": session_id,
         "release_path": str(identity.get("release_path") or ""),
@@ -571,6 +581,8 @@ def _execute_and_record_case(
         "trace_id": trace_id,
         "passed": passed,
         "observation_digest": digest,
+        "observation_execution_id": execution_id,
+        "live_acceptance_case_key": _live_acceptance_case_key(identity, case_id),
         "deployment_commit": commit,
         "deployment_version": str(identity.get("version") or ""),
         "release_path": str(identity.get("release_path") or ""),
@@ -590,7 +602,7 @@ def _execute_and_record_case(
         scope=scope,
         loop_id=f"live_acceptance_{commit[:12]}",
         step_name=case_id,
-        semantic_key=stable_semantic_key("live_task_acceptance.v2", commit, receipt_id, session_id, case_id, passed, digest),
+        semantic_key=stable_semantic_key("live_task_acceptance.v3", commit, receipt_id, session_id, case_id, passed, digest),
         status="active",
         content=payload,
         meta=payload,
@@ -644,30 +656,47 @@ def _existing_passed_case(
     definition: dict[str, Any],
 ) -> Any | None:
     deployment_commit = str(identity.get("commit") or "")
+    receipt_id = str(identity.get("promotion_request_id") or "")
+    session_id = str(identity.get("release_session_id") or receipt_id)
     case_id = str(definition.get("case_id") or "")
     task_type = str(definition.get("task_type") or "")
-    offset = 0
-    while True:
-        records = runtime.store.list_records(kinds=["learning_eval"], scope=scope, limit=500, offset=offset)
-        for record in records:
-            payload = _record_payload(record)
-            if (
-                validate_live_acceptance_case(
-                    runtime,
-                    scope=scope,
-                    evidence=record,
-                    case_id=case_id,
-                    task_type=task_type,
-                    trace_id=str(payload.get("trace_id") or ""),
-                    deployment_commit=deployment_commit,
-                    passed=True,
-                    identity=identity,
-                )
-            ):
-                return record
-        if len(records) < 500:
-            return None
-        offset += len(records)
+    case_key = _live_acceptance_case_key(identity, case_id)
+    # Wall-clock timestamps have second precision, and record IDs are random.
+    # Use native insertion order, including quarantined/invalidated evidence.
+    # Legacy records without this key require a fresh probe; never fall back to
+    # the timestamp-sorted list and accidentally recover a superseded success.
+    record = runtime.store.latest_record_by_meta_value_exact_scope(
+        kind="learning_eval", source=VERIFIER_METHOD, status=None, scope=scope,
+        meta_key="live_acceptance_case_key", meta_value=case_key,
+    )
+    if record is None:
+        return None
+    payload = _record_payload(record)
+    if (
+        getattr(record, "scope", None) != scope
+        or str(getattr(record, "source", "") or "") != VERIFIER_METHOD
+        or payload.get("report_type") != CASE_REPORT_TYPE
+        or payload.get("case_id") != case_id
+        or payload.get("deployment_commit") != deployment_commit
+        or payload.get("promotion_request_id") != receipt_id
+        or payload.get("release_session_id") != session_id
+        or payload.get("live_acceptance_case_key") != case_key
+        or re.fullmatch(r"[0-9a-f]{32}", str(payload.get("observation_execution_id") or "")) is None
+    ):
+        return None
+    if validate_live_acceptance_case(
+        runtime,
+        scope=scope,
+        evidence=record,
+        case_id=case_id,
+        task_type=task_type,
+        trace_id=str(payload.get("trace_id") or ""),
+        deployment_commit=deployment_commit,
+        passed=True,
+        identity=identity,
+    ):
+        return record
+    return None
 
 
 def _record_created_at(record: Any) -> str:

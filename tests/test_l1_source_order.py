@@ -431,12 +431,21 @@ def test_existing_atom_final_decision_conflict_is_not_silently_reused(tmp_path):
         assert meta["l1_extraction_diagnostics"]["failure_reason"] == "l1_existing_atom_conflict"
 
 
-@pytest.mark.parametrize("change", ["mutation_state", "superseded_by", "event_time", "binding_removed"])
+@pytest.mark.parametrize("change", ["mutation_state", "superseded_by", "event_time", "binding_removed", "write_receipt"])
 def test_existing_reconcile_rechecks_atom_state_inside_second_transaction(tmp_path, monkeypatch, change):
     import eimemory.knowledge.l1_pipeline as pipeline
     with closing(RuntimeStore(tmp_path)) as store:
         api, parent = MemoryAPI(store), capture(store, NEW, LATE)
         child_id = extract(api, parent, NEW)[0]["record_id"]
+        # This test exercises the pre-v2 reconciliation path. A newly written
+        # receipt instead proves its original decision already committed and
+        # must reject a changed target before reaching a repair transaction.
+        child = current(store, child_id)
+        legacy_meta = {key: value for key, value in child.meta.items() if key != "l1_write_receipt"}
+        if isinstance(legacy_meta.get("business_meta"), dict):
+            legacy_meta["business_meta"] = {key: value for key, value in legacy_meta["business_meta"].items()
+                                            if key != "l1_write_receipt"}
+        rewrite(store, child, meta=legacy_meta)
         rewrite(store, parent, meta=dict(parent.meta))
         target = api.ingest(text=OLD, title=OLD, memory_type="fact", scope=asdict(SCOPE),
             source="hermes.manual", source_id="hermes", force_capture=True)
@@ -450,6 +459,8 @@ def test_existing_reconcile_rechecks_atom_state_inside_second_transaction(tmp_pa
             row = current(store, child_id)
             if change == "event_time":
                 row.time.occurred_at = EARLY
+            elif change == "write_receipt":
+                row.meta = {**row.meta, "l1_write_receipt": {"schema": "l1_atom_write.v1"}}
             elif change == "binding_removed":
                 row.meta = {key:value for key, value in row.meta.items() if key != "source_event_binding"}
                 if isinstance(row.meta.get("business_meta"), dict):

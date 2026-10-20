@@ -4,6 +4,8 @@ from copy import deepcopy
 from dataclasses import asdict
 import json
 
+import pytest
+
 from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
 from eimemory.api.runtime import Runtime
 from eimemory.core.clock import now_iso
@@ -598,3 +600,111 @@ def test_newer_other_digest_report_does_not_hide_current_code_report(tmp_path, m
     assert current["package_tree_digest"] == runtime_package_tree_digest()
     assert gate["ok"] is True
     assert gate["record_id"] == current["persisted_record_id"]
+
+
+@pytest.mark.parametrize("field,value,reason", [
+    ("package_tree_digest", "f" * 64, "sample_package_tree_digest_mismatch"),
+    ("replay_execution_id", "another-replay-execution", "replay_execution_id_mismatch"),
+])
+def test_real_replay_rejects_samples_transplanted_from_another_execution(
+    tmp_path, field, value, reason,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_recall_target(runtime)
+        report = run_real_task_replay(
+            runtime, _dataset(_ten_sources(runtime)), seed=False, persist_report=True,
+        )
+        record = runtime.store.get_by_id(report["persisted_record_id"], scope=SCOPE)
+        for sample in record.content["report"]["samples"]:
+            sample[field] = value
+        runtime.store.rewrite(record)
+        gate = build_verified_real_replay_summary(runtime, scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert gate["ok"] is False
+    assert gate["sample_count"] == 0
+    assert gate["rejection_reasons"][reason] == 10
+
+
+def test_real_replay_authenticity_failure_cannot_hide_behind_ten_valid_samples(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_recall_target(runtime)
+        source_ids = _ten_sources(runtime)
+        source_ids.append(_append_real_source(runtime, index=10, task_type="production.task.0"))
+        report = run_real_task_replay(
+            runtime, _dataset(source_ids), seed=False, persist_report=True,
+        )
+        record = runtime.store.get_by_id(report["persisted_record_id"], scope=SCOPE)
+        record.content["report"]["samples"][-1]["source_evidence_digest"] = "f" * 64
+        runtime.store.rewrite(record)
+        gate = build_verified_real_replay_summary(runtime, scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert gate["sample_count"] == 10
+    assert gate["pass_rate"] == 1.0
+    assert gate["rejection_reasons"] == {"source_evidence_digest_mismatch": 1}
+    assert gate["ok"] is False
+    assert gate["reason"] == "verified_real_replay_authenticity_failed"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("samples", 1),
+    ("replay_execution_id", ""),
+    ("scope", {**asdict(SCOPE), "workspace_id": "another-workspace"}),
+    ("package_tree_digest", "f" * 64),
+])
+def test_real_replay_malformed_current_report_is_not_missing_evidence(tmp_path, field, value) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        report = run_real_task_replay(runtime, _dataset([]), seed=False, persist_report=True)
+        record = runtime.store.get_by_id(report["persisted_record_id"], scope=SCOPE)
+        record.content["report"][field] = value
+        runtime.store.rewrite(record)
+        gate = build_verified_real_replay_summary(runtime, scope=SCOPE)
+    finally:
+        runtime.close()
+    assert gate["ok"] is False
+    assert gate["reason"] == "replay_report_identity_invalid"
+    assert gate["record_id"] == report["persisted_record_id"]
+
+
+def test_real_replay_revoked_source_does_not_hide_behind_ten_valid_samples(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_recall_target(runtime)
+        sources = _ten_sources(runtime)
+        sources.append(_append_real_source(runtime, index=10, task_type="production.task.0"))
+        run_real_task_replay(runtime, _dataset(sources), seed=False, persist_report=True)
+        source = runtime.store.get_by_id(sources[-1], scope=SCOPE)
+        source.status = "quarantined"
+        runtime.store.rewrite(source)
+        gate = build_verified_real_replay_summary(runtime, scope=SCOPE)
+    finally:
+        runtime.close()
+    assert gate["sample_count"] == 10
+    assert gate["pass_rate"] == 1.0
+    assert gate["rejection_reasons"] == {"inactive_source_record": 1}
+    assert gate["ok"] is False
+    assert gate["reason"] == "verified_real_replay_authenticity_failed"
+
+
+def test_real_replay_keeps_original_non_business_cases_as_excluded_samples(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_recall_target(runtime)
+        sources = _ten_sources(runtime)
+        sources.append(_append_real_source(
+            runtime, index=10, task_type="production.task.0", rehearsal=True,
+        ))
+        run_real_task_replay(runtime, _dataset(sources), seed=False, persist_report=True)
+        gate = build_verified_real_replay_summary(runtime, scope=SCOPE)
+    finally:
+        runtime.close()
+    assert gate["sample_count"] == 10
+    assert gate["rejection_reasons"] == {"rehearsal_source": 1}
+    assert gate["ok"] is True
+    assert gate["reason"] == ""

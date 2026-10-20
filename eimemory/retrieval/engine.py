@@ -288,7 +288,7 @@ class GovernedRecallEngine:
     """Single owner of recall hydration, governance, ordering, and packaging."""
 
     name = "governed"
-    policy_version = "governed-recall.v3"
+    policy_version = "governed-recall.v4"
     _minimum_candidate_budget = 48
     _candidate_budget_multiplier = 3
     _max_query_scope_refs = 64
@@ -1360,6 +1360,9 @@ class GovernedRecallEngine:
             identity_evidence_by_ref=identity_evidence_by_ref,
             base_ids=base_ids,
             memory_usage_adjustments=memory_usage_adjustments,
+            graph_edge_refs=graph_edge_refs,
+            explicit_recall_boundary=explicit_evidence_boundary,
+            preference_request=preference_request,
             deadline_at=deadline_at,
         )
         auxiliary_snapshots = {self._record_key(rule): record_digest(rule) for rule in rules}
@@ -1680,6 +1683,9 @@ class GovernedRecallEngine:
         identity_evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]],
         base_ids: set[tuple[str, ExactScope, str]],
         memory_usage_adjustments: dict[tuple[str, str, str, str, str, str], dict[str, object]],
+        graph_edge_refs: list[object] | None = None,
+        explicit_recall_boundary: bool = False,
+        preference_request: PreferenceRecallRequest | None = None,
         deadline_at: float = 0.0,
     ) -> tuple[list[RecordEnvelope], dict[str, Any]]:
         pre_pool_items = list(items)[:5000]
@@ -1793,7 +1799,12 @@ class GovernedRecallEngine:
                 score=lambda item: self._safe_float(
                     (memory_usage_adjustments.get(self._memory_usage_key(item)) or {}).get("adjustment")
                 ),
-                eligible=lambda item: bool(memory_usage_adjustments.get(self._memory_usage_key(item))),
+                # RRF turns every participating rank into a positive vote.
+                # A rejection (or net-zero feedback) is not positive evidence
+                # and must not promote a record over an unadjusted candidate.
+                eligible=lambda item: self._safe_float(
+                    (memory_usage_adjustments.get(self._memory_usage_key(item)) or {}).get("adjustment")
+                ) > 0.0,
             )
             result = fuse_ranked_components(
                 [
@@ -1882,6 +1893,56 @@ class GovernedRecallEngine:
                 pooled.append(item)
                 pool_members[representative_ref] = []
             pool_members[representative_ref].append(item)
+
+        if self.relevance_admission is None:
+            # A high RRF score cannot establish relevance. Pooling first used
+            # to discard a grounded sibling when a vector/lifecycle-only hit
+            # became the page representative and then failed local admission.
+            # Select a representative using that same local gate and its OWN
+            # evidence; final admission/authority checks still run afterwards.
+            graph_grounded_ids = self._trusted_graph_grounded_ids(
+                graph_edge_refs or (),
+                minimum_confidence=float(self._relevance_selector_thresholds["graph_relation_min_confidence"]),
+            )
+
+            def locally_grounded(item: RecordEnvelope) -> bool:
+                evidence = evidence_by_ref.get(self._record_key(item), set())
+                if evidence & {"exact_title", "alias_hit"}:
+                    return True
+                if self._is_strongly_lexical_durable_event(query, item):
+                    return True
+                score, _reason = self._non_exact_grounding_score(
+                    query=query, item=item, evidence=evidence,
+                    component_hints_by_ref=component_hints_by_ref,
+                    graph_grounded_ids=graph_grounded_ids,
+                    vector_min_score=float(self._relevance_selector_thresholds["vector_grounding_min_score"]),
+                    explicit_recall_boundary=explicit_recall_boundary,
+                    preference_request=preference_request,
+                )
+                return score >= float(self._relevance_selector_thresholds["non_exact_min_grounding"])
+
+            replaced_representative = False
+            for index, representative in enumerate(pooled):
+                members = pool_members[self._record_key(representative)]
+                if len(members) < 2 or (deadline_at and perf_counter() >= deadline_at):
+                    continue
+                # Preserve an exact identity on its own record, even if another
+                # chunk accumulated more independent non-identity RRF votes.
+                replacement = next((member for member in members
+                    if evidence_by_ref.get(self._record_key(member), set()) & {"exact_title", "alias_hit"}), None)
+                if replacement is None and not locally_grounded(representative):
+                    replacement = next((member for member in members[1:]
+                        if (not deadline_at or perf_counter() < deadline_at) and locally_grounded(member)), None)
+                if replacement is not None and self._record_key(replacement) != self._record_key(representative):
+                    pool_members.pop(self._record_key(representative))
+                    pool_members[self._record_key(replacement)] = members
+                    pooled[index] = replacement
+                    replaced_representative = True
+            if replaced_representative:
+                # The surviving record keeps its own fused position, not the
+                # stronger score or position of the rejected sibling.
+                fused_positions = {self._record_key(item): index for index, item in enumerate(fused)}
+                pooled.sort(key=lambda item: fused_positions[self._record_key(item)])
 
         target_source_id = request.target_source_id
         ambiguity_reasons: list[str] = []
@@ -2530,7 +2591,7 @@ class GovernedRecallEngine:
         # merely through timestamp or random record-ID ordering.
         living = hints.get("living_score_adjustments")
         return (self._safe_float(hints.get("quality_score")) > 0
-                or (isinstance(living, dict) and self._safe_float(living.get("total_adjustment")) != 0))
+                or (isinstance(living, dict) and self._safe_float(living.get("total_adjustment")) > 0))
 
     def _living_component_key(self, item: RecordEnvelope, hints: dict[str, Any]) -> tuple[float, float, float, str]:
         living = hints.get("living_score_adjustments")

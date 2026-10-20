@@ -74,7 +74,10 @@ def record_external_channel_acceptance(
         _receipt_identity_resolver
         or evidence_contract.verified_deployment_receipt_identity
     )
-    if not same_release_authority(resolver(receipt), current_release):
+    if (
+        getattr(receipt, "scope", None) != scope_ref
+        or not same_release_authority(resolver(receipt), current_release)
+    ):
         return {"ok": False, "error": "current_deployment_receipt_invalid"}
     receipt_recorded_at_ms = _iso_timestamp_ms(
         getattr(getattr(receipt, "time", None), "created_at", "")
@@ -165,6 +168,8 @@ def record_external_channel_acceptance(
         semantic_key=stable_semantic_key(
             "external_channel_acceptance",
             current_release.commit,
+            current_release.receipt_id,
+            current_release.session_id,
             evidence_payload["delivery_receipt_digest"],
         ),
         authority_tier="L0",
@@ -184,6 +189,18 @@ def record_external_channel_acceptance(
         evidence=[current_release.receipt_id],
         source=SOURCE,
     )
+    # Idempotency and release stamping are store-owned. Re-read the actual
+    # persisted evidence before reporting success, including a cached row
+    # that may have been quarantined or bound to another release session.
+    persisted = runtime.store.get_by_exact_ref(
+        record.record_id, scope=scope_ref, source_id=record.source_id,
+    )
+    if (
+        getattr(persisted, "scope", None) != scope_ref
+        or not validate_external_channel_acceptance(persisted, current_release=current_release)
+        or any(persisted.content.get(key) != value for key, value in evidence_payload.items())
+    ):
+        return {"ok": False, "error": "persisted_channel_acceptance_invalid", "record_id": record.record_id}
     return {
         "ok": True,
         "record_id": record.record_id,
@@ -216,6 +233,7 @@ def validate_external_channel_acceptance(
     recorded_release = release_identity_from_record(evidence)
     return bool(
         getattr(evidence, "kind", "") == "learning_eval"
+        and getattr(evidence, "status", "") == "active"
         and str(getattr(evidence, "source", "") or "") == SOURCE
         and str(content.get("report_type") or "") == REPORT_TYPE
         and str(content.get("schema_version") or "") == SCHEMA_VERSION
@@ -370,10 +388,9 @@ def _valid_platform(value: Any) -> bool:
 
 
 def _positive_int(value: Any) -> int:
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 0
+    # Native delivery timestamps are JSON integers. Coercing True or a
+    # fractional number creates a receipt time that the producer never made.
+    return value if type(value) is int and value > 0 else 0
 
 
 def _digest(value: str) -> str:

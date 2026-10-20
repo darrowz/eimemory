@@ -2019,7 +2019,7 @@ class RuntimeStore:
         *,
         kind: str,
         source: str,
-        status: str,
+        status: str | None = "active",
         scope: ScopeRef | dict,
         meta_key: str,
         meta_value: object,

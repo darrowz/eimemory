@@ -73,6 +73,23 @@ def _authoritative_completion(meta: dict[str, Any]) -> bool:
     )
 
 
+def _l1_write_receipt(
+    atom: L1Atom, *, text: str, memory_type: str, action: str,
+    target_ids: list[str] | tuple[str, ...],
+) -> dict[str, str]:
+    """Bind a committed final judgment to its original deterministic atom."""
+    if (not isinstance(target_ids, (list, tuple))
+            or any(not isinstance(value, str) or not value.strip() for value in target_ids)):
+        raise L1SourceOrderBlocked("l1_existing_atom_conflict")
+    def digest(value: Any) -> str:
+        return sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                 separators=(",", ":")).encode("utf-8")).hexdigest()
+    return {"schema": "l1_atom_write.v1", "atom_digest": digest(asdict(atom)),
+            "output_digest": digest({"text": text, "memory_type": memory_type}),
+            "decision_digest": digest({"action": action,
+                "target_ids": sorted({value.strip() for value in target_ids})})}
+
+
 def _resolve_l1_client(*, use_llm: bool, llm: object | None, fallback_heuristic: bool) -> object | None:
     if not use_llm or llm is not None:
         return llm
@@ -102,6 +119,10 @@ def _reconcile_existing_l1_update(
         )
         if current is None or current.status != "active":
             raise ValueError("l1_existing_atom_unavailable")
+        if business_metadata(current.meta).get("l1_write_receipt") is not None:
+            # Recheck the legacy-only boundary under the repair transaction;
+            # another writer could have installed a receipt after the read.
+            raise L1SourceOrderBlocked("l1_existing_atom_conflict")
         if source_event_binding is not None:
             from eimemory.recall.indexing import is_inactive_or_superseded_record
             if is_inactive_or_superseded_record(current):
@@ -225,6 +246,7 @@ def persist_l1_atoms(
             visible.scope != scope_ref or visible.source_id != channel_id
         ):
             raise ValueError("l1_parent_partition_mismatch")
+        raise L1SourceOrderBlocked("l1_source_parent_unavailable")
     if parent is not None and (parent.scope != scope_ref or parent.source_id != channel_id):
         raise ValueError("l1_parent_partition_mismatch")
     if source_event_binding is not None and (
@@ -270,17 +292,10 @@ def persist_l1_atoms(
                                 written_record_ids=[])
     written: list[dict[str, Any]] = []
     for decision in decisions:
-        if decision.action == "skip":
-            if diagnostics_sink is not None:
-                diagnostics_sink["skip_count"] += 1
-                for target_id in decision.target_ids:
-                    target = memory_api.store.get_by_exact_ref(
-                        target_id, scope=scope_ref, source_id=channel_id)
-                    diagnostics_sink["skipped_target_records"].append(target)
-            continue
         atom = decision.atom
         text = decision.merged_content or atom.text
         memory_type = decision.merged_type or atom.memory_type
+        action = decision.action
         atom_id = atom_ids[id(atom)]
         existing = (
             memory_api.store.get_by_exact_ref(
@@ -288,39 +303,91 @@ def persist_l1_atoms(
             )
             if atom_id else None
         )
+        receipt = business_metadata(existing.meta).get("l1_write_receipt") if existing is not None else None
+        if decision.action == "skip":
+            # A committed child can only have a store/update receipt. A new
+            # skip decision must not bypass the persisted judgment comparison.
+            if receipt is not None:
+                raise L1SourceOrderBlocked("l1_existing_atom_conflict")
+            if diagnostics_sink is not None:
+                diagnostics_sink["skip_count"] += 1
+                for target_id in decision.target_ids:
+                    target = memory_api.store.get_by_exact_ref(
+                        target_id, scope=scope_ref, source_id=channel_id)
+                    diagnostics_sink["skipped_target_records"].append(target)
+            continue
         try:
             if existing is not None:
                 fact = existing
-                if source_binding is not None:
+                if source_binding is not None or receipt is not None:
+                    resume_committed = (decision.action == "store" and decision.origin == "no_candidates"
+                                        and receipt is not None)
+                    requested_targets = decision.target_ids
+                    if resume_committed:
+                        # A previous atomic update may already have retired its
+                        # candidate before the L0 completion transaction failed.
+                        # Reuse only that recorded output, never a new judge
+                        # decision or a new supersession request on retry.
+                        existing_meta = business_metadata(existing.meta)
+                        action = str(existing_meta.get("conflict_action") or "")
+                        requested_targets = existing_meta.get("supersedes", [])
+                        if (action not in {"store", "update"}
+                                or existing.source != f"{channel_id}.l1"
+                                or existing.summary != existing.content.get("text")
+                                or receipt != _l1_write_receipt(atom, text=existing.summary,
+                                    memory_type=existing.content.get("memory_type"),
+                                    action=action, target_ids=requested_targets)):
+                            raise L1SourceOrderBlocked("l1_existing_atom_conflict")
+                        text = existing.summary
+                        memory_type = existing.content["memory_type"]
                     def validate_existing(sqlite):
                         current = sqlite.get_by_exact_ref(
                             existing.record_id, scope=scope_ref, source_id=channel_id,
                             preserve_unknown_occurred_at=True)
                         if current is None:
                             raise L1SourceOrderBlocked("l1_source_parent_unavailable")
+                        current_meta = business_metadata(current.meta)
+                        if current_meta.get("l1_write_receipt") != receipt:
+                            raise L1SourceOrderBlocked("l1_existing_atom_conflict")
                         if (current.summary != text or current.content.get("text") != text
                                 or current.content.get("memory_type") != memory_type):
                             raise L1SourceOrderBlocked("l1_existing_atom_conflict")
-                        validate_l1_source_event(current, source_binding,
-                                                 get_exact=sqlite.get_by_exact_ref)
-                        previous = business_metadata(current.meta).get("source_event_binding")
-                        if previous is None and current.time.occurred_at != parent.time.occurred_at:
-                            raise L1SourceOrderBlocked("l1_legacy_source_binding_unknown")
-                        if previous is not None and previous != source_binding:
-                            raise L1SourceOrderBlocked("l1_source_parent_changed")
-                        if previous is not None and current.time.occurred_at != parent.time.occurred_at:
-                            raise L1SourceOrderBlocked("l1_source_binding_invalid")
+                        if receipt is not None and (
+                            current.source != f"{channel_id}.l1"
+                            or current_meta.get("capture_origin") != "l1_extract"
+                            or current_meta.get("memory_layer") != "l1"
+                            or receipt != _l1_write_receipt(atom, text=current.summary,
+                                memory_type=current.content.get("memory_type"),
+                                action=str(current_meta.get("conflict_action") or ""),
+                                target_ids=current_meta.get("supersedes", []))
+                            or receipt != _l1_write_receipt(atom, text=text, memory_type=memory_type,
+                                action=action, target_ids=requested_targets)
+                        ):
+                            raise L1SourceOrderBlocked("l1_existing_atom_conflict")
+                        if source_binding is not None:
+                            validate_l1_source_event(current, source_binding,
+                                                     get_exact=sqlite.get_by_exact_ref)
+                            previous = current_meta.get("source_event_binding")
+                            if previous is None and current.time.occurred_at != parent.time.occurred_at:
+                                raise L1SourceOrderBlocked("l1_legacy_source_binding_unknown")
+                            if (previous is not None or receipt is not None) and previous != source_binding:
+                                raise L1SourceOrderBlocked("l1_source_parent_changed")
+                            if previous is not None and current.time.occurred_at != parent.time.occurred_at:
+                                raise L1SourceOrderBlocked("l1_source_binding_invalid")
                         return current, [], []
                     fact = memory_api.store.mutate_records_atomically(validate_existing)
                     from eimemory.recall.indexing import is_inactive_or_superseded_record
-                    if is_inactive_or_superseded_record(fact):
+                    if fact.status != "active" or is_inactive_or_superseded_record(fact):
                         # Explicit legacy re-extraction cannot revive an atom
                         # that a later authorized observation already closed.
                         if diagnostics_sink is not None:
                             diagnostics_sink["skip_count"] += 1
                             diagnostics_sink["skipped_target_records"].append(fact)
                         continue
-                if decision.action == "update" and decision.target_ids:
+                # A receipt proves this exact decision already committed with
+                # all its targets. Only legacy receipt-less children can need
+                # the pre-v2 repair transaction; retries never add new targets.
+                if receipt is None and decision.action == "update" and decision.target_ids:
                     fact = _reconcile_existing_l1_update(
                         memory_api, record=fact, target_ids=decision.target_ids,
                         source_event_binding=source_binding,
@@ -357,6 +424,8 @@ def persist_l1_atoms(
                     ),
                     "conflict_action": decision.action,
                     "supersedes": list(decision.target_ids),
+                    "l1_write_receipt": _l1_write_receipt(atom, text=text, memory_type=memory_type,
+                        action=decision.action, target_ids=decision.target_ids),
                 },
                 supersede_record_ids=list(decision.target_ids)
                 if decision.action == "update" else None,
@@ -382,11 +451,11 @@ def persist_l1_atoms(
                 "memory_type": memory_type,
                 "title": fact.title,
                 "memory_layer": "l1",
-                "conflict_action": decision.action,
+                "conflict_action": action,
             }
         )
         if diagnostics_sink is not None:
-            diagnostics_sink["update_count" if decision.action == "update" else "store_count"] += 1
+            diagnostics_sink["update_count" if action == "update" else "store_count"] += 1
             diagnostics_sink["written_record_ids"].append(fact.record_id)
     return written
 

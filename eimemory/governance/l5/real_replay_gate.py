@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import asdict
 from typing import Any
 
 from eimemory.evaluation.task_replay import (
@@ -15,6 +16,37 @@ from eimemory.runtime_identity import runtime_package_tree_digest
 
 MIN_VERIFIED_REAL_REPLAY_SAMPLES = 10
 MIN_VERIFIED_REAL_REPLAY_PASS_RATE = 0.8
+
+# A report with contradictory provenance cannot become trustworthy merely
+# by dropping the damaged samples and retaining enough passing ones.
+REAL_REPLAY_AUTHENTICITY_REASONS = frozenset({
+    "source_record_unavailable_in_scope",
+    "inactive_source_record",
+    "untrusted_source_record",
+    "invalid_outcome_trace_contract",
+    "invalid_outcome_trace_payload",
+    "outcome_trace_identity_mismatch",
+    "dynamic_capability_catalog_required",
+    "task_type_missing",
+    "terminal_verifier_invalid",
+    "terminal_evidence_invalid",
+    "terminal_contract_digest_missing",
+    "terminal_contract_digest_mismatch",
+    "source_provenance_invalid",
+    "source_evidence_digest_mismatch",
+    "terminal_evidence_digest_mismatch",
+    "source_task_type_mismatch",
+    "malformed_sample",
+    "malformed_verdict",
+    "duplicate_terminal_evidence",
+    "duplicate_source_record",
+    "case_scope_mismatch",
+    "source_record_id_missing",
+    "sample_package_tree_digest_mismatch",
+    "replay_execution_id_mismatch",
+    "replay_report_identity_invalid",
+    "verified_real_replay_authenticity_failed",
+})
 
 
 def build_verified_real_replay_summary(
@@ -34,26 +66,43 @@ def build_verified_real_replay_summary(
         meta_key="package_tree_digest",
         meta_value=current_digest,
     )
-    if record is not None:
-        report = record.content.get("report") if isinstance(record.content, dict) else {}
-    else:
-        report = {}
-    if (
-        not isinstance(report, dict)
-        or report.get("real_provenance_contract") != REAL_PROVENANCE_CONTRACT
-        or str(report.get("package_tree_digest") or "") != current_digest
-    ):
+    if record is None:
         return _empty_summary(
             package_tree_digest=current_digest,
             reason="current_code_replay_missing",
         )
+    report = record.content.get("report") if isinstance(record.content, dict) else {}
+    report = report if isinstance(report, dict) else {}
+    execution_id = report.get("replay_execution_id")
+    if (
+        report.get("ok") is not True
+        or report.get("real_provenance_contract") != REAL_PROVENANCE_CONTRACT
+        or report.get("package_tree_digest") != current_digest
+        or report.get("schema_version") != "real_task_replay.v1"
+        or report.get("report_type") != "real_task_replay"
+        or report.get("scope") != asdict(scope_ref)
+        or not isinstance(execution_id, str)
+        or not execution_id.strip()
+        or not isinstance(report.get("samples"), list)
+    ):
+        return {
+            **_empty_summary(package_tree_digest=current_digest, reason="replay_report_identity_invalid"),
+            "record_id": record.record_id,
+        }
     accepted: list[dict[str, Any]] = []
     rejection_reasons: Counter[str] = Counter()
     seen_source_ids: set[str] = set()
     seen_terminal_evidence: set[str] = set()
-    for raw_sample in list(report.get("samples") or []):
+    source_verification_lost = False
+    for raw_sample in report["samples"]:
         if not isinstance(raw_sample, dict):
             rejection_reasons["malformed_sample"] += 1
+            continue
+        if raw_sample.get("package_tree_digest") != current_digest:
+            rejection_reasons["sample_package_tree_digest_mismatch"] += 1
+            continue
+        if raw_sample.get("replay_execution_id") != execution_id:
+            rejection_reasons["replay_execution_id_mismatch"] += 1
             continue
         source_record_id = str(raw_sample.get("source_record_id") or "")
         if not source_record_id:
@@ -71,6 +120,10 @@ def build_verified_real_replay_summary(
         )
         if provenance.get("ok") is not True:
             rejection_reasons[str(provenance.get("reason") or "source_provenance_invalid")] += 1
+            # A previously verified source that is now a rehearsal, failed,
+            # or otherwise ineligible has regressed. Originally non-business
+            # cases remain ordinary exclusions rather than corruption claims.
+            source_verification_lost |= raw_sample.get("real_provenance_ok") is True
             continue
         if str(raw_sample.get("source_evidence_digest") or "") != str(
             provenance.get("source_evidence_digest") or ""
@@ -112,12 +165,19 @@ def build_verified_real_replay_summary(
     distinct_task_types = len({sample["task_type"] for sample in accepted})
     sample_deficit = max(0, MIN_VERIFIED_REAL_REPLAY_SAMPLES - sample_count)
     pass_rate_deficit = max(0.0, MIN_VERIFIED_REAL_REPLAY_PASS_RATE - pass_rate)
+    authenticity_failed = source_verification_lost or bool(
+        REAL_REPLAY_AUTHENTICITY_REASONS.intersection(rejection_reasons)
+    )
     return {
         "ok": bool(
             sample_deficit == 0
             and pass_rate_deficit == 0.0
+            and not authenticity_failed
         ),
-        "reason": "" if sample_count else "verified_real_samples_missing",
+        "reason": (
+            "verified_real_replay_authenticity_failed" if authenticity_failed
+            else "" if sample_count else "verified_real_samples_missing"
+        ),
         "record_id": record.record_id,
         "replay_execution_id": str(report.get("replay_execution_id") or ""),
         "provenance_contract": REAL_PROVENANCE_CONTRACT,

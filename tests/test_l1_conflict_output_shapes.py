@@ -81,11 +81,16 @@ class ConflictOutputShapesTest(unittest.TestCase):
                 self.assertEqual(self.run_items([self.item(**fields)], strict)[0].merged_content, self.atoms[0].text)
             self.assertEqual(self.run_items([self.item(merged_content="   ")], strict)[0].merged_content, "")
 
-    def test_null_empty_targets_and_existing_string_iteration(self):
+    def test_null_empty_targets_and_single_id_shorthand(self):
         for strict in [False, True]:
             for targets in [None, [], ""]:
                 self.assertEqual(self.run_items([self.item("store", target_ids=targets)], strict)[0].target_ids, ())
-            self.assertEqual(self.run_items([self.item(target_ids="ab")], strict, targets=["a", "b"])[0].target_ids, ("a", "b"))
+            self.assertEqual(self.run_items([self.item(target_ids="old-1")], strict)[0].target_ids, ("old-1",))
+            if strict:
+                with self.assertRaisesRegex(self.error, "l1_conflict_unauthorized_target"):
+                    self.run_items([self.item(target_ids="ab")], strict, targets=["a", "b"])
+            else:
+                self.assertEqual(self.run_items([self.item(target_ids="ab")], strict, targets=["a", "b"])[0].action, "store")
             self.assertEqual(self.run_items([self.item(target_ids=[7, " ", "old-1"])], strict, targets=["7", "old-1"])[0].target_ids, ("7", "old-1"))
 
     def test_lenient_malformed_batch_discards_prior_decisions(self):

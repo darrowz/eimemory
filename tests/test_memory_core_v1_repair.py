@@ -129,6 +129,14 @@ def test_device_fact_extraction_preserves_source_without_named_user(tmp_path):
     assert atoms[0].source_message_ids == ('synthetic-episode',)
     with closing(RuntimeStore(tmp_path)) as store:
         memory = MemoryAPI(store)
+        parent = RecordEnvelope.create(kind='memory', title='Synthetic source turn',
+            summary='User: ' + text + '\nAssistant: Recorded.',
+            content={'text': 'User: ' + text + '\nAssistant: Recorded.', 'memory_type': 'conversation'},
+            scope=ScopeRef(user_id='synthetic-owner'), source='synthetic-source.turn',
+            source_id='synthetic-source',
+            meta={'memory_layer': 'l0', 'memory_type': 'conversation', 'capture_origin': 'turn_sync'})
+        parent.record_id = 'synthetic-episode'
+        store.append(parent)
         written = persist_l1_atoms(memory, atoms=atoms, episode_id='synthetic-episode',
             scope={'user_id': 'synthetic-owner'}, channel_id='synthetic-source')
         engine = GovernedRecallEngine(store=store, candidate_source=fragment_source(store))

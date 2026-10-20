@@ -22,6 +22,8 @@ from .boundary import (raw_request_boundary, raw_ref_allowed, capture_raw_snapsh
 from eimemory.models.source_partitions import normalize_source_ids
 
 _log = logging.getLogger(__name__)
+_WORD_RE = re.compile(r"[\w']+", re.UNICODE)
+_CJK_RUN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 
 
 @raw_request_boundary
@@ -88,30 +90,35 @@ def _search_raw_candidates(store, *, normalized_query, scope_ref, task_context, 
         results=candidates,
         task_context=task_context,
     )
-    if _should_expand_turn_context(task_context):
+    expand_turn_context = _should_expand_turn_context(task_context)
+    if expand_turn_context:
         ranked = _expand_ranked_turn_context(
-            store,
-            ranked=ranked,
-            scope=scope_ref,
-            source_ids=allowed_source_ids,
-            limit=limit,
+            store, ranked=ranked, scope=scope_ref,
+            source_ids=allowed_source_ids, limit=limit,
         )
     if len(ranked) < limit:
-        ranked = _merge_candidates(
-            ranked,
-            rerank_raw_results(
-                query=normalized_query,
-                results=_direct_raw_scan_candidates(
+        # Rank the candidate union with one time reference. Appending an
+        # independently ranked backstop makes even a strong correction lose
+        # to every indexed hit and assigns two different "newest" bonuses.
+        ranked = rerank_raw_results(
+            query=normalized_query,
+            results=[
+                *candidates,
+                *_direct_raw_scan_candidates(
                     store,
                     query=normalized_query,
                     scope=scope_ref,
                     source_ids=allowed_source_ids,
                     limit=max(limit * 2, limit),
                 ),
-                task_context=task_context,
-            ),
-            limit=limit,
+            ],
+            task_context=task_context,
         )
+        if expand_turn_context:
+            ranked = _expand_ranked_turn_context(
+                store, ranked=ranked, scope=scope_ref,
+                source_ids=allowed_source_ids, limit=limit,
+            )
     # Model quality is evaluated after delivery; keep local ranking and bounds.
     if len(ranked) > limit:
         ranked = ranked[:limit]
@@ -126,6 +133,7 @@ def rerank_raw_results(
 ) -> list[dict[str, Any]]:
     query_text = str(query or "")
     task_context = dict(task_context or {})
+    results = _unique_raw_candidates(results)
     max_time = _max_timestamp(results)
     ranked: list[dict[str, Any]] = []
     for index, result in enumerate(results):
@@ -310,29 +318,27 @@ def _direct_raw_scan_candidates(
             proper_overlap = min(0.25, 0.08 * sum(1 for item in proper if item in text_lower))
         phrase_overlap = 0.18 if quoted and any(phrase in text_lower for phrase in quoted) else 0.0
         score = round((lexical * 0.62) + (semantic * 0.28) + proper_overlap + phrase_overlap, 6)
+        # Recency and correction markers rank grounded candidates; they are
+        # not evidence that an unrelated raw record answers this query.
+        if score <= 0:
+            continue
         scored.append((score, index, record))
     scored.sort(key=lambda item: (-item[0], item[1]))
     return [{"record": record, "base_score": score} for score, _index, record in scored[: max(1, int(limit))]]
 
 
-def _merge_candidates(
-    primary: list[dict[str, Any]],
-    secondary: list[dict[str, Any]],
-    *,
-    limit: int,
-) -> list[dict[str, Any]]:
-    merged: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str, str, str]] = set()
-    for item in [*primary, *secondary]:
+def _unique_raw_candidates(results: list[Any]) -> list[dict[str, Any]]:
+    """Keep the strongest score per exact authority without counting it twice."""
+    by_ref: dict[tuple[str, str, str, str, str, str], dict[str, Any]] = {}
+    for item in results:
         record = _result_record(item)
         record_key = _raw_key(record)
-        if not record_key[0] or record_key in seen:
+        if not record_key[0]:
             continue
-        seen.add(record_key)
-        merged.append(item)
-        if len(merged) >= limit:
-            break
-    return merged
+        score = _result_base_score(item)
+        if record_key not in by_ref or score > by_ref[record_key]["base_score"]:
+            by_ref[record_key] = {"record": record, "base_score": score}
+    return list(by_ref.values())
 
 
 def _maybe_rerank_with_llm(
@@ -870,8 +876,9 @@ def _result_base_score(result: Any) -> float:
     else:
         value = getattr(result, "base_score", getattr(result, "score", 0.0))
     try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
+        score = float(value)
+        return max(0.0, score) if math.isfinite(score) else 0.0
+    except (TypeError, ValueError, OverflowError):
         return 0.0
 
 
@@ -1016,11 +1023,23 @@ def _jaccard_score(left: set[str], right: set[str]) -> float:
 
 
 def _terms(text: str) -> list[str]:
-    return [
-        term.lower()
-        for term in re.findall(r"[\w']+", str(text or ""), flags=re.UNICODE)
-        if len(term.strip("'")) > 1
-    ]
+    # Whitespace tokenization treats an entire Chinese sentence (and adjacent
+    # ASCII identifiers) as one word. CJK bigrams ground short names inside
+    # prose while non-CJK words keep their original identifier boundaries.
+    terms: list[str] = []
+    for word in _WORD_RE.findall(str(text or "").lower()):
+        start = 0
+        for match in _CJK_RUN_RE.finditer(word):
+            prefix = word[start:match.start()]
+            if len(prefix.strip("'")) > 1:
+                terms.append(prefix)
+            run = match.group()
+            terms.extend(run[index:index + 2] for index in range(len(run) - 1))
+            start = match.end()
+        suffix = word[start:]
+        if len(suffix.strip("'")) > 1:
+            terms.append(suffix)
+    return terms
 
 
 def _quoted_phrases(text: str) -> list[str]:
