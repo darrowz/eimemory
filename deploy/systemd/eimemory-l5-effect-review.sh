@@ -18,11 +18,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ -z "${EIMEMORY_TRUSTED_REPOSITORY_ROOT:-}${EIMEMORY_DEPLOYMENT_REPO_ROOT:-}" ]]; then
-  echo "trusted_repository_root_unset" >&2
-  exit 1
-fi
-
 readiness_exit=0
 managed_effect_review=0
 while IFS= read -r cgroup; do
@@ -31,6 +26,15 @@ while IFS= read -r cgroup; do
       managed_effect_review=1 ;;
   esac
 done </proc/self/cgroup
+if [ "$managed_effect_review" = 1 ]; then
+  EIMEMORY_TRUSTED_REPOSITORY_ROOT="$("$EIMEMORY_PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
+    /usr/libexec/eimemory-manager/runtime_manager_launch.py --repository-root)"
+  export EIMEMORY_TRUSTED_REPOSITORY_ROOT
+fi
+if [[ -z "${EIMEMORY_TRUSTED_REPOSITORY_ROOT:-}${EIMEMORY_DEPLOYMENT_REPO_ROOT:-}" ]]; then
+  echo "trusted_repository_root_unset" >&2
+  exit 1
+fi
 if [ "$managed_effect_review" = 1 ]; then
   # The fixed PID1 owner cannot select a console-copy override. The reviewed
   # helper requires the protected registry and actual venv/raw-source identity.
@@ -58,13 +62,13 @@ except (OSError, UnicodeError, json.JSONDecodeError) as exc:
     raise SystemExit("invalid L5 readiness report") from exc
 if not isinstance(payload, dict) or payload.get("report_type") != "l5_readiness_report":
     raise SystemExit("invalid L5 readiness report")
-if payload.get("schema_version") == "l5_readiness.v4":
+if payload.get("schema_version") in {"l5_readiness.v4", "l5_readiness.v5"}:
     # Capturing an incomplete assessment succeeds without claiming L5 or
     # changing its evidence. The v4 reader has no legacy current_stage field.
     complete = payload.get("product_l5_complete")
     gaps = payload.get("gaps")
     if (
-        payload.get("schema") != "l5.reader.v4"
+        payload.get("schema") != {"l5_readiness.v4":"l5.reader.v4", "l5_readiness.v5":"l5.reader.v5"}[payload["schema_version"]]
         or readiness_exit not in ({0} if complete else {0, 1})
         or type(complete) is not bool
         or payload.get("ok") is not complete

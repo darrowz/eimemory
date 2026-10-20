@@ -1079,6 +1079,22 @@ def enable_managed(args):
     print(json.dumps({'ok':True,'registry_generation':configured['generation'],'history':str(history)}))
 
 
+def revalidation_parent(c,registry,key,scope):
+    c.hex_value(key,64,'bootstrap_revalidation_job_key_invalid')
+    record=c.strict_json(read(STATE/'jobs'/(key+'.json')))
+    request=record.get('request',{})
+    if (record.get('manual_release') is not True or record.get('resumed') is not True
+            or record.get('phase')!='resumed_awaiting_business'
+            or request.get('target_commit')!=registry['runtime_commit'] or request.get('scope')!=scope):
+        raise ValueError('bootstrap_revalidation_parent_not_eligible')
+    c.validate_manual_permit(request,key)
+    native,ended=exited_job_state(c,key,record)
+    if not ended or native.get('Result') not in {'exit-code','signal','timeout','core-dump','watchdog'}:
+        raise ValueError('bootstrap_revalidation_parent_not_failed')
+    healthy_original(registry['runtime_commit'])
+    return key
+
+
 def stage(args):
     # Every reviewed attempt is independently recorded. An ambiguous old start
     # cannot be replayed under a fresh nonce or silently overwritten.
@@ -1095,7 +1111,12 @@ def stage(args):
         raise ValueError('bootstrap_manual_scope_manifest_invalid')
     scope=c.validate_scope(scope_manifest['scope'])
     if CURRENT.resolve(strict=True)!=RELEASES/registry['runtime_commit']:raise ValueError('bootstrap_current_registry_mismatch')
-    if args.target_commit==registry['runtime_commit']:raise ValueError('bootstrap_target_already_current')
+    revalidation=getattr(args,'revalidate_current_after',None)
+    if args.target_commit==registry['runtime_commit']:
+        if not revalidation:raise ValueError('bootstrap_target_already_current')
+        revalidation_parent(c,registry,revalidation,scope)
+    elif revalidation:
+        raise ValueError('bootstrap_revalidation_target_not_current')
     storage_clean()
     pair={'base_commit':registry['runtime_commit'],'candidate_commit':args.target_commit,'controller_commit':registry['controller_commit'],
         'validation_controller_commit':args.target_commit,'scope':scope}
@@ -1126,7 +1147,7 @@ def stage(args):
     c.validate_manual_permit(request,key)
     record={'job_key':key,'request':request,'registry':registry,'manual_release':True,
         'phase':'submitted','unit':c.job_unit(key),'active_before':None,'quiesced':False,'resumed':False,
-        'approved_retry_of':approved_retry}
+        'approved_retry_of':approved_retry,**({'revalidation_of':revalidation} if revalidation else {})}
     write(STATE/'jobs'/(key+'.json'),c.canonical(record),gid=registry['runtime_gid'],exclusive=True)
     write(pointer,c.canonical({'job_key':key,'attempt_id':args.attempt_id}),gid=registry['runtime_gid'])
     call(['/usr/bin/systemctl','start','--no-block',record['unit']])
@@ -1144,7 +1165,7 @@ def main():
     q=sub.add_parser('upgrade-controller');q.add_argument('--bundle',type=Path,required=True);q.add_argument('--expected-bundle-sha256',required=True);q.add_argument('--expected-registry-sha256',required=True);q.add_argument('--expected-current-commit',required=True);q.add_argument('--expected-transition-sha256',required=True);q.add_argument('--abandon-failed-job-key');q.add_argument('--managed-incident-manifest',type=Path,required=True);q.add_argument('--expected-managed-incident-manifest-sha256',required=True)
     q=sub.add_parser('enable-managed-authority');q.add_argument('--managed-incident-manifest',type=Path,required=True);q.add_argument('--expected-managed-incident-manifest-sha256',required=True);q.add_argument('--expected-registry-sha256',required=True)
     q=sub.add_parser('recover-failed-manual');q.add_argument('--job-key',required=True);q.add_argument('--expected-current-commit',required=True);q.add_argument('--expected-registry-sha256',required=True);q.add_argument('--expected-transition-sha256',required=True)
-    q=sub.add_parser('stage-release');q.add_argument('--target-commit',required=True);q.add_argument('--attempt-id',required=True);q.add_argument('--prior-job-key');q.add_argument('--scope-manifest',type=Path,required=True);q.add_argument('--expected-scope-sha256',required=True)
+    q=sub.add_parser('stage-release');q.add_argument('--target-commit',required=True);q.add_argument('--attempt-id',required=True);q.add_argument('--prior-job-key');q.add_argument('--revalidate-current-after');q.add_argument('--scope-manifest',type=Path,required=True);q.add_argument('--expected-scope-sha256',required=True)
     q=sub.add_parser('restore-owner');q.add_argument('--history-id',required=True);q.add_argument('--expected-history-sha256',required=True);q.add_argument('--expected-current-commit',required=True);q.add_argument('--expected-registry-sha256',required=True);q.add_argument('--abandon-failed-job-key')
     a=p.parse_args()
     with lifecycle_lock():

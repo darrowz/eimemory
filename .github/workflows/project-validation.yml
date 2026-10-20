@@ -64,6 +64,9 @@ jobs:
           tests/test_managed_code_incident_proof.py
           tests/test_runtime_manager_manual_release.py
           tests/test_runtime_process_environment.py
+          tests/test_runtime_observer_recovery.py
+          tests/test_runtime_service_observation.py
+          tests/test_timer_monitor.py
           tests/test_runtime_manager_controller_upgrade.py
           tests/test_runtime_manager_handoff.py
           tests/test_version.py

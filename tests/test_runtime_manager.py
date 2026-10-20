@@ -790,7 +790,8 @@ def test_user_owner_snapshot_rejects_unrelated_edit_and_restores_only_its_policy
 
 @pytest.mark.skipif(sys.platform=='win32',reason='real bash managed same-current transition protocol')
 @pytest.mark.parametrize('context,marker',[(False,False),(True,False),(True,True)])
-def test_managed_already_current_uses_bound_protocol_without_rebuilding(tmp_path,context,marker):
+@pytest.mark.parametrize('mode',['0','1'])
+def test_managed_already_current_uses_bound_protocol_without_rebuilding(tmp_path,context,marker,mode):
     import subprocess
     text=(ROOT/'deploy/install_immutable_release.sh').read_text()
     start=text.index('_run_managed_already_current() {')
@@ -799,9 +800,9 @@ def test_managed_already_current_uses_bound_protocol_without_rebuilding(tmp_path
     pending=tmp_path/'pending'
     if marker:pending.write_text('{}')
     commands=[]
-    for function in ('_stop_storage_writers','_runtime_manager_phase','_verify_release_health','_record_deployment_receipt','_run_post_deploy_validation','_restart_storage_writers'):
+    for function in ('_stop_storage_writers','_runtime_manager_phase','_verify_release_health','_record_deployment_receipt','_run_post_deploy_validation','_restart_storage_writers','_release_candidate_validation_lock','_release_storage_deploy_lock'):
         commands.append(function+'() { echo '+function+' "$@"; }')
-    shell='set -e\n'+helpers+'\n'+'\n'.join(commands)+f"\nSTORAGE_TRANSACTION_MARKER='{pending}'\nSTORAGE_TRANSACTION_CLEARING='{tmp_path/'clearing'}'\nSTORAGE_TRANSACTION_RECOVERY='{tmp_path/'recovery'}'\n"+f"EIMEMORY_RUNTIME_TRANSITION_JOB={'a'*64 if context else ''}\nEIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE=1\nRELEASE_DIR=/private/immutable\nCOMMIT={'b'*40}\n_run_managed_already_current\n_finish_managed_already_current\n"
+    shell='set -e\n'+helpers+'\n'+'\n'.join(commands)+f"\nSTORAGE_TRANSACTION_MARKER='{pending}'\nSTORAGE_TRANSACTION_CLEARING='{tmp_path/'clearing'}'\nSTORAGE_TRANSACTION_RECOVERY='{tmp_path/'recovery'}'\n"+f"EIMEMORY_RUNTIME_TRANSITION_JOB={'a'*64 if context else ''}\nEIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE={mode}\nRELEASE_DIR=/private/immutable\nCOMMIT={'b'*40}\n_run_managed_already_current\n_finish_managed_already_current\n"
     result=subprocess.run(['bash','-c',shell],capture_output=True,text=True)
     if marker:
         assert result.returncode==2 and not result.stdout
@@ -811,7 +812,9 @@ def test_managed_already_current_uses_bound_protocol_without_rebuilding(tmp_path
         assert result.returncode==0
         lines=result.stdout.splitlines()
         assert lines[:3]==['_stop_storage_writers','_runtime_manager_phase publish','_runtime_manager_phase activate']
-        assert lines[-2:]==['_restart_storage_writers','managed_already_current=technical_verified_restore_deferred']
+        assert '_restart_storage_writers' in lines
+        if mode=='1':assert lines[-1]=='managed_already_current=technical_verified_restore_deferred'
+        else:assert lines[-3:]==['_release_candidate_validation_lock','_release_storage_deploy_lock','_run_post_deploy_validation']
         assert '_record_deployment_receipt' in lines and '_run_post_deploy_validation' in lines
         assert not any('rebuild' in line or 'stage_built' in line for line in lines)
 

@@ -124,6 +124,7 @@ def prepare_product_module(module):
     read_root(__file__,raw=True);registry=root_contract().validate_registry(read_root(REGISTRY))
     if os.getuid()!=registry['runtime_uid'] or os.geteuid()!=registry['runtime_uid'] or os.geteuid()==0:
         raise ValueError('manager_launcher_runtime_uid_required')
+    os.environ['EIMEMORY_TRUSTED_REPOSITORY_ROOT']=registry['repository_root']
     flags=protected_cache()
     if not sys.flags.isolated or not sys.dont_write_bytecode or sys._xoptions.get('pycache_prefix')!=str(EMPTY_PYCACHE):
         raise ValueError('manager_product_interpreter_flags_required')
@@ -164,6 +165,16 @@ def apply_runtime_settings(module,args):
         for part in line.split(':',2)[-1].split('/') if part in value['units']}
     if len(units)!=1:raise ValueError('manager_settings_native_unit_ambiguous')
     return helper.apply(value,units.pop(),module,args)
+
+
+def repository_root():
+    registry=root_contract().validate_registry(read_root(REGISTRY))
+    if os.getuid()!=registry['runtime_uid'] or os.geteuid()!=registry['runtime_uid'] or os.geteuid()==0:
+        raise ValueError('manager_launcher_runtime_uid_required')
+    repository=Path(registry['repository_root'])
+    if not repository.is_dir() or repository.resolve(strict=True)!=repository:
+        raise ValueError('manager_launcher_repository_changed')
+    return str(repository)
 
 
 def product_module(module,args):
@@ -325,6 +336,7 @@ def launch(key,*,preflight=False):
 
 if __name__=='__main__':
     if len(sys.argv)>=3 and sys.argv[1]=='--product-module':product_module(sys.argv[2],sys.argv[3:])
+    elif len(sys.argv)==2 and sys.argv[1]=='--repository-root':print(repository_root())
     elif len(sys.argv)==2 and sys.argv[1]=='--recover-fused':recover_fused()
     elif len(sys.argv)==2:launch(sys.argv[1])
     elif len(sys.argv)==3 and sys.argv[1]=='--preflight':launch(sys.argv[2],preflight=True)

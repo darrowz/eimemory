@@ -463,10 +463,11 @@ def test_l5_effect_review_fails_closed_without_trusted_repository_root(tmp_path:
 
 
 @pytest.mark.parametrize("complete", [False, True])
-def test_l5_effect_review_preserves_v4_completion_result(tmp_path: Path, complete: bool) -> None:
+@pytest.mark.parametrize("version", ["v4", "v5"])
+def test_l5_effect_review_preserves_v4_completion_result(tmp_path: Path, complete: bool, version: str) -> None:
     payload = {
-        "schema": "l5.reader.v4",
-        "schema_version": "l5_readiness.v4",
+        "schema": "l5.reader."+version,
+        "schema_version": "l5_readiness."+version,
         "report_type": "l5_readiness_report",
         "ok": complete,
         "status": "ready" if complete else "incomplete",
@@ -3154,6 +3155,11 @@ def test_immutable_release_installer_rejects_dangling_current_link_with_clear_er
     install_root = tmp_path / "install"
     (install_root / "releases").mkdir(parents=True)
     (install_root / "current").symlink_to(tmp_path / "missing-release", target_is_directory=True)
+    fake_bin = tmp_path / 'fixture-bin'
+    fake_bin.mkdir()
+    systemctl = fake_bin / 'systemctl'
+    systemctl.write_text('#!/bin/sh\n[ "$1" = is-active ] && exit 3\nexit 1\n', encoding='utf-8')
+    systemctl.chmod(0o755)
     env = dict(os.environ)
     env.update(
         {
@@ -3162,6 +3168,7 @@ def test_immutable_release_installer_rejects_dangling_current_link_with_clear_er
             "PYTHON_BIN": _bash_path(Path(sys.executable)),
             "USER_SYSTEMD_ENABLE_SERVICE": "0",
             "EIMEMORY_POST_SWITCH_GATES": "0",
+            "PATH": str(fake_bin) + os.pathsep + os.environ.get('PATH', ''),
         }
     )
 
