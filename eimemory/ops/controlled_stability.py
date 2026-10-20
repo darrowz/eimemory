@@ -684,7 +684,8 @@ def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commi
                         or not database.get("ownership") or any(o.get("ok") is not True for o in database["ownership"])):
                     reasons.append("sample_database_unverified")
                 errors = journal.get("observed_error_counts", {})
-                if (journal.get("observation_scope") != "allowlisted_user_unit_journal"
+                if (journal.get("observation_scope") not in {
+                        "allowlisted_user_unit_journal", "registered_manager_all_invocations_journal"}
                         or journal.get("window_seconds") != 600
                         or set(errors) != {"crash", "oom", "database_read_write_failure"}
                         or any(type(n) is not int or n != 0 for n in errors.values())):

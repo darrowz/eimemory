@@ -79,3 +79,16 @@ def test_failed_prestart_has_distinct_native_evidence_and_never_a_main_exit(tmp_
         assert ended is (fault=='none')
         assert ('prestart_failure' in record) is (fault=='none')
         assert 'terminal_state' not in record
+
+
+@pytest.mark.parametrize('fault', ['', 'pid', 'invocation', 'group', 'type', 'user'])
+def test_recovery_accepts_only_actual_running_captured_oneshot(monkeypatch, fault):
+    m=module();unit='eimemory-vector-sync.service'
+    state=dict(LoadState='loaded',ActiveState='activating',SubState='start',Type='oneshot',
+        MainPID='123',InvocationID='a'*32,ControlGroup='/system.slice/'+unit)
+    if fault=='pid':state['MainPID']='0'
+    elif fault=='invocation':state['InvocationID']=''
+    elif fault=='group':state['ControlGroup']='/unregistered'
+    elif fault=='type':state['Type']='simple'
+    monkeypatch.setattr(m,'_handoff_unit_state',lambda *args:state)
+    assert m._running_captured_oneshot(c,None,'user' if fault=='user' else 'system',unit) is (not fault)
