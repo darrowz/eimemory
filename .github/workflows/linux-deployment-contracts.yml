@@ -113,6 +113,8 @@ jobs:
           tests/test_code_incident_coverage.py
           tests/test_code_incident_coverage_archive.py
           tests/test_managed_code_incident_proof.py
+          tests/test_runtime_manager_handoff.py
+          tests/test_runtime_manager_controller_upgrade.py
           tests/test_code_policy_operator.py
           tests/test_code_automation_policy_issue.py
           tests/test_code_evolution_bridge_v2.py
