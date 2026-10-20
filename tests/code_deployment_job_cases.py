@@ -40,6 +40,10 @@ def durable_job_fixture(tmp_path, monkeypatch):
     """Use the actual effect owner/receipts/consumption to reach DEPLOY_INTENT."""
     from tests.test_code_evolution_effects import _ready_manager, _RecordingAdapter, _policy, TX_ID
     from eimemory.storage.code_evolution_store import digest_json
+    from eimemory.governance.safety import prompt_safety_executor
+    # This fixture replaces the manager transport below. Reopened runtimes
+    # must not consult the real host's RPC configuration through that double.
+    monkeypatch.setattr(prompt_safety_executor, '_rpc_service_environment', lambda: [])
     runtime = Runtime.create(root=tmp_path/"runtime")
     manager = _ready_manager(runtime)
     policy = _policy()
