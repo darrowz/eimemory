@@ -513,3 +513,22 @@ def test_long_mutating_gates_are_followed_by_a_full_stability_window(pipeline, m
     assert finished_at == {"replay": 180.0, "live": 192.0, "channel": 193.0}
     assert samples_at[1] - finished_at["channel"] == 60.0
     assert sum(sleeps) == 60.0 and all(0 < seconds <= 1.0 for seconds in sleeps)
+
+
+@pytest.mark.parametrize('prior_failed', [False, True])
+def test_managed_controlled_entry_emits_complete_report_without_overwriting_failure(pipeline, prior_failed):
+    from eimemory.governance.release.evidence_contract import ReleaseIdentity
+    deployed=receipt()
+    report={'deployment':deployed,'deployment_receipt':deployed,'storage_migrations':{'ok':True},
+        'scope':SCOPE,'record_ids':{},'blocked_stage':'','blocked_reason':''}
+    if prior_failed:report['readiness']={'ok':False,'status':'failed','reason':'retained_actual_failure'}
+    release=ReleaseIdentity(commit=deployed['commit'],version=deployed['version'],
+        receipt_id=deployed['promotion_request_id'],session_id=deployed['release_session_id'])
+    result=closure._run_controlled_operational_closure(pipeline.runtime,report=report,scope=SCOPE,
+        identity_kwargs={'repo_root':'/fixture/repo'},release=release,policy={'stable_before':'2026-01-01T00:00:00Z'})
+    assert result['ok'] is (not prior_failed)
+    if prior_failed:assert result['readiness']['reason']=='retained_actual_failure'
+    else:
+        assert controlled_production_closure_report_ok(result)
+        assert all(result[key]['status']=='not_run' for key in (
+            'production_recall_gate','production_recall_strict_state','closure_rehearsal','readiness'))
