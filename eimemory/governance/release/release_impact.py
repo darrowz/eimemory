@@ -644,6 +644,7 @@ for _domain, _paths in _CURRENT_PRODUCTION_SURFACES.items():
 for _domain in ("memory.governance", "code.evolution", "deployment.runtime"):
     DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain],
         "deploy/bootstrap_runtime_manager.py",
+        "deploy/runtime_manager_launch.py",
         "deploy/build_runtime_manager_bundle.py",
         "eimemory/governance/evolution/managed_code_incident_proof.py",
         "eimemory/core/managed_incident_proof_authority.py",
