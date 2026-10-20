@@ -67,6 +67,8 @@ def install_release_write_guard(root: Path) -> None:
                     os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
                 ))
                 if writing:
+                    # CPython's open audit event is (path, mode, flags). It does
+                    # not include dir_fd, so a relative name is judged against cwd.
                     target = inside(args[0])
             elif event in {'os.mkdir', 'os.remove', 'os.rmdir', 'os.chmod', 'os.chown', 'os.utime', 'os.truncate'}:
                 target = inside(args[0], args[-1] if len(args) > 1 else None)
@@ -101,3 +103,53 @@ def install_release_write_guard(root: Path) -> None:
 
     sys.dont_write_bytecode = True
     sys.addaudithook(audit)
+
+
+def open_new_file_at_directory(directory_fd: int, name: str, flags: int, mode: int = 0o600) -> int:
+    """Create one file in directory_fd without looking like a release write.
+
+    The open audit event omits dir_fd. A validation child whose cwd is the
+    immutable release must not present a relative name, or the guard treats an
+    external artifact as a release write. Move cwd to the external directory
+    only for that audited open, then restore it. The kernel open still uses
+    dir_fd. A destination inside a guarded release is left unchanged so the
+    guard still denies it.
+    """
+    if isinstance(directory_fd, bool) or not isinstance(directory_fd, int) or directory_fd < 0:
+        raise ValueError('release_guard_directory_fd_invalid')
+    if (not isinstance(name, str) or not name or name in {'.', '..'}
+            or any(ord(char) in {0, 47, 92} for char in name)):
+        raise ValueError('release_guard_relative_name_invalid')
+    held = None
+    try:
+        if _relative_open_would_be_misread(directory_fd):
+            held = os.open('.', os.O_RDONLY | os.O_DIRECTORY)
+            os.fchdir(directory_fd)
+        return os.open(name, flags, mode, dir_fd=directory_fd)
+    finally:
+        if held is not None:
+            try:
+                os.fchdir(held)
+            finally:
+                os.close(held)
+
+
+def _relative_open_would_be_misread(directory_fd: int) -> bool:
+    if not sys.platform.startswith('linux'):
+        return False
+    try:
+        cwd = os.path.realpath(os.getcwd())
+        target = os.path.realpath(os.readlink(f'/proc/self/fd/{directory_fd}'))
+    except OSError:
+        return False
+    with _guard_lock:
+        roots = tuple(_installed)
+    for root in roots:
+        try:
+            cwd_inside = os.path.commonpath((cwd, root)) == root
+            target_inside = os.path.commonpath((target, root)) == root
+        except ValueError:
+            continue
+        if cwd_inside and not target_inside:
+            return True
+    return False

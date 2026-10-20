@@ -17,6 +17,7 @@ import time
 
 from eimemory.contracts.code_deployment_job import (SCHEMA, MANUAL_SCHEMA, VALIDATION_BUDGETS,
     canonical_bytes, request_key, validate_request, validate_manual_permit)
+from eimemory.core.release_source_guard import open_new_file_at_directory
 
 JOBS_ROOT = Path("/var/lib/eimemory/state/code-deployment-jobs")
 
@@ -120,9 +121,10 @@ def _exclusive_blob(path: Path, raw: bytes) -> None:
     _directory(path.parent)
     parent = _parent_fd(path)
     try:
-        fd = os.open(path.name if parent is not None else path,
-                     os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-                     | getattr(os, "O_BINARY", 0), 0o600, dir_fd=parent)
+        flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                 | getattr(os, "O_BINARY", 0))
+        fd = (open_new_file_at_directory(parent, path.name, flags, 0o600) if parent is not None
+              else os.open(path, flags, 0o600))
     except BaseException:
         if parent is not None:
             os.close(parent)

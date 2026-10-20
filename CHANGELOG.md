@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.1] — 2026-10-20
+
+- Keep external deployment-validation artifacts writable when the child cwd is the immutable release. The open audit event omits dir_fd, so relocate only that external open and restore cwd. Writes inside the release remain denied.
+- This does not certify production L5 completion or change recall gates.
+
 ## [1.15.0] — 2026-10-20
 
 - Integrate the L0/L1/L5 audit: evidence-based raw recall ranking, governed-recall.v4 page selection, durable L1 conflict recovery, fair queue draining, and exact L5 replay/channel evidence binding.

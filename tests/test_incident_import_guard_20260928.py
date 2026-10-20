@@ -122,3 +122,81 @@ print(json.dumps({'readonly':True,'outside_writable':True,'bytecode_count':0}))
     assert result.returncode==0, result.stderr+result.stdout
     assert json.loads(result.stdout.splitlines()[-1])=={'readonly':True,'outside_writable':True,'bytecode_count':0}
     assert list(root.rglob('*.pyc'))==[]
+
+
+def test_external_dirfd_write_from_release_cwd_is_not_misdenied(tmp_path):
+    release = tmp_path / 'releases' / ('c' * 40)
+    release.mkdir(parents=True)
+    release.chmod(0o700)
+    outside = tmp_path / 'jobs'
+    outside.mkdir(mode=0o700)
+    code = '''
+import os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from eimemory.core.release_source_guard import install_release_write_guard
+from eimemory.governance.evolution.code_deployment_job import _exclusive_blob
+install_release_write_guard(Path(sys.argv[2]))
+os.chdir(sys.argv[2])
+_exclusive_blob(Path(sys.argv[3]) / "artifact.json", b"ok")
+if os.getcwd() != sys.argv[2]:
+    raise SystemExit("cwd_not_restored")
+print("written")
+'''
+    result = subprocess.run(
+        [sys.executable, '-I', '-B', '-c', code, str(SOURCE), str(release), str(outside)],
+        cwd=release, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (outside / 'artifact.json').read_bytes() == b'ok'
+    assert not (release / 'artifact.json').exists()
+
+
+def test_release_dirfd_write_and_relative_open_stay_denied(tmp_path):
+    release = tmp_path / 'releases' / ('d' * 40)
+    release.mkdir(parents=True)
+    release.chmod(0o700)
+    code = '''
+import os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from eimemory.core.release_source_guard import install_release_write_guard, open_new_file_at_directory
+from eimemory.governance.evolution.code_deployment_job import _exclusive_blob
+install_release_write_guard(Path(sys.argv[2]))
+os.chdir(sys.argv[2])
+try:
+    _exclusive_blob(Path(sys.argv[2]) / "bad.json", b"no")
+except PermissionError:
+    pass
+else:
+    raise SystemExit("inside_write_allowed")
+parent = os.open(sys.argv[2], os.O_RDONLY | os.O_DIRECTORY)
+try:
+    open_new_file_at_directory(parent, "escaped.txt", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+except PermissionError:
+    pass
+else:
+    raise SystemExit("dirfd_inside_write_allowed")
+finally:
+    os.close(parent)
+try:
+    fd = os.open("relative.txt", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+except PermissionError:
+    pass
+else:
+    os.close(fd)
+    raise SystemExit("relative_write_allowed")
+try:
+    open_new_file_at_directory(0, "../escape", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+except ValueError:
+    pass
+else:
+    raise SystemExit("escape_name_allowed")
+print("denied")
+'''
+    result = subprocess.run(
+        [sys.executable, '-I', '-B', '-c', code, str(SOURCE), str(release)],
+        cwd=release, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert result.stdout.strip() == 'denied'
+    assert list(release.glob('*.json')) == []
+    assert list(release.glob('*.txt')) == []
