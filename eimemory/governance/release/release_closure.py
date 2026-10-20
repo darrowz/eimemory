@@ -577,7 +577,7 @@ def _run_controlled_operational_closure(
     # Preserve any existing verdict so a prior failure cannot be overwritten.
     for key in ('production_recall_gate', 'production_recall_strict_state', 'closure_rehearsal', 'readiness'):
         report.setdefault(key, {'ok':False, 'status':'not_run',
-            'reason':'controlled_operational_workflow'})
+            'reason':'upstream_gate_not_run'})
     report.update(
         report_type="controlled_production_release_closure", legacy_compatibility=False,
         acceptance_basis="controlled_existing_memory", evidence_class="operator_controlled_existing_memory",
