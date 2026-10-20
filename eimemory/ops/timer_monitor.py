@@ -167,13 +167,16 @@ def _default_units(*, include_legacy_learning_timers: bool = False) -> list[str]
 
 
 def _collect_unit_states(units: list[str], *, runner: Callable[[list[str]], str] | None = None) -> list[dict[str, Any]]:
-    from eimemory.core.runtime_manager import manager_for, unit_state
+    from eimemory.core.runtime_manager import manager_for
+    from eimemory.ops.runtime_service_observation import service_state
     states: list[dict[str, Any]] = []
     properties = ("LoadState", "ActiveState", "SubState", "UnitFileState", "LastTriggerUSec", "NextElapseUSecRealtime", "Result")
     for unit in units:
         try:
             if runner is None:
-                data = unit_state(unit, properties)
+                selected = properties if unit.endswith('.timer') else tuple(
+                    name for name in properties if name not in {'LastTriggerUSec', 'NextElapseUSecRealtime'})
+                data = service_state(unit, selected)
                 raw = "\n".join(key + "=" + value for key, value in data.items())
             else:
                 raw = _show_unit(runner, unit, user=manager_for(unit) == "user")

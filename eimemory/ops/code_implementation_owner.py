@@ -492,7 +492,7 @@ def _unit_status(unit: str, *, call: Callable[[list[str]], str]) -> dict[str, st
     ]
     try:
         raw = call(args)
-    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         return {
             "unit": unit,
             "load_state": "unknown",
@@ -517,10 +517,13 @@ def _unit_status(unit: str, *, call: Callable[[list[str]], str]) -> dict[str, st
 
 
 def _run_systemctl(args: list[str]) -> str:
-    from eimemory.core.runtime_manager import unit_state
+    from eimemory.ops.runtime_service_observation import service_state
     unit = args[2]
     properties = next(item.partition("=")[2] for item in args if item.startswith("--property="))
-    values = unit_state(unit, tuple(properties.split(",")))
+    selected = tuple(properties.split(","))
+    if not unit.endswith('.timer'):
+        selected = tuple(name for name in selected if name not in {'LastTriggerUSec', 'NextElapseUSecRealtime'})
+    values = service_state(unit, selected)
     return "\n".join(key + "=" + value for key, value in values.items())
 
 

@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.5] — 2026-10-20
+
+- Observe ordinary user services and registered PID1 services through their actual execution context, covering maintenance, scope refresh, timer ownership and controlled stability. Failed reads remain distinct from absent units.
+- Verify the live RPC process release before refreshing deployment scope bindings; preserve controlled recall and L5 evidence checks.
+
 ## [1.15.4] — 2026-10-20
 
 - Bind managed-discovery contract fixtures to explicit transition jobs, retaining registry failure rejection alongside ordinary user-manager discovery tests.

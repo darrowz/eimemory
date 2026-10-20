@@ -140,9 +140,10 @@ def _run(args: list[str]) -> str:
 
 
 def _unit_states() -> list[dict[str, str]]:
-    from eimemory.core.runtime_manager import unit_state
+    from eimemory.ops.runtime_service_observation import service_state
     properties = tuple(_PROPERTIES.split(","))
-    states = [unit_state(unit, properties) for unit in UNITS]
+    states = [service_state(unit, tuple(name for name in properties
+        if not unit.endswith('.timer') or name not in {'ExecMainStatus', 'NRestarts', 'MainPID'})) for unit in UNITS]
     if len(states) != len(UNITS) or {s["Id"] for s in states} != set(UNITS):
         raise ValueError("unit_inventory_incomplete")
     return states
@@ -486,8 +487,37 @@ def _journal_output(args: list[str]) -> str:
 
 
 def _journal() -> dict[str, Any]:
-    from eimemory.core.runtime_manager import request
-    return request("error_window")["report"]
+    from eimemory.ops.runtime_service_observation import registered_runtime_context
+    if registered_runtime_context():
+        from eimemory.core.runtime_manager import request
+        return request("error_window")["report"]
+    end = time.time()
+    counts = {name: 0 for name, _ in _JOURNAL_ERROR_PATTERNS}
+    pattern = '|'.join('(?:' + expression + ')' for _, expression in _JOURNAL_ERROR_PATTERNS)
+    args = ['journalctl', '--user', '--quiet', '--no-pager', '--all', '--output=json',
+            '--lines=2001', '--since=@' + str(end - 600), '--until=@' + str(end),
+            '--grep=' + pattern, '--case-sensitive=no']
+    for index, unit in enumerate(sorted(set(RUNTIME_UNITS + JOB_UNITS))):
+        if index:
+            args.append('+')
+        args += ['_SYSTEMD_USER_UNIT=' + unit, '_UID=' + str(os.geteuid())]
+    lines = _journal_output(args).splitlines()
+    if len(lines) > 2000:
+        raise ValueError('journal_window_truncated')
+    for line in lines:
+        entry = strict_json_loads(line, max_bytes=262144)
+        if not isinstance(entry, dict) or not isinstance(entry.get('MESSAGE'), str):
+            raise ValueError('journal_message_contract_invalid')
+        matched = {name: bool(re.search(expression, entry['MESSAGE'], re.I))
+                   for name, expression in _JOURNAL_ERROR_PATTERNS}
+        if not any(matched.values()):
+            raise ValueError('journal_filter_contract_invalid')
+        for name, hit in matched.items():
+            counts[name] += int(hit)
+    return {'ok': not any(counts.values()), 'window_seconds': 600,
+            'observation_scope': 'allowlisted_user_unit_journal',
+            'entries_observed': len(lines), 'entry_selection': 'native_error_pattern_matches',
+            'native_database_counters_available': False, 'observed_error_counts': counts}
 
 
 def collect_controlled_stability_sample(*, expected_commit: str, database_path: str | Path) -> dict[str, Any]:
@@ -539,7 +569,8 @@ def collect_controlled_stability_sample(*, expected_commit: str, database_path: 
                     ok = ok and state["ActiveState"] == "active" and state["UnitFileState"] in ("enabled", "enabled-runtime")
                 else:
                     ok = ok and state["ActiveState"] in ("active", "inactive", "activating") and state["ExecMainStatus"] == "0"
-                restarts = int(state["NRestarts"]) if state["NRestarts"].isdigit() else None
+                counter = state.get("NRestarts", "")
+                restarts = int(counter) if counter.isdigit() else None
                 units.append({"unit": unit, "ok": bool(ok), "active_state": state["ActiveState"],
                               "result": state["Result"], "restart_count": restarts})
             processes = [_process_status(state, commit) for state in states if state["Id"] in RUNTIME_UNITS]

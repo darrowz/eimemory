@@ -33,11 +33,13 @@ def main():
     if live.name != commit:
         raise ValueError('live_commit_mismatch')
     sys.path.insert(0,str(live))
-    from eimemory.core.runtime_manager import unit_state
-    pid = unit_state('eimemory-rpc.service', ('MainPID',))['MainPID']
+    from eimemory.ops.runtime_service_observation import service_state
+    pid = service_state('eimemory-rpc.service', ('MainPID',))['MainPID']
     if not pid.isdigit() or int(pid)<=0 or Path('/proc',pid).stat().st_uid!=os.geteuid():
         raise ValueError('registered_rpc_process_owner_mismatch')
     values = dict(part.split(b'=', 1) for part in Path('/proc', pid, 'environ').read_bytes().split(b'\0') if b'=' in part)
+    if values.get(b'EIMEMORY_RUNTIME_COMMIT') != commit.encode():
+        raise ValueError('rpc_process_release_mismatch')
     binding = values.get(b'EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE')
     if not binding:
         print(json.dumps({'binding_refresh': 'not_configured'}))

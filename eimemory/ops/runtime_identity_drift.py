@@ -157,11 +157,15 @@ def inspect_live_runtime_identity(
     # and must not manufacture a permanent runtime-drift incident.  Explicit
     # empty strings from injected runners still mean a loaded unit is missing
     # its commit, preserving the detector's fail-closed contract.
-    environments = {
-        unit: environment
-        for unit in PYTHON_RUNTIME_UNITS
-        if (environment := read_environment(unit)) is not None
-    }
+    try:
+        environments = {
+            unit: environment
+            for unit in PYTHON_RUNTIME_UNITS
+            if (environment := read_environment(unit)) is not None
+        }
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        return {"ok": False, "status": "unavailable",
+                "reason": "runtime_unit_observation_failed", "error_type": type(exc).__name__}
     if not environments:
         return {
             "ok": False,
@@ -411,11 +415,8 @@ def _observation_time(value: Any) -> datetime:
 
 
 def _systemd_environment(unit: str) -> str | None:
-    from eimemory.core.runtime_manager import runtime_commit
-    try:
-        return "EIMEMORY_RUNTIME_COMMIT=" + runtime_commit(unit)
-    except (OSError, ValueError, RuntimeError):
-        return None
+    from eimemory.ops.runtime_service_observation import runtime_environment
+    return runtime_environment(unit)
 
 
 def _digest(value: object) -> str:
