@@ -129,3 +129,20 @@ registry/controller identity and sole RPC owner after handoff. Timer enablement
 alone proves neither checkpoint operation nor L5 completion. Original events
 without an activation receipt remain unproven, and an absent transaction or
 28,800-second observation cannot be reconstructed from business acceptance.
+
+## Retained history and controller upgrades
+
+An unregistered retained incident source is accumulated as wildcard positive
+knowledge with its original payload digest. It does not abort the physical
+history scan and is never reclassified as a registered source. Its uncertain
+provenance still prevents a claim that a defect was previously unknown.
+
+After a normal release, `bootstrap_runtime_manager.py upgrade-controller`
+updates the reviewed host controller without restarting product services.
+Require the current commit, registry/transition/bundle digests and an explicitly
+linked successor managed manifest for that immutable release. Scope grants,
+signing keys and accumulated knowledge remain intact. Changed service templates
+require an ownership handoff instead. The controller is stopped before its
+modules are replaced; a failure restores its private original snapshot and
+manifest. Successful controller installation supplies no incident, terminal
+transaction or elapsed observation evidence.

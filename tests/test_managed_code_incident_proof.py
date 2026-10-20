@@ -652,6 +652,32 @@ def test_no_incident_checkpoint_accumulates_real_receive_rows_without_root_recei
     assert root_index.execute('SELECT count(*) FROM managed_knowledge').fetchone()[0]==0
 
 
+@pytest.mark.parametrize('source',['eimemory.ops.timer_monitor','evolution.observe','unknown.code-source'])
+def test_unregistered_retained_history_accumulates_without_certifying_novelty(physical,source):
+    from eimemory.models.records import RecordEnvelope
+    old=RecordEnvelope.create(kind='incident',source=source,title='retained unclassified incident',
+        scope=ScopeRef.from_dict(SCOPE),content={'incident_class':'release.closure_internal_failure',
+            'diagnostic_codes':['typed_code']})
+    physical.store.append(old)
+    original=old.to_dict()
+    conn=physical.store.sqlite.conn
+    schema={row['name']:row['sql'] for row in conn.execute("SELECT name,sql FROM sqlite_master WHERE name LIKE 'trg_code_incident_coverage_%' OR name LIKE 'idx_incident_coverage_%' ORDER BY name")}
+    before=conn.total_changes
+    facts=collect_physical_facts(physical.store.sqlite.path,
+        manifest=dict(scopes=[SCOPE],schema_digest=digest(schema)),source_record_id='',source_digest='')
+    assert facts['complete'] is True and conn.total_changes==before
+    retained=next(item for item in facts['history'] if item['record_id']==old.record_id)
+    assert retained['defect_key']=='*' and retained['source_digest']==digest(original)
+    assert physical.store.get_by_id(old.record_id).to_dict()==original
+    index=state();authority._ingest(index,facts,dict(scopes=[SCOPE]))
+    assert index.execute("SELECT defect_key FROM managed_knowledge WHERE record_id=?",(old.record_id,)).fetchone()[0]=='*'
+    assert int(index.execute("SELECT value FROM authority_meta WHERE key='high_water'").fetchone()[0])==facts['through']
+    current=original_facts()
+    current.update(source_record_id='later-native-source',source_created_at='2099-01-01T00:00:00+00:00')
+    # The preserved unknown history never becomes evidence of no prior report.
+    assert authority._known(index,current)[:2]==(None,None)
+
+
 @pytest.mark.skipif(os.name!='posix' or not hasattr(os,'geteuid') or os.geteuid()!=0,
                     reason='actual root issuer and unprivileged UID worker require native root fixture')
 def test_native_root_private_key_actual_uid_worker_and_receipt_readback(tmp_path,physical,monkeypatch):

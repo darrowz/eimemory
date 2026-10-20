@@ -41,6 +41,16 @@ def _commit(repo: Path, path: str, content: str, message: str) -> str:
 @pytest.mark.parametrize(
     ("path", "expected_domains", "expected_unknown", "expected_reason"),
     [
+        *[
+            (path, ["code.evolution", "deployment.runtime", "memory.governance"],
+             [], "classified_production_change")
+            for path in (
+                "deploy/bootstrap_runtime_manager.py",
+                "deploy/build_runtime_manager_bundle.py",
+                "eimemory/governance/evolution/managed_code_incident_proof.py",
+                "eimemory/core/managed_incident_proof_authority.py",
+            )
+        ],
         (
             "eimemory/ops/runtime_service_observation.py",
             ["deployment.runtime"],
