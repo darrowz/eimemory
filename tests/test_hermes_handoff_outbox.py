@@ -21,7 +21,7 @@ RELEASE = {"release_commit": "a" * 40, "release_version": "synthetic", "deployme
 
 
 @pytest.fixture(autouse=True)
-def isolated(monkeypatch):
+def isolated(monkeypatch, trusted_dataset_path_ancestors):
     monkeypatch.setenv("EIMEMORY_L1_FORCE_QUEUE", "1")
     monkeypatch.delenv("EIMEMORY_L1_KICK_THREAD", raising=False)
     monkeypatch.delenv("HERMES_HOME", raising=False)

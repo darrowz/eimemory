@@ -104,6 +104,7 @@ def test_native_capture_admission_controls_bash_exit_and_preserves_evidence(tmp_
         args = ["--prior-commit", "6" * 40]
     completed = _run(tmp_path, *args, extra_env=env)
     assert completed.returncode == (0 if accepted else 1), completed.stderr
+    assert completed.stdout.strip(), completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result["recording_ok"] is True and result["capture_saved"] is True
     assert result["ordinary_release_admission"] == ("admitted" if accepted else "denied")

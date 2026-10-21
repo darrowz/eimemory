@@ -46,9 +46,23 @@ PRODUCT_SERVICES = ('eimemory-rpc.service','eimemory-console.service','eimemory-
 PRODUCT_TIMERS = tuple(n.replace('.service','.timer') for n in PRODUCT_SERVICES
  if n not in {'eimemory-rpc.service','eimemory-console.service','eimemory-release-closure.service','eimemory-l5-fused-closure.service'})
 PRODUCT_PATHS = ('eimemory-release-closure.path',)
-USER_COMPAT_UNITS = ('hermes-gateway.service','hermes-gateway-hongtai.service','hermes-gateway-hongxin.service',
- 'hermes-gateway-xiaomage.service','openclaw-gateway.service','openclaw-loop-watch.service',
+USER_COMPAT_UNITS = ('hermes-gateway.service','openclaw-gateway.service','openclaw-loop-watch.service',
  'openclaw-loop-watch.timer','openclaw-loop-compact.service','openclaw-loop-compact.timer')
+
+
+def compatibility_units(units):
+ """Bounded user-only profile names from an authenticated Root registry.
+
+ This does not authorize a system service or executable. Root owns the registry
+ bytes; callers must authenticate it before making privileged decisions.
+ """
+ if not isinstance(units,dict) or len(units)>128:raise ValueError('manager_registry_unit_inventory_invalid')
+ extras=set(units)-set(PRODUCT_SERVICES)-set(PRODUCT_TIMERS)-set(PRODUCT_PATHS)-set(USER_COMPAT_UNITS)
+ if len(extras)>64 or any(not isinstance(name,str) or re.fullmatch(r'hermes-gateway-[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}\.service',name) is None for name in extras):
+  raise ValueError('manager_registry_unit_inventory_invalid')
+ return frozenset((*USER_COMPAT_UNITS,*extras))
+
+
 REGISTERED_UNITS = frozenset((*PRODUCT_SERVICES,*PRODUCT_TIMERS,*PRODUCT_PATHS,*USER_COMPAT_UNITS))
 COMPATIBILITY_PATHS = (
  'eimemory/contracts/runtime_manager.py','eimemory/core/runtime_manager.py',
@@ -114,13 +128,15 @@ def validate_registry(value: Any) -> dict:
  repository=value.get('repository_root')
  if not isinstance(repository,str) or not repository.startswith('/') or repository=='/' or '..' in repository.split('/') or any(x in repository for x in '\r\n\0') or repository.endswith('/'):
   raise ValueError('manager_registry_repository_invalid')
- if value['runtime_user']!='darrow' or type(value['runtime_uid']) is not int or type(value['runtime_gid']) is not int or value['runtime_uid']<1 or value['runtime_gid']<1:raise ValueError('manager_registry_runtime_identity_invalid')
+ if not isinstance(value['runtime_user'],str) or re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}',value['runtime_user']) is None or type(value['runtime_uid']) is not int or type(value['runtime_gid']) is not int or value['runtime_uid']<1 or value['runtime_gid']<1:raise ValueError('manager_registry_runtime_identity_invalid')
  units=value['units']
- if not isinstance(units,dict) or set(units)!=REGISTERED_UNITS:raise ValueError('manager_registry_unit_inventory_invalid')
+ compat=compatibility_units(units)
+ registered=frozenset((*PRODUCT_SERVICES,*PRODUCT_TIMERS,*PRODUCT_PATHS,*compat))
+ if set(units)!=registered:raise ValueError('manager_registry_unit_inventory_invalid')
  for name,item in units.items():
   if not isinstance(item,dict) or set(item)!={'manager','installed'} or type(item['installed']) is not bool or item['manager'] not in {'system','user'}:raise ValueError('manager_registry_unit_invalid')
-  if item['manager']!=('user' if name in USER_COMPAT_UNITS else 'system'):raise ValueError('manager_registry_unit_manager_mismatch')
- if not isinstance(value['template_hashes'],dict) or any(name not in REGISTERED_UNITS and name not in {'eimemory-code-deployment-job@.service',*(prefix+'.service' for prefix in VALIDATION_PREFIXES.values())} for name in value['template_hashes']):raise ValueError('manager_registry_template_invalid')
+  if item['manager']!=('user' if name in compat else 'system'):raise ValueError('manager_registry_unit_manager_mismatch')
+ if not isinstance(value['template_hashes'],dict) or any(name not in registered and name not in {'eimemory-code-deployment-job@.service',*(prefix+'.service' for prefix in VALIDATION_PREFIXES.values())} for name in value['template_hashes']):raise ValueError('manager_registry_template_invalid')
  for item in value['template_hashes'].values():hex_value(item,64,'manager_registry_template_digest_invalid')
  if not isinstance(value['compatibility_hashes'],dict) or set(value['compatibility_hashes'])!=set(COMPATIBILITY_PATHS):raise ValueError('manager_registry_compatibility_invalid')
  for item in value['compatibility_hashes'].values():hex_value(item,64,'manager_registry_compatibility_digest_invalid')

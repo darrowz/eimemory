@@ -28,11 +28,22 @@ def test_audit_read_and_verify_share_append_lock_without_recursion(tmp_path, mon
     assert seen == [tmp_path / 'audit.jsonl.lock'] * 3
 
 
-def test_systemd_environment_keeps_all_property_lines(monkeypatch):
+def test_systemd_environment_keeps_all_values_in_one_property(monkeypatch):
     import eimemory.ops.runtime_identity_drift as drift
-    monkeypatch.setattr(drift.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=0,
-        stdout='LoadState=loaded\nEnvironment=A=one\nEnvironment=\nEnvironment=B=two\n'))
+    from eimemory.ops import runtime_service_observation as observation
+    monkeypatch.setattr(observation, 'registered_runtime_context', lambda: False)
+    monkeypatch.setattr(observation.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=0,
+        stdout='LoadState=loaded\nEnvironment=A=one B=two\n'))
     assert drift._systemd_environment('synthetic.service') == 'A=one B=two'
+
+
+def test_systemd_environment_rejects_duplicate_properties(monkeypatch):
+    from eimemory.ops import runtime_service_observation as observation
+    monkeypatch.setattr(observation, 'registered_runtime_context', lambda: False)
+    monkeypatch.setattr(observation.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=0,
+        stdout='LoadState=loaded\nEnvironment=A=one\nEnvironment=B=two\n'))
+    with pytest.raises(ValueError, match='response_invalid'):
+        observation.runtime_environment('synthetic.service')
 
 
 def test_world_watch_does_not_reset_external_tracemalloc_peak(tmp_path, monkeypatch):

@@ -198,7 +198,7 @@ def main():
     config = Path("/etc/eimemory")
     native_invocation = os.environ.get("INVOCATION_ID", "")
     environment = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "HOME": "/home/darrow", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
+        "HOME": __import__("pwd").getpwuid(os.geteuid()).pw_dir, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1", "INVOCATION_ID": native_invocation,
         "EIMEMORY_ROOT": "/var/lib/eimemory", "EIMEMORY_CONFIG_DIR": str(config),
         "EIMEMORY_RUNTIME_COMMIT": request["controller_commit"],

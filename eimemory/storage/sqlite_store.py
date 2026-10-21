@@ -222,6 +222,36 @@ def raise_if_sqlite_busy(exc: BaseException) -> None:
 
 
 class SqliteRecordStore:
+    @classmethod
+    def readonly_inline_reader(cls, path):
+        """Own a bounded inline-record reader without schema or write setup.
+
+        This deliberately does not attach mutable projections/payload archives.
+        The storage layer alone owns the connection and closes its snapshot.
+        """
+        from contextlib import contextmanager
+        from threading import RLock
+
+        @contextmanager
+        def opened():
+            resolved = Path(path).resolve(strict=True)
+            if os.name == "posix" and (os.getuid() != resolved.stat().st_uid
+                    or os.geteuid() != resolved.stat().st_uid):
+                raise ValueError("subject_projection_database_reader_owner_required")
+            connection = sqlite3.connect(resolved.as_uri() + "?mode=ro", uri=True)
+            connection.row_factory = sqlite3.Row
+            store = object.__new__(cls)
+            store.conn, store.path = connection, resolved
+            store.bind_runtime_lock(RLock())
+            try:
+                connection.execute("PRAGMA query_only=ON")
+                connection.execute("BEGIN")
+                yield store
+            finally:
+                connection.rollback()
+                connection.close()
+        return opened()
+
     def __init__(
         self,
         path: Path,

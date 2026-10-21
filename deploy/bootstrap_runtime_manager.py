@@ -141,6 +141,12 @@ def load_contract():
     path=ROOT/'runtime_manager_contract.py';raw=read(path)
     spec=importlib.util.spec_from_file_location('reviewed_runtime_contract',path)
     c=importlib.util.module_from_spec(spec);exec(compile(raw,str(path),'exec'),c.__dict__)
+    if REGISTRY.exists() and hasattr(c, 'compatibility_units'):
+        # Existing authenticated inventory is retained through controller
+        # upgrades, including every registered user profile.
+        current=c.validate_registry(c.strict_json(read(REGISTRY)))
+        c.USER_COMPAT_UNITS=tuple(sorted(c.compatibility_units(current['units'])))
+        c.REGISTERED_UNITS=frozenset(current['units'])
     return c
 
 
@@ -168,7 +174,11 @@ def preview_runtime_settings(account,snapshot,units):
     spec=importlib.util.spec_from_file_location('reviewed_runtime_settings',path)
     helper=importlib.util.module_from_spec(spec)
     exec(compile(raw,str(path),'exec'),helper.__dict__)
-    value=helper.build(snapshot,units);encoded=helper.canonical(value)
+    import inspect
+    # An upgrade initially reads the previously reviewed helper. Its old call
+    # shape remains supported until the new account-aware helper is installed.
+    coordinates={'account':account} if 'account' in inspect.signature(helper.build).parameters else {}
+    value=helper.build(snapshot,units,**coordinates);encoded=helper.canonical(value)
     done=subprocess.run(['/usr/sbin/runuser','-u',account.pw_name,'--','/usr/bin/python3','-I','-B','-X',
         'pycache_prefix=/var/lib/eimemory-manager/empty-pycache',str(path),'--preview'],
         input=encoded,capture_output=True,timeout=30,
@@ -355,7 +365,7 @@ def fence_owner_validation(c,key,operation,child,parent,*,allow_running):
 
 def restore_owner(args):
     import pwd
-    account=pwd.getpwnam('darrow');c=load_contract()
+    account=pwd.getpwuid(1001);c=load_contract()
     if re.fullmatch(r'bootstrap-[0-9]{8}T[0-9]{6}Z-[0-9]+',args.history_id) is None:raise ValueError('bootstrap_history_id_invalid')
     history=STATE/args.history_id
     if not history.is_dir() or history.is_symlink() or stat.S_IMODE(history.stat().st_mode)!=0o700:raise ValueError('bootstrap_history_not_protected')
@@ -544,10 +554,10 @@ def retire_legacy_user_owners(account,prior,units):
 
 def install(args, *, handoff=None):
     import pwd
-    account=pwd.getpwnam('darrow')
+    account=pwd.getpwuid(1001)
     repository=Path(args.repository_root)
     if repository.resolve(strict=True)!=repository or not repository.is_dir():raise ValueError('bootstrap_repository_coordinate_invalid')
-    if account.pw_uid!=1001 or account.pw_gid!=1001 or account.pw_dir!='/home/darrow':raise ValueError('bootstrap_actual_runtime_identity_mismatch')
+    if account.pw_uid!=1001 or account.pw_gid!=1001 or not account.pw_dir.startswith('/') or '..' in account.pw_dir.split('/') or any(c in account.pw_dir for c in '\r\n\0'):raise ValueError('bootstrap_actual_runtime_identity_mismatch')
     if REGISTRY.exists():
         original=read(REGISTRY)
         if args.expected_registry_sha256 is None or sha256(original).hexdigest()!=args.expected_registry_sha256:
@@ -604,6 +614,23 @@ def install(args, *, handoff=None):
         write(ROOT/name,raw,gid=account.pw_gid)
     spec=importlib.util.spec_from_file_location('reviewed_runtime_contract',ROOT/'runtime_manager_contract.py')
     c=importlib.util.module_from_spec(spec);exec(compile(read(ROOT/'runtime_manager_contract.py'),str(ROOT/'runtime_manager_contract.py'),'exec'),c.__dict__)
+    if hasattr(c, 'compatibility_units'):
+        if REGISTRY.exists():
+            retained=c.validate_registry(c.strict_json(read(REGISTRY)))
+            compat=c.compatibility_units(retained['units'])
+        else:
+            # First migration discovers names as data only; every profile is
+            # user-managed. Root never executes user-owned unit source.
+            home=Path(account.pw_dir)/'.config/systemd/user'
+            names={name:{'manager':'user','installed':False}
+                for name in c.REGISTERED_UNITS}
+            if home.is_dir():
+                for path in home.glob('hermes-gateway-*.service'):
+                    if path.name.endswith('.service'):
+                        names[path.name]={'manager':'user','installed':False}
+            compat=c.compatibility_units(names)
+        c.USER_COMPAT_UNITS=tuple(sorted(compat))
+        c.REGISTERED_UNITS=frozenset((*c.PRODUCT_SERVICES,*c.PRODUCT_TIMERS,*c.PRODUCT_PATHS,*compat))
     if not isinstance(scopes['units'],dict) or not set(scopes['units'])<=set(c.PRODUCT_SERVICES):raise ValueError('bootstrap_unit_scope_manifest_invalid')
     for scope in scopes['units'].values():c.validate_scope(scope)
     units={}
@@ -637,7 +664,7 @@ def install(args, *, handoff=None):
     settings,settings_preview=preview_runtime_settings(account,user_original,c.PRODUCT_SERVICES)
     write(history/'runtime-settings-preview.json',settings_preview,gid=0,mode=0o600,exclusive=True)
     storage_clean()
-    authority_preview=configure_managed_authority(args,{'managed_incident_authority':{'enabled':False},'runtime_uid':account.pw_uid,'runtime_gid':account.pw_gid,'runtime_user':'darrow','runtime_commit':commit,'controller_commit':commit},history,c,account)
+    authority_preview=configure_managed_authority(args,{'managed_incident_authority':{'enabled':False},'runtime_uid':account.pw_uid,'runtime_gid':account.pw_gid,'runtime_user':account.pw_name,'runtime_commit':commit,'controller_commit':commit},history,c,account)
     write(ROOT/'runtime-settings.v1.json',settings,gid=account.pw_gid)
     # Stop/disable the old product owner before publishing any system owner.
     # No parallel RPC owner is ever started as part of a migration.
@@ -650,7 +677,7 @@ def install(args, *, handoff=None):
         # Every product command must remain non-root, including ExecStartPre.
         if unit.endswith('.service'):
             text=raw.decode()
-            if 'User=darrow' not in text or 'PrivateUsers=self' not in text or 'NoNewPrivileges=yes' not in text:
+            if 'User='+account.pw_name+'\n' not in text or 'PrivateUsers=self' not in text or 'NoNewPrivileges=yes' not in text:
                 raise ValueError('bootstrap_product_identity_missing')
             if re.search(r'^Exec[^=]*=[+!]',text,re.M):raise ValueError('bootstrap_product_privilege_prefix_forbidden')
         write(SYSTEM_UNITS/unit,raw,gid=account.pw_gid)
@@ -661,7 +688,7 @@ def install(args, *, handoff=None):
             if unit in {'eimemory-rpc.service','eimemory-console.service'}:
                 policy=policy.replace(('/opt/eimemory/releases/'+commit+' ').encode(),b'/opt/eimemory/releases ')
             write(SYSTEM_UNITS/(unit+'.d')/'90-eimemory-runtime.conf',policy,gid=account.pw_gid)
-    registry={'schema':c.REGISTRY_SCHEMA,'runtime_user':'darrow','runtime_uid':account.pw_uid,'runtime_gid':account.pw_gid,
+    registry={'schema':c.REGISTRY_SCHEMA,'runtime_user':account.pw_name,'runtime_uid':account.pw_uid,'runtime_gid':account.pw_gid,
         'controller_commit':commit,'runtime_commit':commit,'repository_root':str(repository),'units':units,
         'template_hashes':{name.split('/')[-1]:sha256(raw).hexdigest() for name,raw in files.items() if name.startswith('templates/')},
         'compatibility_hashes':json.loads(files['compatibility.json']),
@@ -851,7 +878,7 @@ def handoff(args):
     """
     import pwd
     from types import SimpleNamespace
-    account=pwd.getpwnam('darrow')
+    account=pwd.getpwuid(1001)
     context=handoff_preflight(args,account)
     c=load_contract()
     try:
@@ -910,7 +937,7 @@ def upgrade_controller(args):
     neither a deployment success nor L5 completion is inferred from this job.
     """
     import pwd
-    account=pwd.getpwnam('darrow');c=load_contract()
+    account=pwd.getpwuid(1001);c=load_contract()
     original=read(REGISTRY)
     if sha256(original).hexdigest()!=args.expected_registry_sha256:
         raise ValueError('bootstrap_upgrade_registry_cas_mismatch')
@@ -1005,7 +1032,7 @@ def recover_failed_manual(args):
     """Restore a failed manual job's captured automation, preserving failure."""
     import pwd
     from types import SimpleNamespace
-    account=pwd.getpwnam('darrow');c=load_contract();original=read(REGISTRY)
+    account=pwd.getpwuid(1001);c=load_contract();original=read(REGISTRY)
     if sha256(original).hexdigest()!=args.expected_registry_sha256:
         raise ValueError('bootstrap_manual_recovery_registry_cas_mismatch')
     registry=c.validate_registry(c.strict_json(original));commit=args.expected_current_commit
@@ -1093,7 +1120,7 @@ def configure_upgrade_inputs(args,files,commit):
 
 def enable_managed(args):
     import pwd
-    account=pwd.getpwnam('darrow');c=load_contract()
+    account=pwd.getpwuid(1001);c=load_contract()
     old=read(REGISTRY)
     if sha256(old).hexdigest()!=args.expected_registry_sha256:raise ValueError('bootstrap_managed_registry_cas_mismatch')
     registry=c.validate_registry(c.strict_json(old))

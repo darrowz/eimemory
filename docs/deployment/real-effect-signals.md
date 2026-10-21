@@ -348,3 +348,34 @@ of cleaning those 49 rules or backfilling the 515 old decisions is made. Verify
 new real turns produce label rows, negative tools/corrections remain negative or
 suspected, and quarantined rules stay out of the active rule search before
 claiming that any phase improved production behavior.
+
+
+## Native repair verification prerequisites
+
+The protected full-suite plan runs the complete repository tests, including the
+JavaScript bridges. The verification host needs Node.js 22 on its system PATH,
+as well as the configured trusted Python environment, pytest and bubblewrap.
+Install missing host dependencies through the distribution's configured package
+manager; do not skip JavaScript tests or expose private home directories or the
+host session bus to satisfy a fixture. Record the package version and install
+result with the operational evidence.
+
+One protected verification phase can take up to 7,200 seconds. The registered
+learn-watch and nightly entry points have four-hour startup budgets, allowing a
+phase, provider work and bounded lease-lock recovery to finish. This does not
+shorten the full plan or the real observation window. An aborted attempt retains
+its failure receipts and cannot be reset into a successful transaction.
+
+The Root registry owns the exact user-managed colleague service inventory.
+Service usernames and home paths come from the operating system's fixed runtime
+UID account; the rendered bundle pins those bytes. Additional colleague names
+can only designate user-managed Hermes profiles, never arbitrary system units.
+Controlled stability checks all registered colleague profiles and the agents in
+the existing protected business-acceptance policy, retaining the complete-team
+coverage floors. Missing or untrusted configuration blocks acceptance.
+
+A known historical user report can exercise a lawful automated maintenance
+transaction. Its original prior-knowledge and user-report facts remain bound to
+the transaction and terminal receipt. A successful execution is not evidence of
+a previously unknown, system-first incident. The latter qualification still
+requires independently verified original provenance.

@@ -72,17 +72,23 @@ def test_live_trace_is_bound_to_receipt_and_session(live_boundary, field):
     assert len(live_boundary.traces)==2
 
 
-def test_live_same_authority_retry_is_idempotent(live_boundary):
+def test_live_actual_reexecution_creates_a_fresh_observation(live_boundary):
     first=execute(live_boundary);second=execute(live_boundary)
-    assert first['record_id']==second['record_id']
-    assert first['trace_id']==second['trace_id']
-    assert len(live_boundary.records)==len(live_boundary.traces)==1
+    assert first['record_id'] != second['record_id']
+    assert first['trace_id'] != second['trace_id']
+    assert first['observation_digest'] != second['observation_digest']
+    assert len(live_boundary.records)==len(live_boundary.traces)==2
 
 
 def test_live_version_metadata_does_not_change_trace_authority(live_boundary):
-    first=execute(live_boundary)
-    live_boundary.current['version']='display-metadata-only'
-    second=execute(live_boundary)
+    # Hold the execution identity fixed to isolate display metadata. Real new
+    # probes intentionally receive new observations, even under one authority.
+    monkeypatch = pytest.MonkeyPatch()
+    with monkeypatch.context() as patch:
+        patch.setattr(live, 'uuid4', lambda: SimpleNamespace(hex='fixed-execution'))
+        first=execute(live_boundary)
+        live_boundary.current['version']='display-metadata-only'
+        second=execute(live_boundary)
     assert first['trace_id']==second['trace_id']
 
 

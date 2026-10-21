@@ -19,6 +19,26 @@ SCOPE = {"tenant_id": "default", "agent_id": "hongrui", "workspace_id": "embodie
 COMMIT = "a" * 40
 
 
+def test_native_maintenance_entrypoints_outlive_a_protected_verification_phase():
+    """A short service timeout otherwise replays the same unfinished phase."""
+    import inspect
+    import re
+    from pathlib import Path
+    from eimemory.governance.evolution.code_evolution_effects import _run_bounded_process
+    from eimemory.governance.evolution.code_evolution_transaction import LEASE_RENEWAL_LOCK_RETRY_SECONDS
+    from eimemory.adapters.hermes.code_implementation import FIXED_COMPLETION_TIMEOUT_SECONDS
+
+    verifier_budget = inspect.signature(_run_bounded_process).parameters["max_seconds"].default
+    minimum = verifier_budget + FIXED_COMPLETION_TIMEOUT_SECONDS + LEASE_RENEWAL_LOCK_RETRY_SECONDS
+    root = Path(__file__).resolve().parents[1]
+    for unit in ("eimemory-learn-watch.service", "eimemory-nightly.service"):
+        text = (root / "deploy" / "systemd" / unit).read_text(encoding="utf-8")
+        timeout = re.search(r"^TimeoutStartSec=(\d+)([smh]?)$", text, re.MULTILINE)
+        assert timeout is not None, unit
+        seconds = int(timeout[1]) * {"": 1, "s": 1, "m": 60, "h": 3600}[timeout[2]]
+        assert seconds > minimum, (unit, seconds, minimum)
+
+
 @pytest.fixture(autouse=True)
 def isolated_maintenance_observation_clock(monkeypatch):
     # Recovery queue fixtures use a fixed first sample; this is no elapsed-time

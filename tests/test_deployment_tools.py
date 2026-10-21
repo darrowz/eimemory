@@ -933,7 +933,7 @@ def test_hermes_attestation_profile_provisioner_runs_in_isolated_mode(tmp_path) 
 
 
 def test_hermes_installer_migrates_legacy_plugin_outside_discovery_and_is_idempotent(
-    tmp_path,
+    tmp_path, trusted_dataset_path_ancestors,
 ) -> None:
     if os.name != "posix":
         pytest.skip("managed Hermes plugin links require POSIX symlink semantics")
@@ -3485,7 +3485,9 @@ def _registered_discovery_fixture(tmp_path, installed, *, fault=None):
     from tests.test_runtime_manager import registry
     from eimemory.contracts import runtime_manager as contract
     value=registry()
-    assert set(installed)<=contract.REGISTERED_UNITS
+    # Synthetic registration, including configured user-only profiles, is
+    # authenticated by the real contract before shell discovery.
+    assert set(installed)<=set(contract.validate_registry(value)["units"])
     for name in installed:value['units'][name]['installed']=True
     value['generation']=contract.digest({k:v for k,v in value.items() if k!='generation'})
     if fault=='corrupt_registry':value['units'].pop('eimemory-rpc.service')

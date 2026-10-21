@@ -24,11 +24,7 @@ from eimemory.core.strict_json import loads as strict_json_loads
 
 SCHEMA = "controlled_operational_stability.v1"
 SAMPLE_SCHEMA = "controlled_operational_stability_sample.v1"
-RUNTIME_UNITS = (
-    "eimemory-rpc.service", "hermes-gateway.service",
-    "hermes-gateway-hongtai.service", "hermes-gateway-hongxin.service",
-    "hermes-gateway-xiaomage.service",
-)
+RUNTIME_UNITS = ("eimemory-rpc.service", "hermes-gateway.service")
 TIMER_UNITS = (
     "eimemory-nightly.timer", "eimemory-backup.timer", "eimemory-audit-verify.timer",
     "eimemory-timer-monitor.timer", "eimemory-vector-sync.timer",
@@ -37,7 +33,37 @@ TIMER_UNITS = (
 )
 JOB_UNITS = tuple(name.removesuffix(".timer") + ".service" for name in TIMER_UNITS)
 UNITS = RUNTIME_UNITS + TIMER_UNITS + JOB_UNITS
-REQUIRED_AGENTS = frozenset({"hongrui", "hongtai", "hongxin", "xiaomage"})
+def _runtime_units() -> tuple[str, ...]:
+    from eimemory.core.runtime_manager import read_registry
+    from eimemory.contracts.runtime_manager import compatibility_units
+    registry = read_registry()
+    profiles = sorted(name for name in compatibility_units(registry['units'])
+                      if name.startswith('hermes-gateway-') and registry['units'][name]['installed'])
+    units = (*RUNTIME_UNITS, *profiles)
+    # Preserve the original complete-team coverage floor. A smaller declared
+    # inventory cannot silently certify a partial deployment.
+    if len(units) < 5:
+        raise ValueError('stability_team_runtime_inventory_incomplete')
+    return units
+
+
+def _units() -> tuple[str, ...]:
+    return _runtime_units() + TIMER_UNITS + JOB_UNITS
+
+
+def _required_agents() -> frozenset[str]:
+    from eimemory.evaluation.controlled_production_acceptance import (
+        DEFAULT_POLICY, _read_policy, _validate_policy,
+    )
+    # Fixed protected policy path; caller-supplied scope and environment never
+    # choose which colleagues count as the complete business team.
+    raw = _read_policy(Path(DEFAULT_POLICY))
+    policy = _validate_policy(raw, raw['owner_scope'])
+    agents = frozenset(entry['scope']['agent_id'] for entry in policy['agents'])
+    if len(agents) < 4:
+        raise ValueError('stability_team_business_inventory_incomplete')
+    return agents
+
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _PROPERTIES = "Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,NRestarts,MainPID,UnitFileState"
@@ -143,8 +169,8 @@ def _unit_states() -> list[dict[str, str]]:
     from eimemory.ops.runtime_service_observation import service_state
     properties = tuple(_PROPERTIES.split(","))
     states = [service_state(unit, tuple(name for name in properties
-        if not unit.endswith('.timer') or name not in {'ExecMainStatus', 'NRestarts', 'MainPID'})) for unit in UNITS]
-    if len(states) != len(UNITS) or {s["Id"] for s in states} != set(UNITS):
+        if not unit.endswith('.timer') or name not in {'ExecMainStatus', 'NRestarts', 'MainPID'})) for unit in _units()]
+    if len(states) != len(_units()) or {s["Id"] for s in states} != set(_units()):
         raise ValueError("unit_inventory_incomplete")
     return states
 
@@ -187,7 +213,7 @@ def _process_environment(state: dict[str, str]) -> tuple[int, Path, dict[str, st
 def _postgres_snapshot(states: list[dict[str, str]], database_path: Path, expected_commit: str) -> dict[str, Any]:
     if database_path.is_symlink() or database_path.stat().st_uid != os.geteuid():
         raise ValueError("database_owner_required")
-    _pid, _process, env = _process_environment(next(s for s in states if s["Id"] == RUNTIME_UNITS[0]))
+    _pid, _process, env = _process_environment(next(s for s in states if s["Id"] == _runtime_units()[0]))
     binary = Path("/opt/eimemory/releases") / expected_commit / ".venv/bin/python"
     result = subprocess.run([str(binary), "-I", "-B", "-c", _PG_READ_SCRIPT, str(database_path), expected_commit],
         env=env, capture_output=True, text=True, timeout=12, check=False)
@@ -312,10 +338,10 @@ def _process_status(state: dict[str, str], expected_commit: str) -> dict[str, An
 def _credential_binding(states: list[dict[str, str]]) -> bool:
     from eimemory.adapters.runtime.host_auth import attestation_tokens_from_private_file, producer_token_from_private_file
 
-    _pid, _process, rpc_env = _process_environment(next(s for s in states if s["Id"] == RUNTIME_UNITS[0]))
+    _pid, _process, rpc_env = _process_environment(next(s for s in states if s["Id"] == _runtime_units()[0]))
     authorized = attestation_tokens_from_private_file(environ=rpc_env)
     for state in states:
-        if state["Id"] not in RUNTIME_UNITS[1:]:
+        if state["Id"] not in _runtime_units()[1:]:
             continue
         _pid, _process, env = _process_environment(state)
         token = producer_token_from_private_file("hermes", environ=env)
@@ -332,7 +358,7 @@ def _capture_environment_status(env: dict[str, str], unit: str, expected_commit:
             isinstance(v, str) and bool(v.strip()) and "*" not in v for v in entry.values())
         for entry in allowed))
     if valid:
-        valid = len({_digest(entry) for entry in allowed}) == 6 and REQUIRED_AGENTS.issubset(
+        valid = len({_digest(entry) for entry in allowed}) == 6 and _required_agents().issubset(
             {entry["agent_id"] for entry in allowed})
     from eimemory.adapters.runtime.host_auth import attestation_tokens_from_private_file, producer_token_from_private_file
     if unit == "eimemory-rpc.service":
@@ -522,7 +548,7 @@ def _journal() -> dict[str, Any]:
     args = ['journalctl', '--user', '--quiet', '--no-pager', '--all', '--output=json',
             '--lines=2001', '--since=@' + str(end - 600), '--until=@' + str(end),
             '--grep=' + pattern, '--case-sensitive=no']
-    for index, unit in enumerate(sorted(set(RUNTIME_UNITS + JOB_UNITS))):
+    for index, unit in enumerate(sorted(set(_runtime_units() + JOB_UNITS))):
         if index:
             args.append('+')
         args += ['_SYSTEMD_USER_UNIT=' + unit, '_UID=' + str(os.geteuid())]
@@ -588,7 +614,7 @@ def collect_controlled_stability_sample(*, expected_commit: str, database_path: 
             for state in states:
                 unit = state["Id"]
                 ok = state["LoadState"] == "loaded" and state["Result"] in ("", "success")
-                if unit in RUNTIME_UNITS:
+                if unit in _runtime_units():
                     ok = ok and state["ActiveState"] == "active" and state["ExecMainStatus"] == "0"
                 elif unit in TIMER_UNITS:
                     ok = ok and state["ActiveState"] == "active" and state["UnitFileState"] in ("enabled", "enabled-runtime")
@@ -598,7 +624,7 @@ def collect_controlled_stability_sample(*, expected_commit: str, database_path: 
                 restarts = int(counter) if counter.isdigit() else None
                 units.append({"unit": unit, "ok": bool(ok), "active_state": state["ActiveState"],
                               "result": state["Result"], "restart_count": restarts})
-            processes = [_process_status(state, commit) for state in states if state["Id"] in RUNTIME_UNITS]
+            processes = [_process_status(state, commit) for state in states if state["Id"] in _runtime_units()]
             result["units"] = units
             result["capture"] = {"ok": all(p["ok"] for p in processes)
                 and len({p["capture_policy_digest"] for p in processes}) == 1,
@@ -620,12 +646,26 @@ def collect_controlled_stability_sample(*, expected_commit: str, database_path: 
 def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commit: str,
                                 minimum_interval_seconds: int = 60,
                                 expected_version: str | None = None,
-                                now: datetime | str | None = None) -> dict[str, Any]:
+                                now: datetime | str | None = None,
+                                expected_runtime_units: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
     """Assess a current window, or reproduce a signed report at its assessed_at.
 
     Supplying ``now`` is for deterministic structural verification, not proof
     that a historical observation describes the current running release.
     """
+    # Native assessment freezes the protected inventory. A signed historical
+    # report can explicitly replay that inventory without host I/O; this is
+    # structural consistency only, never new authority or a current measurement.
+    runtime_units = tuple(_runtime_units()) if expected_runtime_units is None else expected_runtime_units
+    if (not isinstance(runtime_units, (list, tuple)) or not 5 <= len(runtime_units) <= 66
+            or any(not isinstance(unit, str) for unit in runtime_units)
+            or len(set(runtime_units)) != len(runtime_units)
+            or tuple(runtime_units[:2]) != RUNTIME_UNITS[:2]
+            or any(re.fullmatch(r'hermes-gateway-[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}\.service', unit) is None
+                   for unit in runtime_units[2:])):
+        raise ValueError('stability_runtime_inventory_invalid')
+    runtime_units = tuple(runtime_units)
+    observed_units = runtime_units + TIMER_UNITS + JOB_UNITS
     commit = _commit(expected_commit)
     if expected_version is None:
         from eimemory.version import __version__
@@ -692,7 +732,7 @@ def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commi
                     reasons.append("sample_error_observation_unverified")
                 processes = capture.get("processes", [])
                 if (capture.get("credential_binding_valid") is not True
-                        or len(processes) != len(RUNTIME_UNITS) or {p.get("unit") for p in processes} != set(RUNTIME_UNITS)
+                        or len(processes) != len(runtime_units) or {p.get("unit") for p in processes} != set(runtime_units)
                         or len({p.get("capture_policy_digest") for p in processes}) != 1
                         or any(p.get("ok") is not True or p.get("capture_enabled") is not True
                             or p.get("capture_policy_valid") is not True or p.get("capture_scope_count") != 6
@@ -703,7 +743,7 @@ def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commi
                             or _HEX64.fullmatch(p["capture_policy_digest"]) is None for p in processes)):
                     reasons.append("sample_capture_unverified")
                 units = sample.get("units", [])
-                if len(units) != len(UNITS) or {u.get("unit") for u in units} != set(UNITS) or any(u.get("ok") is not True for u in units):
+                if len(units) != len(observed_units) or {u.get("unit") for u in units} != set(observed_units) or any(u.get("ok") is not True for u in units):
                     reasons.append("sample_unit_inventory_incomplete")
             if len({sample.get("boot_id") for sample in samples}) != 1 or not samples[0].get("boot_id"):
                 reasons.append("host_boot_changed")
@@ -723,7 +763,7 @@ def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commi
             latest_age = (assessed - walls[-1]).total_seconds()
             if not -5 <= latest_age <= 120 or interval > 3600:
                 reasons.append("observations_not_fresh")
-            for unit in RUNTIME_UNITS:
+            for unit in runtime_units:
                 counts = [next(u["restart_count"] for u in s["units"] if u["unit"] == unit) for s in samples]
                 if any(type(n) is not int or n < 0 for n in counts) or len(set(counts)) != 1:
                     reasons.append("runtime_restarted_or_counter_unavailable")
@@ -737,6 +777,7 @@ def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commi
     reasons = sorted(set(reasons))
     return {"schema": SCHEMA, "ok": not reasons, "status": "observed_healthy" if not reasons else "blocked",
             "expected_commit": commit, "assessed_at": assessed.isoformat(),
+            "runtime_units": list(runtime_units),
             "sample_count": len(samples) if isinstance(samples, list) else 0,
             "interval_seconds": max(0.0, round(interval, 3)), "minimum_interval_seconds": minimum_interval_seconds,
             "observation_scope": "bounded_runtime_window", "short_window_only": True,

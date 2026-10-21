@@ -1124,8 +1124,8 @@ class Bridge:
     def runtime_process_environment(self,registry,unit):
         # Only the runtime UID may observe its own registered runtime processes.
         # Never accept an arbitrary PID, root unit, path or environment override.
-        allowed={'eimemory-rpc.service','hermes-gateway.service','hermes-gateway-hongtai.service',
-                 'hermes-gateway-hongxin.service','hermes-gateway-xiaomage.service'}
+        allowed={'eimemory-rpc.service',*(name for name in self.c.compatibility_units(registry['units'])
+            if name=='hermes-gateway.service' or name.startswith('hermes-gateway-'))}
         if unit not in allowed:raise ValueError('manager_process_unit_not_allowlisted')
         properties=['Id','LoadState','ActiveState','MainPID','InvocationID','ControlGroup']
         before=self.unit_state(registry,unit,properties)
@@ -1225,7 +1225,7 @@ class Bridge:
                 if root.is_symlink() or not root.is_dir():raise ValueError('manager_probe_release_missing')
                 self.command(['/usr/bin/systemd-run','--quiet','--wait','--collect','--pipe',
                     '--unit=eimemory-readonly-probe-'+value['job_key'],
-                    '--property=User=darrow','--property=Group=darrow','--property=PrivateUsers=self',
+                    '--property=User='+registry['runtime_user'],'--property=Group='+str(registry['runtime_gid']),'--property=PrivateUsers=self',
                     '--property=NoNewPrivileges=yes','--property=CapabilityBoundingSet=',
                     '--property=ReadOnlyPaths=/opt/eimemory/releases',
                     str(root/'.venv/bin/python'),'-I','-B','-X','pycache_prefix='+self.c.EMPTY_PYCACHE,'-c',

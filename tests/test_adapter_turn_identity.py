@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.usefixtures("trusted_dataset_path_ancestors")
+
 import re
 
 from eimemory.adapters.codex.hook import CodexHookAdapter

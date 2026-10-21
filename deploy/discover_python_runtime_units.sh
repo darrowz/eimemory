@@ -6,7 +6,7 @@ USER_SYSTEMD_DIR="${1:?user systemd directory is required}"
 # Manager selection is explicit job context, never a health-based fallback.
 if [ -n "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" ]; then
   [[ "$EIMEMORY_RUNTIME_TRANSITION_JOB" =~ ^[0-9a-f]{64}$ ]] || exit 2
-  CONTROL="${EIMEMORY_RUNTIME_MANAGER_CONTROL:-${REPO_DIR:-${EIMEMORY_TRUSTED_REPOSITORY_ROOT:-/dev-project/eimemory}}/deploy/runtime_manager_control.py}"
+  CONTROL="${EIMEMORY_RUNTIME_MANAGER_CONTROL:-${REPO_DIR:-${EIMEMORY_TRUSTED_REPOSITORY_ROOT:?trusted_repository_required}}/deploy/runtime_manager_control.py}"
   python3 -I -B "$CONTROL" systemctl list-units
   exit $?
 fi

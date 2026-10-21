@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.15.18" src="https://img.shields.io/badge/version-1.15.18-blue">
+  <img alt="Package version 1.15.19" src="https://img.shields.io/badge/version-1.15.19-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -276,7 +276,7 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.15.18, mainline)
+## Current package status (1.15.19, mainline)
 
 An operator can authorize `controlled_existing_memory` production operation acceptance with the protected root-owned `/etc/eimemory-controlled-production-acceptance/policy.json` (`controlled_production_acceptance_policy.v1`). The policy binds the actual operator request digest, owning deployment scope, every colleague's exact Hermes scope/source, an old-memory cutoff, at least three cases per scope, a maximum of fifty cases, a receipt lifetime of at most 24 hours, and the live `engine_contract_digest`. Where nightly's service scope and deployment's real Hermes scope differ, the root policy can explicitly list up to four `additional_owner_scopes` under the same tenant and primary agent. Every caller must exactly match one listed owner; each receipt retains its actual owner and release authority. Derive that digest with `digest(controlled_retrieval_contract(runtime))` under the actual RPC retrieval configuration; a lexical-only evaluator cannot substitute for the configured vector path.
 

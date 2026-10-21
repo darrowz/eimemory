@@ -30,6 +30,9 @@ SELECTED_NAMES = {
 # shape (pre-fix, post-fix) is pinned once per dump format. The 3.13+ digests
 # were computed from the same two sources (fd5cb5fc^ and fd5cb5fc).
 REVIEWED_AST_HASHES = {
+    # Python 3.11 lacks FunctionDef.type_params. Same reviewed 3c08400d
+    # source (verified byte-identical); no selected helper changed.
+    "6870dbd934811eb8bf144fa429ad987b401875dea2aa4f2373deb7170710e812",
     # Python <= 3.12
     "e6446211a14dce80765a73cb406c1dc815aa636648b00c4bfb928e4304090852",
     "c22508e938822ec524e6b3d1b5e4cfe44092c26df0737a8c864bdf219602540e",

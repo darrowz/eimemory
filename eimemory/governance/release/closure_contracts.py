@@ -567,11 +567,12 @@ def controlled_production_closure_report_ok(report: Any) -> bool:
     try:
         # This validates the historical measured window deterministically.
         # Current health was checked by the native producer, not by summary.
-        if not _name(stability.get("assessed_at")):
+        if not _name(stability.get("assessed_at")) or not isinstance(stability.get("runtime_units"), list):
             return False
         assessed = assess_controlled_stability(
             stability.get("samples"), expected_commit=commit,
             expected_version=receipt.get("version"), minimum_interval_seconds=60, now=stability["assessed_at"],
+            expected_runtime_units=stability["runtime_units"],
         )
         if assessed.get("ok") is not True or assessed != stability:
             return False

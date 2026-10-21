@@ -655,6 +655,21 @@ for _domain in ("memory.governance", "code.evolution", "deployment.runtime"):
         "eimemory/ops/release_closure_failure.py",
     )
 
+# Privileged orchestration and subject projection are production behavior,
+# including their data-only preparation/transport helpers. Changes must acquire
+# current domain evidence rather than inheriting an older release's gates.
+for _domain in ("memory.governance", "code.evolution", "deployment.runtime"):
+    DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain],
+        "deploy/run_code_deployment_gate.py", "deploy/run_code_deployment_job.py",
+        "deploy/run_code_deployment_validation.py", "deploy/runtime_manager_control.py",
+        "deploy/runtime_manager_owner_files.py", "deploy/runtime_manager_settings.py",
+        "deploy/runtime_manager_user_policy.py", "eimemory/core/runtime_manager.py",
+        "eimemory/ops/prepare_managed_incident_authority.py")
+for _domain in ("memory.recall", "memory.governance", "deployment.runtime"):
+    DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], "eimemory/ops/candidate_readiness_barrier.py",
+        "eimemory/subject_projection.py", "eimemory/subject_projection_cli.py",
+        "eimemory/subject_projection_consumption.py")
+
 IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
 IGNORED_PATHS = {
     ".gitignore",

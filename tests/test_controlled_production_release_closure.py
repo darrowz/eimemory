@@ -10,11 +10,16 @@ from eimemory.governance.release.release_closure import _wait_for_controlled_win
 from eimemory.governance.release.closure_contracts import controlled_production_closure_report_ok
 from eimemory.governance.release.closure_blockers import closure_blockers
 from eimemory.governance.release.closure_verdict import summarize_release_closure
-from eimemory.ops.controlled_stability import assess_controlled_stability as assess_stability
+from eimemory.ops.controlled_stability import assess_controlled_stability as native_assess_stability
 from eimemory.ops import controlled_rpc_probe
 from eimemory.ei_bridge.protocol import EIMEMORY_RPC_CONTRACT_VERSION
 from release_report_fixtures import live, receipt, replay
-from test_controlled_stability import samples as stability_samples, seal as seal_stability_sample
+from test_controlled_stability import samples as stability_samples, seal as seal_stability_sample, stability_fixture_contract
+
+
+def assess_stability(*args, **kwargs):
+    with stability_fixture_contract():
+        return native_assess_stability(*args, **kwargs)
 
 
 SCOPE = dict(tenant_id="default", agent_id="primary", workspace_id="production", user_id="owner")

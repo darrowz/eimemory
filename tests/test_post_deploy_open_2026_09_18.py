@@ -61,7 +61,9 @@ def test_p1_deploy_worker_uses_collector_not_curl_redirect() -> None:
     assert "--probe-only" in script
     assert "health_exit_code" in script
     assert "PYTHONPATH" in script
-    assert "python3 -I" not in script
+    # Root manager control must keep isolation; the legacy health subprocess
+    # retains its separate explicitly selected collector import boundary.
+    assert '/usr/bin/python3 -I -B "$REPO/deploy/runtime_manager_control.py"' in script
 
 
 def test_p2_managed_dropins_overwrite_stale_release_dir_and_rpc_url() -> None:

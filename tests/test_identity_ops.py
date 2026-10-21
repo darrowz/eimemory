@@ -299,6 +299,16 @@ def test_cli_nightly_emits_bounded_machine_readable_summary(tmp_path, monkeypatc
 
     assert output == {
         "schema": "eimemory.nightly.cli_summary.v1",
+        "business_recall_quality": {
+            "schema": "eimemory.business_recall_quality_summary.v1",
+            "accepted": None, "acceptance_basis": "not_reported", "evidence": {},
+            "per_agent": {"status": "not_run"},
+        },
+        "natural_recall_quality_gate": {
+            "ok": None, "blocked_reason": "", "skipped_reason": "", "blocking_metrics": {},
+        },
+        "natural_recall_quality_accepted": None,
+        "natural_recall_quality_per_agent": {"status": "not_run"},
         "ok": True,
         "active_rule_count": 3,
         "promotion_candidate_count": 2,

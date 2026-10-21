@@ -66,5 +66,6 @@ def test_eibrain_rpc_rejects_invalid_outcome_trace_payload(tmp_path) -> None:
     assert response["error"] == "invalid_request"
 
 
-def test_record_outcome_trace_script_compiles() -> None:
-    py_compile.compile("scripts/record_outcome_trace.py", doraise=True)
+def test_record_outcome_trace_script_compiles(tmp_path) -> None:
+    py_compile.compile("scripts/record_outcome_trace.py",
+                       cfile=str(tmp_path / "record_outcome_trace.pyc"), doraise=True)

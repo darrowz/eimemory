@@ -10,7 +10,9 @@ from eimemory.adapters.eibrain.rpc_server import _candidate_source_health, build
 from eimemory.ops import controlled_stability as probe
 from eimemory.version import __version__
 from eimemory.retrieval.readiness_contract import readiness_ok, sanitize_readiness
-from test_controlled_stability import COMMIT, health_payload, readiness, samples, seal
+from test_controlled_stability import (
+    COMMIT, health_payload, readiness, samples, seal, configured_team_observation_contract,
+)
 
 
 def test_native_readiness_recovers_current_health_without_changing_last_failed_query(monkeypatch):

@@ -7,6 +7,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
+import stat
 import os
 import py_compile
 import subprocess
@@ -581,7 +582,10 @@ def test_actual_interpreter_existing_pyc_cannot_override_pinned_source_with_empt
     original=b'VALUE = "source"\n';forged=b'VALUE = "forged"\n';assert len(original)==len(forged)
     path.write_bytes(original);metadata=path.stat();path.write_bytes(forged)
     os.utime(path,ns=(metadata.st_atime_ns,metadata.st_mtime_ns))
-    py_compile.compile(str(path),doraise=True)
+    # The child uses -I, so write the attack cache where that child looks,
+    # independently of pytest's private PYTHONPYCACHEPREFIX.
+    bytecode=source/'__pycache__'/('victim.'+sys.implementation.cache_tag+'.pyc')
+    py_compile.compile(str(path),cfile=str(bytecode),doraise=True)
     path.write_bytes(original);os.utime(path,ns=(metadata.st_atime_ns,metadata.st_mtime_ns))
     snippet='import sys;sys.path.insert(0,sys.argv[1]);import victim;print(victim.VALUE)'
     base=[sys.executable,'-I','-S','-B']
@@ -593,7 +597,26 @@ def test_actual_interpreter_existing_pyc_cannot_override_pinned_source_with_empt
 
 
 @pytest.mark.skipif(os.name!='posix',reason='real POSIX descriptor/no-follow/identity boundary')
-def test_posix_empty_source_and_changed_then_restored_identity_are_strict(tmp_path,monkeypatch):
+def test_posix_empty_source_and_changed_then_restored_identity_are_strict(
+        tmp_path, monkeypatch, trusted_dataset_path_ancestors):
+    # Model only immutable external ancestors for this descriptor-level source
+    # identity test. The actual producer directory/files and their mutation
+    # clocks remain untouched; root/native permission tests use real metadata.
+    external={(p.stat().st_dev,p.stat().st_ino) for p in tmp_path.parents}
+    def external_metadata(meta):
+        if stat.S_ISDIR(meta.st_mode) and (meta.st_dev,meta.st_ino) in external:
+            values=list(meta)
+            if meta.st_uid not in {0,os.geteuid()}:values[4]=0
+            if not meta.st_mode & stat.S_ISVTX:
+                values[0]=int(meta.st_mode)&~(stat.S_IWGRP|stat.S_IWOTH)
+            return os.stat_result(values)
+        return meta
+    native_os=authority.os
+    monkeypatch.setattr(authority,'os',SimpleNamespace(**{
+        **vars(native_os),
+        'fstat':lambda fd:external_metadata(native_os.fstat(fd)),
+        'stat':lambda *args,**kwargs:external_metadata(native_os.stat(*args,**kwargs)),
+    }))
     path=tmp_path/'__init__.py';path.write_bytes(b'')
     owners=(0,os.geteuid())
     assert authority._read(path,owners=owners,allow_empty=True)==b''

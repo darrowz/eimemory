@@ -123,7 +123,8 @@ def test_cli_evolve_autonomous_prints_report(monkeypatch, tmp_path, capsys) -> N
 
     assert exit_code == 0
     assert output["report_type"] == "autonomous_evolution"
-    assert output["scope"]["user_id"] == "darrow"
+    # An explicit owner is an exact authority coordinate, even for an alias.
+    assert output["scope"]["user_id"] == "Darrow"
 
 
 def test_cli_evolve_autonomous_returns_nonzero_on_failed_report(monkeypatch, tmp_path, capsys) -> None:

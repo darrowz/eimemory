@@ -34,7 +34,10 @@ def _fixture(tmp_path):
         'import os\nfrom pathlib import Path\n'
         'root = Path(os.environ["TEST_RELEASE"])\n'
         'assert not list((root / "integrations").rglob("__pycache__")), "runtime bytecode remains"\n'
-        'print("receipt_called")\n'
+        'import json,sys\n'
+        'print(json.dumps(dict(ok=True, report_type="deployment_receipt",\n'
+        '    commit=sys.argv[sys.argv.index("--deployed-commit")+1],\n'
+        '    promotion_request_id="rec_fixture", receipt_called=True)))\n'
     )
     subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
     subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture'], check=True)
@@ -75,6 +78,9 @@ def test_receipt_normalizes_only_bytecode_and_rejects_source_drift(tmp_path, tam
     script += _function('_prepare_release_receipt_source') + _function('_record_deployment_receipt')
     # Call inside a conditional: bash set -e is disabled here, as in the real
     # post-deploy caller, so every gate must propagate its error explicitly.
+    # This fixture tests source normalization only. Fixed receipt readback is
+    # substituted; strict native receipt binding has independent integration tests.
+    script += '_verify_current_deployment_receipt() { [ "$1" = rec_fixture ]; }\n'
     script += 'if _record_deployment_receipt; then exit 0; else exit $?; fi\n'
     env = dict(os.environ, TEST_RELEASE=str(release))
     result = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)

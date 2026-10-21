@@ -1,3 +1,7 @@
+import pytest
+
+pytestmark = pytest.mark.usefixtures("trusted_dataset_path_ancestors")
+
 """Empty retrievals must close feedback without inventing task success."""
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.adapters.hermes.provider_core import HermesMemoryProviderCore

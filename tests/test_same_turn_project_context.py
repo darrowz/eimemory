@@ -163,7 +163,7 @@ def test_unrelated_tool_is_not_cited_or_used_as_authority(tmp_path):
 
 
 @pytest.mark.parametrize('missing_ids', [False, True])
-def test_host_capture_through_rpc(tmp_path, missing_ids):
+def test_host_capture_through_rpc(tmp_path, trusted_dataset_path_ancestors, missing_ids):
     from eimemory.adapters.hermes.provider_core import HermesMemoryProviderCore
     from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
     with closing(Runtime.create(root=tmp_path / 'runtime')) as runtime:

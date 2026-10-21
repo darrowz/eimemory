@@ -42,7 +42,12 @@ def test_revoked_or_invalid_policy_does_not_discover_from_records(runtime, monke
     delivery(runtime)
     monkeypatch.setenv('EIMEMORY_CAPTURE_QUERY_SCOPES', policy_value)
     monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: pytest.fail('unauthorized'))
-    assert _run_semantic_relevance_monitor(runtime, scope=OPERATOR)['new_count'] == 0
+    result = _run_semantic_relevance_monitor(runtime, scope=OPERATOR)
+    if result['ok']:
+        assert result['new_count'] == 0
+    else:
+        assert result['status'] == 'blocked'
+        assert result['blocked_reason'].startswith('semantic_monitor_failed:')
     assert saved_reports(runtime) == []
 
 

@@ -19,8 +19,11 @@ def test_secure_read_v2_policy_owner_check_unsupported_without_geteuid(tmp_path,
     path = tmp_path / "policy.json"
     path.write_text('{"schema_version":1}', encoding="utf-8")
     os.chmod(path, 0o600)
-    monkeypatch.setattr(policy_mod.os, "name", "nt", raising=False)
-    monkeypatch.setattr(policy_mod.os, "geteuid", None, raising=False)
+    # Reach the owner-platform guard even on hosts without POSIX chmod modes.
+    monkeypatch.setattr(policy_mod, "os", SimpleNamespace(**{
+        **vars(os), "name": "nt", "geteuid": None,
+        "fstat": lambda fd: SimpleNamespace(st_mode=(os.fstat(fd).st_mode & ~0o777) | 0o600),
+    }))
     raw, err = policy_mod._secure_read_v2_policy(path)
     assert raw == ""
     assert err == "policy_owner_check_unsupported"
@@ -33,8 +36,9 @@ def test_release_binding_fsync_skips_o_directory_on_windows(tmp_path, monkeypatc
         calls.append(args)
         raise AssertionError("os.open should not run on Windows for dir fsync")
 
-    monkeypatch.setattr(refresh_mod.os, "name", "nt")
-    monkeypatch.setattr(refresh_mod.os, "open", fake_open)
+    monkeypatch.setattr(refresh_mod, "os", SimpleNamespace(**{
+        **vars(os), "name": "nt", "open": fake_open,
+    }))
     # Exercise the fsync branch via the helper pattern used in refresh.
     path = tmp_path / "bindings.json"
     path.write_text("[]", encoding="utf-8")

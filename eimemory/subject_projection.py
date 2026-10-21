@@ -64,25 +64,16 @@ def readonly_subject_source(database):
     """No schema/bootstrap; this bounded contract admits inline memories only."""
     path = Path(database).resolve(strict=True)
     _require_reader_owner(path)
-    connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    sqlite = object.__new__(SqliteRecordStore)
-    sqlite.conn, sqlite.path = connection, path
-    lock = RLock()
-    sqlite.bind_runtime_lock(lock)
-    class Reader:
-        def read_consistent(self, callback):
-            with lock:
-                return callback(sqlite)
-    reader = Reader()
-    reader.sqlite = sqlite
-    try:
-        connection.execute("PRAGMA query_only=ON")
-        connection.execute("BEGIN")
+    with SqliteRecordStore.readonly_inline_reader(path) as sqlite:
+        lock = RLock()
+        sqlite.bind_runtime_lock(lock)
+        class Reader:
+            def read_consistent(self, callback):
+                with lock:
+                    return callback(sqlite)
+        reader = Reader()
+        reader.sqlite = sqlite
         yield reader
-    finally:
-        connection.rollback()
-        connection.close()
 
 
 def _owner_process(operation, database, payload):

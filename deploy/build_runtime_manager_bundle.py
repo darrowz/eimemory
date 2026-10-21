@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from hashlib import sha256
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import sys
 import zipfile
@@ -12,7 +12,18 @@ import zipfile
 SOURCE_ROOT=Path(__file__).resolve().parents[1]
 
 
-def build(root,commit):
+def build(root,commit, *, account=None):
+    if account is None:
+        import pwd
+        account = pwd.getpwuid(1001)
+    if account.pw_uid != 1001 or account.pw_gid != 1001:
+        raise ValueError("manager_bundle_runtime_identity_invalid")
+    if (re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", account.pw_name) is None
+            or re.fullmatch(r"/[A-Za-z0-9_./-]+", account.pw_dir) is None
+            or account.pw_dir.startswith("//")
+            or PurePosixPath(account.pw_dir).as_posix() != account.pw_dir
+            or '..' in PurePosixPath(account.pw_dir).parts):
+        raise ValueError("manager_bundle_runtime_account_invalid")
     if re.fullmatch('[0-9a-f]{40}',commit) is None:raise ValueError('full_controller_commit_required')
     # Importing this pure contract here is as the runtime/operator user only.
     sys.path.insert(0,str(root))
@@ -33,9 +44,9 @@ def build(root,commit):
         source=root/'deploy/systemd'/unit
         if not source.exists():continue
         text=source.read_text(encoding='utf-8')
-        text=text.replace('WantedBy=default.target','WantedBy=multi-user.target').replace('%h','/home/darrow')
-        text=re.sub(r'^Environment=USER=%u$', 'Environment=USER=darrow', text, flags=re.M)
-        text=text.replace('/home/darrow/.config/systemd/user/eimemory-l5-effect-review.sh','/opt/eimemory/current/deploy/systemd/eimemory-l5-effect-review.sh')
+        text=text.replace('WantedBy=default.target','WantedBy=multi-user.target').replace('%h',account.pw_dir)
+        text=re.sub(r'^Environment=USER=%u$', 'Environment=USER='+account.pw_name, text, flags=re.M)
+        text=text.replace(account.pw_dir+'/.config/systemd/user/eimemory-l5-effect-review.sh','/opt/eimemory/current/deploy/systemd/eimemory-l5-effect-review.sh')
         if unit.endswith('.service'):
             # Explicit argv is necessary: -I ignores PYTHONPYCACHEPREFIX.
             cache=' -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache'
@@ -51,7 +62,7 @@ def build(root,commit):
                     line='Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory-manager/empty-pycache'
                 lines.append(line)
             text='\n'.join(lines)+'\n'
-            text+='\n[Service]\nUser=darrow\nGroup=darrow\nEnvironment=HOME=/home/darrow\nEnvironment=XDG_RUNTIME_DIR=/run/user/1001\nEnvironment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus\nPrivateUsers=self\nNoNewPrivileges=yes\nCapabilityBoundingSet=\nAmbientCapabilities=\n'
+            text+='\n[Service]\nUser=@RUNTIME_USER@\nGroup=@RUNTIME_GROUP@\nEnvironment=HOME=@RUNTIME_HOME@\nEnvironment=XDG_RUNTIME_DIR=/run/user/1001\nEnvironment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus\nPrivateUsers=self\nNoNewPrivileges=yes\nCapabilityBoundingSet=\nAmbientCapabilities=\n'
             if unit=='eimemory-l5-fused-closure.service':
                 text+='KillMode=control-group\nSendSIGKILL=yes\n'
                 hook='/usr/bin/python3'+cache+' /usr/libexec/eimemory-manager/runtime_manager_launch.py --recover-fused'
@@ -64,9 +75,9 @@ Requires=eimemory-runtime-manager.service
 [Service]
 Type=exec
 RemainAfterExit=yes
-User=darrow
-Group=darrow
-Environment=HOME=/home/darrow
+User=@RUNTIME_USER@
+Group=@RUNTIME_GROUP@
+Environment=HOME=@RUNTIME_HOME@
 Environment=XDG_RUNTIME_DIR=/run/user/1001
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus
 Environment=PYTHONDONTWRITEBYTECODE=1
@@ -98,8 +109,8 @@ ReadOnlyPaths=/usr/libexec/eimemory-manager /etc/eimemory-code-automation-author
             b'ReadOnlyPaths=/usr/libexec/eimemory-manager ',b'ReadOnlyPaths=/opt/eimemory/releases /usr/libexec/eimemory-manager ').replace(
             b'RuntimeMaxSec=14400',('RuntimeMaxSec='+str(VALIDATION_RUNTIME_SECONDS[operation])).encode())
     files['job-runtime-policy.conf']=b"""[Service]
-User=darrow
-Group=darrow
+User=@RUNTIME_USER@
+Group=@RUNTIME_GROUP@
 PrivateUsers=self
 NoNewPrivileges=yes
 CapabilityBoundingSet=
@@ -108,8 +119,8 @@ ReadOnlyPaths=/opt/eimemory/releases/@COMMIT@ /etc/eimemory-code-automation-auth
 ExecStartPre=/usr/bin/python3 -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache /usr/libexec/eimemory-manager/runtime_manager_launch.py --preflight %i
 """
     files['validation-runtime-policy.conf']=b"""[Service]
-User=darrow
-Group=darrow
+User=@RUNTIME_USER@
+Group=@RUNTIME_GROUP@
 PrivateUsers=self
 NoNewPrivileges=yes
 CapabilityBoundingSet=
@@ -118,9 +129,9 @@ ReadOnlyPaths=/opt/eimemory/releases /usr/libexec/eimemory-manager /etc/eimemory
 """
     files['runtime-policy.conf']=b"""# Root-reviewed runtime authority; atomic directory replacements remain visible.
 [Service]
-User=darrow
-Group=darrow
-Environment=HOME=/home/darrow
+User=@RUNTIME_USER@
+Group=@RUNTIME_GROUP@
+Environment=HOME=@RUNTIME_HOME@
 Environment=EIMEMORY_RUNTIME_COMMIT=@COMMIT@
 Environment=EIMEMORY_RUNTIME_RELEASE_DIR=/opt/eimemory/current
 Environment=EIMEMORY_RPC_URL=http://127.0.0.1:8091/
@@ -139,7 +150,7 @@ ExecCondition=/usr/bin/python3 -I -B -X pycache_prefix=/var/lib/eimemory-manager
 ExecStartPre=/opt/eimemory/releases/@COMMIT@/.venv/bin/python -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -c "import os,sys; sys.exit(0 if os.statvfs(sys.argv[1]).f_flag & os.ST_RDONLY else 'immutable_release_mount_not_readonly')" /opt/eimemory/releases/@COMMIT@
 """
     # The root daemon has no product Python imports. It is the sole privileged
-    # unit; every product Exec* is subject to User=darrow without +/! bypasses.
+    # unit; every product Exec* is subject to User=@RUNTIME_USER@ without +/! bypasses.
     files['eimemory-runtime-manager.service']=b"""[Unit]
 Description=eimemory fixed-action host runtime manager
 After=network.target
@@ -155,12 +166,17 @@ AmbientCapabilities=CAP_SETUID CAP_SETGID
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=read-only
-ReadWritePaths=/home/darrow/.config/systemd/user
+ReadWritePaths=@RUNTIME_HOME@/.config/systemd/user
 RestrictAddressFamilies=AF_UNIX
 Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 """
+    for name in tuple(files):
+        if name.endswith(('.service', '.conf')):
+            files[name] = files[name].replace(b'@RUNTIME_USER@', account.pw_name.encode()).replace(
+                b'@RUNTIME_HOME@', account.pw_dir.encode()).replace(
+                b'@RUNTIME_GROUP@', str(account.pw_gid).encode())
     manifest={'schema':'eimemory.runtime_manager_bundle.v1','controller_commit':commit,
         'files':{name:sha256(raw).hexdigest() for name,raw in sorted(files.items())}}
     files['manifest.json']=json.dumps(manifest,sort_keys=True,separators=(',',':')).encode()

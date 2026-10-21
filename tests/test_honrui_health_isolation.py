@@ -70,28 +70,23 @@ def test_collector_cold_isolated_import_ignores_poisoned_cwd(tmp_path):
 
 @pytest.mark.skipif(os.name != 'posix', reason='user-systemd owner contract requires POSIX')
 def test_owner_check_uses_cold_collector_without_installed_package(tmp_path):
-    binary = tmp_path/'bin'; binary.mkdir()
-    tool = binary/'systemctl'
-    tool.write_text('''#!/usr/bin/env bash
-if [ "${1:-}" = "--user" ]; then
-  shift
-  case "${1:-}" in is-active) echo active;; is-enabled) echo enabled;; esac
-else
-  case "${1:-}" in is-active) echo inactive;; is-enabled) echo disabled;;
-    show) case "${4:-}" in LoadState) echo not-found;; esac;; esac
-fi
-''')
-    tool.chmod(0o755)
-    env = child_environment(); env['PATH'] = str(binary)+os.pathsep+env.get('PATH','')
+    # Freeze the real shell entry point and substitute only its neighbouring
+    # Root-manager transport. The cold collector remains the production file.
+    entry = tmp_path/'check_user_systemd_owner.sh'
+    entry.write_bytes((ROOT/'deploy/check_user_systemd_owner.sh').read_bytes())
+    (tmp_path/'runtime_manager_control.py').write_text(
+        'import sys\nassert sys.argv[1:] == ["single-owner"]\n')
+    env = child_environment()
+    env['EIMEMORY_HEALTH_COLLECTOR'] = str(ROOT/'deploy/collect_release_health.py')
     env['EIMEMORY_HEALTH_PYTHON'] = sys.executable
     with server(b'{"ok":true,"service":"eimemory-rpc"}') as (url, _):
         env['LOOPBACK_HEALTH_URL'] = url
-        result = subprocess.run(['bash', str(ROOT/'deploy/check_user_systemd_owner.sh')],
+        result = subprocess.run(['bash', str(entry)],
             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=12)
     assert result.returncode == 0, result.stderr+result.stdout
-    assert 'ok=user_systemd_owner' in result.stdout
+    assert 'ok=registered_systemd_owner' in result.stdout
     env['EIMEMORY_HEALTH_COLLECTOR'] = str(tmp_path/'absent-collector.py')
-    result = subprocess.run(['bash', str(ROOT/'deploy/check_user_systemd_owner.sh')],
+    result = subprocess.run(['bash', str(entry)],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=12)
     assert result.returncode != 0
     assert 'health_collector_unavailable' in result.stdout

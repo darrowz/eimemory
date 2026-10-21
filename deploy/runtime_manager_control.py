@@ -83,7 +83,8 @@ def main(argv=None):
         for name in ('tenant_id','agent_id','workspace_id','user_id'):print(scope[name])
         return 0
     if argv==['fused-begin']:
-        result=request('begin_fused_closure')
+        from eimemory.core.runtime_manager import begin_fused_closure
+        result=begin_fused_closure()
         if result.get('phase')!='paused':raise ValueError('manager_fused_pause_not_confirmed')
         key=result.get('context_key','')
         if len(key)!=64 or any(c not in '0123456789abcdef' for c in key):raise ValueError('manager_fused_context_invalid')

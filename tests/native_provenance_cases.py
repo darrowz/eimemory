@@ -207,6 +207,8 @@ def test_native_unknown_archive_and_nightly_keep_unproven_separate_from_known_fa
     from eimemory.contracts.release_identity import ReleaseIdentity
     from eimemory.scheduler.result_contract import _nightly_step, _aggregate_nightly_ok
     from test_native_l5_assessment_maintenance import envelope
+    from eimemory.governance.evolution import code_evolution_provider_authority as provider_authority
+    monkeypatch.setattr(provider_authority, 'DELEGATION_PATH', tmp_path/'no-provider-delegations.json')
     release = ReleaseIdentity('a'*40, 'isolated-fixture', 'fixture-receipt', 'fixture-session')
     monkeypatch.setattr(native, 'current_release_identity', lambda *_a: release)
     monkeypatch.setattr('eimemory.governance.release.evidence_contract.current_release_identity', lambda *_a: release)

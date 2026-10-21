@@ -43,7 +43,7 @@ def run_dependency_stage(tmp_path: Path, *, prior_has: bool, override: str | Non
     interpreter(prior, postgres=prior_has, prior=True)
     interpreter(stage, postgres=staged_has)
     source = Path("deploy/install_immutable_release.sh").read_text()
-    start = source.index('"$STAGE_DIR/.venv/bin/python" -I -B -m pip install --no-compile --no-deps "$STAGE_DIR"')
+    start = source.index('"$STAGE_DIR/.venv/bin/python" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache -m pip install --no-compile --no-deps "$STAGE_DIR"')
     end = source.index('_source_checkpoint "$STAGE_DIR" build_outputs_checked', start)
     env = dict(os.environ)
     env["EIMEMORY_INSTALL_PDF_EXTRA"] = "0"

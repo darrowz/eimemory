@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixed PID1 User=darrow entry. Only the opaque registered job key is input."""
+"""Fixed PID1 unprivileged runtime-user entry. Only the opaque registered job key is input."""
 from pathlib import Path
 import json
 import os

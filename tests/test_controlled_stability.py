@@ -1,4 +1,5 @@
 from copy import deepcopy
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -12,6 +13,30 @@ import pytest
 
 from eimemory.ops import controlled_stability as probe
 from eimemory.version import __version__
+
+
+FIXTURE_RUNTIME_UNITS = ('eimemory-rpc.service','hermes-gateway.service',
+    'hermes-gateway-hongtai.service','hermes-gateway-hongxin.service',
+    'hermes-gateway-xiaomage.service')
+
+
+@contextmanager
+def stability_fixture_contract():
+    # Reusable factories can be called outside this module's pytest fixture
+    # scope. Freeze the synthetic host contract only for that local operation.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(probe, 'RUNTIME_UNITS', FIXTURE_RUNTIME_UNITS)
+        patch.setattr(probe, 'UNITS', FIXTURE_RUNTIME_UNITS + probe.TIMER_UNITS + probe.JOB_UNITS)
+        patch.setattr(probe, '_runtime_units', lambda: FIXTURE_RUNTIME_UNITS)
+        patch.setattr(probe, '_required_agents', lambda: frozenset(
+            {'hongrui','hongtai','hongxin','xiaomage'}))
+        yield
+
+
+@pytest.fixture(autouse=True)
+def configured_team_observation_contract():
+    with stability_fixture_contract():
+        yield
 
 
 COMMIT = "b" * 40
@@ -58,8 +83,8 @@ def samples():
                 "capture_enabled": True, "capture_policy_valid": True, "capture_scope_count": 6,
                 "capture_policy_digest": "c" * 64, "recall_budget_seconds": 8,
                 "hermes_attestation_ready": True, "runtime_commit_matches": True,
-                "pid": 100 + n, "start_ticks": 2345} for n, unit in enumerate(probe.RUNTIME_UNITS)]},
-            "units": [{"unit": unit, "ok": True, "restart_count": 0} for unit in probe.UNITS]}))
+                "pid": 100 + n, "start_ticks": 2345} for n, unit in enumerate(FIXTURE_RUNTIME_UNITS)]},
+            "units": [{"unit": unit, "ok": True, "restart_count": 0} for unit in (FIXTURE_RUNTIME_UNITS + probe.TIMER_UNITS + probe.JOB_UNITS)]}))
     return result
 
 
@@ -220,7 +245,7 @@ def test_unsafe_sidecar_rejected(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _registered_manager_journal_boundary(monkeypatch):
+def _registered_manager_journal_boundary(monkeypatch, configured_team_observation_contract):
     import importlib.util
     from eimemory.contracts import runtime_manager as contract
     source=Path(__file__).resolve().parents[1]/"deploy/runtime_manager_bridge.py"
@@ -649,3 +674,23 @@ def test_unknown_journal_scope_cannot_claim_a_verified_window():
     value[-1]['journal']['observation_scope'] = 'unregistered_global_journal'
     seal(value[-1])
     assert 'sample_error_observation_unverified' in assess(value)['blocked_reasons']
+
+
+def test_archived_inventory_replay_is_structural_and_performs_no_host_lookup(monkeypatch):
+    report=assess(samples())
+    monkeypatch.setattr(probe, '_runtime_units', lambda: pytest.fail('historical replay contacted host'))
+    replayed=probe.assess_controlled_stability(report['samples'], expected_commit=COMMIT,
+        expected_version=__version__, now=report['assessed_at'],
+        expected_runtime_units=report['runtime_units'])
+    assert replayed==report
+    assert replayed['natural_certified'] is False
+    assert replayed['long_term_stability_certified'] is False
+
+
+@pytest.mark.parametrize('units', [[], list(FIXTURE_RUNTIME_UNITS[:4]),
+    list(FIXTURE_RUNTIME_UNITS)+['arbitrary.service'],
+    list(FIXTURE_RUNTIME_UNITS)+[FIXTURE_RUNTIME_UNITS[-1]]])
+def test_archived_inventory_cannot_shrink_team_or_add_system_units(units):
+    with pytest.raises(ValueError,match='runtime_inventory_invalid'):
+        probe.assess_controlled_stability(samples(), expected_commit=COMMIT,
+                                         expected_runtime_units=units)

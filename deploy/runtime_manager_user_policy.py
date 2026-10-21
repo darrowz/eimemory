@@ -38,10 +38,14 @@ def apply(commit):
         raw=os.read(fd,65537)
         if len(raw)>65536:raise ValueError('manager_user_policy_template_limit')
     finally:os.close(fd)
-    raw=raw.replace(b'@COMMIT@',commit.encode()).replace(b'User=darrow\n',b'').replace(b'Group=darrow\n',b'').replace(b'PrivateUsers=self',b'PrivateUsers=yes')
+    import pwd
+    account = pwd.getpwuid(uid)
+    if account.pw_name != registry['runtime_user'] or account.pw_gid != registry['runtime_gid']:
+        raise ValueError('manager_user_policy_runtime_account_mismatch')
+    raw=raw.replace(b'@COMMIT@',commit.encode()).replace(('User='+account.pw_name+'\n').encode(),b'').replace(('Group='+str(account.pw_gid)+'\n').encode(),b'').replace(b'PrivateUsers=self',b'PrivateUsers=yes')
     raw=raw.replace(('/opt/eimemory/releases/'+commit+' ').encode(),b'/opt/eimemory/releases ')
-    home=Path('/home/darrow/.config/systemd/user')
-    for parent in (home,home.parent,home.parent.parent,Path('/home/darrow')):
+    home=Path(account.pw_dir)/'.config/systemd/user'
+    for parent in (home,home.parent,home.parent.parent,Path(account.pw_dir)):
         st=parent.lstat()
         if not stat.S_ISDIR(st.st_mode) or st.st_uid!=uid or stat.S_IMODE(st.st_mode)&0o022:
             raise ValueError('manager_user_policy_directory_untrusted')

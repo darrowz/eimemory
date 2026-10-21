@@ -4,7 +4,7 @@ import pytest
 from eimemory.adapters.hermes.outbox import HermesOutbox
 
 
-def test_new_profile_is_private_under_group_writable_umask(tmp_path):
+def test_new_profile_is_private_under_group_writable_umask(tmp_path, trusted_dataset_path_ancestors):
     old = os.umask(0o002)
     try:
         home = tmp_path / 'new-profile'

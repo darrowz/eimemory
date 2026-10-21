@@ -13,7 +13,7 @@ import pytest
 from eimemory.adapters.hermes.outbox import HermesOutbox
 
 
-pytestmark = [pytest.mark.linux_deployment,
+pytestmark = [pytest.mark.usefixtures("trusted_dataset_path_ancestors"), pytest.mark.linux_deployment,
               pytest.mark.skipif(os.name != "posix", reason="POSIX directory trust contract")]
 SOURCE = Path(__file__).resolve().parents[1] / "deploy" / "install_hermes_integration.py"
 SPEC = importlib.util.spec_from_file_location("handoff_installer_under_test", SOURCE)

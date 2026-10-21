@@ -12,7 +12,9 @@ Nice=10
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime
 Type=oneshot
-TimeoutStartSec=900
+# A repair can run a protected verifier for up to two hours. Phase receipts
+# survive recovery; the observer must outlive one phase and its hand-off.
+TimeoutStartSec=4h
 WorkingDirectory=/opt/eimemory/current
 Environment=EIMEMORY_ROOT=/var/lib/eimemory
 Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory

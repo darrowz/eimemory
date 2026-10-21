@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.19] — 2026-10-21
+
+- Give native maintenance owners enough time to complete a protected verification phase; retain the complete test plan and observation duration. Repair source-domain coverage, keep inline source readers inside storage, and render fixed-UID service ownership from real account metadata and protected team inventories.
+- Align regression fixtures with strict sandbox ownership, current provider/receipt identities and separately recorded live observations. Preserve negative permission checks, duplicate-property rejection and original incident provenance.
+
 ## [1.15.18] — 2026-10-21
 
 - Keep trusted Python installations and uv aliases available read-only inside private verification sandboxes, while preserving home, production-state and network isolation. Require a durable, identity-bound transaction before acknowledging system repair submission; retain failed terminal outcomes.

@@ -14,7 +14,9 @@ import re
 import stat
 import sys
 
-HOME=Path('/home/darrow/.config/systemd/user')
+def default_home():
+    import pwd
+    return Path(pwd.getpwuid(1001).pw_dir) / '.config/systemd/user'
 POLICY='zzzz-eimemory-host-manager.conf'
 MAX=4*1024*1024
 
@@ -45,7 +47,8 @@ def read(path):
     finally:os.close(fd)
 
 
-def snapshot(units,*,home=HOME):
+def snapshot(units,*,home=None):
+    home = default_home() if home is None else home
     directories(home)
     if (not isinstance(units,list) or len(units)>100 or len(set(units))!=len(units)
             or any(not isinstance(u,str) or not re.fullmatch(r'(?:eimemory|hermes|openclaw)-[A-Za-z0-9_-]+\.(?:service|timer|path)',u) for u in units)):
@@ -64,7 +67,8 @@ def snapshot(units,*,home=HOME):
     return {'schema':'eimemory.runtime_owner_user_files.v1','units':units,'files':files}
 
 
-def restore(value,*,home=HOME):
+def restore(value,*,home=None):
+    home = default_home() if home is None else home
     if not isinstance(value,dict) or set(value)!={'schema','units','files'} or value['schema']!='eimemory.runtime_owner_user_files.v1':raise ValueError('owner_files_snapshot_invalid')
     current=snapshot(value['units'],home=home)
     original=value['files']

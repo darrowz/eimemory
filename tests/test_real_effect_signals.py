@@ -9,7 +9,7 @@ from eimemory.retrieval.proactive import ProactiveRecallService
 
 
 @pytest.fixture
-def live(tmp_path):
+def live(tmp_path, trusted_dataset_path_ancestors):
     runtime = Runtime.create(root=tmp_path / "store")
     runtime.proactive = ProactiveRecallService(runtime, control_percent=0, release_identity={
         "release_commit": "a" * 40, "release_version": "1.14.53",

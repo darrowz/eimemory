@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 import sys
 import zipfile
+from functools import partial
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +24,9 @@ def standalone(name):
     spec = importlib.util.spec_from_file_location(name, ROOT / 'deploy' / (name + '.py'))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    if name in {'build_runtime_manager_bundle', 'runtime_manager_settings'}:
+        module.build = partial(module.build, account=SimpleNamespace(
+            pw_name='darrow', pw_uid=1001, pw_gid=1001, pw_dir='/home/darrow'))
     return module
 
 
@@ -134,6 +139,8 @@ def registry():
         template_hashes={},compatibility_hashes={name:'0'*64 for name in c.COMPATIBILITY_PATHS},
         unit_scopes={name:dict(tenant_id='fixture',agent_id='fixture',workspace_id='fixture',user_id='fixture') for name in c.PRODUCT_SERVICES},
         managed_incident_authority={'enabled':False},controller_entry_digest=None,validation_entry_digest=None)
+    value['units'].update({name:dict(manager='user',installed=False) for name in (
+        'hermes-gateway-hongtai.service','hermes-gateway-hongxin.service','hermes-gateway-xiaomage.service')})
     value['generation'] = c.digest(value)
     return value
 
@@ -843,10 +850,10 @@ def test_restore_owner_requires_clean_original_release_and_stops_new_rpc_first(m
     monkeypatch.setattr(m,'read',lambda path,**_:Path(path).read_bytes())
     monkeypatch.setattr(m,'write',lambda path,raw,**kw:Path(path).write_bytes(raw))
     account=SimpleNamespace(pw_name='darrow',pw_uid=1001,pw_gid=1001,pw_dir='/home/darrow')
-    if sys.platform=='win32':monkeypatch.setitem(sys.modules,'pwd',SimpleNamespace(getpwnam=lambda _:account))
+    if sys.platform=='win32':monkeypatch.setitem(sys.modules,'pwd',SimpleNamespace(getpwuid=lambda _:account))
     else:
         import pwd
-        monkeypatch.setattr(pwd,'getpwnam',lambda _:account)
+        monkeypatch.setattr(pwd,'getpwuid',lambda _:account)
     def storage():
         if fault=='storage_pending':raise ValueError('bootstrap_storage_recovery_not_clean')
     monkeypatch.setattr(m,'storage_clean',storage)
@@ -1046,7 +1053,8 @@ def test_actual_existing_timestamp_pyc_is_ignored_with_explicit_empty_prefix(tmp
     poisoned="value='poison'\n";reviewed="value='source'\n"
     assert len(poisoned)==len(reviewed)
     source.write_text(poisoned);os.utime(source,(1000000000,1000000000))
-    py_compile.compile(str(source),doraise=True)
+    bytecode=tmp_path/'__pycache__'/('cacheprobe.'+sys.implementation.cache_tag+'.pyc')
+    py_compile.compile(str(source),cfile=str(bytecode),doraise=True)
     source.write_text(reviewed);os.utime(source,(1000000000,1000000000))
     command="import sys;sys.path.insert(0,sys.argv[1]);import cacheprobe;print(cacheprobe.value)"
     def value(flags):
@@ -1153,7 +1161,7 @@ def test_manager_reinstall_cannot_replace_live_root_authority_in_place(monkeypat
     path=tmp_path/'registry.json';path.write_bytes(b'protected original root registry')
     monkeypatch.setattr(m,'REGISTRY',path);monkeypatch.setattr(m,'STATE',tmp_path)
     monkeypatch.setattr(m,'read',lambda p:Path(p).read_bytes())
-    monkeypatch.setitem(sys.modules,'pwd',SimpleNamespace(getpwnam=lambda _:SimpleNamespace(pw_uid=1001,pw_gid=1001,pw_dir='/home/darrow')))
+    monkeypatch.setitem(sys.modules,'pwd',SimpleNamespace(getpwuid=lambda _:SimpleNamespace(pw_name='darrow',pw_uid=1001,pw_gid=1001,pw_dir='/home/darrow')))
     monkeypatch.setattr(m,'write',lambda *_args,**_kwargs:pytest.fail('root source must not be replaced'))
     with pytest.raises(ValueError,match='existing_manager_upgrade_requires_reviewed_handoff'):
         m.install(SimpleNamespace(repository_root=str(repository),expected_registry_sha256=sha256(path.read_bytes()).hexdigest()))
@@ -1686,3 +1694,42 @@ def test_pid1_backup_cli_ignores_mutable_console_script_override(monkeypatch):
         with pytest.raises(ValueError,match='backup_native_reader_context_invalid'):
             module._run_cli('/tmp/unreviewed-eimemory',['backup','verify','fixture'],{},30)
     assert seen==['fixture']
+
+
+@pytest.mark.parametrize('unit,manager', [
+    ('arbitrary.service','user'), ('hermes-gateway-../../escape.service','user'),
+    ('hermes-gateway-coworker.service','system'),
+])
+def test_configured_profile_inventory_never_grants_a_system_unit(unit,manager):
+    value=registry()
+    value['units'][unit]=dict(manager=manager,installed=True)
+    value['generation']=c.digest({k:v for k,v in value.items() if k!='generation'})
+    with pytest.raises(ValueError):c.validate_registry(value)
+
+
+def test_configured_profile_inventory_preserves_exact_user_owner():
+    value=registry()
+    value['units']['hermes-gateway-colleague.service']=dict(manager='user',installed=True)
+    value['generation']=c.digest({k:v for k,v in value.items() if k!='generation'})
+    assert client.manager_for('hermes-gateway-colleague.service',registry=value)=='user'
+    assert not c.fixed_system_unit_cgroup('/system.slice/hermes-gateway-colleague.service',
+                                         'hermes-gateway-colleague.service')
+
+
+def test_bundle_renders_the_actual_fixed_uid_account_without_site_defaults():
+    account=SimpleNamespace(pw_name='runtimeowner',pw_uid=1001,pw_gid=1001,pw_dir='/srv/runtimeowner')
+    builder=standalone('build_runtime_manager_bundle')
+    files=builder.build(ROOT,'a'*40,account=account)
+    template=files['templates/eimemory-nightly.service'].decode()
+    assert 'User=runtimeowner\n' in template and 'Group=1001\n' in template
+    assert 'Environment=HOME=/srv/runtimeowner\n' in template
+    assert 'TimeoutStartSec=4h' in template
+    assert 'ReadWritePaths=/srv/runtimeowner/.config/systemd/user' in files['eimemory-runtime-manager.service'].decode()
+    assert all(b'@RUNTIME_' not in raw for raw in files.values())
+
+
+@pytest.mark.parametrize('home', ['/', '/srv/../root', '/srv/runtime owner', '/srv/owner%u', '/srv/owner\nUser=root'])
+def test_bundle_rejects_account_paths_that_change_unit_syntax(home):
+    account=SimpleNamespace(pw_name='runtimeowner',pw_uid=1001,pw_gid=1001,pw_dir=home)
+    with pytest.raises(ValueError,match='runtime_account_invalid'):
+        standalone('build_runtime_manager_bundle').build(ROOT,'a'*40,account=account)

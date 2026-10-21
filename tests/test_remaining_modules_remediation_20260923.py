@@ -405,7 +405,16 @@ def test_int2_registered_recall_and_experience_have_no_dead_branch() -> None:
 
     source = (ROOT / "eimemory" / "cli" / "main.py").read_text(encoding="utf-8")
     main_source = source.split("def main(", 1)[1]
-    assert "parsed.command ==" not in main_source
+    # Root-only policy/identity operators must exit before Runtime creation.
+    # This guard concerns duplicate dead branches for registered product routes.
+    parsed_main = ast.parse("def main(" + main_source)
+    for node in ast.walk(parsed_main):
+        if (isinstance(node, ast.Compare) and isinstance(node.left, ast.Attribute)
+                and isinstance(node.left.value, ast.Name)
+                and node.left.value.id == "parsed" and node.left.attr == "command"):
+            route_names = {value.value for value in ast.walk(node)
+                           if isinstance(value, ast.Constant) and isinstance(value.value, str)}
+            assert not route_names.intersection({"recall", "experience"})
     from eimemory.cli.main import COMMAND_REGISTRY, _build_parser
 
     parser = _build_parser()

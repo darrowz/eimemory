@@ -4,6 +4,10 @@ Run from any working directory with Python's unittest discovery. The installer
 is located relative to this file, not argv or the process working directory.
 JSON fixtures form the deliberately small YAML subset needed by these tests.
 """
+import pytest
+
+pytestmark = pytest.mark.usefixtures("trusted_dataset_path_ancestors")
+
 from contextlib import contextmanager
 import importlib.util
 import json

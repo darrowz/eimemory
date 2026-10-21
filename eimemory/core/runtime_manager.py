@@ -74,10 +74,6 @@ def unit_state(unit: str, properties: tuple[str,...]=('ActiveState','SubState','
  if not properties or any(item not in READ_PROPERTIES for item in properties):raise RuntimeManagerError('manager_property_not_allowlisted')
  return request('unit_state',unit=unit,properties=list(properties))['state']
 
-def unit_journal(unit: str, invocation: str, *, limit: int=5000) -> dict:
- hex_value(invocation,32,'manager_invocation_invalid')
- if type(limit) is not int or not 1<=limit<=5000:raise RuntimeManagerError('manager_journal_limit_invalid')
- return request('unit_journal',unit=unit,invocation=invocation,limit=limit)
 
 def submit_deployment_job(job_key: str) -> dict:
  job_unit(job_key);return request('submit_job',job_key=job_key)
@@ -86,13 +82,7 @@ def deployment_job_status(job_key: str) -> dict:
  job_unit(job_key);return request('job_status',job_key=job_key)
 
 
-def release_deployment_job(job_key: str) -> dict:
- """Release only an already root-pinned completed parent invocation."""
- job_unit(job_key);return request('release_job',job_key=job_key)
 
-def deployment_job_journal(job_key: str, invocation: str) -> dict:
- job_unit(job_key);hex_value(invocation,32,'manager_invocation_invalid')
- return request('job_journal',job_key=job_key,invocation=invocation)
 
 def transition(job_key: str, phase: str) -> dict:
  job_unit(job_key)
@@ -111,10 +101,6 @@ def finalize_deployment_job(job_key: str) -> dict:
 def activation_attestation() -> dict:
  return request('activation_attestation')['reference']
 
-
-def verify_activation_attestation(receipt_id: str, digest: str) -> dict:
- hex_value(receipt_id,64,'manager_activation_receipt_id_invalid');hex_value(digest,64,'manager_activation_receipt_digest_invalid')
- return request('verify_activation_attestation',receipt_id=receipt_id,digest=digest)['attestation']
 
 
 def complete_deployment_job(job_key: str) -> dict:

@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -215,9 +216,10 @@ def test_restore_fsyncs_live_segment_root_after_publish(tmp_path, monkeypatch) -
 def test_portable_directory_fsync_propagates_io_failure(tmp_path, monkeypatch) -> None:
     directory = tmp_path / "state"
     directory.mkdir()
-    monkeypatch.setattr(maintenance.os, "name", "nt")
-    monkeypatch.setattr(maintenance.os, "open", lambda _path, _flags: 91)
-    monkeypatch.setattr(maintenance.os, "close", lambda _fd: None)
+    monkeypatch.setattr(maintenance, "os", SimpleNamespace(**{
+        **vars(os), "name": "nt", "open": lambda _path, _flags: 91,
+        "close": lambda _fd: None,
+    }))
     monkeypatch.setattr(
         maintenance.os,
         "fsync",

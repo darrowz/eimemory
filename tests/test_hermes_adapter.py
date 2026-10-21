@@ -24,7 +24,7 @@ from eimemory.retrieval.proactive import ProactiveRecallService
 
 
 @pytest.fixture(autouse=True)
-def isolated_profile(tmp_path, monkeypatch):
+def isolated_profile(tmp_path, monkeypatch, trusted_dataset_path_ancestors):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-profile"))
 
 

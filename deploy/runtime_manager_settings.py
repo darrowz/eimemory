@@ -47,8 +47,11 @@ def lines(text):
     if pending:raise ValueError('manager_settings_incomplete_line')
 
 
-def expand_specifiers(value):
-    replacements={'%':'%','h':'/home/darrow','u':'darrow','U':'1001'}
+def expand_specifiers(value, *, account=None):
+    if account is None:
+        import pwd
+        account = pwd.getpwuid(1001)
+    replacements={'%':'%','h':account.pw_dir,'u':account.pw_name,'U':str(account.pw_uid)}
     def replace(match):
         if match[1] not in replacements:raise ValueError('manager_settings_unsupported_specifier')
         return replacements[match[1]]
@@ -95,7 +98,7 @@ def rpc_arguments(command):
     return [item for flag in ('--host','--port','--loopback-health-host','--loopback-health-port') if flag in values for item in (flag,values[flag])]
 
 
-def build(snapshot,units):
+def build(snapshot,units, *, account=None):
     if snapshot.get('schema')!='eimemory.runtime_owner_user_files.v1':raise ValueError('manager_settings_snapshot_invalid')
     result={}
     for unit in sorted(units):
@@ -118,11 +121,11 @@ def build(snapshot,units):
                     for token in shlex.split(value,posix=True):
                         k,sep,v=token.partition('=')
                         if not sep or re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*',k) is None:raise ValueError('manager_settings_environment_invalid')
-                        if permitted(k):environment[k]=expand_specifiers(v)
+                        if permitted(k):environment[k]=expand_specifiers(v, account=account)
                 elif key=='EnvironmentFile':
                     if not value.strip():files.clear();continue
                     for token in shlex.split(value,posix=True):
-                        optional=token.startswith('-');path=expand_specifiers(token[1:] if optional else token)
+                        optional=token.startswith('-');path=expand_specifiers(token[1:] if optional else token, account=account)
                         parsed=PurePosixPath(path)
                         if (not parsed.is_absolute() or parsed.as_posix()!=path or '..' in parsed.parts
                                 or any(c in path for c in '\r\n\0*?[')):
