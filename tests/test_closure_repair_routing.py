@@ -33,19 +33,33 @@ class Store(SQLiteFixtureStore):
 
 @pytest.fixture
 def setup_router(tmp_path,monkeypatch):
-    runtime=SimpleNamespace(store=Store(tmp_path/'db.sqlite'),run_autonomous_evolution=lambda **kw:{'ok':True})
+    transactions={}
+    runtime=SimpleNamespace(store=Store(tmp_path/'db.sqlite'))
     report=blocked('release_closure_report_contract_invalid')
     registered=record_release_closure_failure(runtime,scope=SCOPE,closure_report=report,detected_at='now')
     record=runtime.store.list_records(kinds=['incident'],scope=ScopeRef.from_dict(SCOPE),limit=100)[0]
     proposals=[]
-    def propose(*a,**kw):proposals.append(kw);return {'ok':True}
+    def propose(*a,**kw):
+        proposals.append(kw)
+        return {'ok':True,'transaction_id':kw['transaction_id'],
+                'proposal_digest':'d'*64,'patch_digest':'e'*64}
+    def evolve(**kw):
+        proposal=kw['opportunities'][0]['code_evolution_proposal']
+        txid=proposal['transaction_id']
+        transactions[txid]={**SCOPE,'transaction_id':txid,'repository_root':str(tmp_path.resolve()),
+            'base_commit':'a'*40,'origin':'system_detector','detector':record.provenance['detector'],
+            **{key:record.content[key] for key in ('incident_id','incident_digest','incident_class')},
+            'proposal_digest':proposal['proposal_digest'],'patch_digest':proposal['patch_digest'],
+            'current_state':'PATCH_VALIDATED','terminal':0}
+        return {'ok':True}
+    runtime.run_autonomous_evolution=evolve
     monkeypatch.setattr(router,'_repository_identity',lambda root:{'ok':True,'base_commit':'a'*40})
     monkeypatch.setattr(router,'_automation_policy_identity',lambda:(registered['incident']['incident_digest'],'b'*64,'profile'))
     monkeypatch.setattr(router,'protected_paths_digest',lambda *a:'c'*64)
     class Ledger:
         def __init__(self,store):pass
         def get_policy_consumption(self,digest):return None
-        def get_transaction(self,txid):return None
+        def get_transaction(self,txid):return transactions.get(txid)
     monkeypatch.setattr(router,'CodeEvolutionStore',Ledger)
     evidence=importlib.import_module('eimemory.governance.release.evidence_contract')
     monkeypatch.setattr(evidence,'current_release_identity',lambda *a:SimpleNamespace(commit='a'*40))
@@ -86,7 +100,7 @@ def test_successful_handoff_is_linked_not_complete(setup_router):
     assert record.status=='active'
 
 
-@pytest.mark.parametrize('mode',['provider','provider_exception','evolution_false','evolution_exception'])
+@pytest.mark.parametrize('mode',['provider','provider_exception','evolution_false','evolution_exception','evolution_ok_without_transaction'])
 def test_failure_never_becomes_processed_success(setup_router,monkeypatch,mode):
     runtime,record,_,path,bridge=setup_router
     if mode=='provider':monkeypatch.setattr(bridge,'propose_code_patch_v2',lambda *a,**kw:{'ok':False,'reason':'provider_unavailable'})
@@ -94,6 +108,7 @@ def test_failure_never_becomes_processed_success(setup_router,monkeypatch,mode):
         def bad_provider(*a,**kw):raise RuntimeError('private-provider-detail')
         monkeypatch.setattr(bridge,'propose_code_patch_v2',bad_provider)
     elif mode=='evolution_false':runtime.run_autonomous_evolution=lambda **kw:{'ok':False,'reason':'policy_denied'}
+    elif mode=='evolution_ok_without_transaction':runtime.run_autonomous_evolution=lambda **kw:{'ok':True,'applied_count':0}
     else:
         def fail(**kw):raise RuntimeError('private-exception-detail')
         runtime.run_autonomous_evolution=fail

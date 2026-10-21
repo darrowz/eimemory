@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.18] — 2026-10-21
+
+- Keep trusted Python installations and uv aliases available read-only inside private verification sandboxes, while preserving home, production-state and network isolation. Require a durable, identity-bound transaction before acknowledging system repair submission; retain failed terminal outcomes.
+
 ## [1.15.17] — 2026-10-21
 
 - Validate installed standing repair grants and their bound provider Profile on idle ticks, so stale protected test plans, expiry or Profile changes cannot hide behind an empty incident queue. Report optional absent authority without creating incidents, child policies or terminal evidence.
