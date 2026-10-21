@@ -259,7 +259,24 @@ def ensure_native_incident_policy(runtime: Any, *, scope: ScopeRef | Mapping[str
     try:
         selected = _selection(runtime, scope_ref, root)
         if selected.get('status') != 'current':
-            return {k: v for k, v in selected.items() if k not in {'current', 'release'}}
+            result = {k: v for k, v in selected.items() if k not in {'current', 'release'}}
+            if selected.get('status') == 'idle':
+                # An empty incident queue does not validate installed standing
+                # authority. In particular, a protected test-plan change can
+                # leave every future repair inadmissible while ticks say idle.
+                # Optional authority remains optional; never install or renew it.
+                if os.path.lexists(standing_grant_path(scope_ref)):
+                    grant = _grant(scope_ref, root, datetime.now(timezone.utc))
+                    _verify_profile(runtime, scope_ref, grant)
+                    result['standing_authority'] = {
+                        'status': 'verified', 'grant_digest': report_digest(grant),
+                        'effects_exercised': False,
+                    }
+                else:
+                    result['standing_authority'] = {
+                        'status': 'not_configured', 'effects_exercised': False,
+                    }
+            return result
         state = Path(runtime.store.root) / 'state' / 'code-automation-owner'
         destination = Path(policy_api.CODE_AUTOMATION_POLICY_DEFAULT_PATH)
         current_policy, current_digest = _policy_at(destination)

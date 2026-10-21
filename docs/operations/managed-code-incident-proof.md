@@ -98,6 +98,16 @@ receipts, current lineage and the real minimum 28800-second observation window
 remain independent requirements. No production incident, child policy, terminal
 receipt or observation is created by installing the provenance mechanism.
 
+An empty incident queue is not an authority preflight. The native policy owner
+also validates any installed exact-scope standing grant and its bound provider
+Profile on idle ticks. A stale protected test-plan digest, expired grant or
+changed Profile reports `blocked`, before an incident needs that authority.
+Optional, absent authority reports `standing_authority.status=not_configured`;
+neither state creates an incident or a child policy. When a protected plan
+changes, review and replace the affected root grant explicitly, retaining its
+exact scope, effects and transaction limit. Never refresh authority by merely
+copying a current digest from an incident payload.
+
 ## Restored user owner with a stale host manager
 
 `bootstrap_runtime_manager.py handoff-user-owner` is the explicit recovery
