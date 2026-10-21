@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.17] — 2026-10-21
+
+- Validate installed standing repair grants and their bound provider Profile on idle ticks, so stale protected test plans, expiry or Profile changes cannot hide behind an empty incident queue. Report optional absent authority without creating incidents, child policies or terminal evidence.
+
 ## [1.15.16] — 2026-10-21
 
 - Bridge skipped managed-knowledge checkpoints through the exact digest chain retained in completed Root controller histories. Require protected archive reads and keep unknown or broken chains blocked; preserve positive facts, receipts and receive anchors while replay cursors restart for reviewed boundaries.
