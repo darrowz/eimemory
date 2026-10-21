@@ -130,11 +130,17 @@ def process_system_code_incidents(
         )
         existing = ledger.get_transaction(transaction_id)
         if existing is not None:
+            error = _submission_binding_error(
+                existing, transaction_id=transaction_id, incident=incident,
+                scope=scope_payload, root=root, base_commit=repository["base_commit"],
+                detector=str(record.provenance.get("detector") or ""),
+            )
             processed.append(
                 {
                     "incident_id": incident["incident_id"],
                     "transaction_id": transaction_id,
-                    "status": str(existing.get("current_state") or "existing"),
+                    "status": "submission_failed" if error else str(existing["current_state"]),
+                    "reason": error,
                     "idempotent": True,
                 }
             )
@@ -217,12 +223,20 @@ def process_system_code_incidents(
                 }
             )
             continue
+        error = _submission_binding_error(
+            ledger.get_transaction(transaction_id), transaction_id=transaction_id,
+            incident=incident, scope=scope_payload, root=root,
+            base_commit=repository["base_commit"],
+            detector=str(record.provenance.get("detector") or ""), proposal=proposal,
+        )
+        if not isinstance(evolution, Mapping) or evolution.get("ok") is not True:
+            error = error or "autonomous_evolution_not_ok"
         processed.append(
             {
                 "incident_id": incident["incident_id"],
                 "transaction_id": transaction_id,
-                "status": "submitted" if isinstance(evolution, Mapping) and evolution.get("ok") is True else "submission_failed",
-                "reason": "" if isinstance(evolution, Mapping) and evolution.get("ok") is True else "autonomous_evolution_not_ok",
+                "status": "submission_failed" if error else "submitted",
+                "reason": error,
                 "evolution": evolution,
             }
         )
@@ -240,6 +254,38 @@ def process_system_code_incidents(
         "repair_complete": False,
         "processed": processed,
     }
+
+
+def _submission_binding_error(
+    transaction: Any, *, transaction_id: str, incident: Mapping[str, Any],
+    scope: Mapping[str, str], root: Path, base_commit: str, detector: str,
+    proposal: Mapping[str, Any] | None = None,
+) -> str:
+    """A successful invocation is not proof of a durable repair hand-off."""
+    from eimemory.governance.evolution.code_evolution_transaction import STATES, TERMINAL_STATES
+
+    if not isinstance(transaction, Mapping):
+        return "autonomous_evolution_transaction_not_persisted"
+    expected = {
+        **scope, "transaction_id": transaction_id, "repository_root": str(root),
+        "base_commit": base_commit, "origin": "system_detector", "detector": detector,
+        **{field: incident[field] for field in ("incident_id", "incident_digest", "incident_class")},
+    }
+    if any(transaction.get(field) != value for field, value in expected.items()):
+        return "autonomous_evolution_transaction_binding_mismatch"
+    state = transaction.get("current_state")
+    if state not in STATES:
+        return "autonomous_evolution_transaction_state_invalid"
+    if transaction.get("terminal") != int(state in TERMINAL_STATES):
+        return "autonomous_evolution_transaction_state_invalid"
+    if state in TERMINAL_STATES and state != "SUCCEEDED_SEDIMENTED":
+        return "autonomous_evolution_transaction_failed"
+    if proposal is not None:
+        for field in ("proposal_digest", "patch_digest"):
+            value = proposal.get(field) or (proposal.get("proposal_digest") if field == "patch_digest" else "")
+            if not isinstance(value, str) or len(value) != 64 or transaction.get(field) != value:
+                return "autonomous_evolution_proposal_binding_mismatch"
+    return ""
 
 
 def _matching_consumed_transaction(

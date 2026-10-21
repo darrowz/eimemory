@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import json
 
 from eimemory.adapters.hermes.code_implementation import BINDING_ID, REVISION_ID
 from eimemory.api.runtime import Runtime
@@ -112,6 +113,60 @@ def test_verification_environment_redirects_explicit_pycompile_outputs() -> None
     assert environment["TMPDIR"] == "/tmp/temp"
     assert environment["TMP"] == environment["TEMP"] == "/tmp/temp"
     assert environment["XDG_CACHE_HOME"] == "/tmp/cache"
+
+
+def test_verifier_only_exposes_trusted_python_installation(tmp_path, monkeypatch):
+    home = tmp_path / "private-home"
+    prefix = home / "uv" / "python-version"
+    binary = prefix / "bin" / "python"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"interpreter")
+    (home / "credentials").write_text("must remain hidden")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(effects_module, "_trusted_python", lambda: binary)
+
+    def probe(argv, **kwargs):
+        assert argv[:4] == [str(binary), "-I", "-S", "-B"]
+        assert kwargs["env"] == _verification_environment()
+        assert kwargs["check"] is True and kwargs["timeout"] == 10
+        return SimpleNamespace(stdout=json.dumps({"base_prefix": str(prefix), "base_executable": str(binary)}).encode())
+
+    monkeypatch.setattr(effects_module.subprocess, "run", probe)
+    assert effects_module._verification_runtime_mounts([str(binary), "-m", "pytest"]) == [(prefix, prefix)]
+    with pytest.raises(ValueError, match="identity_mismatch"):
+        effects_module._verification_runtime_mounts([str(home / "untrusted-python")])
+
+
+def test_verifier_rejects_reexposing_home_as_python_prefix(tmp_path, monkeypatch):
+    home = tmp_path / "private-home"
+    binary = home / "bin" / "python"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"interpreter")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(effects_module, "_trusted_python", lambda: binary)
+    monkeypatch.setattr(effects_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+        stdout=json.dumps({"base_prefix": str(home), "base_executable": str(binary)}).encode()))
+    with pytest.raises(ValueError, match="prefix_not_isolated"):
+        effects_module._verification_runtime_mounts([str(binary)])
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="POSIX venv symlink layout")
+def test_verifier_preserves_uv_alias_without_mounting_surrounding_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    prefix = home / "uv" / "cpython-3.11.16"
+    binary = prefix / "bin" / "python3.11"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"interpreter")
+    alias = prefix.parent / "cpython-3.11"
+    alias.symlink_to(prefix, target_is_directory=True)
+    executable = tmp_path / "repo" / ".venv" / "bin" / "python"
+    executable.parent.mkdir(parents=True)
+    executable.symlink_to(alias / "bin" / binary.name)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(effects_module, "_trusted_python", lambda: executable)
+    monkeypatch.setattr(effects_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+        stdout=json.dumps({"base_prefix": str(prefix), "base_executable": str(binary)}).encode()))
+    assert set(effects_module._verification_runtime_mounts([str(executable)])) == {(prefix, prefix), (prefix, alias)}
 
 
 @pytest.mark.parametrize("fails", [False, True])

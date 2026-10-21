@@ -1030,6 +1030,7 @@ class ProductionEffectAdapter:
             return self._verify_in_scratch(candidate, argv=argv, heartbeat=heartbeat, sandbox=sandbox, scratch=scratch)
 
     def _verify_in_scratch(self, candidate, *, argv, heartbeat, sandbox, scratch) -> VerificationResult:
+        runtime_mounts = _verification_runtime_mounts(argv)
         sandbox_argv = [
             str(sandbox),
             "--die-with-parent",
@@ -1051,6 +1052,8 @@ class ProductionEffectAdapter:
             "/etc/eimemory",
             "--tmpfs",
             "/var/lib/eimemory",
+            *[item for source, target in runtime_mounts
+              for item in ("--ro-bind", str(source), str(target))],
             "--chdir",
             str(candidate.root),
             "--",
@@ -1875,6 +1878,54 @@ def _trusted_python() -> Path:
     if not candidate.is_absolute() or not candidate.name.startswith("python") or not os.access(candidate, os.X_OK):
         raise ValueError("trusted_python_unavailable")
     return candidate
+
+
+def _verification_runtime_mounts(argv: Sequence[str]) -> list[tuple[Path, Path]]:
+    """Expose only the trusted Python installation hidden by private mounts.
+
+    A repository venv may point at a uv/pyenv installation under the user's
+    home. Masking that home must not make the signed verifier argv disappear.
+    Resolve the base installation using isolated, site-free interpreter code;
+    bind only that installation, never the surrounding home or credentials.
+    """
+    if not argv or not Path(argv[0]).is_absolute():
+        return []  # Production argv is independently checked by its test plan.
+    executable = Path(argv[0])
+    if executable != _trusted_python():
+        raise ValueError("verification_python_identity_mismatch")
+    probe = subprocess.run(
+        [str(executable), "-I", "-S", "-B", "-c",
+         "import json,sys;print(json.dumps({'base_prefix':sys.base_prefix,"
+         "'base_executable':getattr(sys,'_base_executable',sys.executable)}))"],
+        env=_verification_environment(), capture_output=True, check=True, timeout=10,
+    )
+    if len(probe.stdout) > 65536:
+        raise ValueError("verification_python_metadata_invalid")
+    metadata = json.loads(probe.stdout)
+    prefix = Path(metadata["base_prefix"]).resolve(strict=True)
+    binary = executable.resolve(strict=True)
+    if not prefix.is_dir() or not binary.is_relative_to(prefix) or prefix == Path(prefix.anchor):
+        raise ValueError("verification_python_prefix_invalid")
+    hidden = (Path.home().resolve(), Path("/etc/eimemory"), Path("/var/lib/eimemory"), Path("/tmp"))
+    if any(prefix == root or root.is_relative_to(prefix) for root in hidden):
+        raise ValueError("verification_python_prefix_not_isolated")
+    aliases = {prefix, Path(metadata["base_executable"]).parent.parent}
+    if executable.is_symlink():
+        target = executable.readlink()
+        if not target.is_absolute():
+            target = executable.parent / target
+        aliases.add(target.parent.parent)
+    mounts = []
+    for alias in sorted(aliases, key=str):
+        if not any(alias.is_relative_to(root) for root in hidden):
+            continue
+        if not alias.is_absolute() or alias.resolve(strict=True) != prefix:
+            raise ValueError("verification_python_alias_invalid")
+        if any(alias.is_relative_to(root) for root in hidden):
+            if alias in hidden:
+                raise ValueError("verification_python_prefix_not_isolated")
+            mounts.append((prefix, alias))
+    return mounts
 
 
 def _verification_environment() -> dict[str, str]:

@@ -106,8 +106,9 @@ def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypat
         assert proposal_calls == []
         assert evolution_calls == []
         return
-    assert report["ok"] is True
-    assert report["status"] == "processed"
+    assert report["ok"] is False
+    assert report["status"] == "blocked"
+    assert report["processed"][0]["reason"] == "autonomous_evolution_transaction_not_persisted"
     assert proposal_calls[0]["origin"] == "system_detector"
     assert proposal_calls[0]["known_before_detection"] is None
     assert proposal_calls[0]["prior_user_reported"] is None
@@ -187,15 +188,29 @@ def routing_harness(monkeypatch):
 
     ledger = SimpleNamespace(
         get_policy_consumption=consumption,
-        get_transaction=lambda _transaction_id: None,
+        rows={},
     )
+    ledger.get_transaction = lambda transaction_id: ledger.rows.get(transaction_id)
+
+    def transaction_row(transaction_id):
+        return {
+            **SCOPE, "transaction_id": transaction_id,
+            "repository_root": str(Path.cwd().resolve()), "base_commit": COMMIT,
+            "origin": "system_detector", "detector": record.provenance["detector"],
+            **{field: record.content[field] for field in ("incident_id", "incident_digest", "incident_class")},
+            "current_state": "PATCH_VALIDATED", "terminal": 0,
+            "proposal_digest": "b" * 64, "patch_digest": "c" * 64,
+        }
 
     def proposal(_runtime, **kwargs):
         calls["proposal"].append(kwargs)
-        return {"ok": True, "transaction_id": kwargs["transaction_id"]}
+        return {"ok": True, "transaction_id": kwargs["transaction_id"],
+                "proposal_digest": "b" * 64, "patch_digest": "c" * 64}
 
     def evolve(**kwargs):
         calls["evolution"].append(kwargs)
+        transaction_id = kwargs["opportunities"][0]["code_evolution_proposal"]["transaction_id"]
+        ledger.rows[transaction_id] = transaction_row(transaction_id)
         return {"ok": True}
 
     def append(attempt_record, existing_match=None):
@@ -241,6 +256,7 @@ def routing_harness(monkeypatch):
         record=record,
         calls=calls,
         ledger=ledger,
+        transaction_row=transaction_row,
         run=lambda: process_system_code_incidents(runtime, scope=SCOPE, repo_root=Path.cwd()),
     )
 
@@ -307,9 +323,7 @@ def test_current_active_incident_preserves_routing_and_idempotency(
     if runtime_drift:
         _select_runtime_drift_incident(routing_harness.record)
     if existing_transaction:
-        routing_harness.ledger.get_transaction = lambda _transaction_id: {
-            "current_state": "DETECTED"
-        }
+        routing_harness.ledger.get_transaction = routing_harness.transaction_row
 
     report = routing_harness.run()
 
@@ -341,6 +355,32 @@ def test_missing_current_release_blocks_before_any_policy_or_provider(routing_ha
     assert routing_harness.calls == {
         "proposal": [], "evolution": [], "consumption_reads": []
     }
+
+
+@pytest.mark.parametrize("damage", ["absent", "scope", "incident", "base", "proposal", "failed", "unknown_state"])
+def test_invocation_success_cannot_acknowledge_missing_or_unbound_transaction(routing_harness, damage):
+    def read(transaction_id):
+        if not routing_harness.calls["evolution"] or damage == "absent":
+            return None
+        row = routing_harness.transaction_row(transaction_id)
+        field, value = {
+            "scope": ("agent_id", "different-agent"),
+            "incident": ("incident_digest", "e" * 64),
+            "base": ("base_commit", "e" * 40),
+            "proposal": ("proposal_digest", "e" * 64),
+            "failed": ("current_state", "ABORTED_CANDIDATE_RESTORED"),
+            "unknown_state": ("current_state", "UNKNOWN"),
+        }[damage]
+        row[field] = value
+        return row
+
+    routing_harness.ledger.get_transaction = read
+    report = routing_harness.run()
+    assert report["ok"] is False and report["status"] == "blocked"
+    assert report["processed"][0]["status"] == "submission_failed"
+    assert report["processed"][0]["repair_complete"] is False
+    assert report["processed"][0]["attempt_record_id"]
+    assert len(routing_harness.calls["evolution"]) == 1
 
 
 def test_legacy_router_source_label_cannot_replace_native_current_fence(routing_harness):
