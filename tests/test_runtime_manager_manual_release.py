@@ -29,7 +29,7 @@ def test_failed_manual_recovery_restores_capture_without_forging_success(tmp_pat
     monkeypatch.setattr(m,'RELEASES',source.parent);monkeypatch.setattr(m,'REGISTRY',reg)
     monkeypatch.setattr(m,'read',lambda p,**_:Path(p).read_bytes())
     monkeypatch.setattr(m,'load_contract',lambda:SimpleNamespace(validate_registry=lambda x:x,strict_json=c.strict_json,canonical=c.canonical,REGISTERED_UNITS=c.REGISTERED_UNITS))
-    monkeypatch.setitem(sys.modules,'pwd',SimpleNamespace(getpwnam=lambda _:SimpleNamespace(pw_gid=1001)))
+    monkeypatch.setitem(sys.modules,'pwd',SimpleNamespace(getpwuid=lambda uid:SimpleNamespace(pw_uid=uid,pw_gid=1001,pw_name='darrow',pw_dir='/home/darrow')))
     def clean():
         if fault=='unclean':raise ValueError('unclean_storage')
     monkeypatch.setattr(m,'storage_clean',clean)

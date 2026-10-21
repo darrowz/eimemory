@@ -81,6 +81,9 @@ def test_maintenance_reports_failed_read_separately_from_empty_inventory(monkeyp
 
 def test_user_stability_journal_observes_actual_units_without_exporting_messages(monkeypatch):
     from eimemory.ops import controlled_stability as stability
+    monkeypatch.setattr(stability, '_runtime_units', lambda: (
+        *stability.RUNTIME_UNITS, 'hermes-gateway-a.service',
+        'hermes-gateway-b.service', 'hermes-gateway-c.service'))
     monkeypatch.setattr(observation, 'registered_runtime_context', lambda: False)
     monkeypatch.setattr(stability.os, 'geteuid', lambda: 1001, raising=False)
     calls = []
@@ -97,6 +100,9 @@ def test_user_stability_journal_observes_actual_units_without_exporting_messages
 
 def test_stability_does_not_require_service_process_attributes_from_timers(monkeypatch):
     from eimemory.ops import controlled_stability as stability
+    monkeypatch.setattr(stability, '_runtime_units', lambda: (
+        *stability.RUNTIME_UNITS, 'hermes-gateway-a.service',
+        'hermes-gateway-b.service', 'hermes-gateway-c.service'))
     calls = []
     def state(unit, properties):
         calls.append((unit, properties))

@@ -34,6 +34,9 @@ TIMER_UNITS = (
 JOB_UNITS = tuple(name.removesuffix(".timer") + ".service" for name in TIMER_UNITS)
 UNITS = RUNTIME_UNITS + TIMER_UNITS + JOB_UNITS
 def _runtime_units() -> tuple[str, ...]:
+    from eimemory.ops.runtime_service_observation import registered_runtime_context
+    if not registered_runtime_context():
+        return _user_runtime_units()
     from eimemory.core.runtime_manager import read_registry
     from eimemory.contracts.runtime_manager import compatibility_units
     registry = read_registry()
@@ -43,6 +46,32 @@ def _runtime_units() -> tuple[str, ...]:
     # Preserve the original complete-team coverage floor. A smaller declared
     # inventory cannot silently certify a partial deployment.
     if len(units) < 5:
+        raise ValueError('stability_team_runtime_inventory_incomplete')
+    return units
+
+
+def _user_runtime_units() -> tuple[str, ...]:
+    """Observe the user manager directly, without consulting a root registry."""
+    result = subprocess.run(
+        ['systemctl', '--user', 'list-unit-files', '--type=service',
+         '--no-legend', '--no-pager'], capture_output=True, text=True,
+        timeout=30, check=False)
+    if result.returncode:
+        raise RuntimeError('stability_user_runtime_inventory_unavailable')
+    if len(result.stdout.encode()) > 1024 * 1024:
+        raise ValueError('stability_user_runtime_inventory_too_large')
+    profiles = set()
+    for row in result.stdout.splitlines():
+        fields = row.split()
+        if not fields:
+            continue
+        name = fields[0]
+        if re.fullmatch(r'hermes-gateway-[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\.service', name):
+            if name in profiles:
+                raise ValueError('stability_user_runtime_inventory_duplicate')
+            profiles.add(name)
+    units = (*RUNTIME_UNITS, *sorted(profiles))
+    if not 5 <= len(units) <= 66:
         raise ValueError('stability_team_runtime_inventory_incomplete')
     return units
 
@@ -168,9 +197,10 @@ def _run(args: list[str]) -> str:
 def _unit_states() -> list[dict[str, str]]:
     from eimemory.ops.runtime_service_observation import service_state
     properties = tuple(_PROPERTIES.split(","))
+    units = _units()
     states = [service_state(unit, tuple(name for name in properties
-        if not unit.endswith('.timer') or name not in {'ExecMainStatus', 'NRestarts', 'MainPID'})) for unit in _units()]
-    if len(states) != len(_units()) or {s["Id"] for s in states} != set(_units()):
+        if not unit.endswith('.timer') or name not in {'ExecMainStatus', 'NRestarts', 'MainPID'})) for unit in units]
+    if len(states) != len(units) or {s["Id"] for s in states} != set(units):
         raise ValueError("unit_inventory_incomplete")
     return states
 

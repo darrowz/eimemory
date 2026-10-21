@@ -31,11 +31,11 @@ def test_host_observes_only_the_original_runtime_owned_process(tmp_path,monkeypa
         return result
     monkeypatch.setattr(bridge,'unit_state',native)
     if fault=='none':
-        value=bridge.runtime_process_environment({'runtime_uid':1001},state['Id'])
+        value=bridge.runtime_process_environment({'runtime_uid':1001,'units':{name:{'manager':'user' if name in c.USER_COMPAT_UNITS else 'system'} for name in c.REGISTERED_UNITS}},state['Id'])
         assert value['pid']==123 and value['start_ticks']==4321
         assert value['environment']=={'CAPTURE':'1','PATH':'/usr/bin','EIMEMORY_RUNTIME_SETTINGS_APPLIED':token}
     else:
-        with pytest.raises(ValueError):bridge.runtime_process_environment({'runtime_uid':1001},'sshd.service' if fault=='unit' else state['Id'])
+        with pytest.raises(ValueError):bridge.runtime_process_environment({'runtime_uid':1001,'units':{name:{'manager':'user' if name in c.USER_COMPAT_UNITS else 'system'} for name in c.REGISTERED_UNITS}},'sshd.service' if fault=='unit' else state['Id'])
 
 
 @pytest.mark.parametrize('fault',['first','bound','changed'])

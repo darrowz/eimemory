@@ -355,10 +355,10 @@ claiming that any phase improved production behavior.
 The protected full-suite plan runs the complete repository tests, including the
 JavaScript bridges. The verification host needs Node.js 22 on its system PATH,
 as well as the configured trusted Python environment, pytest and bubblewrap.
-Install missing host dependencies through the distribution's configured package
-manager; do not skip JavaScript tests or expose private home directories or the
-host session bus to satisfy a fixture. Record the package version and install
-result with the operational evidence.
+Provide dependencies through a reviewed user-accessible toolchain; project
+deployment must not require privilege escalation. Do not skip JavaScript tests
+or expose private home directories or the host session bus to satisfy a fixture.
+Record the toolchain version and verification result with the operational evidence.
 
 One protected verification phase can take up to 7,200 seconds. The registered
 learn-watch and nightly entry points have four-hour startup budgets, allowing a
@@ -366,13 +366,23 @@ phase, provider work and bounded lease-lock recovery to finish. This does not
 shorten the full plan or the real observation window. An aborted attempt retains
 its failure receipts and cannot be reset into a successful transaction.
 
-The Root registry owns the exact user-managed colleague service inventory.
-Service usernames and home paths come from the operating system's fixed runtime
-UID account; the rendered bundle pins those bytes. Additional colleague names
-can only designate user-managed Hermes profiles, never arbitrary system units.
-Controlled stability checks all registered colleague profiles and the agents in
-the existing protected business-acceptance policy, retaining the complete-team
-coverage floors. Missing or untrusted configuration blocks acceptance.
+User-managed stability collection reads colleague service inventory directly
+from `systemctl --user list-unit-files`; it never contacts the legacy privileged
+manager for this inventory. Additional colleague names can only designate bounded
+Hermes profile names. The complete-team coverage floor remains five runtime
+services, and collection checks their actual service states separately. Each
+unit-state snapshot uses one inventory read, avoiding changes between repeated
+enumerations during that snapshot.
+
+Legacy system-managed execution remains explicitly identifiable for historical
+diagnostics. Its privileged registry, incident-proof issuer, provider delegation
+and protected business policy have not yet been migrated to a user-owned authority.
+A successful legacy diagnostic is not proof of a user-only deployment. Do not
+promote this release as completing that migration or convert legacy provenance
+into new autonomous incident evidence. The live legacy owner must be retired
+through a validated handover before activating the user RPC listener; starting
+both owners or removing the existing listener before the handover is validated
+does not establish a valid deployment.
 
 A known historical user report can exercise a lawful automated maintenance
 transaction. Its original prior-knowledge and user-report facts remain bound to

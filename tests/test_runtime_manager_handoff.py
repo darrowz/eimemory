@@ -112,7 +112,7 @@ def test_handoff_retains_failure_and_uses_complete_original_rollback_boundary(tm
     monkeypatch.setattr(m,'STATE',tmp_path);monkeypatch.setattr(m,'REGISTRY',registry)
     monkeypatch.setattr(m,'load_contract',lambda:SimpleNamespace(canonical=c.canonical,strict_json=c.strict_json,
         validate_registry=lambda _:dict(generation='f'*64),USER_COMPAT_UNITS=()))
-    monkeypatch.setitem(sys.modules,'pwd',SimpleNamespace(getpwnam=lambda _:SimpleNamespace(pw_gid=1001)))
+    monkeypatch.setitem(sys.modules,'pwd',SimpleNamespace(getpwuid=lambda uid:SimpleNamespace(pw_uid=uid,pw_gid=1001,pw_name='darrow',pw_dir='/home/darrow')))
     monkeypatch.setattr(m,'handoff_preflight',lambda *_:context)
     monkeypatch.setattr(m,'read',lambda p,**_:Path(p).read_bytes())
     def write(path,raw,**_):Path(path).write_bytes(raw)

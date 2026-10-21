@@ -83,7 +83,7 @@ def test_native_capture_admission_controls_bash_exit_and_preserves_evidence(tmp_
         "import pathlib,runpy,sys\n"
         f"sys.path[:0] = [{str(repository)!r}, {str(repository / 'tests')!r}]\n"
         "from eimemory.ops import closure_capture\n"
-        "from test_closure_capture_pipeline import FixtureRuntime\n"
+        "from closure_storage_fixture import FixtureRuntime\n"
         "native = closure_capture.process_capture\n"
         "def capture(*args, **kwargs):\n"
         f"    kwargs['runtime_factory'] = lambda: FixtureRuntime(pathlib.Path({str(tmp_path / 'incident.sqlite')!r}))\n"

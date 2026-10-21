@@ -58,7 +58,7 @@ def test_controller_upgrade_preserves_business_owner_and_rolls_back_fixed_code(t
     monkeypatch.setattr(m,'CURRENT',source);monkeypatch.setattr(m,'RELEASES',source.parent)
     contract=SimpleNamespace(canonical=c.canonical,strict_json=c.strict_json,digest=c.digest,validate_registry=lambda x:x)
     monkeypatch.setattr(m,'load_contract',lambda:contract)
-    monkeypatch.setitem(sys.modules,'pwd',SimpleNamespace(getpwnam=lambda _:SimpleNamespace(pw_gid=1001)))
+    monkeypatch.setitem(sys.modules,'pwd',SimpleNamespace(getpwuid=lambda uid:SimpleNamespace(pw_uid=uid,pw_gid=1001,pw_name='darrow',pw_dir='/home/darrow')))
     old_manifest=b'{"original":true}';manifest_path=Path('/etc/eimemory-code-automation-authority/managed-code-incident-manifest.v1.json')
     monkeypatch.setattr(m,'read',lambda p,**_:old_manifest if Path(p)==manifest_path else b'' if p==args.bundle else Path(p).read_bytes())
     monkeypatch.setattr(m,'bundle',lambda *_:(files,{'controller_commit':commit}))
