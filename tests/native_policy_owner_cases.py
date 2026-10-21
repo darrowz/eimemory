@@ -166,6 +166,43 @@ def test_native_policy_real_capture_git_issuer_sqlite_and_same_original_bytes(na
     assert len(list(_state(f).glob('*.json'))) == 2
 
 
+@pytest.mark.parametrize('bad', ['test_plan', 'expiry', 'profile'])
+def test_idle_owner_checks_installed_authority_before_next_incident(native_policy_fixture, monkeypatch, bad):
+    f = native_policy_fixture
+    path = owner.standing_grant_path(f.scope)
+    path.parent.mkdir()
+    path.write_text('isolated presence marker; fixture reader supplies the grant')
+    if bad == 'test_plan':
+        f.grant['routes']['release.closure_internal_failure']['test_plan_digest'] = 'f'*64
+        reason = 'standing_grant_route_mismatch'
+    elif bad == 'expiry':
+        f.grant['expires_at'] = '2020-01-01T00:00:00Z'
+        reason = 'standing_grant_expired_or_not_yet_valid'
+    else:
+        monkeypatch.setattr(owner, '_verify_profile', lambda *_a: (_ for _ in ()).throw(
+            ValueError('standing_grant_profile_digest_mismatch')))
+        reason = 'standing_grant_profile_digest_mismatch'
+    result = _ensure(f)
+    assert result['ok'] is False and result['reason'] == reason, result
+    assert not _state(f).exists() and not f.destination.exists()
+    assert CodeEvolutionStore(f.runtime.store).list_transactions() == []
+
+
+@pytest.mark.parametrize('installed', [False, True])
+def test_idle_owner_reports_authority_without_creating_an_incident_or_policy(native_policy_fixture, installed):
+    f = native_policy_fixture
+    path = owner.standing_grant_path(f.scope)
+    if installed:
+        path.parent.mkdir()
+        path.write_text('isolated presence marker; fixture reader supplies the grant')
+    result = _ensure(f)
+    assert result['ok'] is True and result['status'] == 'idle', result
+    assert result['standing_authority']['status'] == ('verified' if installed else 'not_configured')
+    assert result['standing_authority']['effects_exercised'] is False
+    assert not _state(f).exists() and not f.destination.exists()
+    assert CodeEvolutionStore(f.runtime.store).list_transactions() == []
+
+
 @pytest.mark.parametrize('bad', ['missing', 'disabled', 'scope', 'remote', 'branch', 'repo', 'effects',
                                  'max_transactions', 'expiry', 'route', 'test_plan', 'profile', 'kill', 'revoke'])
 def test_native_policy_grant_boundary_is_default_deny(native_policy_fixture, monkeypatch, bad):
