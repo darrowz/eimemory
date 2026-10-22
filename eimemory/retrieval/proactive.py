@@ -123,6 +123,37 @@ def _is_host_notification(query: str) -> bool:
     return bool(_HOST_NOTIFICATION.match(str(query or "")))
 
 
+_ECHO_WINDOW_SECONDS = 600
+_ECHO_MIN_QUERY_CHARS = 12
+
+
+def _is_current_turn_echo(record: Any, query: str) -> bool:
+    """A just-captured transcript of this very request is not recalled evidence.
+
+    Hosts may persist the incoming turn before asking for recall; such a
+    record trivially matches the query and only echoes it back.
+    """
+    needle = " ".join(str(query or "").split()).casefold()
+    if len(needle) < _ECHO_MIN_QUERY_CHARS or getattr(record, "kind", "") != "memory":
+        return False
+    created = str(getattr(getattr(record, "time", None), "created_at", "") or "")
+    try:
+        created_at = datetime.fromisoformat(created.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - created_at).total_seconds()
+    if not -60 <= age <= _ECHO_WINDOW_SECONDS:
+        return False
+    content = record.content if isinstance(getattr(record, "content", None), dict) else {}
+    haystack = " ".join(" ".join(str(value or "").split()) for value in (
+        record.title, record.summary, record.detail, content.get("text"))).casefold()
+    # Only a turn transcript attributing these words to the user is an echo;
+    # a durable fact that merely restates the question remains evidence.
+    return bool(re.search(r"\buser\s*[:：]\s*" + re.escape(needle), haystack))
+
+
 class ProactiveRecallService:
     """Deterministic proactive recall and explicit use-feedback coordinator.
 
@@ -497,6 +528,8 @@ class ProactiveRecallService:
                 }
             unique_records: dict[tuple[str, str], RecordEnvelope] = {}
             for record in [*bundle.items, *bundle.rules]:
+                if recall_bundle is None and _is_current_turn_echo(record, normalized_query):
+                    continue
                 unique_records.setdefault((record.record_id, record.source_id), record)
             cached = _CachedRecall(
                 tuple(unique_records.values()), dict(bundle.explanation), float(bundle.confidence),
