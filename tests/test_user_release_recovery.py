@@ -284,7 +284,8 @@ def test_real_failed_terminal_pin_keeps_pre_pin_bytes_and_status_cannot_change_c
 @pytest.mark.parametrize('fault',['none','reload','code','identity','policy','readback','sealed_crash','sealed_tamper',
     'sealed_key_tamper','sealed_ledger_tamper','sealed_key_mode','sealed_wal_tamper',
     'sealed_downgrade','sealed_missing_materials','sealed_null_materials','sealed_material_race',
-    'sealed_transition_race','sealed_current_race','sealed_source_race'])
+    'sealed_transition_race','sealed_current_race','sealed_source_race','sealed_missing_history',
+    'sealed_history_tamper','sealed_history_receipt_tamper','sealed_history_race'])
 @pytest.mark.parametrize('gateway',[False,True])
 def test_installation_failure_retains_fence_and_originals_until_full_readback(tmp_path,monkeypatch,fault,gateway):
     module=installer();uid=os.geteuid()
@@ -426,6 +427,11 @@ def test_installation_failure_retains_fence_and_originals_until_full_readback(tm
         if fault=='sealed_ledger_tamper':(knowledge/'knowledge.sqlite').write_bytes(b'changed-ledger')
         if fault=='sealed_key_mode':(state/'activation-signing.key').chmod(0o640)
         if fault=='sealed_wal_tamper':(knowledge/'knowledge.sqlite-wal').write_bytes(b'pending')
+        if fault in {'sealed_missing_history','sealed_history_tamper','sealed_history_receipt_tamper'}:
+            retained=list(state.glob('authority-*/managed-manifest.snapshot'))[0]
+            if fault=='sealed_missing_history':retained.unlink()
+            elif fault=='sealed_history_tamper':retained.write_bytes(b'changed retained manifest')
+            else:retained.with_name('complete.json').write_bytes(b'{}')
         if fault in {'sealed_downgrade','sealed_missing_materials','sealed_null_materials'}:
             value=json.loads(seal.read_bytes())
             if fault=='sealed_downgrade':
@@ -434,7 +440,7 @@ def test_installation_failure_retains_fence_and_originals_until_full_readback(tm
             elif fault=='sealed_missing_materials':value.pop('protected_materials')
             else:value['protected_materials']=None
             seal.write_bytes(module.canonical(value));recovery.expected_completion_sha256=sha256(seal.read_bytes()).hexdigest()
-        if fault in {'sealed_material_race','sealed_transition_race','sealed_current_race','sealed_source_race'}:
+        if fault in {'sealed_material_race','sealed_transition_race','sealed_current_race','sealed_source_race','sealed_history_race'}:
             real_archive=module.write
             changed={'value':False}
             def archive_then_race(path,raw,owner,mode=0o600):
@@ -445,6 +451,7 @@ def test_installation_failure_retains_fence_and_originals_until_full_readback(tm
                     elif fault=='sealed_transition_race':(state/'active-transition.json').write_bytes(b'changed-transition')
                     elif fault=='sealed_current_race':
                         other=current.parent/('c'*40);other.mkdir();paths['/opt/eimemory/current']=other
+                    elif fault=='sealed_history_race':list(state.glob('authority-*/managed-manifest.snapshot'))[0].write_bytes(b'changed history')
                 return result
             monkeypatch.setattr(module,'write',archive_then_race)
             if fault=='sealed_source_race':

@@ -489,6 +489,48 @@ def retain_manifest_history(state, raw, generation, uid):
     return history
 
 
+def retained_manifest_evidence(state,uid,*,raw=None,generation=None,expected=None):
+    """Verify a durable pre-publication manifest archive without creating one."""
+    fields={'basename','registry_generation','manifest_sha256','completion_sha256'}
+    if expected is not None:
+        if not isinstance(expected,dict) or set(expected)!=fields:
+            raise ValueError('user_install_manifest_history_unverified')
+        generation=expected['registry_generation'];wanted=expected['manifest_sha256']
+        names=[expected['basename']]
+    else:
+        if not isinstance(raw,bytes):raise ValueError('user_install_manifest_history_unverified')
+        wanted=sha256(raw).hexdigest()
+        names=sorted(path.name for path in Path(state).glob('authority-*'))
+    if (not isinstance(generation,str) or re.fullmatch('[0-9a-f]{64}',generation) is None
+            or not isinstance(wanted,str) or re.fullmatch('[0-9a-f]{64}',wanted) is None or len(names)>4096):
+        raise ValueError('user_install_manifest_history_unverified')
+    for name in names:
+        if not isinstance(name,str) or re.fullmatch(r'authority-[0-9]{8}T[0-9]{6}Z-[0-9]+',name) is None:
+            if expected is not None:raise ValueError('user_install_manifest_history_unverified')
+            continue
+        history=Path(state)/name
+        try:
+            info=history.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid!=uid or info.st_mode&0o022:
+                raise ValueError('user_install_manifest_history_unverified')
+            snapshot=owned_bytes(history/'managed-manifest.snapshot',uid,1048576)
+            complete=owned_bytes(history/'complete.json',uid,65536)
+            if any(stat.S_IMODE((history/leaf).lstat().st_mode)!=0o600
+                   for leaf in ('managed-manifest.snapshot','complete.json')):
+                raise ValueError('user_install_manifest_history_unverified')
+            if (strict(complete)!={'registry_generation':generation,'manifest_sha256':wanted}
+                    or sha256(snapshot).hexdigest()!=wanted or raw is not None and snapshot!=raw):
+                raise ValueError('user_install_manifest_history_unverified')
+            evidence={'basename':name,'registry_generation':generation,'manifest_sha256':wanted,
+                'completion_sha256':sha256(complete).hexdigest()}
+            if expected is not None and evidence!=expected:
+                raise ValueError('user_install_manifest_history_unverified')
+            return evidence
+        except (OSError,ValueError):
+            if expected is not None:raise ValueError('user_install_manifest_history_unverified') from None
+    raise ValueError('user_install_manifest_history_unverified')
+
+
 def published_registry(seed,files,manifest,managed_raw,home,uid,gid,contract):
     authority=Path(home)/'.config/eimemory/control-plane';state=Path(home)/'.local/state/eimemory/control-plane'
     entry=strict(files['controller-entry.json'])
@@ -841,6 +883,7 @@ def _publish_installation(args,account,files,manifest,seed,settings,managed_raw,
             if os.path.lexists(state/'active-transition.json') else None))!=original_transition:
         raise ValueError('user_install_transition_changed')
     retain_manifest_history(state,prior_raw,seed['generation'],uid)
+    retained_proof=retained_manifest_evidence(state,uid,raw=prior_raw,generation=seed['generation'])
     for name,raw in files.items():
         if name!='eimemory-runtime-manager.service':write(code/name,raw,uid)
     cache=code/'empty-pycache'
@@ -907,7 +950,8 @@ def _publish_installation(args,account,files,manifest,seed,settings,managed_raw,
         'installation_sha256':sha256(intent_raw).hexdigest(),'registry_sha256':sha256(contract.canonical(registry)).hexdigest(),
         'controller_commit':commit,'runtime_commit':runtime,'release_accepted':False,'autonomous_repair_credit':False,
         'published_files':installation_inventory(home,registry,uid,helper),
-        'protected_materials':protected_materials(home,uid)}
+        'protected_materials':protected_materials(home,uid),
+        'retained_manifest_history':retained_manifest_evidence(state,uid,expected=retained_proof)}
     if gateway_manifest is not None:
         seal['gateway_retirement']=gateway_retirement_evidence(backup.with_suffix('.gateway-retirements'),
             uid,intent['gateway_retirement_manifest_sha256'],unit_home,registry)
@@ -979,6 +1023,8 @@ def recover_completed_installation(args):
                 raise ValueError('user_install_protected_materials_invalid')
             protected_materials(home,uid,seal.get('protected_materials'))
             expected['protected_materials']=seal['protected_materials']
+            expected['retained_manifest_history']=retained_manifest_evidence(state,uid,
+                expected=seal.get('retained_manifest_history'))
         if intent.get('gateway_retirement_manifest_sha256') is not None:
             expected['gateway_retirement']=gateway_retirement_evidence(backup.with_suffix('.gateway-retirements'),
                 uid,intent['gateway_retirement_manifest_sha256'],home/'.config/systemd/user',registry)
@@ -1003,6 +1049,8 @@ def recover_completed_installation(args):
             'release_accepted':False,'autonomous_repair_credit':False}),uid,0o600)
         stopped_controller(environment)
         if 'protected_materials' in expected:protected_materials(home,uid,expected['protected_materials'])
+        if 'retained_manifest_history' in expected:
+            retained_manifest_evidence(state,uid,expected=expected['retained_manifest_history'])
         verify_controller_sources(registry,registry['controller_commit'])
         final_transition=sha256(owned_bytes(transition,uid,65536)).hexdigest() if os.path.lexists(transition) else None
         if (Path('/opt/eimemory/current').resolve(strict=True)!=current
@@ -1114,8 +1162,14 @@ def finish_published_installation(args):
     before_registry=before.get(str(registry_path),{}).get('raw')
     prior_manifest=before.get(str(authority/'managed-code-incident-manifest.v1.json'),{}).get('raw')
     managed=strict(managed_raw)
-    if (before_registry is None or sha256(before_registry).hexdigest()!=intent['registry_before_sha256']
-            or intent['registry_before_sha256']!=args.expected_existing_registry_sha256 or prior_manifest is None
+    # Initial user installation has no old registry, but still has the imported
+    # authority manifest and signing/knowledge custody. Absence is a distinct
+    # three-way binding, never an excuse to accept a missing upgrade original.
+    registry_before=intent.get('registry_before_sha256')
+    registry_bound=(before_registry is None and 'registry_before_sha256' in intent and registry_before is None
+        and args.expected_existing_registry_sha256=='') if before_registry is None else (
+            sha256(before_registry).hexdigest()==registry_before==args.expected_existing_registry_sha256)
+    if (not registry_bound or prior_manifest is None
             or sha256(prior_manifest).hexdigest()!=seed['managed_incident_authority']['manifest_sha256']
             or managed.get('previous_manifest_digest')!=sha256(canonical(strict(prior_manifest))).hexdigest()
             or managed.get('release_commit')!=registry['controller_commit']
@@ -1128,6 +1182,7 @@ def finish_published_installation(args):
         seal_path=backup.with_suffix('.complete.json')
         if os.path.lexists(seal_path):raise ValueError('user_install_finish_existing_seal_use_recovery')
         repairs,repair_evidence=reviewed_metadata_repairs(args,intent,registry,home,uid)
+        retained_proof=retained_manifest_evidence(state,uid,raw=prior_manifest,generation=seed['generation'])
         expected=published_installation_expectations(backup_raw,home,uid,files,registry,settings,managed_raw,
             contract,policy_module,metadata_repairs=repairs)
         retirement=None
@@ -1140,6 +1195,7 @@ def finish_published_installation(args):
                     or Path('/opt/eimemory/current').resolve(strict=True)!=Path('/opt/eimemory/releases')/registry['runtime_commit']):
                 raise ValueError('user_install_finish_authority_changed')
             verify_controller_sources(registry,registry['controller_commit'])
+            retained_manifest_evidence(state,uid,expected=retained_proof)
             if installation_inventory(home,registry,uid,helper)!=expected:
                 raise ValueError('user_install_finish_publication_mismatch')
             for path,pin in ((authority/'managed-incident-proof.key',args.expected_managed_key_sha256),
@@ -1162,7 +1218,7 @@ def finish_published_installation(args):
             'installation_sha256':sha256(marker_raw).hexdigest(),'registry_sha256':sha256(registry_raw).hexdigest(),
             'controller_commit':registry['controller_commit'],'runtime_commit':registry['runtime_commit'],
             'release_accepted':False,'autonomous_repair_credit':False,'published_files':expected,
-            'protected_materials':materials}
+            'protected_materials':materials,'retained_manifest_history':retained_proof}
         if retirement is not None:seal['gateway_retirement']=retirement
         provenance=backup.with_suffix('.published-finish-'+str(time.time_ns())+'.json')
         archive_write(provenance,canonical(dict(schema='eimemory.user_published_installation_finish.v1',
