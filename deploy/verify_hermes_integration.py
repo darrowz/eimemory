@@ -116,6 +116,28 @@ def _deploy_workspace() -> str:
             or HONGTU_WORKSPACE_ID)
 
 
+def _initialize_deployment_replay(provider, session_id: str) -> None:
+    scope = {
+        "tenant_id": os.environ.get("EIMEMORY_TENANT_ID") or "default",
+        "agent_id": _deploy_agent(),
+        "workspace_id": _deploy_workspace(),
+        "user_id": os.environ.get("EIMEMORY_USER_ID") or os.environ.get("USER") or "operator",
+    }
+    provider.initialize(
+        session_id,
+        hermes_home=os.environ.get("HERMES_HOME", ""),
+        platform="deployment-replay",
+        agent_context="primary",
+        agent_identity=scope["agent_id"],
+        # The native request label selects its registered profile. The expected
+        # scope below still checks every coordinate after the existing Hermes
+        # channel normalization, including a job's base workspace spelling.
+        agent_workspace="hermes",
+        user_id=scope["user_id"],
+        expected_scope=scope,
+    )
+
+
 def verify_hermes_integration(
     *,
     repo_root: str | Path,
@@ -149,19 +171,7 @@ def verify_hermes_integration(
     if provider is None:
         raise RuntimeError("official Hermes loader did not return eimemory provider")
     session_id = f"hermes-release-{commit[:12]}-{uuid.uuid4().hex[:8]}"
-    provider.initialize(
-        session_id,
-        hermes_home=os.environ.get("HERMES_HOME", ""),
-        platform="deployment-replay",
-        agent_context="primary",
-        agent_identity=_deploy_agent(),
-        agent_workspace=_deploy_workspace(),
-        user_id=os.environ.get("EIMEMORY_USER_ID") or os.environ.get("USER") or "operator",
-        expected_scope={"tenant_id": os.environ.get("EIMEMORY_TENANT_ID") or "default",
-            "agent_id": _deploy_agent(),
-            "workspace_id": _deploy_workspace(),
-            "user_id": os.environ.get("EIMEMORY_USER_ID") or os.environ.get("USER") or "operator"},
-    )
+    _initialize_deployment_replay(provider, session_id)
     try:
         discover_plugins(force=True)
         manager = get_plugin_manager()

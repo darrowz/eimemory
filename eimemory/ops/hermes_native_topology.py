@@ -63,7 +63,10 @@ def _process_owner():
 
 
 def _configuration(profile, source_pins):
-    import yaml
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ValueError('hermes_native_yaml_dependency_unavailable') from exc
     home = Path(profile['hermes_home'])
     raw = _read(home / 'config.yaml')
     try:

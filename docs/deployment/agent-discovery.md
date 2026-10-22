@@ -15,6 +15,12 @@ profile's identity. Background callbacks retain their request's context; a
 session ID alone cannot select a provider belonging to another profile. Shared
 RPC credentials are used only for the shared RPC endpoint.
 
+The eiMemory interpreter that reads native Hermes configuration needs the
+`hermes` extra (`python -m pip install 'eimemory[hermes]'`). Managed user
+preparation and immutable deployment install and verify it themselves; they
+do not rely on PyYAML being present in Hermes' separate interpreter. The
+standalone Hermes integration installer requires the same extra in its caller.
+
 Sampling coverage compares the complete tenant, agent, workspace, user, channel
 and source tuple. A configured profile with no natural traffic remains visible
 with zero counts. Explicit searches, controlled historical business evidence

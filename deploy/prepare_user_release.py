@@ -79,7 +79,7 @@ def verify(repository,commit,releases,record):
             raise ValueError('user_release_console_script_changed')
     run([root/'.venv/bin/python','-I','-B','-X','pycache_prefix='+str(cache),'-m','pip','check'])
     run([root/'.venv/bin/python','-I','-B','-X','pycache_prefix='+str(cache),'-c',
-         'import pypdf,psycopg; from psycopg.rows import dict_row'])
+         'import pypdf,psycopg,yaml; from psycopg.rows import dict_row; assert callable(yaml.safe_load)'])
     run([root/'.venv/bin/python','-I','-B','-X','pycache_prefix='+str(cache),
         root/'.venv/bin/eimemory','--help'],stdout=subprocess.DEVNULL)
     return root
@@ -115,7 +115,7 @@ def prepare(repository,commit,releases):
             '--release-dir',stage,'--releases-root',releases,'--repo-root',repository,'--commit',commit])
         run([*python,'-m','venv',stage/'.venv'])
         run([stage/'.venv/bin/python','-I','-B','-X','pycache_prefix='+str(cache),
-             '-m','pip','install','--no-compile',str(stage)+'[postgres,pdf]'])
+             '-m','pip','install','--no-compile',str(stage)+'[postgres,pdf,hermes]'])
         run([stage/'.venv/bin/python','-I','-B','-X','pycache_prefix='+str(cache),'-m','pip','check'])
         run([*python,stage/'deploy/clean_release_bytecode.py','--validate-source','--allow-stage',
             '--release-dir',stage,'--releases-root',releases,'--repo-root',repository,'--commit',commit])

@@ -28,7 +28,7 @@ jobs:
           cache: pip
 
       - name: Install package and test runner
-        run: python -B -m pip install --no-compile '.[pdf]' pytest
+        run: python -B -m pip install --no-compile '.[pdf,hermes]' pytest
 
       - name: Verify protected Unix operator authority with actual root permissions
         run: >-
@@ -137,8 +137,10 @@ jobs:
           tests/test_user_topology_restore.py
           tests/test_hermes_topology_contract.py
           tests/test_hermes_native_profile_topology.py
+          tests/test_installer_hermes_dependency.py
           tests/test_hermes_multiplex_context.py
           tests/test_hermes_single_gateway_acceptance.py
+          tests/test_hermes_deployment_scope_replay.py
           tests/test_receipt_handoff_directory_ownership.py
           tests/test_hermes_private_handoff_migration.py
           tests/test_hermes_plugin_no_release_bytecode.py

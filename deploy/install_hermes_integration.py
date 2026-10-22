@@ -65,8 +65,16 @@ def provider_identity(release_root: str | Path) -> dict[str, str]:
     }
 
 
+def _yaml_module():
+    try:
+        import yaml
+    except ImportError as exc:
+        raise RuntimeError('Hermes integration requires eimemory[hermes] in the installer interpreter') from exc
+    return yaml
+
+
 def _plugin_version(path: Path) -> str:
-    import yaml
+    yaml = _yaml_module()
 
     payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return str(payload.get("version") or "").strip()
@@ -93,7 +101,7 @@ def _managed_link(destination: Path, target: Path) -> str:
 
 
 def _write_config(path: Path, payload: dict[str, Any]) -> None:
-    import yaml
+    yaml = _yaml_module()
 
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
@@ -171,7 +179,7 @@ def install_hermes_integration(
     current_root: str | Path = "/opt/eimemory/current",
     allow_provider_only: bool = False,
 ) -> dict[str, Any]:
-    import yaml
+    yaml = _yaml_module()
 
     release = Path(release_root).expanduser().resolve(strict=True)
     home = Path(hermes_home).expanduser().resolve(strict=True)

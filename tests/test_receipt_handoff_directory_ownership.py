@@ -16,6 +16,10 @@ def append(handoff):
 def test_existing_directory_is_never_chmodded(tmp_path):
     native = tmp_path / 'native-profile'
     native.mkdir(mode=0o755)
+    # Establish the native owner's policy independently of the test runner's
+    # service umask; mkdir(mode=...) alone can yield 0750 under umask 0027.
+    native.chmod(0o755)
+    assert stat.S_IMODE(native.stat().st_mode) == 0o755
     append(ReceiptIdHandoff(native / 'hint.sqlite'))
     assert stat.S_IMODE(native.stat().st_mode) == 0o755
 
@@ -25,6 +29,7 @@ def test_shared_writable_directory_is_rejected_without_mutation(tmp_path):
     native = tmp_path / 'native-profile'
     native.mkdir()
     native.chmod(0o775)
+    assert stat.S_IMODE(native.stat().st_mode) == 0o775
     with pytest.raises(ValueError, match='not shared writable'):
         append(ReceiptIdHandoff(native / 'hint.sqlite'))
     assert stat.S_IMODE(native.stat().st_mode) == 0o775

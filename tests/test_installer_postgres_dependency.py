@@ -26,6 +26,7 @@ def interpreter(root: Path, *, postgres: bool, prior: bool = False) -> Path:
         (package / "__init__.py").write_text("raise AssertionError('prior imported')\n" if prior else "")
         (package / "rows.py").write_text("dict_row = object()\n")
     if not prior:
+        (site / 'yaml.py').write_text('def safe_load(value): return {}\n')
         pip = site / "pip"
         pip.mkdir()
         (pip / "__init__.py").write_text("")

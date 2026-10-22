@@ -25,6 +25,7 @@ def interpreter(root: Path, *, pdf: bool, prior: bool = False) -> Path:
         # Preservation detects package presence without importing old code.
         (package / "__init__.py").write_text("raise AssertionError('prior imported')\n" if prior else "")
     if not prior:
+        (site / 'yaml.py').write_text('def safe_load(value): return {}\n')
         pip = site / "pip"
         pip.mkdir()
         (pip / "__init__.py").write_text("")

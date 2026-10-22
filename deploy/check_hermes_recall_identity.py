@@ -16,10 +16,14 @@ import uuid
 def probe_hermes_recall_identity(provider, *, scope, source_ids, queries):
     if not queries or len(queries) > 8 or any(not isinstance(query, str) or not query.strip() or len(query) > 4000 for query in queries):
         raise ValueError("one to eight nonempty queries of at most 4000 characters are required")
+    from eimemory.contracts.hermes_topology import load_topology
+    # A registered native profile owns its scope; expected_scope retains the
+    # exact routing check without rejecting equivalent base/channel spellings.
+    workspace = "hermes" if load_topology() is not None else scope["workspace_id"]
     provider.initialize(
         "hermes-identity-probe-" + uuid.uuid4().hex,
         agent_context="subagent", agent_identity=scope["agent_id"],
-        agent_workspace=scope["workspace_id"], user_id=scope["user_id"],
+        agent_workspace=workspace, user_id=scope["user_id"],
         expected_scope=scope, expected_source_ids=source_ids,
     )
     checks = []

@@ -5,6 +5,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -190,3 +191,18 @@ def test_source_pin_failure_blocks_collection_before_runtime_or_native_reads(mon
     proof=native.collect_native_profile_topology(topology(),expected_commit=COMMIT)
     assert not proof['complete']
     assert proof['blocking_reasons']==['hermes_native_collector_release_mismatch']
+
+
+def test_missing_yaml_extra_is_explicit_and_cannot_pass_native_collection(monkeypatch):
+    native_fixture(monkeypatch)
+    monkeypatch.setitem(sys.modules,'yaml',None)
+    # Exercise the real function rather than the native roster fixture stub.
+    with pytest.raises(ValueError,match='hermes_native_yaml_dependency_unavailable'):
+        _REAL_CONFIGURATION(topology()['profiles'][0],source_pins())
+    monkeypatch.setattr(native,'_configuration',_REAL_CONFIGURATION)
+    proof=native.collect_native_profile_topology(topology(),expected_commit=COMMIT)
+    assert proof['complete'] is False
+    assert all(config['ok'] is False for config in proof['profile_configs'])
+
+
+_REAL_CONFIGURATION = native._configuration

@@ -3323,6 +3323,9 @@ git -C "$REPO_DIR" archive "$COMMIT" | tar -C "$STAGE_DIR" -xf -
 "$PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" -m venv --clear "$STAGE_DIR/.venv"
 
 "$STAGE_DIR/.venv/bin/python" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" -m pip install --no-compile --no-deps "$STAGE_DIR"
+# Managed releases include the native Hermes configuration reader even when
+# Hermes runs in its own interpreter. Never borrow that interpreter's packages.
+"$STAGE_DIR/.venv/bin/python" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" -m pip install --no-compile "$STAGE_DIR[hermes]"
 if [ "${EIMEMORY_INSTALL_POSTGRES_EXTRA+x}" != "x" ]; then
   EIMEMORY_INSTALL_POSTGRES_EXTRA=0
   if [ -n "${PREVIOUS_CURRENT:-}" ] && [ -x "$PREVIOUS_CURRENT/.venv/bin/python" ]; then
@@ -3356,6 +3359,11 @@ if [ "$EIMEMORY_INSTALL_PDF_EXTRA" = "1" ]; then
   "$STAGE_DIR/.venv/bin/python" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" -m pip install --no-compile "$STAGE_DIR[pdf]"
 fi
 "$STAGE_DIR/.venv/bin/python" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" -m pip check
+if ! "$STAGE_DIR/.venv/bin/python" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" -c \
+    'import yaml; assert callable(yaml.safe_load)' >/dev/null 2>&1; then
+  echo "hermes_dependency=failed staged_import" >&2
+  exit 2
+fi
 if [ "$EIMEMORY_INSTALL_POSTGRES_EXTRA" = "1" ]; then
   if ! "$STAGE_DIR/.venv/bin/python" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" -c \
       'import psycopg; from psycopg.rows import dict_row' >/dev/null 2>&1; then
