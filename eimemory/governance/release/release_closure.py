@@ -398,7 +398,7 @@ def read_strict_deployment_receipt(runtime: Any, *, scope, repo_root: str, curre
 
 
 def run_managed_post_resume_closure(runtime: Any, *, job_key: str, validation_context: dict | None = None) -> dict:
-    """Real controlled business/stability admission after native restoration.
+    """Real business/stability admission while serving is ready and timers held.
 
     This entry is deliberately separate from strict pre-observation. It never
     re-records an ordinary deployment receipt and never starts the L5 clock.
@@ -413,6 +413,7 @@ def run_managed_post_resume_closure(runtime: Any, *, job_key: str, validation_co
     from eimemory.governance.release.closure_contracts import controlled_production_closure_report_ok
     from eimemory.governance.l5.l5_readiness import _storage_migration_status
     from eimemory.governance.safety.prompt_safety_executor import bind_prompt_safety_from_service
+    from eimemory.contracts.user_control_plane import user_mode
     import re
 
     report = {"ok": False, "closure_complete": False, "data_accumulating": False,
@@ -439,15 +440,20 @@ def run_managed_post_resume_closure(runtime: Any, *, job_key: str, validation_co
     state = native.get("state") if isinstance(native.get("state"), dict) else {}
     invocation = str(child.get("parent_original_invocation") or "")
     started = _read(JOBS_ROOT / job_key / "started.json")
-    finalized = _read(JOBS_ROOT / job_key / "finalized.json")
+    serving = _read(JOBS_ROOT / job_key / "serving-ready.json")
+    prepared = serving.get('native') if isinstance(serving.get('native'),dict) else {}
     registry = read_registry()
-    if (native.get("manager") != "system" or native.get("unit") != f"eimemory-code-deployment-job@{job_key}.service"
-        or native.get("phase") != "resumed_awaiting_business" or state.get("ActiveState") not in {"active", "activating"}
+    expected_manager='user' if user_mode() else 'system'
+    if (native.get("manager") != expected_manager or native.get("unit") != f"eimemory-code-deployment-job@{job_key}.service"
+        or native.get("phase") != "serving_awaiting_business" or native.get('core_serving_ready') is not True
+        or native.get('background_held') is not True or native.get('resumed') is not False
+        or state.get("ActiveState") not in {"active", "activating"}
         or not re.fullmatch(r"[0-9a-f]{32}", invocation) or state.get("InvocationID") != invocation
         or native.get("original_invocation") != invocation
         or started != {"request_key": job_key, "invocation": invocation}
-        or finalized.get("request_key") != job_key or finalized.get("invocation") != invocation
-        or (finalized.get("native") or {}).get("resumed") is not True
+        or serving.get("request_key") != job_key or serving.get("invocation") != invocation
+        or prepared.get('phase')!='serving_awaiting_business' or prepared.get('core_serving_ready') is not True
+        or prepared.get('background_held') is not True or prepared.get('resumed') is not False
         or registry.get("runtime_commit") != body["candidate_commit"]
         or registry.get("controller_commit") != body["controller_commit"]):
         return _blocked(report, "managed_resume", "native_restoration_not_verified")
@@ -509,6 +515,7 @@ def run_manual_post_resume_closure(runtime: Any, *, job_key: str, validation_con
     from eimemory.evaluation.controlled_production_acceptance import load_controlled_policy
     from eimemory.governance.l5.l5_readiness import _storage_migration_status
     from eimemory.governance.safety.prompt_safety_executor import bind_prompt_safety_from_service
+    from eimemory.contracts.user_control_plane import user_mode
 
     report = dict(ok=False, closure_complete=False, data_accumulating=False,
         report_type="manual_post_resume_business", blocked_stage="", blocked_reason="",
@@ -523,9 +530,11 @@ def run_manual_post_resume_closure(runtime: Any, *, job_key: str, validation_con
         return _blocked(report, "managed_job", "root_reviewed_manual_context_required")
     parent = deployment_job_status(job_key)
     registry = read_registry()
-    if (parent.get("original_invocation") != child["parent_original_invocation"]
-        or parent.get("phase") != "resumed_awaiting_business" or parent.get("resumed") is not True
-        or parent.get("manual_release") is not True or parent.get("held_background")
+    expected_manager='user' if user_mode() else 'system'
+    if (parent.get('manager')!=expected_manager or parent.get("original_invocation") != child["parent_original_invocation"]
+        or parent.get("phase") != "serving_awaiting_business" or parent.get("resumed") is not False
+        or parent.get('core_serving_ready') is not True or parent.get('background_held') is not True
+        or parent.get("manual_release") is not True
         or registry["runtime_commit"] != body["target_commit"]):
         return _blocked(report, "managed_resume", "native_restoration_not_verified")
     scope = dict(body["scope"])

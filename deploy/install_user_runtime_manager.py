@@ -1281,6 +1281,10 @@ def failed_attempt_native(contract,record,environment):
     if (contract.native_terminal_exit(native,original,record['unit'])
             and native['Result'] in {'exit-code','signal','timeout','core-dump','watchdog'}):
         return native
+    if (record.get('terminal_recovery',{}).get('failure_kind')=='boot_change'
+            and contract.restored_boot_failure(record,{**native,'ControlPID':observed['ControlPID']},
+                current_boot=native_boot_id())):
+        return native
     prestart=(record.get('phase')=='submitted' and record.get('quiesced') is False
         and record.get('active_before') is None and native['LoadState']=='loaded'
         and native['ActiveState']=='failed' and native['SubState']=='failed'
@@ -1293,6 +1297,13 @@ def failed_attempt_native(contract,record,environment):
         if old is not None and old!=observed:raise ValueError('user_recovery_prestart_evidence_changed')
         return observed
     raise ValueError('user_recovery_attempt_active_or_unknown')
+
+
+def native_boot_id():
+    value=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    if re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',value) is None:
+        raise ValueError('user_recovery_native_boot_identity_invalid')
+    return value
 
 
 def revalidation_parent(contract,registry,record,scope,environment):
@@ -1316,7 +1327,7 @@ def capture_reference(helper,state,contract,registry,scope):
     fields={'schema','source_job_key','source_job_sha256','source_invocation_id',
         'source_registry_generation','base_commit','scope','active_before','enabled_before',
         'source_native_exit','history_basename'}
-    if (not isinstance(value,dict) or set(value)!=fields
+    if (not isinstance(value,dict) or set(value) not in (fields,fields|{'source_boot_change'})
             or value['schema']!='eimemory.manual_release_recovery_capture.v1'
             or value['base_commit']!=registry['runtime_commit'] or value['scope']!=scope
             or contract.canonical(value)!=raw):
@@ -1663,9 +1674,10 @@ def validate_failed_manual_recovery(contract, registry, record, transition, nati
     if (not isinstance(active,list) or len(active)!=len(set(active))
             or not set(active)<=set(registry['units'])):
         raise ValueError('user_recovery_original_capture_invalid')
-    if (not contract.native_terminal_exit(native,record.get('original_invocation'),record['unit'])
+    boot=contract.restored_boot_failure(record,native)
+    if (not boot and (not contract.native_terminal_exit(native,record.get('original_invocation'),record['unit'])
             or native['Result'] not in {'exit-code','signal','timeout','core-dump','watchdog'}
-            or native['ControlGroup']!=''):
+            or native['ControlGroup']!='')):
         raise ValueError('user_recovery_native_failure_unproven')
 
 
@@ -1697,11 +1709,14 @@ def recovery_capture(contract,record,job_raw,native,current,history_name,enabled
                                  'masked','masked-runtime','linked','linked-runtime','alias','transient',''}
                    for value in enabled_before.values())):
         raise ValueError('user_recovery_enabled_capture_invalid')
-    return {'schema':'eimemory.manual_release_recovery_capture.v1','source_job_key':record['job_key'],
-        'source_job_sha256':sha256(job_raw).hexdigest(),'source_invocation_id':native['InvocationID'],
+    boot=contract.restored_boot_failure(record,native)
+    capture={'schema':'eimemory.manual_release_recovery_capture.v1','source_job_key':record['job_key'],
+        'source_job_sha256':sha256(job_raw).hexdigest(),'source_invocation_id':record['original_invocation'] if boot else native['InvocationID'],
         'source_registry_generation':record['registry']['generation'],'base_commit':current,
         'scope':record['request']['scope'],'active_before':list(active),
         'enabled_before':dict(enabled_before),'source_native_exit':native,'history_basename':history_name}
+    if boot:capture['source_boot_change']=record['terminal_recovery']['boot_change']
+    return capture
 
 
 def migration_enabled_capture(contract,record,user_audit,host_audit):
@@ -1752,6 +1767,8 @@ def reconcile_consumed_capture(helper,contract,state,record,history,uid):
     original_raw=helper.read_file(source/'job.original');original=contract.strict_json(original_raw)
     original_native=contract.strict_json(helper.read_file(source/'native-exit.json'))
     contract.validate_manual_permit(original.get('request'),capture.get('source_job_key'))
+    boot=(capture.get('source_boot_change')==original.get('terminal_recovery',{}).get('boot_change')
+        and 'source_boot_change' in capture and contract.restored_boot_failure(original,original_native))
     if (capture.get('schema')!='eimemory.manual_release_recovery_capture.v1'
             or sha256(original_raw).hexdigest()!=capture.get('source_job_sha256')
             or original.get('job_key')!=capture.get('source_job_key')
@@ -1760,10 +1777,11 @@ def reconcile_consumed_capture(helper,contract,state,record,history,uid):
             or capture.get('base_commit')!=record['request']['base_commit']
             or capture.get('active_before')!=original.get('active_before')
             or capture.get('source_native_exit')!=original_native
-            or capture.get('source_invocation_id')!=original_native.get('InvocationID')
+            or capture.get('source_invocation_id')!=(original.get('original_invocation') if boot else original_native.get('InvocationID'))
             or capture.get('source_registry_generation')!=original['registry']['generation']
-            or not contract.native_terminal_exit(original_native,original.get('original_invocation'),original['unit'])
-            or original_native.get('Result') not in {'exit-code','signal','timeout','core-dump','watchdog'}):
+            or not boot and (not contract.native_terminal_exit(original_native,original.get('original_invocation'),original['unit'])
+                or original_native.get('Result') not in {'exit-code','signal','timeout','core-dump','watchdog'})
+            or 'source_boot_change' in capture and not boot):
         raise ValueError('user_recovery_consumed_capture_binding_invalid')
     consumption=source/'capture-consumption.json'
     if os.path.lexists(consumption):
@@ -1787,6 +1805,12 @@ def reconcile_consumed_capture(helper,contract,state,record,history,uid):
 def pin_failed_terminal(helper,contract,state,record,job_raw,native,history,uid,environment):
     """Pin a real failed native exit once, keeping the untouched pre-pin bytes."""
     if record.get('terminal_state') is not None:return record,job_raw
+    if contract.restored_boot_failure(record,native):
+        if failed_attempt_native(contract,record,environment)!=native:
+            raise ValueError('user_recovery_terminal_pin_changed')
+        # The native interruption proof is already durable. Preserve the exact
+        # original record; a boot change must never become a fake native exit.
+        return record,job_raw
     if (not contract.native_terminal_exit(native,record.get('original_invocation'),record['unit'])
             or native['Result'] not in {'exit-code','signal','timeout','core-dump','watchdog'}
             or native['ControlGroup']!=''):

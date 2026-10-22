@@ -321,6 +321,7 @@ for _domain in ("storage.integrity", "deployment.runtime", "code.evolution"):
 
 _RECALL_RELEASE_BOUNDARIES = (
     "eimemory/__init__.py",
+    "eimemory/core/nightly_deployment_admission.py",
     "eimemory/core/release_source_guard.py",
     "eimemory/evaluation/recall_quality_contract.py",
     "eimemory/scheduler/result_contract.py",
@@ -666,11 +667,18 @@ for _domain in ("memory.governance", "code.evolution", "deployment.runtime"):
         "deploy/runtime_manager_user_policy.py", "eimemory/core/runtime_manager.py",
         "eimemory/contracts/user_control_plane.py", "deploy/install_user_runtime_manager.py",
         "deploy/prepare_user_release.py",
+        "deploy/retire_manual_code_policy.py",
         "eimemory/ops/prepare_managed_incident_authority.py")
 for _domain in ("memory.recall", "memory.governance", "deployment.runtime"):
     DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], "eimemory/ops/candidate_readiness_barrier.py",
         "eimemory/subject_projection.py", "eimemory/subject_projection_cli.py",
         "eimemory/subject_projection_consumption.py")
+
+# Native profile identity and topology bind the subjects used by release
+# evidence. Their changes invalidate each dependent domain's prior evidence.
+for _domain in DOMAINS:
+    DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain],
+        "eimemory/adapters/hermes/profile_context.py", "eimemory/ops/hermes_native_topology.py")
 
 IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
 IGNORED_PATHS = {

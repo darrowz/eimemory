@@ -504,28 +504,57 @@ def _evaluate_agent(runtime, entry, policy, cutoff):
         try:
             bundle = runtime.memory.recall(**kwargs)
             state, complete = _complete(bundle)
-            observation.update(state=state, complete=complete, diagnostics=_recall_diagnostics(bundle))
+            observation.update(state=state, complete=complete, diagnostics=_recall_diagnostics(bundle),
+                bundle_observed=True,
+                returned_counts={section:len(getattr(bundle,section)) for section in ('items','rules','reflections')})
             returned = [*bundle.items, *bundle.rules, *bundle.reflections]
+            bindings = [benchmark._binding(record) for record in returned]
+            # Preserve the real returned references even when a later boundary,
+            # completeness or compact projection check rejects this call.
+            observation['returned'] = bindings
             if any(record.scope != scope or record.source_id not in sources for record in returned):
                 _error('returned_boundary_invalid')
-            bindings = [benchmark._binding(record) for record in returned]
             # Only targets must predate cutoff; live results remain version-bound.
             versions = [_physical(runtime, binding, scope, sources, cutoff, require_old=False) for binding in bindings]
-            compact = bundle.to_compact_dict(limit=5, include_explanation=False)
-            if compact.get('retrieval_status') != 'evidence_found' or len(canonical(compact).encode()) > 16384:
-                _error('compact_result_invalid')
+            observation['returned_versions'] = versions
+            if not complete:
+                _error('retrieval_incomplete')
+            observation['compact_observation']['attempted'] = True
+            try:
+                compact = bundle.to_compact_dict(limit=5, include_explanation=False)
+            except Exception:
+                _error('compact_result_projection_failed')
+            if not isinstance(compact,dict):
+                observation['compact_observation']['structure_valid'] = False
+                _error('compact_result_structure_invalid')
+            compact_state = compact.get('retrieval_status')
+            observation['compact_observation']['retrieval_status'] = compact_state if compact_state in {
+                'evidence_found','no_evidence','unavailable','degraded','ambiguous'} else 'unknown'
+            try:
+                compact_size = len(canonical(compact).encode())
+            except (TypeError,ValueError,OverflowError,RecursionError):
+                observation['compact_observation']['structure_valid'] = False
+                _error('compact_result_structure_invalid')
+            observation['compact_observation']['size_bytes'] = compact_size
+            if compact_state != 'evidence_found':
+                _error('compact_result_status_invalid')
+            if compact_size > 16384:
+                _error('compact_result_size_exceeded')
             for section in ('items', 'rules', 'reflections'):
                 rows = compact.get(section, [])
+                if not isinstance(rows,list) or any(not isinstance(item,dict) for item in rows):
+                    observation['compact_observation']['structure_valid'] = False
+                    _error('compact_result_structure_invalid')
                 allowed = {(record.record_id, record.source_id) for record in getattr(bundle, section)}
-                if (not isinstance(rows, list) or any(not isinstance(item, dict)
-                        or (item.get('record_id'), item.get('source_id')) not in allowed
-                        or ('scope' in item and item['scope'] != asdict(scope)) for item in rows)):
+                if any((item.get('record_id'), item.get('source_id')) not in allowed
+                        or ('scope' in item and item['scope'] != asdict(scope)) for item in rows):
                     _error('compact_result_boundary_invalid')
+            observation['compact_observation']['structure_valid'] = True
+            compact_refs = [[item.get('record_id'), item.get('source_id')] for item in compact.get('items', [])]
+            observation.update(compact_refs=compact_refs, compact_digest=digest(compact))
             raw = bundle.explanation.get('cascade_evidence', [])
             cascade = _cascade_evidence(runtime, compact, scope, sources, cutoff, bundle.items[:5], raw=raw)
-            compact_refs = [[item.get('record_id'), item.get('source_id')] for item in compact.get('items', [])]
-            observation.update(returned=bindings, returned_versions=versions, compact_refs=compact_refs,
-                               cascade_evidence=cascade, compact_digest=digest(compact))
+            observation['cascade_evidence'] = cascade
             return bundle
         except Exception as exc:
             code = str(exc)
@@ -540,7 +569,9 @@ def _evaluate_agent(runtime, entry, policy, cutoff):
         # A failed native callback is still this case's failed observation.
         # Never lose alignment or erase all cases behind a length assertion.
         observation = dict(state={}, diagnostics={}, complete=False, returned=[], returned_versions=[], compact_refs=[],
-                           cascade_evidence=[], compact_digest='', call_count=0, failure_reason='')
+                           cascade_evidence=[], compact_digest='', call_count=0, failure_reason='',
+                           bundle_observed=False,returned_counts={},
+                           compact_observation=dict(attempted=False,structure_valid=None))
         sample = benchmark._run_case(proxy, case, scope, sources)
         binding = case['source_binding']
         version = _physical(runtime, binding, scope, sources, cutoff)

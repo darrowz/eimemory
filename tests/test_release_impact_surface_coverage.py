@@ -61,6 +61,10 @@ def test_every_tracked_production_file_has_a_domain() -> None:
 @pytest.mark.parametrize(
     ("path", "required"),
     [
+        ("eimemory/core/nightly_deployment_admission.py", set(DOMAIN_PATHS)),
+        ("eimemory/adapters/hermes/profile_context.py", set(DOMAIN_PATHS)),
+        ("eimemory/ops/hermes_native_topology.py", set(DOMAIN_PATHS)),
+        ("deploy/retire_manual_code_policy.py", {"memory.governance", "deployment.runtime", "code.evolution"}),
         ("eimemory/adapters/eibrain/health_probe.py", {"channel.delivery", "deployment.runtime"}),
         ("eimemory/adapters/hermes/outbox.py", {"memory.recall", "channel.delivery"}),
         ("eimemory/knowledge/l1_diagnostics.py", {"memory.recall", "memory.governance"}),

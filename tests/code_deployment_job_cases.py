@@ -220,9 +220,14 @@ def test_fixed_job_launcher_argv_matches_entry_without_request_selected_paths(mo
     with pytest.raises(SystemExit):entry.main()
 
 
-@pytest.mark.parametrize("business_passed,completion_lost", [(True,False),(False,False),(True,True)])
+@pytest.mark.parametrize("business_passed,completion_lost,admission_fault", [
+    (True,False,''),(False,False,''),(True,True,''),
+    (False,False,'business_exception'),(False,False,'prepare_lost'),
+    (True,False,'restore_lost'),(True,False,'restore_invalid'),
+    (True,False,'observation_callback_failed'),
+    (True,False,'observation_callback_failed_restore_lost')])
 def test_worker_durable_outcome_waits_for_restoration_business_and_native_complete(
-    durable_job_fixture, monkeypatch, business_passed, completion_lost,
+    durable_job_fixture, monkeypatch, business_passed, completion_lost, admission_fault,
 ):
     """Real ledger/lease sequencing; isolated installer/authority transports.
 
@@ -241,6 +246,21 @@ def test_worker_durable_outcome_waits_for_restoration_business_and_native_comple
         lambda *a,**kw:{"ok":True},raising=False)
     monkeypatch.setattr(jobs,"post_resume_business_error",lambda *a:"")
     sequence=[]
+    if admission_fault.startswith('observation_callback_failed'):
+        start_observing=effects.CodeEvolutionEffectOwner._start_observing
+        def observation_callback_failure(*args,**kwargs):
+            start_observing(*args,**kwargs)
+            raise LookupError('isolated_observation_callback_failure_after_durable_state')
+        monkeypatch.setattr(effects.CodeEvolutionEffectOwner,'_start_observing',observation_callback_failure)
+    rollback_attempts=[]
+    if admission_fault=='observation_callback_failed_restore_lost':
+        begin_intent=CodeEvolutionTransactionManager.begin_intent
+        def transient_rollback_failure(self,*args,**kwargs):
+            if kwargs.get('intent_state')=='ROLLBACK_INTENT':
+                rollback_attempts.append('rollback')
+                if len(rollback_attempts)==1:raise OSError('isolated_first_rollback_write_unavailable')
+            return begin_intent(self,*args,**kwargs)
+        monkeypatch.setattr(CodeEvolutionTransactionManager,'begin_intent',transient_rollback_failure)
     def ledger_state():
         probe=Runtime.create(root=f.runtime.store.root)
         try:return CodeEvolutionTransactionManager(probe).store.get_transaction(f.txid)["current_state"]
@@ -250,34 +270,70 @@ def test_worker_durable_outcome_waits_for_restoration_business_and_native_comple
         return {"ok":True,"commit":tx["candidate_commit"],"version":"1.0.0","receipt_digest":"a"*64}
     monkeypatch.setattr(effects.ProductionEffectAdapter,"run_managed_installer",install)
     monkeypatch.setattr(effects.ProductionEffectAdapter,"_verify_managed_result",lambda *a,**kw:None)
-    def finalize(value):
+    def prepare(value):
         assert value==key and ledger_state()=="HEALTHY"
         assert not (f.root/key/"result.json").exists()
         assert jobs._read(f.root/key/"technical-install.json")["result"]["ok"] is True
-        sequence.append("restore")
-        return {"job_key":key,"resumed":True,"phase":"resumed_awaiting_business"}
+        sequence.append("core")
+        if admission_fault=='prepare_lost':raise TimeoutError('isolated_prepare_reply_lost')
+        return {"job_key":key,"resumed":False,"phase":"serving_awaiting_business",
+            "core_serving_ready":True,"background_held":True}
     def business(_adapter,runtime,**kw):
-        assert sequence==["install","restore"] and ledger_state()=="HEALTHY"
+        assert sequence==["install","core"] and ledger_state()=="HEALTHY"
+        assert not (f.root/key/"finalized.json").exists()
         assert not (f.root/key/"result.json").exists()
         sequence.append("business")
+        if admission_fault=='business_exception':raise LookupError('isolated_business_failure')
         return {"ok":business_passed,"business_qualified":business_passed}
+    def restore(value):
+        assert value==key and sequence==(["install","core"] if admission_fault=='prepare_lost' else ["install","core","business"])
+        rollback_before_restore=not business_passed or admission_fault=='observation_callback_failed'
+        assert ledger_state()==("ROLLBACK_INTENT" if rollback_before_restore else "OBSERVING")
+        assert not (f.root/key/"result.json").exists()
+        if admission_fault not in {'prepare_lost','business_exception'}:
+            assert jobs._read(f.root/key/"post-resume-business.json")["ok"] is business_passed
+        sequence.append("background")
+        if admission_fault in {'restore_lost','observation_callback_failed_restore_lost'}:
+            raise TimeoutError('isolated_restore_reply_lost')
+        if admission_fault=='restore_invalid':
+            return {"job_key":key,"resumed":False,"phase":"serving_awaiting_business","background_held":True}
+        return {"job_key":key,"resumed":True,"phase":"resumed_awaiting_business","background_held":False}
     def complete(value):
         assert value==key and ledger_state()=="OBSERVING"
-        assert sequence==["install","restore","business"]
+        assert sequence==["install","core","business","background"]
         assert not (f.root/key/"result.json").exists()
         sequence.append("complete")
         if completion_lost:raise TimeoutError("isolated_lost_ack")
         return {"job_key":key,"complete":True,"resumed":True,"phase":"completed","operational_complete":True}
-    f.core.finalize_deployment_job=finalize
+    f.core.prepare_deployment_business=prepare
+    f.core.restore_deployment_background=restore
     f.core.complete_deployment_job=complete
     monkeypatch.setattr(effects.ProductionEffectAdapter,"run_post_resume_business",business)
+    if admission_fault:
+        expected=(TimeoutError if admission_fault in {'prepare_lost','restore_lost'} else
+            ValueError if admission_fault=='restore_invalid' else LookupError)
+        with pytest.raises(expected) as captured:
+            jobs.run_job(f.runtime,key,wait_seconds=0)
+        assert ledger_state()=='ROLLBACK_INTENT'
+        assert sequence[-1]=='background' and 'complete' not in sequence
+        failure=jobs._read(f.root/key/'admission-failure.json')
+        assert failure['ok'] is False and failure['error_type']==expected.__name__
+        assert jobs._read(f.root/key/'result.json')['result']['ok'] is False
+        if business_passed:
+            assert jobs._read(f.root/key/'post-resume-business.json')=={'ok':True,'business_qualified':True}
+            assert jobs._read(f.root/key/'technical-install.json')['result']['ok'] is True
+        if admission_fault=='observation_callback_failed_restore_lost':
+            assert rollback_attempts==['rollback','rollback']
+            assert any('OSError' in note for note in captured.value.__notes__)
+            assert any('TimeoutError' in note for note in captured.value.__notes__)
+        return
     result=jobs.run_job(f.runtime,key,wait_seconds=0)
     assert jobs._read(f.root/key/"result.json")["result"]==result
     assert jobs._read(f.root/key/"technical-install.json")["result"]["ok"] is True
     assert result["ok"] is (business_passed and not completion_lost)
     assert result["operational_complete"] is (business_passed and not completion_lost)
     assert result["ledger_state"]==("OBSERVING" if business_passed else "ROLLBACK_INTENT")
-    assert sequence==["install","restore","business"]+(["complete"] if business_passed else [])
+    assert sequence==["install","core","business","background"]+(["complete"] if business_passed else [])
     if completion_lost:
         assert result["reconciliation_required"] is True
         assert result["status"]=="native_completion_unknown"
@@ -316,31 +372,46 @@ def test_observation_uses_current_root_completion_not_a_success_boolean(tmp_path
     assert bool(jobs.observation_completion_error(transaction)) is bool(fault)
 
 
-@pytest.mark.parametrize("phase,policy_exists", [("completed",True),("resumed_awaiting_business",False),
-                                               ("resumed_awaiting_business",True)])
+@pytest.mark.parametrize('user',[False,True])
+@pytest.mark.parametrize("phase,policy_exists,fault", [("resumed_awaiting_business",True,''),
+    ("serving_awaiting_business",False,''),("serving_awaiting_business",True,'')]+[
+    ('serving_awaiting_business',True,fault) for fault in
+    ('manager','resumed','core','background','capture','capture_invocation')])
 def test_post_resume_entry_requires_native_resume_and_calls_full_business_not_strict_preflight(
-    durable_job_fixture,monkeypatch,phase,policy_exists,
+    durable_job_fixture,monkeypatch,phase,policy_exists,user,fault,
 ):
     from eimemory.governance.release import release_closure as closure
     from eimemory.evaluation import controlled_production_acceptance as acceptance
     from eimemory.governance.l5 import l5_readiness
     from eimemory.governance.safety import prompt_safety_executor
+    from eimemory.contracts import user_control_plane
+    monkeypatch.setattr(user_control_plane,'user_mode',lambda:user)
     f=durable_job_fixture;tx=f.manager.store.get_transaction(f.txid)
     key=jobs.handoff(f.runtime,tx,f.policy,operation="deploy")["job_key"]
     for state in ("DEPLOYED_VERIFIED","HEALTHY"):f.manager.transition(f.txid,state)
     body=jobs._read(f.root/key/"request.json")
     jobs._exclusive(f.root/key/"started.json",{"request_key":key,"invocation":"e"*32})
-    jobs._exclusive(f.root/key/"finalized.json",{"request_key":key,"invocation":"e"*32,
-        "native":{"resumed":True,"phase":"resumed_awaiting_business"}})
+    serving={"request_key":key,"invocation":"e"*32,"native":{"resumed":False,
+        "phase":"serving_awaiting_business",'core_serving_ready':True,'background_held':True}}
+    if fault=='capture':serving['native']['background_held']=False
+    if fault=='capture_invocation':serving['invocation']='f'*32
+    jobs._exclusive(f.root/key/"serving-ready.json",serving)
     monkeypatch.setenv("INVOCATION_ID","d"*32)
-    f.core.deployment_job_status=lambda value:{"manager":"system","unit":f"eimemory-code-deployment-job@{key}.service",
-        "phase":phase,"original_invocation":"e"*32,"state":{"ActiveState":"activating","InvocationID":"e"*32}}
-    child={"manager":"system","job_key":key,"operation":"post_resume",
+    native={"manager":"user" if user else "system","unit":f"eimemory-code-deployment-job@{key}.service",
+        "phase":phase,"original_invocation":"e"*32,'resumed':False,'core_serving_ready':True,'background_held':True,
+        "state":{"ActiveState":"activating","InvocationID":"e"*32}}
+    if fault=='manager':native['manager']='system' if user else 'user'
+    if fault=='resumed':native['resumed']=True
+    if fault=='core':native['core_serving_ready']=1
+    if fault=='background':native['background_held']=False
+    f.core.deployment_job_status=lambda value:native
+    child={"manager":"user" if user else "system","job_key":key,"operation":"post_resume",
         "unit":jobs._validation_unit(key,"post_resume"),"target_commit":body["target_commit"],
         "controller_commit":body["controller_commit"],"artifact_basename":"validation-post_resume-result.json",
         "parent_original_invocation":"e"*32,"original_invocation":"d"*32,"phase":phase,
         "state":{"ActiveState":"activating","InvocationID":"d"*32,
             "ControlGroup":"/system.slice/"+jobs._validation_unit(key,"post_resume")}}
+    monkeypatch.setattr(jobs,'validation_context',lambda *_a:(body,child))
     monkeypatch.setattr(jobs,"_native_child_cgroup",lambda:"0::"+child["state"]["ControlGroup"])
     f.core.deployment_validation_status=lambda *a:child
     f.core.read_registry=lambda:{"runtime_commit":body["candidate_commit"],"controller_commit":body["controller_commit"]}
@@ -356,7 +427,7 @@ def test_post_resume_entry_requires_native_resume_and_calls_full_business_not_st
         return {**kw["report"],"ok":False,"blocked_stage":"isolated_actual_business_transport"}
     monkeypatch.setattr(closure,"_run_controlled_operational_closure",controlled)
     result=closure.run_managed_post_resume_closure(f.runtime,job_key=key,validation_context=child)
-    if phase!="resumed_awaiting_business":
+    if phase!="serving_awaiting_business" or fault:
         assert result["blocked_reason"]=="native_restoration_not_verified" and seen==[]
     elif not policy_exists:
         assert result["blocked_reason"]=="historical_business_policy_required" and seen==[]

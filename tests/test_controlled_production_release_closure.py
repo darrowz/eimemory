@@ -548,3 +548,52 @@ def test_managed_controlled_entry_emits_complete_report_without_overwriting_fail
         assert captured['exit_code']==0 and captured['capture_saved'] is True and captured['recording_ok'] is True
         assert all(result[key]['status']=='not_run' for key in (
             'production_recall_gate','production_recall_strict_state','closure_rehearsal','readiness'))
+@pytest.mark.parametrize('user',[False,True])
+@pytest.mark.parametrize('fault',['','phase','resumed','core','background','manager','invocation','runtime'])
+def test_manual_business_requires_protected_core_serving_without_background_resume(monkeypatch,user,fault):
+    from types import SimpleNamespace
+    from eimemory.contracts import user_control_plane
+    from eimemory.core import runtime_manager
+    from eimemory.governance.evolution import code_deployment_job as jobs
+    from eimemory.governance.release import release_closure as closure, evidence_contract
+    from eimemory.evaluation import controlled_production_acceptance as acceptance
+    from eimemory.governance.l5 import l5_readiness
+    from eimemory.governance.safety import prompt_safety_executor
+    key='a'*64;commit='b'*40;invocation='c'*32
+    scope=dict(tenant_id='tenant',agent_id='agent',workspace_id='workspace',user_id='business')
+    body=dict(manual_release=True,target_commit=commit,candidate_commit=commit,base_commit='d'*40,scope=scope)
+    child=dict(parent_original_invocation=invocation)
+    parent=dict(manager='user' if user else 'system',manual_release=True,original_invocation=invocation,
+        phase='serving_awaiting_business',core_serving_ready=True,background_held=True,resumed=False)
+    if fault=='phase':parent['phase']='resumed_awaiting_business'
+    if fault=='resumed':parent['resumed']=True
+    if fault=='core':parent['core_serving_ready']=1
+    if fault=='background':parent['background_held']=False
+    if fault=='manager':parent['manager']='system' if user else 'user'
+    if fault=='invocation':parent['original_invocation']='e'*32
+    monkeypatch.setattr(user_control_plane,'user_mode',lambda:user)
+    monkeypatch.setattr(jobs,'validation_context',lambda *_:(body,child))
+    monkeypatch.setattr(runtime_manager,'deployment_job_status',lambda _:parent)
+    monkeypatch.setattr(runtime_manager,'read_registry',lambda:dict(runtime_commit='e'*40 if fault=='runtime' else commit,
+        repository_root='/reviewed/repository'))
+    receipt=dict(ok=True,commit=commit,version='1.2.3',promotion_request_id='rec_original',strict_transaction=False)
+    monkeypatch.setattr(jobs,'managed_validation_report',lambda *_a,**_k:(receipt,dict(exit_status=0)))
+    actual=closure.ReleaseIdentity(commit=commit,version='1.2.3',receipt_id='rec_original',session_id='session')
+    monkeypatch.setattr(evidence_contract,'current_release_identity',lambda *_a:actual)
+    monkeypatch.setattr(acceptance,'load_controlled_policy',lambda *_a:dict(purpose='historical_business_qualification'))
+    monkeypatch.setattr(l5_readiness,'_storage_migration_status',lambda *_:dict(ok=True))
+    monkeypatch.setattr(prompt_safety_executor,'bind_prompt_safety_from_service',lambda *_:None)
+    calls=[]
+    def controlled(_runtime,**kwargs):
+        calls.append(kwargs)
+        return dict(kwargs['report'],blocked_stage='real_business_required')
+    monkeypatch.setattr(closure,'_run_controlled_operational_closure',controlled)
+    result=closure.run_manual_post_resume_closure(SimpleNamespace(),job_key=key,validation_context=child)
+    if fault:
+        assert result['blocked_reason']=='native_restoration_not_verified' and not calls
+    else:
+        assert len(calls)==1 and result['blocked_stage']=='real_business_required'
+        assert calls[0]['identity_kwargs']['deployment_receipt'] is receipt
+        assert result['record_ids']['deployment_receipt']=='rec_original'
+    assert result['business_qualified'] is False and result['observation_started'] is False
+    assert result['l5_certification']=='not_certified'

@@ -705,6 +705,189 @@ def _execute_code_evolution_sedimentation(
     }
 
 
+def _recover_failed_managed_observation(runtime, *, manager, transaction):
+    """Turn an authenticated failed deployment into a durable rollback intent.
+
+    Missing transport or an unknown native exit cannot authorize recovery.
+    Native evidence is reread under the existing SQL lease independently of
+    service restoration; no original worker is dispatched here.
+    """
+    from pathlib import Path
+    from eimemory.contracts import runtime_manager as contract
+    from eimemory.core import runtime_manager as native_manager
+    from eimemory.governance.evolution import code_deployment_job as jobs
+    from eimemory.storage.code_evolution_store import CodeEvolutionConflict, digest_json
+
+    transaction_id = str(transaction.get("transaction_id") or "")
+    if not ((transaction.get("payload") or {}).get("managed_deployment_jobs") or {}).get("deploy"):
+        return None
+
+    def read_failure(current):
+        binding = jobs._bound_request(current, "deploy")
+        if binding is None:
+            raise ValueError("managed_failed_job_binding_missing")
+        key, body = binding
+        payload = current.get("payload") or {}
+        observing = current.get("current_state") == "OBSERVING"
+        scope = {name: current.get(name) for name in ("tenant_id", "agent_id", "workspace_id", "user_id")}
+        if (body.get("transaction_id") != transaction_id or body.get("operation") != "deploy"
+                or body.get("scope") != scope or payload.get("scope") != scope
+                or body.get("base_commit") != current.get("base_commit")
+                or body.get("candidate_commit") != current.get("candidate_commit")
+                or body.get("target_commit") != current.get("candidate_commit")
+                or current.get("deployed_commit") not in {None, "", body.get("candidate_commit")}
+                or (observing and current.get("deployed_commit") != body.get("candidate_commit"))
+                or payload.get("post_resume_business_job_key") not in {None, key}
+                or (observing and payload.get("post_resume_business_job_key") != key)):
+            raise ValueError("managed_failed_job_transaction_changed")
+        native = native_manager.deployment_job_status(key)
+        recovery = native.get("terminal_recovery")
+        if recovery is None and native.get("phase") != "completed":
+            state = native.get("state") or {}
+            if (native.get("job_key") == key and native.get("unit") == contract.job_unit(key)
+                    and native.get("manager") == jobs._manager_name()
+                    and native.get("terminal_state") is None
+                    and state.get("ActiveState") in {"active", "activating", "deactivating"}
+                    and state.get("SubState") != "exited"):
+                return None
+        invocation = native.get("original_invocation")
+        registry = native_manager.read_registry()
+        allowed_current = ({body["base_commit"], body["candidate_commit"]}
+            if current.get("current_state") == "DEPLOY_INTENT" else {body["candidate_commit"]})
+        if (payload.get("post_resume_business_invocation") not in {None, invocation}
+                or (observing and payload.get("post_resume_business_invocation") != invocation)
+                or native.get("job_key") != key
+                or native.get("manager") != jobs._manager_name() or native.get("unit") != contract.job_unit(key)
+                or registry.get("runtime_commit") not in allowed_current
+                or registry.get("controller_commit") != body["controller_commit"]):
+            raise ValueError("managed_failed_job_identity_unverified")
+        contract.hex_value(invocation, 32, "managed_failed_job_invocation_invalid")
+        pinned = native.get("terminal_state")
+        unit = contract.job_unit(key)
+        if (recovery is None and contract.native_terminal_exit(pinned, invocation, unit)
+                and pinned.get("Result") == "success" and pinned.get("ExecMainStatus") == "0"
+                and contract.native_terminal_readback(pinned, native.get("state"), invocation, unit)):
+            return None
+        if recovery is None:
+            # SQL recovery must not depend on healthy RPC or restored services:
+            # those are prerequisites for the controller's restoration marker.
+            # Preserve native evidence and derive only a rollback intent here.
+            recovery = {"schema": "eimemory.failed_worker_evidence.v1", "job_key": key,
+                "original_invocation": invocation,
+                "registry_generation": registry["generation"], "current_commit": registry["runtime_commit"],
+                "controller_commit": body["controller_commit"], "autonomous_repair_credit": False}
+            if (contract.native_terminal_exit(pinned, invocation, unit)
+                    and pinned.get("Result") in {"exit-code", "signal", "timeout", "core-dump", "watchdog"}
+                    and contract.native_terminal_readback(pinned, native.get("state"), invocation, unit)):
+                recovery.update(failure_kind="native_exit", native_exit=pinned, boot_change=None)
+            else:
+                current_boot = native_observation_clock()["boot_id"]
+                record = {"job_key": key, "unit": unit, "original_invocation": invocation,
+                    "native_hold": native.get("native_hold"), "restore_plan": native.get("restore_plan"),
+                    "registry": {"generation": native.get("launch_registry_generation")}}
+                change = {"schema": "eimemory.native_job_boot_interruption.v1",
+                    "hold_sha256": contract.digest(record["native_hold"]),
+                    "previous_boot_id": (record["native_hold"].get("boot_id")
+                        if isinstance(record["native_hold"], dict) else None),
+                    "current_boot_id": current_boot, "native_state": native.get("state")}
+                if (pinned is not None or not contract.native_boot_interruption(record, change, native.get("state"),
+                        current_boot=current_boot)):
+                    raise ValueError("managed_failed_job_failure_unknown")
+                recovery.update(failure_kind="boot_change", native_exit=None, boot_change=change)
+            contract.hex_value(registry["generation"], 64, "managed_failed_job_registry_invalid")
+            return verify_current(recovery, payload, key, invocation, body)
+        fields = {"schema", "job_key", "original_invocation", "original_phase", "outcome",
+            "failure_reason", "failure_kind", "native_exit", "boot_change", "registry_generation",
+            "current_commit", "controller_commit", "restore_plan_sha256", "phase", "autonomous_repair_credit"}
+        if (not isinstance(recovery, dict) or set(recovery) != fields
+                or recovery.get("schema") != "eimemory.native_failed_job_restore.v1"
+                or recovery.get("failure_kind") not in {"native_exit", "boot_change"}
+                or recovery.get("outcome") != "failed"
+                or recovery.get("autonomous_repair_credit") is not False
+                or recovery.get("phase") not in {"failure_verified", "restoring", "restored"}
+                or not isinstance(recovery.get("original_phase"), str) or not recovery["original_phase"]
+                or recovery.get("job_key") != key or recovery.get("original_invocation") != invocation
+                or native.get("complete") is True or native.get("finalized") is True
+                or recovery.get("registry_generation") != registry.get("generation")
+                or recovery.get("current_commit") != registry.get("runtime_commit")
+                or recovery.get("controller_commit") != body["controller_commit"]
+                or registry.get("controller_commit") != body["controller_commit"]):
+            raise ValueError("managed_failed_job_recovery_unverified")
+        contract.hex_value(recovery["registry_generation"], 64, "managed_failed_job_registry_invalid")
+        contract.hex_value(recovery["restore_plan_sha256"], 64, "managed_failed_job_plan_invalid")
+        if recovery["failure_kind"] == "native_exit":
+            if (recovery["failure_reason"] != "worker_abnormal_native_exit" or recovery["boot_change"] is not None
+                    or recovery["native_exit"] != pinned):
+                raise ValueError("managed_failed_job_native_exit_unverified")
+            verify_failed_exit(pinned, native, invocation, unit)
+        else:
+            change = recovery["boot_change"]
+            if (recovery["failure_reason"] != "worker_interrupted_by_boot_change"
+                    or recovery["native_exit"] is not None or pinned is not None
+                    or not isinstance(change, dict) or set(change) != {"schema", "hold_sha256",
+                        "previous_boot_id", "current_boot_id", "native_state"}
+                    or change["schema"] != "eimemory.native_job_boot_interruption.v1"):
+                raise ValueError("managed_failed_job_boot_unverified")
+            record = {"job_key": key, "unit": unit, "original_invocation": invocation,
+                "native_hold": native.get("native_hold"), "restore_plan": native.get("restore_plan"),
+                "registry": {"generation": native.get("launch_registry_generation")}, "request": body,
+                "resumed": native.get("resumed"), "finalized": native.get("complete"), "terminal_recovery": recovery}
+            current_boot = native_observation_clock()["boot_id"]
+            proven = (contract.restored_boot_failure(record, native.get("state"), current_boot=current_boot)
+                if recovery["phase"] == "restored" else
+                contract.native_boot_interruption_readback(record, change, native.get("state"), current_boot=current_boot))
+            if (contract.digest(record["restore_plan"]) != recovery["restore_plan_sha256"]
+                    or not proven):
+                raise ValueError("managed_failed_job_boot_state_unverified")
+        return verify_current(recovery, payload, key, invocation, body)
+
+    def verify_failed_exit(pinned, native, invocation, unit):
+        if (not contract.native_terminal_exit(pinned, invocation, unit)
+                or pinned.get("Result") not in {"exit-code", "signal", "timeout", "core-dump", "watchdog"}
+                or not contract.native_terminal_readback(pinned, native.get("state"), invocation, unit)):
+            raise ValueError("managed_failed_job_native_exit_unverified")
+
+    def verify_current(recovery, payload, key, invocation, body):
+        started = jobs._read(jobs.JOBS_ROOT / key / "started.json")
+        current_link = Path(payload["authorized_policy"]["deployment"]["current_link"]).resolve(strict=True)
+        if (started != {"request_key": key, "invocation": invocation}
+                or current_link.parent.name != "releases" or current_link.name != recovery["current_commit"]):
+            raise ValueError("managed_failed_job_current_changed")
+        return {"job_key": key, "invocation": invocation, "recovery": recovery,
+            "recovery_digest": digest_json(recovery)}
+
+    acquired = False
+    try:
+        first = read_failure(transaction)
+        if first is None:
+            return None
+        manager.acquire_lease(transaction_id)
+        acquired = True
+        latest = manager.store.get_transaction(transaction_id)
+        if (not latest or latest.get("current_state") != transaction.get("current_state")
+                or latest.get("current_state") not in {"DEPLOY_INTENT", "DEPLOYED_VERIFIED", "HEALTHY", "OBSERVING"}
+                or latest.get("terminal")):
+            return {"ok": False, "status": "managed_failed_job_state_changed", "transaction_id": transaction_id}
+        confirmed = read_failure(latest)
+        if confirmed != first:
+            raise ValueError("managed_failed_job_recovery_changed")
+        reason = ("managed_worker_interrupted_by_boot_change"
+            if confirmed["recovery"].get("failure_kind") == "boot_change" else "managed_worker_abnormal_native_exit")
+        changed = manager.begin_intent(transaction_id, step="rollback", intent_state="ROLLBACK_INTENT",
+            input_data={"reason": reason, **confirmed})
+        return {"ok": True, "status": "rollback_required", "transaction_id": transaction_id,
+            "reason": reason, "transaction": changed,
+            "autonomous_repair_credit": False}
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+        return {"ok": False, "status": "managed_failed_job_recovery_unverified", "transaction_id": transaction_id}
+    finally:
+        if acquired:
+            try:
+                manager.release_lease(transaction_id)
+            except CodeEvolutionConflict:
+                pass
+
+
 def resume_code_evolution_transactions(
     runtime: GovernanceRuntime,
     *,
@@ -742,6 +925,11 @@ def resume_code_evolution_transactions(
                 reports.append(record_transaction_hypothesis_feedback(runtime, transaction_id=transaction_id, scope=scope_ref))
             continue
         state = str(transaction.get("current_state") or "")
+        if state in {"DEPLOY_INTENT", "DEPLOYED_VERIFIED", "HEALTHY", "OBSERVING"}:
+            failed_worker = _recover_failed_managed_observation(runtime, manager=manager, transaction=transaction)
+            if failed_worker is not None:
+                reports.append(failed_worker)
+                continue
         if state in FORWARD_EFFECT_STATES and state not in {"COMMIT_INTENT", "PUSH_INTENT", "DEPLOY_INTENT"}:
             if not effect_execution_authorized(transaction):
                 reports.append({"ok": False, "transaction_id": transaction_id, "status": "effect_execution_not_authorized", "state": state})

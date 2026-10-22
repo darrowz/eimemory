@@ -115,6 +115,23 @@ class CoverageArchive:
             raise ValueError('incident_archive_overlapping_ranges')
         return result
 
+    def bounded_read_through(self, table, after, through):
+        """Choose a continuation boundary without increasing the frame limit.
+
+        Small historical frames can exhaust the frame budget before a caller's
+        row budget. This only chooses a smaller prefix; range_rows still checks
+        every selected manifest, signature, compressed frame and original row.
+        """
+        if (table not in TABLES or type(after) is not int or type(through) is not int
+                or not 0<=after<=through):
+            raise ValueError('incident_archive_read_range_invalid')
+        if not self._installed() or after==through:return through
+        rows=self.conn.execute(f'''SELECT first_sequence,last_sequence FROM {ARCHIVES}
+            WHERE table_name=? AND last_sequence>? AND first_sequence<=?
+            ORDER BY first_sequence LIMIT ?''',(table,after,through,MAX_READ_SEGMENTS+1)).fetchall()
+        if len(rows)<=MAX_READ_SEGMENTS:return through
+        return min(through,rows[MAX_READ_SEGMENTS-1]['last_sequence'])
+
     def key_rows(self, table, *, scope=None, record_id=None, payload_digest=None, limit=1):
         if not self._installed(): return []
         conditions, args = ['table_name=?'], [table]

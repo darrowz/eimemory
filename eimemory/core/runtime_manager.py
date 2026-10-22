@@ -70,7 +70,7 @@ def request(operation: str, **values: Any) -> dict:
   meta=socket_path.lstat()
   if not stat.S_ISSOCK(meta.st_mode) or meta.st_uid!=owner or meta.st_gid!=registry['runtime_gid'] or stat.S_IMODE(meta.st_mode)!=0o660 or meta.st_nlink!=1:raise RuntimeManagerError('manager_socket_untrusted')
   with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as stream:
-   stream.settimeout(610 if operation in {'transition','readonly_probe','finalize_job','begin_fused_closure','end_fused_closure','recover_fused_closure'} else
+   stream.settimeout(610 if operation in {'transition','readonly_probe','finalize_job','prepare_business_job','restore_background_job','begin_fused_closure','end_fused_closure','recover_fused_closure'} else
        120 if operation in {'issue_managed_incident_proof','verify_managed_incident_proof','checkpoint_managed_incident_knowledge'} else 30);stream.connect(SOCKET_PATH)
    if not hasattr(socket,'SO_PEERCRED'):raise RuntimeManagerError('manager_peer_credentials_unavailable')
    _pid,uid,_gid=struct.unpack('3i',stream.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize('3i')))
@@ -110,6 +110,14 @@ def runtime_commit(unit: str) -> str:
 
 def finalize_deployment_job(job_key: str) -> dict:
  job_unit(job_key);return request('finalize_job',job_key=job_key)
+
+
+def prepare_deployment_business(job_key: str) -> dict:
+ job_unit(job_key);return request('prepare_business_job',job_key=job_key)
+
+
+def restore_deployment_background(job_key: str) -> dict:
+ job_unit(job_key);return request('restore_background_job',job_key=job_key)
 
 
 def activation_attestation() -> dict:

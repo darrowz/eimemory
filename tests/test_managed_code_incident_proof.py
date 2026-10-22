@@ -995,3 +995,61 @@ def test_manifest_archive_requires_completed_root_history_and_protected_reads(tm
     assert all(kwargs.get('mode')==0o600 for _,kwargs in reads)
     assert not any(path.parent==unrelated for path,_ in reads)
     assert not any(path.name=='managed-manifest.snapshot' and path.parent==incomplete for path,_ in reads)
+@pytest.mark.parametrize('error,preserved',[
+    ('managed_authority_lock_timeout',True),('managed_authority_manifest_continuity_unverified',True),
+    ('manager_transport_unavailable',True),('manager_peer_uid_denied',True),
+    ('manager_error /PRIVATE/PATH?token=SECRET',False),('PRIVATE_SECRET',False),
+    ('managed_authority_'+('x'*97),False)])
+def test_checkpoint_failure_keeps_only_fixed_control_plane_reason_codes(monkeypatch,error,preserved):
+    from eimemory.core import runtime_manager
+    from eimemory.governance.evolution.managed_code_incident_proof import checkpoint_managed_ingress
+    def fail():raise runtime_manager.RuntimeManagerError(error)
+    monkeypatch.setattr(runtime_manager,'checkpoint_managed_incident_knowledge',fail)
+    result=checkpoint_managed_ingress()
+    assert result['status']=='unproven' and result['qualifies_for_product_completion'] is False
+    assert result['reason']=='managed_ingress_checkpoint_unavailable'
+    assert result.get('error_code')==(error if preserved else None)
+    assert 'PRIVATE' not in json.dumps(result) and 'SECRET' not in json.dumps(result)
+
+
+def test_checkpoint_non_manager_exception_cannot_supply_a_manager_code(monkeypatch):
+    from eimemory.core import runtime_manager
+    from eimemory.governance.evolution.managed_code_incident_proof import checkpoint_managed_ingress
+    def fail():raise ValueError('managed_authority_lock_timeout')
+    monkeypatch.setattr(runtime_manager,'checkpoint_managed_incident_knowledge',fail)
+    result=checkpoint_managed_ingress()
+    assert result['error_type']=='ValueError' and 'error_code' not in result
+
+def test_managed_worker_continues_small_cold_frames_and_retains_prior_uncertainty(physical,monkeypatch):
+    from eimemory.models.records import RecordEnvelope
+    from eimemory.storage import code_incident_coverage_archive as archive_module
+    from eimemory.storage.code_incident_coverage_archive import TABLES
+    from eimemory.storage.code_incident_coverage_store import CodeIncidentCoverageStore
+    from eimemory.storage.migrations.code_incident_coverage import JOURNAL
+    from eimemory.governance.learning.effect_policy import seal,verify
+    manifest,original,root,anchor=_physical_prefix_fixture(physical)
+    for index in range(8):
+        physical.store.append(RecordEnvelope.create(kind='reflection',source='ordinary.fixture',
+            scope=ScopeRef.from_dict(SCOPE),title=f'original retained metadata {index}'))
+    conn=physical.store.sqlite.conn
+    before=[dict(row) for row in conn.execute(f'SELECT * FROM {JOURNAL} ORDER BY sequence')]
+    with monkeypatch.context() as patch:
+        patch.setattr(archive_module,'MAX_ROWS',1)
+        CodeIncidentCoverageStore(physical.store).maintain_archive(seal=seal,verify=verify,
+            keep={table:1 for table in TABLES},batches=64)
+    monkeypatch.setattr(archive_module,'MAX_READ_SEGMENTS',2)
+    root.execute("INSERT OR REPLACE INTO authority_meta VALUES('uncertainty','typed_ingress_mutation_or_unregistered')")
+    after=original['through'];seen=list(original['rows']);pages=0
+    while True:
+        facts=collect_physical_facts(physical.store.sqlite.path,manifest=manifest,
+            source_record_id='',source_digest='',after=after)
+        assert facts['cursor_anchor_verified'] and 0<facts['through']-after<=5000
+        seen.extend(facts['rows']);pages+=1
+        # This fixture authority is isolated memory, never a formal ledger.
+        authority._ingest(root,facts,manifest)
+        assert root.execute("SELECT value FROM authority_meta WHERE key='uncertainty'").fetchone()[0]=='typed_ingress_mutation_or_unregistered'
+        if facts['complete']:break
+        assert facts['through']<facts['high_water']
+        after=facts['through']
+    assert pages>1 and seen==before
+    assert archive_module.MAX_READ_SEGMENTS==2

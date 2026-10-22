@@ -2933,6 +2933,8 @@ def _cmd_nightly(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
     report = run_nightly_jobs(
         runtime,
         scope=scope,
+        **({"deployment_admission": parsed._nightly_deployment_admission}
+           if hasattr(parsed, "_nightly_deployment_admission") else {}),
     )
     output = _nightly_cli_summary(report)
     del report
@@ -4016,6 +4018,13 @@ def main(argv: list[str] | None = None) -> int:
     pre_runtime = _ops_before_settings(parsed)
     if pre_runtime is not None:
         return pre_runtime
+    if parsed.command == "nightly":
+        from eimemory.core.nightly_deployment_admission import wait_for_deployment_terminal
+
+        try:
+            parsed._nightly_deployment_admission = wait_for_deployment_terminal()
+        except (OSError, ValueError, RuntimeError) as exc:
+            return _print_error("nightly_deployment_not_terminal", exc)
     try:
         settings = load_settings()
     except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
