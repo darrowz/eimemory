@@ -1644,7 +1644,7 @@ class AgentRuntimeMemoryService:
                 getattr(self.runtime, "_attestation_available_channels", ())
             ),
             "attestation_reason": (
-                "operator_separated_profile_active"
+                "producer_credentials_configured"
                 if channel_id in set(getattr(self.runtime, "_attestation_available_channels", ()))
                 else (
                     str(
@@ -1657,6 +1657,9 @@ class AgentRuntimeMemoryService:
                     or "operator_separated_attestation_profile_not_configured_for_channel"
                 )
             ),
+            # A configured producer token proves the credential protocol,
+            # never gateway process isolation or native L5 qualification.
+            "attestation_boundary_verified": False,
             "l1_extract": l1_extract,
             "degraded": l1_extract.get("ok") is False,
         }

@@ -80,6 +80,8 @@ def test_user_bundle_keeps_bus_and_signing_material_out_of_products(tmp_path):
     manifest=json.loads(files['manifest.json'])
     assert manifest['schema']=='eimemory.user_runtime_manager_bundle.v1'
     assert manifest['files']=={name:sha256(raw).hexdigest() for name,raw in files.items() if name!='manifest.json'}
+    assert {name for name in files if name.startswith('hermes-policy/')}=={'hermes-policy/hermes-gateway-eimemory.conf'}
+    assert 'ensure_hermes_profile_boundary.py' not in files
     for name,raw in files.items():
         # These are controller inputs, not installed unit/drop-in policies.
         if name.startswith('hermes-policy/'):
@@ -114,6 +116,8 @@ def test_user_bundle_keeps_bus_and_signing_material_out_of_products(tmp_path):
             assert 'ReadWritePaths=-'+account.pw_dir+'/.hermes ' in text
             assert '/bus' in inaccessible and '/systemd/private' in inaccessible
             assert 'managed-incident-proof.key' in inaccessible and 'activation-signing.key' in inaccessible
+            handoff='ReadWritePaths=-'+str(home/'.local/state/eimemory/hermes-handoff')+'\n'
+            assert (handoff in text)==(name in {'templates/eimemory-code-deployment-job@.service','job-runtime-policy.conf'})
 
 
 def test_user_bundle_reader_authenticates_the_exact_archive(tmp_path):

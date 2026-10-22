@@ -766,9 +766,6 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
         encoding="utf-8"
     )
     dropin = Path("deploy/systemd/hermes-gateway-eimemory.conf").read_text(encoding="utf-8")
-    gateway_wrapper = Path("deploy/systemd/hermes-gateway-eimemory.sh").read_text(
-        encoding="utf-8"
-    )
 
     for required in (
         "ensure_attestation_profile.py",
@@ -809,15 +806,12 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
     assert "-p no:cacheprovider" in integration_verifier
     assert "EIMEMORY_ATTESTATION_HOST_PROFILE=operator-separated-v1" in dropin
     assert "EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE=/etc/eimemory/hermes-attestation.token" in dropin
-    assert "Environment=PYTHONDONTWRITEBYTECODE=1" in dropin
-    assert "PYTHONPATH=/opt/eimemory/current" in dropin
-    assert "ExecStart=%h/.config/systemd/user/hermes-gateway-eimemory.sh" in dropin
-    assert "gateway run --replace" in gateway_wrapper
-    assert "EIMEMORY_RPC_AUTH_TOKEN=*" in gateway_wrapper
-    assert 'export EIMEMORY_RPC_TOKEN="$rpc_token"' in gateway_wrapper
-    assert "export PYTHONDONTWRITEBYTECODE=1" in gateway_wrapper
-    assert 'exec "$hermes_python" -B -m hermes_cli.main gateway run --replace' in gateway_wrapper
-    assert "hermes-gateway-eimemory.sh" in installer
+    assert all(not line or line.startswith(("#", "[Service]", "Environment=EIMEMORY_",
+        "EnvironmentFile=")) for line in dropin.splitlines())
+    publication = installer.split('_install_hermes_integration() {', 1)[1].split('\n}', 1)[0]
+    for retired in ('hermes-gateway-eimemory.sh', '91-eimemory-hermes.conf',
+                    '93-eimemory-handoff.conf', '94-eimemory-hermes-profile-boundary.conf'):
+        assert retired not in publication
 
 
 def test_hermes_provider_digest_loads_exact_release_module(tmp_path: Path) -> None:
@@ -1424,28 +1418,19 @@ def test_openclaw_gateway_override_uses_production_eimemory_runtime() -> None:
 
     assert "Environment=EIMEMORY_ROOT=/var/lib/eimemory" in override_text
     assert "Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory" in override_text
-    assert "UnsetEnvironment=PYTHONPATH PYTHONHOME VIRTUAL_ENV" in override_text
+    assert "UnsetEnvironment=" not in override_text
     assert re.search(r'''^\s*Environment\s*=\s*["']?PYTHONPATH=''', override_text, re.MULTILINE) is None
     assert re.search(r"python\d+\.\d+", override_text) is None
-    assert "Environment=PYTHONDONTWRITEBYTECODE=1" in override_text
-    assert "Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/@EIMEMORY_COMMIT@" in override_text
+    assert "Environment=PYTHONDONTWRITEBYTECODE=" not in override_text
+    assert "Environment=PYTHONPYCACHEPREFIX=" not in override_text
     assert "Environment=EIMEMORY_RUNTIME_COMMIT=@EIMEMORY_COMMIT@" in override_text
     assert 'Environment="EIMEMORY_HOOK_COMMAND=/opt/eimemory/current/.venv/bin/eimemory openclaw-hook"' in override_text
     assert 'Environment="EIMEMORY_BRIDGE_COMMAND=/opt/eimemory/current/.venv/bin/eimemory ei-bridge feishu"' in override_text
     assert "Environment=EIMEMORY_BEFORE_PROMPT_BUDGET_MS=22000" in override_text
-    assert (
-        "Environment=EIBRAIN_MONITOR_URL=http://${EIMEMORY_GATEWAY_METRICS_URL:-127.0.0.1:18080}/status.json"
-        in override_text
-    )
     assert "/dev-project/eimemory/.venv" not in override_text
     assert "PYTHONPATH=/dev-project/eimemory" not in override_text
-    assert "MemoryAccounting=yes" in override_text
-    assert "MemoryHigh=3G" in override_text
-    assert "MemoryMax=4G" in override_text
-    assert "MemorySwapMax=512M" in override_text
-    assert "TasksAccounting=yes" in override_text
-    assert "TasksMax=96" in override_text
-    assert "OOMPolicy=kill" in override_text
+    assert all(line.startswith(("#", "[", "Environment=", "EnvironmentFile="))
+               or not line.strip() for line in override_text.splitlines())
 
 
 def test_openclaw_runtime_has_no_eimemory_compiled_receipt_injection() -> None:
@@ -1694,7 +1679,7 @@ def test_managed_systemd_dropin_installer_is_atomic_and_preserves_unmanaged_file
     source = tmp_path / "source.conf"
     source.write_text(f"{helper.MANAGED_MARKER}\n[Service]\nEnvironment=SAFE=1\n", encoding="utf-8")
     root = tmp_path / "systemd"
-    dropin_dir = root / "openclaw-gateway.service.d"
+    dropin_dir = root / "example.service.d"
     dropin_dir.mkdir(parents=True)
     unmanaged = dropin_dir / "local-secret.conf"
     unmanaged.write_text("Environment=LOCAL_SECRET=preserve\n", encoding="utf-8")
@@ -1833,7 +1818,7 @@ def test_managed_systemd_dropin_installer_rejects_unmanaged_target(tmp_path) -> 
     source = tmp_path / "source.conf"
     source.write_text(f"{helper.MANAGED_MARKER}\n[Service]\n", encoding="utf-8")
     root = tmp_path / "systemd"
-    target = root / "openclaw-gateway.service.d" / "90-eimemory-runtime.conf"
+    target = root / "example.service.d" / "90-eimemory-runtime.conf"
     target.parent.mkdir(parents=True)
     target.write_text("Environment=LOCAL_SECRET=do-not-overwrite\n", encoding="utf-8")
 
@@ -1848,7 +1833,7 @@ def test_managed_systemd_dropin_installer_rejects_symlink_target(tmp_path) -> No
     source = tmp_path / "source.conf"
     source.write_text(f"{helper.MANAGED_MARKER}\n[Service]\n", encoding="utf-8")
     root = tmp_path / "systemd"
-    target = root / "openclaw-gateway.service.d" / "90-eimemory-runtime.conf"
+    target = root / "example.service.d" / "90-eimemory-runtime.conf"
     target.parent.mkdir(parents=True)
     outside = tmp_path / "outside.conf"
     outside.write_text("outside\n", encoding="utf-8")
@@ -1875,7 +1860,7 @@ def test_managed_systemd_dropin_installer_rejects_ancestor_symlink(tmp_path) -> 
     linked_home = tmp_path / "linked-home"
     linked_home.symlink_to(real_home, target_is_directory=True)
     linked_root = linked_home / "systemd" / "user"
-    target = linked_root / "openclaw-gateway.service.d" / "90-eimemory-runtime.conf"
+    target = linked_root / "example.service.d" / "90-eimemory-runtime.conf"
 
     with pytest.raises(helper.ManagedDropinError, match="without symlink components"):
         helper.install_managed_dropin(source=source, target=target, root=linked_root)
@@ -3598,10 +3583,10 @@ def test_learn_watch_timer_is_not_five_minute_heavy_polling() -> None:
     assert "OnCalendar=*:00/5" not in timer
 
 
-def test_interactive_gateway_and_batch_jobs_have_resource_priorities() -> None:
+def test_only_eimemory_batch_jobs_have_managed_resource_priorities() -> None:
     gateway = Path("deploy/systemd/openclaw-gateway-eimemory.conf").read_text(encoding="utf-8")
-    assert "CPUWeight=1000" in gateway
-    assert "MemoryLow=512M" in gateway
+    assert not any(line.startswith(("CPU", "IO", "Memory", "Tasks", "OOM", "Nice="))
+                   for line in gateway.splitlines())
 
     for name in (
         "eimemory-nightly.service",

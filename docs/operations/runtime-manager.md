@@ -26,15 +26,33 @@ manual permit, checks retirement of system owners, validates the prepared target
 and starts only the fixed user job. Existing or ambiguous attempts remain
 preserved; submission grants no autonomous repair or release acceptance credit.
 
-Product namespaces seal the account home (including user-owned ancestors) read-only,
-with writable product subdirectories limited to `.hermes`, `.cache`, `.codex`
-and `.openclaw`. This prevents renaming a writable ancestor to replace a
-protected authority path. Writable product roots must be real owned directories.
-Products have no capabilities, `NoNewPrivileges=yes`, private user/PID namespaces,
-read-only authority/controller/unit paths, and inaccessible signing material,
-knowledge/backups and both user-manager bus sockets. The user controller alone
-observes native host PIDs and operates the user manager. Same UID alone does not
-establish the authority boundary.
+eiMemory services and deployment/validation children seal their account home
+and authority paths read-only, with explicitly owned writable state directories.
+They retain `NoNewPrivileges=yes`, private user/PID namespaces, empty capability
+sets and hidden signing material, knowledge/backups and user-manager sockets.
+The user controller observes native host PIDs and operates the user manager.
+
+Hermes and OpenClaw gateways remain external applications owned by the user.
+eiMemory adds memory connection and release identity environment only. It does
+not replace their native startup commands or add startup conditions, controller
+dependencies, filesystem restrictions, namespaces, capability restrictions,
+creation masks or resource limits. Existing gateway configuration and directory
+modes remain owned by those applications. Upgrade recovery archives and removes
+only byte-verified historical eiMemory restrictions; an unknown or modified
+configuration is preserved and reported instead of overwritten. The gateway's
+own native policy remains effective.
+
+Source directories inside eiMemory's own immutable release are sealed read-only
+after exact Git validation; its dependency environment is unchanged. This keeps
+Python imports from creating source caches without altering the gateway's
+global Python/cache policy. An older prepared candidate must pass its original
+receipt and source checks and have this source seal verified before reuse.
+
+An unrestricted same-account gateway belongs to the trusted host environment;
+eiMemory does not claim an OS isolation boundary against that application.
+Credential configuration alone is not verified process isolation or L5 repair
+evidence. Native unit identity, transaction, receipt and observation gates remain
+independent requirements for eiMemory's autonomous work.
 
 The controller runs in the host user and PID namespaces. It has
 `NoNewPrivileges=yes` and zero effective, permitted and ambient capabilities.
@@ -42,12 +60,12 @@ Its inherited capability bounding set is not expanded. Mount isolation such
 as `PrivateTmp` would cause the unprivileged user manager to create a child
 user namespace, preventing the controller from authenticating sibling host
 processes. Startup therefore verifies the actual namespace mappings and
-capability state. Products and deployment children keep their private
+capability state. eiMemory services and deployment children keep their private
 namespaces and empty capability sets.
 
 Installation holds the verified bridge and lifecycle locks throughout
-publication. A durable `controller-installation.json` and fixed native unit
-conditions prevent starts until the entire generation has been read back and
+publication. A durable `controller-installation.json` and fixed eiMemory unit
+conditions prevent eiMemory starts until the entire generation has been read back and
 sealed. An interrupted publication retains the barrier and originals; an
 operator must verify the exact completed generation or recover the original
 files. Removing the barrier without that verification is not recovery.

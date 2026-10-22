@@ -10,6 +10,12 @@ import sys
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolated_hermes_handoff_root(tmp_path, monkeypatch):
+    """Outboxes and any child providers must never use the operator's state."""
+    monkeypatch.setenv('EIMEMORY_HERMES_HANDOFF_ROOT', str(tmp_path/'eimemory-handoff'))
+
+
 @pytest.fixture
 def deploy_worker_environment(tmp_path: Path, request):
     """Isolate shell children too; Python monkeypatches do not cross exec."""

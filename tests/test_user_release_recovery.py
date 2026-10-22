@@ -282,7 +282,8 @@ def test_real_failed_terminal_pin_keeps_pre_pin_bytes_and_status_cannot_change_c
 
 @pytest.mark.skipif(os.name!='posix',reason='native descriptor and durable installation protocol')
 @pytest.mark.parametrize('fault',['none','reload','code','identity','policy','readback','sealed_crash','sealed_tamper'])
-def test_installation_failure_retains_fence_and_originals_until_full_readback(tmp_path,monkeypatch,fault):
+@pytest.mark.parametrize('gateway',[False,True])
+def test_installation_failure_retains_fence_and_originals_until_full_readback(tmp_path,monkeypatch,fault,gateway):
     module=installer();uid=os.geteuid()
     if uid==0:pytest.skip('unprivileged operator required')
     home=tmp_path/'operator';authority=home/'.config/eimemory/control-plane'
@@ -318,6 +319,25 @@ def test_installation_failure_retains_fence_and_originals_until_full_readback(tm
             [('user_control_plane.py','eimemory/contracts/user_control_plane.py'),
              ('runtime_manager_contract.py','eimemory/contracts/runtime_manager.py')]},
         'units':{'eimemory-rpc.service':{'installed':True}}}
+    gateway_manifest=None;gateway_plan=[];native_gateway={}
+    if gateway:
+        gateway_unit='hermes-gateway-hongtai.service'
+        registry['units'].update({gateway_unit:{'installed':True},'openclaw-gateway.service':{'installed':False}})
+        native_gateway={units/gateway_unit:b'[Service]\nExecStart=/usr/bin/native-gateway\n',
+            units/(gateway_unit+'.d')/'99-user-business.conf':b'[Service]\nEnvironment=BUSINESS_NATIVE=1\n'}
+        for path,raw in native_gateway.items():
+            path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(raw);path.chmod(0o664)
+        (units/(gateway_unit+'.d')).chmod(0o775)
+        entries=[]
+        for unit,leaf,raw in [(gateway_unit,'05-eimemory-installation-guard.conf',b'[Unit]\nConditionPathExists=!old\n'),
+                (gateway_unit,'zzzzzz-eimemory-user-control-plane.conf',b'[Service]\nPrivateUsers=yes\n'),
+                ('openclaw-gateway.service','05-eimemory-installation-guard.conf',b'[Unit]\nConditionPathExists=!old\n')]:
+            path=units/(unit+'.d')/leaf;path.parent.mkdir(exist_ok=True);path.write_bytes(raw)
+            entry=gateway_entry(path.relative_to(units).as_posix(),raw,uid,path.stat().st_mode&0o777)
+            entries.append(entry)
+            original,identity=module.gateway_original(path,uid)
+            gateway_plan.append(dict(entry=entry,original=original,identity=identity))
+        gateway_manifest=module.canonical({'schema':'eimemory.gateway_policy_retirement.v1','entries':entries})
     seed={'runtime_commit':'b'*40,'generation':'f'*64};manifest={'controller_commit':'a'*40}
     args=SimpleNamespace(expected_bundle_sha256='e'*64,
         expected_existing_registry_sha256=sha256(b'original-registry').hexdigest(),
@@ -337,6 +357,9 @@ def test_installation_failure_retains_fence_and_originals_until_full_readback(tm
         if len(calls)==3:
             policy=units/'eimemory-rpc.service.d/zzzzzz-eimemory-user-control-plane.conf'
             policy.write_bytes(b'[Service]\nNoNewPrivileges=yes\n')
+            if gateway:
+                (units/(gateway_unit+'.d')/'zzzzzz-eimemory-user-control-plane.conf').write_bytes(
+                    gateway_metadata('b'*40))
         if fault=='readback' and len(calls)==3:(code/'helper.py').write_bytes(b'tampered')
         return SimpleNamespace(returncode=1 if fail else 0)
     monkeypatch.setattr(module.subprocess,'run',run)
@@ -348,7 +371,8 @@ def test_installation_failure_retains_fence_and_originals_until_full_readback(tm
         return real_unlink(path,*args,**kwargs)
     monkeypatch.setattr(real_path,'unlink',unlink)
     invoke=lambda:module._publish_installation(args,SimpleNamespace(pw_uid=uid,pw_gid=os.getegid(),pw_dir=str(home)),
-        files,manifest,seed,b'{}',b'{}',b'{}',registry,SimpleNamespace(canonical=module.canonical),None,{},b'original-registry',None)
+        files,manifest,seed,b'{}',b'{}',b'{}',registry,SimpleNamespace(canonical=module.canonical),None,{},b'original-registry',None,
+        gateway_manifest,gateway_plan)
     if fault=='none':invoke()
     else:
         with pytest.raises((OSError,ValueError)):invoke()
@@ -356,10 +380,25 @@ def test_installation_failure_retains_fence_and_originals_until_full_readback(tm
     assert len(backups)==1 and backups[0].stat().st_size>0
     guard=units/'eimemory-runtime-manager.service.d/05-eimemory-installation-guard.conf'
     assert ('ConditionPathExists=!'+str(marker)) in guard.read_text()
+    if gateway:
+        for unit in [gateway_unit,'openclaw-gateway.service']:
+            prior_guard=units/(unit+'.d')/'05-eimemory-installation-guard.conf'
+            if fault=='reload':assert prior_guard.read_bytes()==b'[Unit]\nConditionPathExists=!old\n'
+            else:assert not prior_guard.exists()
+        assert not (units/'openclaw-gateway.service').exists()
+        for path,raw in native_gateway.items():
+            assert path.read_bytes()==raw and path.stat().st_mode&0o777==0o664
+        assert (units/(gateway_unit+'.d')).stat().st_mode&0o777==0o775
+        assert 'start' not in [arg for argv in calls for arg in argv]
     if fault=='none':
         assert not marker.exists()
+        outbox=home/'.local/state/eimemory/hermes-handoff'
+        assert outbox.is_dir() and outbox.stat().st_mode&0o777==0o700
         seal=json.loads(backups[0].with_suffix('.complete.json').read_bytes())
         assert seal['release_accepted'] is False and seal['autonomous_repair_credit'] is False
+        if gateway:
+            assert seal['gateway_retirement']['manifest_sha256']==sha256(gateway_manifest).hexdigest()
+            assert len(seal['gateway_retirement']['originals'])==3
     else:
         assert marker.exists() and json.loads(marker.read_bytes())['phase']=='publication_pending'
         assert backups[0].with_suffix('.complete.json').exists()==(fault in {'sealed_crash','sealed_tamper'})
@@ -385,3 +424,235 @@ def test_installation_failure_retains_fence_and_originals_until_full_readback(tm
             with pytest.raises((OSError,ValueError)):module.recover_completed_installation(recovery)
             assert marker.exists()
     assert (knowledge/'knowledge.sqlite').read_bytes()==b'original-ledger'
+
+
+def gateway_entry(relative,raw,uid,mode=0o664):
+    return {'relative_path':relative,'sha256':sha256(raw).hexdigest(),'uid':uid,'mode':mode,
+        'source':{'kind':'operator_reviewed_legacy_eimemory',
+            'reference':'fixture-original-native-audit.json','sha256':'e'*64}}
+
+
+def gateway_metadata(commit):
+    return (b'# eimemory gateway memory integration only; native process policy is unchanged.\n'
+        b'[Service]\nEnvironment=EIMEMORY_ROOT=/opt/eimemory/current\n'
+        b'Environment=EIMEMORY_RUNTIME_COMMIT='+commit.encode()+b'\n')
+
+
+@pytest.mark.parametrize('unit,expected',[
+    ('hermes-gateway.service',True),('hermes-gateway-hongtai.service',True),
+    ('hermes-gateway-hongxin.service',True),('hermes-gateway-xiaomage.service',True),
+    ('openclaw-gateway.service',True),('business-gateway.service',True),
+    ('openclaw-loop-observer.service',False),('eimemory-rpc.service',False),
+    ('hermes-gateway.service.d',False),('../hermes-gateway.service',False),
+    ('hermes-gateway-.service',False),('gateway.service',False),('',False),(None,False)])
+def test_gateway_classification_matches_shared_policy(unit,expected):
+    module=installer()
+    source=Path(__file__).resolve().parents[1]/'deploy/runtime_manager_user_policy.py'
+    spec=importlib.util.spec_from_file_location('gateway_shared_classifier',source)
+    shared=importlib.util.module_from_spec(spec);spec.loader.exec_module(shared)
+    assert module.is_gateway_unit(unit) is expected
+    assert shared.is_gateway_unit(unit) is expected
+
+
+@pytest.mark.parametrize('fault',['none','duplicate','path_escape','native_fragment','custom_business',
+    'sidecar','foreign_uid','bool_mode','large_mode','bad_mode','bad_source','missing_source',
+    'invalid_sha','non_string_sha','bad_reference','extra_field','duplicate_key'])
+def test_gateway_retirement_requires_explicit_bounded_review_of_each_eimemory_dropin(fault):
+    module=installer();entry=gateway_entry('hermes-gateway.service.d/90-eimemory-runtime.conf',b'legacy',1001)
+    manifest={'schema':'eimemory.gateway_policy_retirement.v1','entries':[entry]}
+    if fault=='duplicate':manifest['entries'].append(deepcopy(entry))
+    elif fault=='path_escape':entry['relative_path']='../hermes-gateway.service.d/90-eimemory-runtime.conf'
+    elif fault=='native_fragment':entry['relative_path']='hermes-gateway.service'
+    elif fault=='custom_business':entry['relative_path']='hermes-gateway.service.d/99-user-business.conf'
+    elif fault=='sidecar':entry['relative_path']='openclaw-loop-observer.service.d/90-eimemory-runtime.conf'
+    elif fault=='foreign_uid':entry['uid']=1002
+    elif fault=='bool_mode':entry['mode']=True
+    elif fault=='large_mode':entry['mode']=0o4755
+    elif fault=='bad_mode':entry['mode']='0664'
+    elif fault=='bad_source':entry['source']['kind']='filename_inferred'
+    elif fault=='missing_source':entry.pop('source')
+    elif fault=='invalid_sha':entry['sha256']='bad'
+    elif fault=='non_string_sha':entry['source']['sha256']=None
+    elif fault=='bad_reference':entry['source']['reference']='before\nnot_a_source'
+    elif fault=='extra_field':entry['delete_all_gateway_files']=True
+    raw=module.canonical(manifest)
+    if fault=='duplicate_key':raw=raw.replace(b'"mode":436',b'"mode":436,"mode":436')
+    if fault=='none':assert module.gateway_manifest_entries(raw,1001)==[entry]
+    else:
+        with pytest.raises(ValueError):module.gateway_manifest_entries(raw,1001)
+
+
+def test_gateway_retirement_cli_keeps_manifest_and_hash_paired(monkeypatch,tmp_path):
+    module=installer();captured=[]
+    monkeypatch.setattr(module,'install',lambda args:captured.append(args))
+    argv=['installer']
+    for name in ['bundle','registry-seed','runtime-settings','managed-manifest']:
+        argv+=['--'+name,str(tmp_path/name),'--expected-'+name+'-sha256','a'*64]
+    for name in ['knowledge','managed-key','activation-key']:argv+=['--expected-'+name+'-sha256','b'*64]
+    argv+=['--gateway-retirement-manifest',str(tmp_path/'reviewed.json'),
+        '--expected-gateway-retirement-sha256','c'*64]
+    monkeypatch.setattr(module.sys,'argv',argv);module.main()
+    assert captured[0].gateway_retirement_manifest==tmp_path/'reviewed.json'
+    assert captured[0].expected_gateway_retirement_sha256=='c'*64
+    for args in [SimpleNamespace(gateway_retirement_manifest=tmp_path/'reviewed.json'),
+            SimpleNamespace(expected_gateway_retirement_sha256='c'*64)]:
+        with pytest.raises(ValueError,match='review_required'):
+            module.gateway_retirement_plan(args,1001,tmp_path)
+
+
+@pytest.mark.skipif(os.name!='posix',reason='native gateway descriptor custody')
+@pytest.mark.parametrize('fault',['none','stale_sha','changed_bytes','changed_mode','replacement',
+    'symlink','hardlink','parent_symlink'])
+def test_gateway_retirement_cas_archives_all_originals_and_preserves_business(tmp_path,monkeypatch,fault):
+    module=installer();uid=os.geteuid()
+    if uid==0:pytest.skip('unprivileged operator required')
+    units=tmp_path/'user';dropins=units/'hermes-gateway.service.d';dropins.mkdir(parents=True);dropins.chmod(0o775)
+    originals={dropins/'89-eimemory-runtime-dir.conf':b'[Service]\nExecStartPre=/old/profile-guard\n',
+        dropins/'90-eimemory-runtime.conf':b'[Service]\nExecStart=/old/wrapper\n'}
+    business=dropins/'99-business.conf';business.write_bytes(b'[Service]\nEnvironment=BUSINESS=1\n');business.chmod(0o664)
+    for path,raw in originals.items():path.write_bytes(raw);path.chmod(0o664)
+    selected=next(iter(originals))
+    entries=[gateway_entry(path.relative_to(units).as_posix(),raw,uid) for path,raw in originals.items()]
+    if fault=='stale_sha':entries[0]['sha256']='0'*64
+    manifest=tmp_path/'manifest.json';raw=module.canonical({'schema':'eimemory.gateway_policy_retirement.v1','entries':entries})
+    manifest.write_bytes(raw);args=SimpleNamespace(gateway_retirement_manifest=manifest,
+        expected_gateway_retirement_sha256=sha256(raw).hexdigest())
+    if fault=='symlink':
+        target=tmp_path/'other';target.write_bytes(originals[selected]);selected.unlink();selected.symlink_to(target)
+    elif fault=='hardlink':os.link(selected,tmp_path/'alias')
+    elif fault=='parent_symlink':
+        other=tmp_path/'moved';dropins.rename(other);dropins.symlink_to(other,target_is_directory=True)
+    if fault in {'stale_sha','symlink','hardlink','parent_symlink'}:
+        with pytest.raises((ValueError,OSError)):module.gateway_retirement_plan(args,uid,units)
+        assert all(path.exists() for path in originals)
+        return
+    prepared,plan=module.gateway_retirement_plan(args,uid,units)
+    if fault=='changed_bytes':selected.write_bytes(b'operator edit after review')
+    elif fault=='changed_mode':selected.chmod(0o644)
+    elif fault=='replacement':
+        replacement=dropins/'replacement';replacement.write_bytes(originals[selected]);replacement.chmod(0o664)
+        os.replace(replacement,selected)
+    # Native temp ancestors need no production home fixture; private archive
+    # creation still keeps immutable owned reads and real fsync/CAS operations.
+    def fixture_directory(path,_uid,mode=0o750):
+        path.mkdir(parents=True,exist_ok=True);path.chmod(mode)
+    monkeypatch.setattr(module,'directory',fixture_directory)
+    archive=tmp_path/'retired'
+    if fault!='none':
+        with pytest.raises(ValueError,match='cas_mismatch'):
+            module.retire_gateway_policies(prepared,plan,units,archive,uid)
+        assert all(path.exists() for path in originals)
+    else:
+        real_unlink=module.os.unlink;removed=[]
+        def unlink(path,*args,**kwargs):
+            if kwargs.get('dir_fd') is not None:
+                # Every source in the batch is durable before any deletion.
+                assert all((archive/source.relative_to(units)).read_bytes()==value for source,value in originals.items())
+                removed.append(path)
+            return real_unlink(path,*args,**kwargs)
+        monkeypatch.setattr(module.os,'unlink',unlink)
+        module.retire_gateway_policies(prepared,plan,units,archive,uid)
+        assert len(removed)==len(originals) and all(not path.exists() for path in originals)
+        result=module.gateway_retirement_evidence(archive,uid,sha256(raw).hexdigest(),units,{'units':{}})
+        assert result['originals']=={entry['relative_path']:entry['sha256'] for entry in entries}
+        assert all((archive/path.relative_to(units)).stat().st_mode&0o777==0o600 for path in originals)
+        assert (archive/'original-identities.json').exists()
+    assert business.read_bytes()==b'[Service]\nEnvironment=BUSINESS=1\n'
+    assert business.stat().st_mode&0o777==0o664 and dropins.stat().st_mode&0o777==0o775
+
+
+@pytest.mark.skipif(os.name!='posix',reason='native inventory and preserved collaborative gateway mode')
+@pytest.mark.parametrize('fault',['none','exec','resource','dependency','umask','namespace','global_python',
+    'wrong_commit','old_policy','writable_metadata'])
+def test_gateway_inventory_seals_memory_metadata_without_owning_native_configuration(tmp_path,fault):
+    module=installer();uid=os.geteuid()
+    if uid==0:pytest.skip('unprivileged operator required')
+    home=tmp_path/'operator';units=home/'.config/systemd/user';unit='hermes-gateway-hongtai.service'
+    dropins=units/(unit+'.d');dropins.mkdir(parents=True);dropins.chmod(0o775)
+    native=units/unit;native.write_bytes(b'[Service]\nExecStart=/native/launcher\n');native.chmod(0o664)
+    own=dropins/'zzzzzz-eimemory-user-control-plane.conf';own.write_bytes(gateway_metadata('a'*40));own.chmod(0o600)
+    business=dropins/'90-eimemory-runtime.conf';business.write_bytes(b'[Service]\nEnvironment=NATIVE_PROFILE=1\n');business.chmod(0o664)
+    additions={'exec':b'ExecStart=/forbidden\n','resource':b'MemoryMax=1G\n',
+        'dependency':b'Wants=eimemory-runtime-manager.service\n','umask':b'UMask=0077\n',
+        'namespace':b'PrivateUsers=yes\n','global_python':b'Environment=PYTHONPATH=/wrong\n'}
+    if fault in additions:own.write_bytes(own.read_bytes()+additions[fault])
+    elif fault=='wrong_commit':own.write_bytes(gateway_metadata('b'*40))
+    elif fault=='old_policy':own.write_bytes(b'[Service]\nPrivateUsers=yes\n')
+    elif fault=='writable_metadata':own.chmod(0o664)
+    registry={'template_hashes':{},'units':{unit:{'installed':True}},'runtime_commit':'a'*40}
+    if fault=='none':
+        inventory=module.installation_inventory(home,registry,uid)
+        assert set(inventory)=={str(own)} and inventory[str(own)]['sha256']==sha256(own.read_bytes()).hexdigest()
+        business.write_bytes(b'[Service]\nEnvironment=NATIVE_PROFILE=2\n')
+        assert module.installation_inventory(home,registry,uid)==inventory
+    else:
+        with pytest.raises(ValueError):module.installation_inventory(home,registry,uid)
+    assert native.read_bytes()==b'[Service]\nExecStart=/native/launcher\n'
+    assert native.stat().st_mode&0o777==0o664 and business.stat().st_mode&0o777==0o664
+    assert dropins.stat().st_mode&0o777==0o775
+
+
+@pytest.mark.skipif(os.name!='posix',reason='native unit publication')
+def test_even_legacy_gateway_templates_cannot_overwrite_native_unit_or_policy(tmp_path,monkeypatch):
+    module=installer();uid=os.geteuid()
+    if uid==0:pytest.skip('unprivileged operator required')
+    units=tmp_path/'units';units.mkdir();native=units/'hermes-gateway.service'
+    native.write_bytes(b'native service');native.chmod(0o664)
+    dropins=units/'hermes-gateway.service.d';dropins.mkdir();dropins.chmod(0o775)
+    policy=dropins/'90-eimemory-runtime.conf';policy.write_bytes(b'native policy');policy.chmod(0o664)
+    def fixture_directory(path,_uid,mode=0o750):path.mkdir(parents=True,exist_ok=True);path.chmod(mode)
+    monkeypatch.setattr(module,'directory',fixture_directory)
+    files={'templates/hermes-gateway.service':b'old restricted template',
+        'templates/eimemory-rpc.service':b'owned rpc','runtime-policy.conf':b'[Service]\nNoNewPrivileges=yes\n'}
+    module.install_user_units(files,units,uid,controller_commit='a'*40,runtime_commit='b'*40)
+    assert native.read_bytes()==b'native service' and policy.read_bytes()==b'native policy'
+    assert native.stat().st_mode&0o777==0o664 and dropins.stat().st_mode&0o777==0o775
+    assert (units/'eimemory-rpc.service.d/90-eimemory-runtime.conf').read_bytes()==files['runtime-policy.conf']
+
+
+@pytest.mark.skipif(os.name!='posix',reason='native archive integrity and crash boundaries')
+@pytest.mark.parametrize('fault',['none','original','identities','result','manifest','restored_policy',
+    'new_metadata','bad_metadata','partial_unlink'])
+def test_gateway_retirement_proof_rejects_tampering_and_incomplete_batches(tmp_path,monkeypatch,fault):
+    module=installer();uid=os.geteuid()
+    if uid==0:pytest.skip('unprivileged operator required')
+    units=tmp_path/'user';unit='hermes-gateway.service';dropins=units/(unit+'.d');dropins.mkdir(parents=True)
+    old={dropins/'05-eimemory-installation-guard.conf':b'[Unit]\nConditionPathExists=!old\n',
+        dropins/'zzzzzz-eimemory-user-control-plane.conf':b'[Service]\nPrivateUsers=yes\n'}
+    entries=[];plan=[]
+    for path,raw in old.items():
+        path.write_bytes(raw);path.chmod(0o664)
+        entry=gateway_entry(path.relative_to(units).as_posix(),raw,uid)
+        original,identity=module.gateway_original(path,uid)
+        entries.append(entry);plan.append(dict(entry=entry,original=original,identity=identity))
+    raw=module.canonical({'schema':'eimemory.gateway_policy_retirement.v1','entries':entries})
+    def fixture_directory(path,_uid,mode=0o750):path.mkdir(parents=True,exist_ok=True);path.chmod(mode)
+    monkeypatch.setattr(module,'directory',fixture_directory)
+    archive=tmp_path/'archive';real_unlink=module.os.unlink;count=0
+    def unlink(path,*args,**kwargs):
+        nonlocal count
+        if kwargs.get('dir_fd') is not None:
+            count+=1
+            if fault=='partial_unlink' and count==2:raise OSError('interrupted retirement')
+        return real_unlink(path,*args,**kwargs)
+    monkeypatch.setattr(module.os,'unlink',unlink)
+    if fault=='partial_unlink':
+        with pytest.raises(OSError,match='interrupted'):
+            module.retire_gateway_policies(raw,plan,units,archive,uid)
+        assert all((archive/path.relative_to(units)).read_bytes()==value for path,value in old.items())
+        assert len([path for path in old if path.exists()])==1 and not (archive/'complete.json').exists()
+    else:module.retire_gateway_policies(raw,plan,units,archive,uid)
+    if fault=='original':(archive/entries[0]['relative_path']).write_bytes(b'changed original')
+    elif fault=='identities':(archive/'original-identities.json').write_bytes(b'[]')
+    elif fault=='result':(archive/'complete.json').write_bytes(b'{}')
+    elif fault=='manifest':(archive/'reviewed-manifest.json').write_bytes(raw+b' ')
+    elif fault=='restored_policy':next(iter(old)).write_bytes(next(iter(old.values())))
+    elif fault in {'new_metadata','bad_metadata'}:
+        (dropins/'zzzzzz-eimemory-user-control-plane.conf').write_bytes(gateway_metadata('a'*40)
+            +(b'PrivateUsers=yes\n' if fault=='bad_metadata' else b''))
+    registry={'units':{unit:{'installed':True}},'runtime_commit':'a'*40}
+    verify=lambda:module.gateway_retirement_evidence(archive,uid,sha256(raw).hexdigest(),units,registry)
+    if fault in {'none','new_metadata'}:
+        assert verify()['manifest_sha256']==sha256(raw).hexdigest()
+    else:
+        with pytest.raises((ValueError,OSError)):verify()

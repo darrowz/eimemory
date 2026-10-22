@@ -66,6 +66,8 @@ def verify(repository,commit,releases,record):
     python=[sys.executable,'-I','-B','-X','pycache_prefix='+str(cache)]
     run([*python,root/'deploy/clean_release_bytecode.py','--validate-source',
         '--release-dir',root,'--releases-root',releases,'--repo-root',repository,'--commit',commit])
+    run([*python,Path(__file__).with_name('clean_release_bytecode.py'),'--verify-source-seal',
+        '--release-dir',root,'--releases-root',releases,'--repo-root',repository,'--commit',commit])
     hashes=record.get('console_script_hashes')
     if not isinstance(hashes,dict) or set(hashes)!={'eimemory','eimemory-qmd','pip','pip3'}:
         raise ValueError('user_release_console_script_inventory_incomplete')
@@ -120,6 +122,8 @@ def prepare(repository,commit,releases):
         stage.rename(root)
         run([*python,root/'deploy/clean_release_bytecode.py','--relocate-venv',
             '--release-dir',root,'--releases-root',releases,'--from-stage',stage,'--to-release',root])
+        run([*python,Path(__file__).with_name('clean_release_bytecode.py'),'--seal-source',
+            '--release-dir',root,'--releases-root',releases,'--repo-root',repository,'--commit',commit])
         record={'schema':'eimemory.prepared_user_release.v1','commit':commit,
             'repository_root':str(repository),'source_tree':git(repository,'rev-parse',commit+'^{tree}'),
             'release_dir':str(root),'activated':False,'release_accepted':False,

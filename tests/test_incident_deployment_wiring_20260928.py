@@ -47,7 +47,7 @@ def test_installer_uses_memory_compilation_and_no_automatic_bytecode_cleanup():
 
 
 def test_quality_wrapper_and_nightly_report_call_new_contracts():
-    quality=(ROOT/'eimemory/evaluation/production_recall.py').read_text()
+    quality=(ROOT/'eimemory/evaluation/production_recall.py').read_text(encoding='utf-8')
     jobs=(ROOT/'eimemory/scheduler/jobs.py').read_text()
     assert 'evaluate_quality_report(' in quality
     assert 'nightly_result_diagnostics(report, step_reports)' in jobs
@@ -68,26 +68,26 @@ def test_readonly_capability_preflight_is_before_service_switch():
     text=(ROOT/'deploy/install_immutable_release.sh').read_text()
     assert 'systemd-run --user --quiet --wait --collect --pipe' in text
     assert 'release_readonly_preflight=failed current_not_switched' in text
-    assert '_source_checkpoint "$RELEASE_DIR" console_verified\n_preflight_release_readonly' in text
+    tail = text.split('_source_checkpoint "$RELEASE_DIR" console_verified\n', 1)[1]
+    assert tail.index('--seal-source --release-dir "$RELEASE_DIR"') < tail.index('_preflight_release_readonly')
 
 
 def test_consumer_readonly_policy_covers_current_link_switches():
     text=(ROOT/'deploy/install_managed_systemd_dropin.py').read_text()
-    assert 'unit_name.endswith("-gateway.service")' in text
+    assert 'gateway_policy.is_gateway_unit(unit_name)' in text
+    assert 'gateway_policy.render_gateway_integration(' in text
     assert '"eimemory-rpc.service"' in text
     assert 'protected_path = rendered_root if consumer else rendered_root / render_commit' in text
 
 
 @pytest.mark.skipif(os.name != 'posix', reason='Linux systemd paths')
 @pytest.mark.parametrize('unit,whole_tree', [
-    ('hermes-gateway.service', True),
-    ('hermes-gateway-hongxin.service', True),
-    ('hermes-gateway-hongtai.service', True),
-    ('hermes-gateway-xiaomage.service', True),
     ('eimemory-rpc.service', True),
+    ('eimemory-console.service', True),
     ('eimemory-nightly.service', False),
+    ('openclaw-loop-watch.service', False),
 ])
-def test_rendered_profile_gateway_protects_future_releases(tmp_path, unit, whole_tree):
+def test_eimemory_consumers_keep_their_own_release_protection(tmp_path, unit, whole_tree):
     from deploy.install_managed_systemd_dropin import install_managed_dropin
     root = tmp_path / 'systemd'
     root.mkdir()
@@ -101,3 +101,45 @@ def test_rendered_profile_gateway_protects_future_releases(tmp_path, unit, whole
     )
     protected = '/opt/eimemory/releases' + ('' if whole_tree else '/' + commit)
     assert 'ReadOnlyPaths=' + protected in target.read_text().splitlines()
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Linux systemd paths')
+@pytest.mark.parametrize('unit', [
+    'hermes-gateway.service', 'hermes-gateway-hongxin.service',
+    'hermes-gateway-hongtai.service', 'hermes-gateway-xiaomage.service',
+    'openclaw-gateway.service', 'colleague-gateway.service',
+])
+@pytest.mark.parametrize('source', ['eimemory-python-runtime.conf', 'openclaw-gateway-eimemory.conf'])
+def test_external_gateways_receive_only_bound_memory_environment(tmp_path, unit, source):
+    from deploy.install_managed_systemd_dropin import install_managed_dropin
+    root = tmp_path / 'systemd'
+    root.mkdir()
+    target = root / (unit + '.d') / 'runtime.conf'
+    local = target.parent / 'vendor.conf'
+    target.parent.mkdir()
+    local.write_bytes(b'[Service]\nNoNewPrivileges=no\nMemoryMax=infinity\nExecStart=/vendor/gateway\n')
+    before = local.read_bytes()
+    receipt = '/etc/eimemory/specific-receipt.env'
+    arguments = dict(source=ROOT / 'deploy/systemd' / source, target=target, root=root,
+        render_commit='a' * 40, render_evidence_receipt_env_file=receipt)
+    if source == 'eimemory-python-runtime.conf':
+        arguments['render_releases_root'] = '/opt/eimemory/releases'
+    install_managed_dropin(**arguments)
+    lines = target.read_text().splitlines()
+    assert 'Environment=EIMEMORY_RUNTIME_COMMIT=' + 'a' * 40 in lines
+    assert 'EnvironmentFile=-' + receipt in lines
+    assert all(not line or line.startswith(('#', '[Service]', 'Environment=EIMEMORY_',
+        'Environment="EIMEMORY_', 'EnvironmentFile=')) for line in lines)
+    assert local.read_bytes() == before
+
+
+def test_compatibility_installer_does_not_recreate_gateway_startup_limits():
+    text = (ROOT / 'deploy/install_immutable_release.sh').read_text()
+    hermes = text.split('_install_hermes_integration() {', 1)[1].split('\n}', 1)[0]
+    for retired in ('93-eimemory-handoff.conf', '94-eimemory-hermes-profile-boundary.conf',
+                    '91-eimemory-hermes.conf', 'hermes-gateway-eimemory.sh'):
+        assert retired not in hermes
+    guards = text.split('_install_storage_release_guards() {', 1)[1].split('\n}', 1)[0]
+    loop = guards.split('for unit in "${!guard_units[@]}"; do', 1)[1]
+    assert '*-gateway.service|hermes-gateway-*.service) continue' in loop
+    assert loop.index(') continue') < loop.index('install_managed_systemd_dropin.py')

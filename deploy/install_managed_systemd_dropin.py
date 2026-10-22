@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Iterable
 import errno
+import importlib.util
 import os
 from pathlib import Path
 import re
@@ -27,6 +28,22 @@ def _is_managed(payload: bytes) -> bool:
         return payload.decode("utf-8").splitlines()[0] == MANAGED_MARKER
     except (UnicodeDecodeError, IndexError):
         return False
+
+
+def _gateway_policy():
+    """Load the same pure gateway contract used by the native controller.
+
+    A direct isolated Python entry does not add the deployment directory to
+    sys.path. Resolve this fixed sibling explicitly, without importing a live
+    installation or a caller-selected helper.
+    """
+    helper = Path(__file__).with_name("runtime_manager_user_policy.py")
+    if helper.is_symlink() or not helper.is_file():
+        raise ManagedDropinError("gateway integration helper must be a regular non-symlink file")
+    specification = importlib.util.spec_from_file_location("_eimemory_gateway_integration", helper)
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
 
 
 def install_managed_dropin(
@@ -113,12 +130,11 @@ def install_managed_dropin(
                 or not render_commit):
             raise ManagedDropinError("immutable releases root must be an absolute systemd-safe path with commit")
         payload = payload.replace(release_token, os.fsencode(rendered_root))
-        # Consumer gateways/RPC must remain read-only across a current-link
-        # switch. Designated jobs may build sibling candidates, but not mutate
-        # the release from which they are running.
+        # eiMemory consumers remain read-only across a current-link switch.
+        # External gateway metadata is rendered separately below and never
+        # inherits an eiMemory process, mount or resource policy.
         unit_name = target.parent.name.removesuffix(".d")
-        consumer = (unit_name.endswith("-gateway.service")
-                    or re.fullmatch(r"hermes-gateway-[A-Za-z0-9_.@-]+\.service", unit_name) is not None) or unit_name in {
+        consumer = unit_name in {
             "eimemory-rpc.service", "eimemory-console.service",
         }
         protected_path = rendered_root if consumer else rendered_root / render_commit
@@ -168,6 +184,26 @@ def install_managed_dropin(
         raise ManagedDropinError("target must be a direct service drop-in under systemd root")
     if any(item.parent != target.parent or item == target for item in retired):
         raise ManagedDropinError("retired targets must be distinct siblings of the managed target")
+    unit_name = target.parent.name.removesuffix(".d")
+    # Ordinary eiMemory and generic safe file publication needs no installed
+    # controller dependency. The shared contract remains the final classifier.
+    gateway_policy = (_gateway_policy() if unit_name.endswith("-gateway.service")
+        or unit_name.startswith("hermes-gateway-") else None)
+    if gateway_policy is not None:
+        if not gateway_policy.is_gateway_unit(unit_name):
+            raise ManagedDropinError("gateway unit identity is not supported by the integration contract")
+        # Never filter arbitrary source directives into a gateway's policy:
+        # produce the fixed memory connection contract instead. In particular,
+        # old release templates cannot reintroduce ExecStart/ExecStartPre,
+        # PrivateUsers, read-only paths, capabilities, umask or resource limits.
+        try:
+            payload = (MANAGED_MARKER + "\n").encode() + gateway_policy.render_gateway_integration(
+                unit_name, render_commit.lower())
+        except ValueError as exc:
+            raise ManagedDropinError("gateway integration requires a bound release identity") from exc
+        if render_evidence_receipt_env_file:
+            payload = payload.replace(b"EnvironmentFile=-/etc/eimemory/evidence-receipt.env\n",
+                b"EnvironmentFile=-" + os.fsencode(render_evidence_receipt_env_file) + b"\n")
     allowed_owners = {os.geteuid() if hasattr(os, "geteuid") else root.stat().st_uid}
     if owner_uid is not None:
         allowed_owners.add(int(owner_uid))

@@ -124,44 +124,26 @@ def _remove_release_link(destination: Path, target: Path) -> str:
 
 
 def prepare_handoff_directories(home: Path) -> dict[str, Any]:
-    """Prepare owned profile directories for the private durable outbox.
+    """Inspect live profiles without changing native gateway permissions.
 
-    Older Hermes profiles can inherit group-write from their creation umask.
-    The runtime correctly refuses such paths; fix only the installation's own
-    directories, never an outside ancestor, managed child symlink, foreign owner
-    or payload. The explicitly supplied home keeps its existing canonical-path
-    semantics, as does the runtime outbox.
-    Validate every existing target before changing any mode.
+    Durable memory handoff owns an independent private state directory. Native
+    profile/state permissions and symlinks are therefore no longer prerequisites
+    of the memory queue, and this inspection creates no native directories.
     """
     if os.name != "posix":
         return {"status": "not_required", "profile_count": 0, "adjusted_count": 0,
                 "created_count": 0}
     home = home.resolve(strict=True)
     owner = os.geteuid()
-    # PrivateUsers leaves host root unmapped. Reuse the bounded UID-map
-    # validation for system ancestors; profile directories still require the
-    # exact runtime owner below.
-    system_owner = lambda info, path: info.st_uid == 0
-    if owner > 0 and os.getuid() == owner:
-        source = Path(__file__).resolve().parents[1] / "eimemory/contracts/user_control_plane.py"
-        specification = importlib.util.spec_from_file_location("_handoff_user_control", source)
-        control = importlib.util.module_from_spec(specification)
-        specification.loader.exec_module(control)
-        system_owner = lambda info, path: control._system_owner(info, path, owner)
-    for ancestor in home.parents:
-        info = ancestor.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or
-                (info.st_uid != owner and not system_owner(info, ancestor))
-                or (info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX)):
-            raise RuntimeError(f"Hermes handoff ancestor is untrusted: {ancestor}")
-    directories = [(home, False), (home / "state", True)]
+    info = home.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner:
+        raise RuntimeError(f"Hermes handoff directory is untrusted: {home}")
     profiles = home / "profiles"
     profile_count = 0
     if os.path.lexists(profiles):
         info = profiles.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner:
             raise RuntimeError(f"Hermes handoff directory is untrusted: {profiles}")
-        directories.append((profiles, False))
         for profile in sorted(profiles.iterdir()):
             if (profile.name == "default" or _PROFILE_ID.fullmatch(profile.name) is None
                     or (profiles / ".deleted" / profile.name).exists()):
@@ -171,52 +153,15 @@ def prepare_handoff_directories(home: Path) -> dict[str, Any]:
                 raise RuntimeError(f"Hermes handoff directory is untrusted: {profile}")
             if not stat.S_ISDIR(info.st_mode):
                 continue
-            markers = []
-            for name in _PROFILE_IDENTITY_MARKERS:
-                marker = profile / name
-                if os.path.lexists(marker):
-                    markers.append(marker.lstat())
-            if not any(stat.S_ISREG(marker.st_mode) or stat.S_ISLNK(marker.st_mode)
-                       for marker in markers):
-                continue
-            directories.extend(((profile, False), (profile / "state", True)))
-            profile_count += 1
-    modes = []
-    for directory, private in directories:
-        if not os.path.lexists(directory):
-            if not private:
-                raise RuntimeError(f"Hermes handoff directory is missing: {directory}")
-            modes.append((directory, None, 0o700))
-            continue
-        info = directory.lstat()
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner:
-            raise RuntimeError(f"Hermes handoff directory is untrusted: {directory}")
-        modes.append((directory, info, 0o700 if private else stat.S_IMODE(info.st_mode) & ~0o022))
-    adjusted = created = 0
-    for directory, before, mode in modes:
-        if before is None:
-            directory.mkdir(mode=mode)
-            created += 1
-            continue
-        current = directory.lstat()
-        if (current.st_dev, current.st_ino, current.st_uid, current.st_mode) != (
-                before.st_dev, before.st_ino, before.st_uid, before.st_mode):
-            raise RuntimeError(f"Hermes handoff directory changed during installation: {directory}")
-        if stat.S_IMODE(current.st_mode) != mode:
-            # Open without following a replacement symlink; keep the checked
-            # directory inode pinned while tightening its permissions.
-            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
-                opened = os.fstat(descriptor)
-                if (opened.st_dev, opened.st_ino, opened.st_uid, opened.st_mode) != (
-                        before.st_dev, before.st_ino, before.st_uid, before.st_mode):
-                    raise RuntimeError(f"Hermes handoff directory changed during installation: {directory}")
-                os.fchmod(descriptor, mode)
-            finally:
-                os.close(descriptor)
-            adjusted += 1
+            if info.st_uid != owner:
+                raise RuntimeError(f"Hermes handoff directory is untrusted: {profile}")
+            markers = [profile / name for name in _PROFILE_IDENTITY_MARKERS]
+            if any(os.path.lexists(marker) and (
+                    stat.S_ISREG(marker.lstat().st_mode) or stat.S_ISLNK(marker.lstat().st_mode))
+                   for marker in markers):
+                profile_count += 1
     return {"status": "ready", "profile_count": profile_count,
-            "adjusted_count": adjusted, "created_count": created}
+            "adjusted_count": 0, "created_count": 0}
 
 
 def install_hermes_integration(

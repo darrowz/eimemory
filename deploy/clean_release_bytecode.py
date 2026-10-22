@@ -92,6 +92,11 @@ def _open_directory_at(parent_fd: int, name: str, flags: int) -> int:
 def _remove_directory_tree(parent_fd: int, name: str, flags: int) -> None:
     directory_fd = _open_directory_at(parent_fd, name, flags)
     try:
+        info = os.fstat(directory_fd)
+        if info.st_uid == os.geteuid() and not info.st_mode & stat.S_IWUSR:
+            # Retiring our sealed artifact must not require changing a host
+            # application's permissions or following any source symlink.
+            os.fchmod(directory_fd, stat.S_IMODE(info.st_mode) | stat.S_IWUSR)
         for child_name in os.listdir(directory_fd):
             child_stat = os.stat(child_name, dir_fd=directory_fd, follow_symlinks=False)
             if stat.S_ISDIR(child_stat.st_mode):
@@ -256,6 +261,9 @@ def prepare_release_directory(
         try:
             _clean_release_fd(release_fd, flags)
             _validate_source_fd(release_fd, flags, repo_root=Path(repo_root).resolve(strict=True), commit=commit)
+            info = os.fstat(release_fd)
+            if info.st_uid == os.geteuid() and not info.st_mode & stat.S_IWUSR:
+                os.fchmod(release_fd, stat.S_IMODE(info.st_mode) | stat.S_IWUSR)
             try:
                 venv_stat = os.stat(".venv", dir_fd=release_fd, follow_symlinks=False)
             except FileNotFoundError:
@@ -393,6 +401,68 @@ def relocate_virtualenv_scripts(
     return changed
 
 
+def seal_release_source_permissions(
+    *, release_dir: str | Path, releases_root: str | Path,
+    repo_root: str | Path, commit: str, verify_only: bool = False,
+) -> None:
+    """Keep source caches out of our artifact without changing its host process.
+
+    Only an exact Git-validated release's owned source directories are sealed.
+    Virtual environments and symlink targets remain untouched. Keep descriptors
+    pinned through validation and publication, and validate every directory
+    before changing any mode.
+    """
+    if os.name != "posix" or os.geteuid() <= 0 or os.getuid() != os.geteuid():
+        raise CleanupError("source permission seal requires the non-root release owner")
+    validate_release_source(release_dir=release_dir, releases_root=releases_root,
+                            repo_root=repo_root, commit=commit)
+    release, root = resolve_release_paths(release_dir, releases_root)
+    flags = _directory_open_flags()
+    parent_fd = os.open(root, flags)
+    descriptors: list[tuple[int, int, str, tuple[int, int, int, int]]] = []
+
+    def identity(info):
+        return info.st_dev, info.st_ino, info.st_uid, info.st_mode
+
+    def collect(parent, name, *, top=False):
+        fd = _open_directory_at(parent, name, flags)
+        info = os.fstat(fd)
+        descriptors.append((fd, parent, name, identity(info)))
+        if info.st_uid != os.geteuid():
+            raise CleanupError("source permission seal encountered a foreign directory")
+        if verify_only and stat.S_IMODE(info.st_mode) != 0o555:
+            raise CleanupError("source permission seal is incomplete")
+        for child in os.listdir(fd):
+            if top and child == ".venv":
+                continue
+            child_info = os.stat(child, dir_fd=fd, follow_symlinks=False)
+            if stat.S_ISDIR(child_info.st_mode):
+                collect(fd, child)
+
+    try:
+        collect(parent_fd, release.name, top=True)
+        for fd, parent, name, original in descriptors:
+            if (identity(os.fstat(fd)) != original or
+                    identity(os.stat(name, dir_fd=parent, follow_symlinks=False)) != original):
+                raise CleanupError("source permission seal directory changed")
+        if not verify_only:
+            for fd, _parent, _name, original in reversed(descriptors):
+                # Prepared controller source can already be mounted read-only
+                # by the deployment job. A correct seal needs no mutation.
+                if stat.S_IMODE(original[3]) != 0o555:
+                    os.fchmod(fd, 0o555)
+                    os.fsync(fd)
+        for fd, parent, name, original in descriptors:
+            expected = (*original[:3], stat.S_IFDIR | 0o555)
+            if (identity(os.fstat(fd)) != expected or
+                    identity(os.stat(name, dir_fd=parent, follow_symlinks=False)) != expected):
+                raise CleanupError("source permission seal readback failed")
+    finally:
+        for fd, _parent, _name, _original in reversed(descriptors):
+            os.close(fd)
+        os.close(parent_fd)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-dir", required=True)
@@ -404,12 +474,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     action.add_argument("--validate-source", action="store_true")
     action.add_argument("--remove-stage", action="store_true")
     action.add_argument("--relocate-venv", action="store_true")
+    action.add_argument("--seal-source", action="store_true")
+    action.add_argument("--verify-source-seal", action="store_true")
     parser.add_argument("--allow-stage", action="store_true")
     parser.add_argument("--from-stage")
     parser.add_argument("--to-release")
     args = parser.parse_args(argv)
     try:
-        if args.prepare or args.validate_source:
+        if args.prepare or args.validate_source or args.seal_source or args.verify_source_seal:
             if not args.repo_root or not args.commit:
                 raise CleanupError("repo root and commit are required")
         if args.prepare:
@@ -428,6 +500,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 repo_root=args.repo_root,
                 commit=args.commit,
                 allow_stage=args.allow_stage,
+            )
+        elif args.seal_source or args.verify_source_seal:
+            seal_release_source_permissions(
+                release_dir=args.release_dir, releases_root=args.releases_root,
+                repo_root=args.repo_root, commit=args.commit,
+                verify_only=args.verify_source_seal,
             )
         elif args.remove_stage:
             remove_stage_directory(stage_dir=args.release_dir, releases_root=args.releases_root)

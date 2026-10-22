@@ -13,6 +13,8 @@ AIGC:
 
 ## [1.15.22] — 2026-10-22
 
+- Keep Hermes/OpenClaw gateway execution under their native configuration. Publish memory integration environment only, retire verified historical eiMemory restrictions, and preserve native startup commands and directory permissions.
+- Move Hermes handoff data into a private eiMemory directory with exact legacy queue migration, and protect eiMemory source caches without changing the gateway's global Python policy.
 - Keep the user controller in the host user and PID namespaces with no effective, permitted or ambient capabilities, so authenticated process observations work without privileged runtime access.
 - Serialize controller installation, preserve a durable startup barrier and original files, and verify the published generation before clearing the barrier.
 - Carry the original activity and enablement capture across failed manual attempts; restore and verify the original user services, timers and paths before completing a release.

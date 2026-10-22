@@ -213,6 +213,68 @@ def _system_owner(info, path, uid):
         return False
 
 
+def native_control_consumer(groups,contract=None):
+    """Only authenticated eimemory units need the eimemory mount sandbox.
+
+    A gateway may independently set NNP or other native policy. That neither
+    enrolls it as an eimemory process nor permits us to change its namespace.
+    """
+    groups=[row[3:] for row in groups if row.startswith('0::')]
+    possible=[group for group in groups if group.rsplit('/',1)[-1].startswith('eimemory-')
+        or group.rsplit('/',1)[-1] in {'openclaw-loop-watch.service','openclaw-loop-compact.service'}]
+    possible=[group for group in possible if group.rsplit('/',1)[-1]!='eimemory-runtime-manager.service']
+    if not possible:return False
+    if contract is None:
+        if __package__:
+            from eimemory.contracts import runtime_manager as contract
+        else:
+            import importlib.util
+            source=Path(__file__).with_name('runtime_manager_contract.py')
+            modes=(0o640,)
+            if (not os.path.lexists(source) and source.parent.name=='contracts'
+                    and source.parent.parent.name=='eimemory'):
+                # Review tools also load this exact source module by file path.
+                # The source contract has its repository name and file mode;
+                # installed controllers never fall back to an editable path.
+                source=source.with_name('runtime_manager.py')
+                uid=account().pw_uid
+                for parent in source.parents:
+                    meta=parent.lstat();system=_system_owner(meta,parent,uid)
+                    sticky=system and meta.st_mode&stat.S_ISVTX
+                    if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid!=uid and not system
+                            or meta.st_mode&0o022 and not sticky
+                                and not os.statvfs(parent).f_flag&os.ST_RDONLY):
+                        raise ValueError('user_control_plane_contract_parent_untrusted')
+                modes=(0o640,0o644)
+            descriptor=os.open(source,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK)
+            try:
+                info=os.fstat(descriptor)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid!=account().pw_uid or info.st_nlink!=1
+                        or stat.S_IMODE(info.st_mode) not in modes or info.st_size>262144):
+                    raise ValueError('user_control_plane_contract_untrusted')
+                raw=os.read(descriptor,262145)
+                identity=lambda value:(value.st_dev,value.st_ino,value.st_uid,value.st_gid,
+                    value.st_mode,value.st_nlink,value.st_size,value.st_mtime_ns,value.st_ctime_ns)
+                if (len(raw)!=info.st_size or identity(info)!=identity(os.fstat(descriptor))
+                        or identity(info)!=identity(source.lstat())):
+                    raise ValueError('user_control_plane_contract_changed')
+            finally:os.close(descriptor)
+            specification=importlib.util.spec_from_file_location('readonly_consumer_contract',source)
+            contract=importlib.util.module_from_spec(specification)
+            exec(compile(raw,str(source),'exec'),contract.__dict__)
+    for group in possible:
+        unit=group.rsplit('/',1)[-1]
+        try:dynamic=contract.is_dynamic_unit(unit)
+        except (TypeError,ValueError):dynamic=False
+        owned=unit in contract.PRODUCT_SERVICES or dynamic or unit in {
+            'openclaw-loop-watch.service','openclaw-loop-compact.service'}
+        if not owned:continue
+        if not contract.fixed_system_unit_cgroup(group,unit):
+            raise ValueError('user_control_plane_native_consumer_unverified')
+        return True
+    return False
+
+
 def trusted_directory(path, *, private=False):
     """Reject symlinks, foreign owners and writable ancestors in user mode."""
     uid = account().pw_uid
@@ -234,11 +296,8 @@ def trusted_directory(path, *, private=False):
         protected=(fixed['authority'],fixed['state'],fixed['code'],fixed['socket'].parent)
         if any(path==root or root in path.parents for root in protected):
             try:
-                fields=dict(line.split(':',1) for line in Path('/proc/self/status').read_text().splitlines() if ':' in line)
                 groups=Path('/proc/self/cgroup').read_text().splitlines()
-                controller=any(row.endswith('/eimemory-runtime-manager.service') for row in groups)
-                if (fields.get('NoNewPrivs','').strip()=='1' and not controller
-                        and not os.statvfs(path).f_flag & os.ST_RDONLY):
+                if native_control_consumer(groups) and not os.statvfs(path).f_flag & os.ST_RDONLY:
                     raise ValueError('user_control_plane_namespace_not_readonly')
             except OSError as exc:
                 raise ValueError('user_control_plane_namespace_unverified') from exc

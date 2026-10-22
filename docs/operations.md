@@ -718,6 +718,14 @@ receipt set. Check `eimemory_status.attestation_available` and
 is unavailable and those tasks cannot count toward L5, while memory/recall
 remain fail-open.
 
+`producer_credentials_configured` reports that producer credentials are
+configured. `attestation_boundary_verified=false` makes clear that this status
+does not verify OS isolation. The historical `operator-separated-v1` marker is
+the credential-loading protocol; it is not an isolation attestation. Native
+activation, autonomous transaction, terminal receipt and observation evidence
+must still pass their own gates. eiMemory does not impose process or filesystem
+restrictions on a Hermes/OpenClaw gateway to obtain those credentials.
+
 ## Codex
 
 Install the matching eimemory Python package in the environment where the

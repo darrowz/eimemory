@@ -1,3 +1,9 @@
+"""Explicit private-file producer credentials, separate from the RPC bearer.
+
+The historical ``operator-separated-v1`` marker selects this credential
+protocol. It does not attest OS process isolation or a model-inaccessible
+same-user filesystem; formal native evidence has its own independent gates.
+"""
 from __future__ import annotations
 
 import json

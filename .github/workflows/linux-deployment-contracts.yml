@@ -131,6 +131,14 @@ jobs:
           tests/test_runtime_identity_drift.py
           tests/test_runtime_manager.py
           tests/test_user_control_plane.py
+          tests/test_gateway_native_boundary.py
+          tests/test_user_release_recovery.py
+          tests/test_hermes_private_handoff_migration.py
+          tests/test_hermes_plugin_no_release_bytecode.py
+          tests/test_outbox_private_creation.py
+          tests/test_hermes_profile_boundary_installer.py
+          tests/test_incident_deployment_wiring_20260928.py
+          tests/test_v1_14_105_rotation.py
           tests/test_user_runtime_inventory.py
           tests/test_system_code_repair.py
           tests/test_system_code_repair_failure.py

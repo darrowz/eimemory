@@ -286,55 +286,45 @@ def test_unknown_contract_stops_gateway_before_its_entrypoint(tmp_path):
     assert not list(target.parent.glob("*.pre-eimemory-profile-boundary-*"))
 
 
-def _render_boundary_dropin(tmp_path, *, helper=None, bad_python=None):
-    writer = runpy.run_path(str(ROOT / "deploy/install_managed_systemd_dropin.py"))["install_managed_dropin"]
-    systemd = tmp_path / "systemd"
-    systemd.mkdir(exist_ok=True)
-    helper = helper or tmp_path / "controller/deploy/ensure_hermes_profile_boundary.py"
-    return writer, systemd, {
-        "source": ROOT / "deploy/systemd/hermes-profile-boundary.conf", "root": systemd,
-        "render_hermes_boundary_python": str(bad_python or Path(sys.executable)),
-        "render_hermes_boundary_helper": str(helper),
-        "render_hermes_boundary_host_root": str(tmp_path / "hermes-agent"),
-    }
-
-
 @pytest.mark.parametrize("unit", ["hermes-gateway.service", "hermes-gateway-hongtai.service",
                                   "hermes-gateway-hongxin.service", "hermes-gateway-xiaomage.service"])
-def test_each_gateway_dropin_uses_controller_helper_across_old_release_rollback(tmp_path, unit):
-    controller_helper = tmp_path / "controller/deploy/ensure_hermes_profile_boundary.py"
-    controller_helper.parent.mkdir(parents=True)
-    shutil.copyfile(ROOT / "deploy/ensure_hermes_profile_boundary.py", controller_helper)
-    old_release = tmp_path / "old-release-without-helper"
-    old_release.mkdir()
-    writer, systemd, kwargs = _render_boundary_dropin(tmp_path, helper=controller_helper)
-    target = systemd / (unit + ".d") / "94-eimemory-hermes-profile-boundary.conf"
-    writer(target=target, **kwargs)
+def test_old_gateway_template_cannot_reintroduce_startup_or_permission_policy(tmp_path, unit):
+    writer = runpy.run_path(str(ROOT / "deploy/install_managed_systemd_dropin.py"))["install_managed_dropin"]
+    systemd = tmp_path / "systemd"
+    systemd.mkdir()
+    old = tmp_path / 'old-release.conf'
+    old.write_text('# Managed by eimemory immutable release installer\n[Service]\n'
+        'Environment=EIMEMORY_RUNTIME_COMMIT=@EIMEMORY_COMMIT@\n'
+        'ExecStartPre=/old/controller/startup-guard\nExecStart=/old/wrapper\n'
+        'PrivateUsers=yes\nReadOnlyPaths=/old/release\nMemoryMax=1G\nUMask=0077\n', encoding='utf-8')
+    target = systemd / (unit + ".d") / "zzzz-eimemory-python-runtime.conf"
+    writer(source=old, target=target, root=systemd, render_commit='a' * 40)
     content = target.read_text(encoding="utf-8")
     assert content.startswith("# Managed by eimemory immutable release installer\n")
-    assert str(controller_helper) in content and str(old_release) not in content
-    assert "--apply --startup" in content and "@EIMEMORY_" not in content
-    assert controller_helper.is_file() and not (old_release / "deploy/ensure_hermes_profile_boundary.py").exists()
+    assert all(not line or line.startswith(('#', '[Service]', 'Environment=EIMEMORY_',
+        'EnvironmentFile=')) for line in content.splitlines())
+    assert 'Environment=EIMEMORY_RUNTIME_COMMIT=' + 'a' * 40 in content.splitlines()
+    assert '/old/' not in content
 
 
-@pytest.mark.parametrize("bad", ["relative/python", "has space/python", "with%specifier", "with$expansion", "with\nnewline"])
-def test_boundary_dropin_rejects_unsafe_paths_before_writing(tmp_path, bad):
-    python = bad if bad.startswith("relative") else str(tmp_path / bad)
-    writer, systemd, kwargs = _render_boundary_dropin(tmp_path, bad_python=python)
-    target = systemd / "hermes-gateway.service.d/guard.conf"
-    with pytest.raises(RuntimeError, match="systemd-safe"):
-        writer(target=target, **kwargs)
-    assert not target.exists()
+@pytest.mark.parametrize('name', ['hermes-handoff-permissions.conf', 'hermes-profile-boundary.conf'])
+def test_retired_gateway_templates_have_no_process_policy(name):
+    content = (ROOT / 'deploy/systemd' / name).read_text(encoding='utf-8')
+    assert all(not line or line.startswith('#') for line in content.splitlines())
 
 
 @pytest.mark.skipif(os.name != "posix" or shutil.which("bash") is None, reason="production installer is Linux bash")
-def test_actual_installer_generates_shared_startup_guard_for_all_four_gateways(tmp_path):
+def test_actual_installer_preserves_native_commands_and_only_publishes_memory_environment(tmp_path):
     systemd = tmp_path / "systemd"
     systemd.mkdir()
     units = ["hermes-gateway.service", "hermes-gateway-hongtai.service",
-             "hermes-gateway-hongxin.service", "hermes-gateway-xiaomage.service"]
+             "hermes-gateway-hongxin.service", "hermes-gateway-xiaomage.service",
+             "openclaw-gateway.service", "colleague-gateway.service"]
     for unit in units:
         (systemd / unit).write_text("[Service]\nExecStart=/usr/bin/python gateway\n", encoding="utf-8")
+        (systemd / unit).chmod(0o664)
+    originals = {unit: (systemd / unit).read_bytes() for unit in units}
+    modes = {unit: (systemd / unit).stat().st_mode & 0o777 for unit in units}
     (systemd / "hermes-gateway-unregistered.service").write_text("[Service]\n", encoding="utf-8")
     control = tmp_path / "registered-runtime-control.py"
     control.write_text("import sys\n"
@@ -358,6 +348,7 @@ def test_actual_installer_generates_shared_startup_guard_for_all_four_gateways(t
     setup += '''
 export EIMEMORY_RUNTIME_MANAGER_CONTROL
 export EIMEMORY_RUNTIME_TRANSITION_JOB=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+unset EIMEMORY_CONTROL_PLANE
 _hermes_is_installed() { return 0; }
 systemctl() { return 0; }
 _user_systemctl() { return 0; }
@@ -373,7 +364,13 @@ _install_as_service_user() { local mode="$1"; shift; install -m "$mode" "$@"; }
     result = subprocess.run(["bash", "-s"], input="set -euo pipefail\n" + setup + function + "\n_install_hermes_integration\n",
                             text=True, capture_output=True, timeout=30)
     assert result.returncode == 0, (result.stdout, result.stderr)
-    guards = list(systemd.glob("*.service.d/94-eimemory-hermes-profile-boundary.conf"))
-    assert {guard.parent.name.removesuffix(".d") for guard in guards} == set(units)
+    metadata = list(systemd.glob("*.service.d/zzzz-eimemory-python-runtime.conf"))
+    assert {item.parent.name.removesuffix(".d") for item in metadata} == set(units)
     assert not (systemd / "hermes-gateway-unregistered.service.d").exists()
-    assert all(str(ROOT / "deploy/ensure_hermes_profile_boundary.py") in guard.read_text() for guard in guards)
+    for item in metadata:
+        assert all(not line or line.startswith(('#', '[Service]', 'Environment=EIMEMORY_', 'Environment="EIMEMORY_',
+            'EnvironmentFile=')) for line in item.read_text().splitlines())
+    assert {unit: (systemd / unit).read_bytes() for unit in units} == originals
+    assert {unit: (systemd / unit).stat().st_mode & 0o777 for unit in units} == modes
+    assert not any(systemd.glob('*.service.d/9[134]-eimemory-*.conf'))
+    assert not (systemd / 'hermes-gateway-eimemory.sh').exists()

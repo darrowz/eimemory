@@ -1224,7 +1224,8 @@ def test_rpc_server_attestation_profile_is_private_file_only(monkeypatch, tmp_pa
         status = AgentRuntimeMemoryService(second_runtime).status(channel="codex", scope=BASE_SCOPE)
         assert second_server.attestation_tokens == {PRODUCER_TOKEN: "codex"}
         assert status["attestation_available"] is True
-        assert status["attestation_reason"] == "operator_separated_profile_active"
+        assert status["attestation_reason"] == "producer_credentials_configured"
+        assert status["attestation_boundary_verified"] is False
     finally:
         second_server.stop()
         second_runtime.close()

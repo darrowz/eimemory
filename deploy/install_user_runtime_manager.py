@@ -21,6 +21,7 @@ import tempfile
 import zipfile
 from contextlib import contextmanager
 from functools import wraps
+import shlex
 
 
 @contextmanager
@@ -122,6 +123,189 @@ def owned_bytes(path,uid,maximum=16*1024*1024):
     finally:os.close(fd)
 
 
+def is_gateway_unit(unit):
+    return isinstance(unit,str) and (unit in {'hermes-gateway.service','openclaw-gateway.service'}
+        or re.fullmatch(r'hermes-gateway-[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}\.service',unit) is not None
+        or re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.@-]{0,63}-gateway\.service',unit) is not None)
+
+
+def gateway_retirement_plan(args,uid,units):
+    """An explicit reviewed manifest, never a filename heuristic, selects bytes."""
+    manifest=getattr(args,'gateway_retirement_manifest',None)
+    digest=getattr(args,'expected_gateway_retirement_sha256','')
+    if manifest is None and not digest:return None,[]
+    if manifest is None or not digest:raise ValueError('user_install_gateway_retirement_review_required')
+    raw=reviewed(manifest,digest,1024*1024)
+    planned=[]
+    for item in gateway_manifest_entries(raw,uid):
+        path=units/item['relative_path']
+        original,identity=gateway_original(path,uid)
+        if identity['mode']!=item['mode'] or sha256(original).hexdigest()!=item['sha256']:
+            raise ValueError('user_install_gateway_retirement_cas_mismatch')
+        planned.append({'entry':item,'original':original,'identity':identity})
+    return raw,planned
+
+
+def gateway_manifest_entries(raw,uid):
+    value=strict(raw)
+    if (not isinstance(value,dict) or set(value)!={'schema','entries'}
+            or value['schema']!='eimemory.gateway_policy_retirement.v1'
+            or not isinstance(value['entries'],list) or len(value['entries'])>256):
+        raise ValueError('user_install_gateway_retirement_manifest_invalid')
+    seen=set()
+    for item in value['entries']:
+        if not isinstance(item,dict) or set(item)!={'relative_path','sha256','uid','mode','source'}:
+            raise ValueError('user_install_gateway_retirement_entry_invalid')
+        relative=item['relative_path']
+        if not isinstance(relative,str):raise ValueError('user_install_gateway_retirement_path_invalid')
+        parts=PurePosixPath(relative).parts
+        if (len(parts)!=2 or PurePosixPath(relative).as_posix()!=relative or '\\' in relative
+                or not parts[0].endswith('.d') or not is_gateway_unit(parts[0][:-2])
+                or re.fullmatch(r'(?:[0-9]{2}-|z{4,6}-)eimemory[A-Za-z0-9_.-]*\.conf',parts[1]) is None
+                or relative in seen):
+            raise ValueError('user_install_gateway_retirement_path_invalid')
+        source=item['source']
+        if (not isinstance(source,dict) or set(source)!={'kind','reference','sha256'}
+                or source['kind']!='operator_reviewed_legacy_eimemory'
+                or not isinstance(source['reference'],str) or not 1<=len(source['reference'])<=1024
+                or any(character in source['reference'] for character in '\r\n\0')
+                or not isinstance(source.get('sha256'),str) or re.fullmatch('[0-9a-f]{64}',source['sha256']) is None
+                or type(item['uid']) is not int or item['uid']!=uid or type(item['mode']) is not int
+                or not 0<=item['mode']<=0o777 or not isinstance(item.get('sha256'),str)
+                or re.fullmatch('[0-9a-f]{64}',item['sha256']) is None):
+            raise ValueError('user_install_gateway_retirement_entry_invalid')
+        seen.add(relative)
+    return value['entries']
+
+
+def gateway_original(path,uid):
+    """Read native gateway metadata without normalizing its original mode."""
+    path=Path(path);parent=path.parent
+    descriptor=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    try:
+        directory_info=os.fstat(descriptor);named_directory=parent.lstat()
+        if (directory_info.st_uid!=uid or not stat.S_ISDIR(directory_info.st_mode)
+                or (directory_info.st_dev,directory_info.st_ino)!=(named_directory.st_dev,named_directory.st_ino)):
+            raise ValueError('user_install_gateway_retirement_parent_untrusted')
+        fd=os.open(path.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK,dir_fd=descriptor)
+        try:
+            before=os.fstat(fd)
+            identity=lambda info:(info.st_dev,info.st_ino,info.st_uid,info.st_gid,info.st_mode,
+                info.st_nlink,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid!=uid or before.st_nlink!=1
+                    or before.st_size>1024*1024):
+                raise ValueError('user_install_gateway_retirement_original_untrusted')
+            raw=os.read(fd,1024*1024+1)
+            if (len(raw)!=before.st_size or identity(before)!=identity(os.fstat(fd))
+                    or identity(before)!=identity(os.stat(path.name,dir_fd=descriptor,follow_symlinks=False))
+                    or (directory_info.st_dev,directory_info.st_ino)!=(parent.lstat().st_dev,parent.lstat().st_ino)):
+                raise ValueError('user_install_gateway_retirement_original_changed')
+            return raw,{'device':before.st_dev,'inode':before.st_ino,'uid':before.st_uid,'gid':before.st_gid,
+                'mode':stat.S_IMODE(before.st_mode),'size':before.st_size,'mtime_ns':before.st_mtime_ns,
+                'ctime_ns':before.st_ctime_ns,'parent_device':directory_info.st_dev,'parent_inode':directory_info.st_ino}
+        finally:os.close(fd)
+    finally:os.close(descriptor)
+
+
+def retire_gateway_policies(raw,planned,units,archive,uid):
+    if raw is None:return
+    directory(archive,uid,0o700)
+    archive_write(archive/'reviewed-manifest.json',raw,uid)
+    # Validate the whole batch and archive every original before the first unlink.
+    for record in planned:
+        path=units/record['entry']['relative_path']
+        current,identity=gateway_original(path,uid)
+        if current!=record['original'] or identity!=record['identity']:
+            raise ValueError('user_install_gateway_retirement_cas_mismatch')
+        destination=archive/record['entry']['relative_path']
+        directory(destination.parent,uid,0o700)
+        archive_write(destination,current,uid)
+    archive_write(archive/'original-identities.json',canonical([
+        {'relative_path':record['entry']['relative_path'],**record['identity']} for record in planned]),uid)
+    for record in planned:
+        path=units/record['entry']['relative_path']
+        current,identity=gateway_original(path,uid)
+        if current!=record['original'] or identity!=record['identity']:
+            raise ValueError('user_install_gateway_retirement_cas_mismatch')
+        parent=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        try:
+            info=os.fstat(parent);named=os.stat(path.name,dir_fd=parent,follow_symlinks=False)
+            if ((info.st_dev,info.st_ino)!=(identity['parent_device'],identity['parent_inode'])
+                    or not stat.S_ISREG(named.st_mode) or named.st_nlink!=1
+                    or (named.st_dev,named.st_ino,named.st_uid,named.st_gid,stat.S_IMODE(named.st_mode),
+                        named.st_size,named.st_mtime_ns,named.st_ctime_ns)!=(identity['device'],identity['inode'],
+                        identity['uid'],identity['gid'],identity['mode'],identity['size'],
+                        identity['mtime_ns'],identity['ctime_ns'])):
+                raise ValueError('user_install_gateway_retirement_cas_mismatch')
+            os.unlink(path.name,dir_fd=parent);os.fsync(parent)
+        finally:os.close(parent)
+    archive_write(archive/'complete.json',canonical({'schema':'eimemory.gateway_policy_retirement_result.v1',
+        'manifest_sha256':sha256(raw).hexdigest(),'retired':len(planned),
+        'native_gateway_units_changed':False,'autonomous_repair_credit':False}),uid)
+
+
+def gateway_retirement_evidence(archive,uid,manifest_sha256,units,registry):
+    """Read back original custody and retired names before lifting the fence."""
+    if manifest_sha256 is None:return None
+    manifest=owned_bytes(archive/'reviewed-manifest.json',uid,1024*1024)
+    if sha256(manifest).hexdigest()!=manifest_sha256:
+        raise ValueError('user_install_gateway_retirement_evidence_changed')
+    entries=gateway_manifest_entries(manifest,uid)
+    identities_raw=owned_bytes(archive/'original-identities.json',uid,1024*1024)
+    identities=strict(identities_raw)
+    if (not isinstance(identities,list) or len(identities)!=len(entries)
+            or any(not isinstance(item,dict) for item in identities)):
+        raise ValueError('user_install_gateway_retirement_evidence_invalid')
+    originals={}
+    for entry,identity in zip(entries,identities):
+        relative=entry['relative_path'];raw=owned_bytes(archive/relative,uid,1024*1024)
+        if (sha256(raw).hexdigest()!=entry['sha256'] or identity.get('relative_path')!=relative
+                or identity.get('uid')!=uid or identity.get('mode')!=entry['mode']
+                or identity.get('size')!=len(raw)):
+            raise ValueError('user_install_gateway_retirement_evidence_changed')
+        current=units/relative
+        if os.path.lexists(current):
+            # The old broad policy may have occupied this exact name. Only
+            # the new integration metadata can legitimately replace it.
+            unit=PurePosixPath(relative).parts[0][:-2]
+            if (current.name!='zzzzzz-eimemory-user-control-plane.conf'
+                    or not registry['units'].get(unit,{}).get('installed')):
+                raise ValueError('user_install_gateway_retired_policy_present')
+            gateway_integration_bytes(current,uid,registry['runtime_commit'])
+        originals[relative]=entry['sha256']
+    result_raw=owned_bytes(archive/'complete.json',uid,65536)
+    expected={'schema':'eimemory.gateway_policy_retirement_result.v1',
+        'manifest_sha256':manifest_sha256,'retired':len(entries),
+        'native_gateway_units_changed':False,'autonomous_repair_credit':False}
+    if strict(result_raw)!=expected:
+        raise ValueError('user_install_gateway_retirement_evidence_invalid')
+    return {'manifest_sha256':manifest_sha256,'identities_sha256':sha256(identities_raw).hexdigest(),
+        'result_sha256':sha256(result_raw).hexdigest(),'originals':originals}
+
+
+def gateway_integration_bytes(path,uid,commit):
+    raw,identity=gateway_original(path,uid)
+    if identity['mode']&0o022:
+        raise ValueError('user_install_gateway_integration_untrusted')
+    expected=b'# eimemory gateway memory integration only; native process policy is unchanged.'
+    if not raw.startswith(expected+b'\n'):
+        raise ValueError('user_install_gateway_integration_unverified')
+    found=[]
+    for line in raw.decode().splitlines():
+        if not line.strip() or line.startswith('#') or line=='[Service]':continue
+        name,separator,value=line.partition('=')
+        if not separator or name not in {'Environment','EnvironmentFile'}:
+            raise ValueError('user_install_gateway_native_policy_forbidden')
+        if name=='Environment':
+            for assignment in shlex.split(value):
+                key,separator,content=assignment.partition('=')
+                if not separator or not key.startswith('EIMEMORY_'):
+                    raise ValueError('user_install_gateway_native_environment_forbidden')
+                if key=='EIMEMORY_RUNTIME_COMMIT':found.append(content)
+    if found!=[commit]:raise ValueError('user_install_gateway_integration_commit_invalid')
+    return raw
+
+
 def installation_inventory(home,registry,uid,helper=None):
     """Seal published control bytes, including the generated effective policy."""
     home=Path(home);code=home/'.local/lib/eimemory/control-plane'
@@ -135,7 +319,16 @@ def installation_inventory(home,registry,uid,helper=None):
             if path.is_file():paths.add(path)
     native=set(registry['template_hashes'])|{name for name,item in registry['units'].items() if item['installed']}
     native.add('eimemory-runtime-manager.service')
+    gateway_paths=set()
     for unit in native:
+        if is_gateway_unit(unit):
+            # Vendor fragments, native profile launchers and local policies are
+            # outside controller publication custody, including mode 0664 files.
+            if registry['units'].get(unit,{}).get('installed'):
+                metadata=units/(unit+'.d')/'zzzzzz-eimemory-user-control-plane.conf'
+                gateway_integration_bytes(metadata,uid,registry['runtime_commit'])
+                gateway_paths.add(metadata)
+            continue
         fragment=units/unit
         if os.path.lexists(fragment):paths.add(fragment)
         dropins=units/(unit+'.d')
@@ -148,13 +341,14 @@ def installation_inventory(home,registry,uid,helper=None):
         if unit in registry['units'] and registry['units'][unit]['installed'] and unit.endswith('.service'):
             policy=dropins/'zzzzzz-eimemory-user-control-plane.conf'
             if not policy.is_file():raise ValueError('user_install_effective_policy_missing')
-    wrapper=units/'hermes-gateway-eimemory.sh'
-    if os.path.lexists(wrapper):paths.add(wrapper)
     result={}
     for path in sorted(paths):
         raw=(helper.read_file(path,maximum=16*1024*1024,modes=(0o600,0o640,0o644,0o755))
             if helper is not None else owned_bytes(path,uid))
         info=path.lstat()
+        result[str(path)]={'sha256':sha256(raw).hexdigest(),'mode':stat.S_IMODE(info.st_mode),'uid':info.st_uid}
+    for path in sorted(gateway_paths):
+        raw=gateway_integration_bytes(path,uid,registry['runtime_commit']);info=path.lstat()
         result[str(path)]={'sha256':sha256(raw).hexdigest(),'mode':stat.S_IMODE(info.st_mode),'uid':info.st_uid}
     return result
 
@@ -308,6 +502,8 @@ def install(args):
         'DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/'+str(uid)+'/bus'}
     stopped_controller(environment)
     files,manifest=bundle_files(args.bundle,args.expected_bundle_sha256,uid,account.pw_gid)
+    if any(name.startswith('templates/') and is_gateway_unit(name.removeprefix('templates/')) for name in files):
+        raise ValueError('user_install_native_gateway_template_forbidden')
     seed=strict(reviewed(args.registry_seed,args.expected_registry_seed_sha256,65536))
     settings=reviewed(args.runtime_settings,args.expected_runtime_settings_sha256,65536)
     managed_raw=reviewed(args.managed_manifest,args.expected_managed_manifest_sha256,1048576)
@@ -328,11 +524,8 @@ def install(args):
     for path in (authority,state,code,home/'.config/systemd/user',home/'.local/share/systemd/user',
                  *(state/name for name in ('jobs','validations','validation-results','activation-receipts','fused-closures'))):
         directory(path,uid)
-    for name in ('.hermes','.cache','.codex','.openclaw'):
-        product_home=home/name
-        mode=stat.S_IMODE(product_home.lstat().st_mode) if product_home.exists() else 0o750
-        directory(product_home,uid,mode)
-    directory(home/'.local/state/hermes',uid,0o700)
+    # Native gateway homes/cache/state belong to their applications. The
+    # optional product RW mounts do not require this installer to create them.
     directory(socket,uid,0o700)
     # Reinstallation needs an exact current-generation CAS and no live effect.
     registry_path=authority/'runtime-manager.v1.json'
@@ -412,6 +605,7 @@ def install(args):
             'key_path':str(authority/'managed-incident-proof.key')}}
     registry['generation']=contract.digest({k:v for k,v in registry.items() if k!='generation'})
     contract.validate_registry(registry)
+    gateway_manifest,gateway_plan=gateway_retirement_plan(args,uid,home/'.config/systemd/user')
     for name,expected in registry['compatibility_hashes'].items():
         source=Path('/opt/eimemory/releases')/commit/name
         if source.is_symlink() or sha256(source.read_bytes()).hexdigest()!=expected:
@@ -433,11 +627,13 @@ def install(args):
         marker=state/'controller-installation.json'
         if os.path.lexists(marker):raise ValueError('user_install_incomplete_installation_preserved')
         _publish_installation(args,account,files,manifest,seed,settings,managed_raw,prior_raw,
-            registry,contract,helper,environment,original_registry,original_transition)
+            registry,contract,helper,environment,original_registry,original_transition,
+            gateway_manifest,gateway_plan)
 
 
 def _publish_installation(args,account,files,manifest,seed,settings,managed_raw,prior_raw,
-                          registry,contract,helper,environment,original_registry,original_transition):
+                          registry,contract,helper,environment,original_registry,original_transition,
+                          gateway_manifest=None,gateway_plan=()):
     """Publish only inside both locks; any exception leaves a durable fence."""
     uid=account.pw_uid;home=Path(account.pw_dir)
     authority=home/'.config/eimemory/control-plane';state=home/'.local/state/eimemory/control-plane'
@@ -465,6 +661,7 @@ def _publish_installation(args,account,files,manifest,seed,settings,managed_raw,
         'transition_before_sha256':sha256(original_transition).hexdigest() if original_transition is not None else None,
         'registry_after_sha256':sha256(contract.canonical(registry)).hexdigest(),
         'backup_basename':backup.name,'backup_sha256':sha256(backup.read_bytes()).hexdigest(),
+        'gateway_retirement_manifest_sha256':sha256(gateway_manifest).hexdigest() if gateway_manifest is not None else None,
         'phase':'publication_pending','release_accepted':False,'autonomous_repair_credit':False}
     intent_raw=canonical(intent)
     write(marker,intent_raw,uid,0o600)
@@ -473,12 +670,15 @@ def _publish_installation(args,account,files,manifest,seed,settings,managed_raw,
     guard=('[Unit]\nConditionPathExists=!'+str(marker)+'\n').encode()
     guarded=set(name.removeprefix('templates/') for name in files if name.startswith('templates/'))
     guarded.update(name for name,item in registry['units'].items() if item['installed'])
+    guarded={unit for unit in guarded if not is_gateway_unit(unit)}
     guarded.add('eimemory-runtime-manager.service')
     unit_home=home/'.config/systemd/user'
     for unit in sorted(guarded):
         write(unit_home/(unit+'.d')/'05-eimemory-installation-guard.conf',guard,uid,0o644)
     subprocess.run(['/usr/bin/systemctl','--user','daemon-reload'],env=environment,check=True,timeout=30)
     stopped_controller(environment)
+    retire_gateway_policies(gateway_manifest,gateway_plan,unit_home,
+        backup.with_suffix('.gateway-retirements'),uid)
     verify_controller_sources(registry,commit)
     if Path('/opt/eimemory/current').resolve(strict=True)!=Path('/opt/eimemory/releases')/runtime:
         raise ValueError('user_install_current_changed')
@@ -501,10 +701,13 @@ def _publish_installation(args,account,files,manifest,seed,settings,managed_raw,
     write(registry_path,contract.canonical(registry),uid)
     write(authority/'installation.v1.json',canonical({'schema':'eimemory.user_control_plane_installation.v1',
         'runtime_uid':uid,'runtime_gid':account.pw_gid,'control_plane':'user'}),uid)
+    # Only this eiMemory-owned outbox is created for controlled integration
+    # checks; native gateway profile/state directories retain their own policy.
+    directory(home/'.local/state/eimemory/hermes-handoff',uid,0o700)
     unit_home=home/'.config/systemd/user'
     install_user_units(files,unit_home,uid,controller_commit=commit,runtime_commit=runtime)
     for unit,item in registry['units'].items():
-        if item['installed'] and unit.endswith('.service'):
+        if item['installed'] and unit.endswith('.service') and not is_gateway_unit(unit):
             directory(unit_home/(unit+'.d'),uid)
     # Historical grants retain their original requester IDs and journal hashes.
     # Only future operator requests move to the user identity.
@@ -531,7 +734,8 @@ def _publish_installation(args,account,files,manifest,seed,settings,managed_raw,
     reviewed(unit_home/'eimemory-runtime-manager.service',sha256(files['eimemory-runtime-manager.service']).hexdigest())
     for name,raw in files.items():
         if name.startswith('templates/'):
-            reviewed(unit_home/name.removeprefix('templates/'),sha256(raw).hexdigest())
+            if not is_gateway_unit(name.removeprefix('templates/')):
+                reviewed(unit_home/name.removeprefix('templates/'),sha256(raw).hexdigest())
     for path,digest in ((authority/'managed-incident-proof.key',args.expected_managed_key_sha256),
                         (state/'activation-signing.key',args.expected_activation_key_sha256),
                         (knowledge_directory/'knowledge.sqlite',args.expected_knowledge_sha256)):
@@ -550,6 +754,9 @@ def _publish_installation(args,account,files,manifest,seed,settings,managed_raw,
         'installation_sha256':sha256(intent_raw).hexdigest(),'registry_sha256':sha256(contract.canonical(registry)).hexdigest(),
         'controller_commit':commit,'runtime_commit':runtime,'release_accepted':False,'autonomous_repair_credit':False,
         'published_files':installation_inventory(home,registry,uid,helper)}
+    if gateway_manifest is not None:
+        seal['gateway_retirement']=gateway_retirement_evidence(backup.with_suffix('.gateway-retirements'),
+            uid,intent['gateway_retirement_manifest_sha256'],unit_home,registry)
     write(backup.with_suffix('.complete.json'),canonical(seal),uid,0o600)
     marker.unlink();sync_parent(marker)
     print(json.dumps({'ok':True,'control_plane':'user','runtime_uid':uid,
@@ -606,6 +813,9 @@ def recover_completed_installation(args):
             'installation_sha256':sha256(marker_raw).hexdigest(),'registry_sha256':sha256(registry_raw).hexdigest(),
             'controller_commit':registry['controller_commit'],'runtime_commit':registry['runtime_commit'],
             'release_accepted':False,'autonomous_repair_credit':False}
+        if intent.get('gateway_retirement_manifest_sha256') is not None:
+            expected['gateway_retirement']=gateway_retirement_evidence(backup.with_suffix('.gateway-retirements'),
+                uid,intent['gateway_retirement_manifest_sha256'],home/'.config/systemd/user',registry)
         if (not isinstance(seal,dict) or set(seal)!=set(expected)|{'published_files'}
                 or any(seal.get(key)!=value for key,value in expected.items())
                 or not isinstance(seal['published_files'],dict)
@@ -627,7 +837,10 @@ def recover_completed_installation(args):
             'release_accepted':False,'autonomous_repair_credit':False}),uid,0o600)
         stopped_controller(environment)
         if (owned_bytes(marker,uid,65536)!=marker_raw or owned_bytes(registry_path,uid,65536)!=registry_raw
-                or installation_inventory(home,registry,uid,helper)!=seal['published_files']):
+                or installation_inventory(home,registry,uid,helper)!=seal['published_files']
+                or ('gateway_retirement' in expected and gateway_retirement_evidence(
+                    backup.with_suffix('.gateway-retirements'),uid,intent['gateway_retirement_manifest_sha256'],
+                    home/'.config/systemd/user',registry)!=expected['gateway_retirement'])):
             raise ValueError('user_install_recovery_authority_changed')
         marker.unlink();sync_parent(marker)
         print(json.dumps({'ok':True,'installation_recovered':True,'controller_commit':registry['controller_commit'],
@@ -641,6 +854,7 @@ def install_user_units(files,unit_home,uid,*,controller_commit,runtime_commit):
     for name,raw in files.items():
         if name.startswith('templates/'):
             unit=name.removeprefix('templates/')
+            if is_gateway_unit(unit):continue
             write(unit_home/unit,raw,uid,0o644)
             destination=unit_home/(unit+'.d')
             directory(destination,uid)
@@ -1231,6 +1445,8 @@ def main():
         parser.add_argument('--'+name,type=Path,required=True)
         parser.add_argument('--expected-'+name+'-sha256',required=True)
     parser.add_argument('--expected-existing-registry-sha256',default='')
+    parser.add_argument('--gateway-retirement-manifest',type=Path)
+    parser.add_argument('--expected-gateway-retirement-sha256',default='')
     parser.add_argument('--expected-knowledge-sha256',required=True)
     parser.add_argument('--expected-managed-key-sha256',required=True)
     parser.add_argument('--expected-activation-key-sha256',required=True)

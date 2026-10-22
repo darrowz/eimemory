@@ -257,11 +257,15 @@ def build_user(root, commit, *, account=None):
             text+='Environment=DBUS_SESSION_BUS_ADDRESS=unix:path='+str(runtime/'bus')+'\n'
         elif name.endswith(('.service','.conf')):
             text+=isolation
+            if name in {'templates/eimemory-code-deployment-job@.service','job-runtime-policy.conf'}:
+                # Only the installer runs the official Hermes provider replay.
+                # Its private handoff must not depend on native profile modes.
+                text+='ReadWritePaths=-'+str(home/'.local/state/eimemory/hermes-handoff')+'\n'
         files[name]=text.encode()
-    for name in ('hermes-handoff-permissions.conf','hermes-gateway-eimemory.conf',
-                 'hermes-gateway-eimemory.sh','hermes-profile-boundary.conf'):
+    # Gateways own their execution, startup dependencies and permissions. Only
+    # memory environment metadata belongs in a controller bundle.
+    for name in ('hermes-gateway-eimemory.conf',):
         files['hermes-policy/'+name]=(root/'deploy/systemd'/name).read_bytes()
-    files['ensure_hermes_profile_boundary.py']=(root/'deploy/ensure_hermes_profile_boundary.py').read_bytes()
     manifest={'schema':'eimemory.user_runtime_manager_bundle.v1','controller_commit':commit,
         'runtime_uid':account.pw_uid,'runtime_gid':account.pw_gid,
         'files':{name:sha256(raw).hexdigest() for name,raw in sorted(files.items()) if name!='manifest.json'}}

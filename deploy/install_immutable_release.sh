@@ -948,6 +948,11 @@ _install_storage_release_guards() {
     fi
   done
   for unit in "${!guard_units[@]}"; do
+    # External gateways own their startup. Only eiMemory processes receive
+    # the storage transaction guard; gateway memory calls use the RPC fence.
+    case "$unit" in
+      *-gateway.service|hermes-gateway-*.service) continue ;;
+    esac
     "$PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" "$REPO_DIR/deploy/install_managed_systemd_dropin.py" \
       --source "$REPO_DIR/deploy/systemd/eimemory-storage-release-guard.conf" \
       --target "$USER_SYSTEMD_DIR/$unit.d/05-eimemory-storage-release-guard.conf" \
@@ -1639,8 +1644,8 @@ _install_hermes_integration() {
       "${helper_args[@]}" || return 2
   if [ "${EIMEMORY_CONTROL_PLANE:-}" = "user" ] && \
      [[ "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" =~ ^[0-9a-f]{64}$ ]]; then
-    # The controller publishes reviewed gateway metadata. The candidate must
-    # never receive write access to native units or the user manager bus.
+    # The controller publishes only the gateway's memory environment. Its
+    # native command, permissions and service policy remain gateway-owned.
     echo "hermes_unit_metadata=controller_owned"
     return 0
   fi
@@ -1699,29 +1704,10 @@ _install_hermes_integration() {
       --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" --render-commit "$target_commit" \
       --render-releases-root "$INSTALL_ROOT/releases" \
       --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
-    case "$unit" in
-      hermes-gateway.service|hermes-gateway-*.service)
-        _install_as_service_user 0644 \
-          "$metadata_release/deploy/systemd/hermes-handoff-permissions.conf" \
-          "$USER_SYSTEMD_DIR/$unit.d/93-eimemory-handoff.conf"
-        # The controller outlives the target application release on rollback.
-        # It also reapplies a recognized seam after an independent Hermes
-        # upgrade, before this gateway can admit a real conversation.
-        "$PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" "$REPO_DIR/deploy/install_managed_systemd_dropin.py" \
-          --source "$REPO_DIR/deploy/systemd/hermes-profile-boundary.conf" \
-          --target "$USER_SYSTEMD_DIR/$unit.d/94-eimemory-hermes-profile-boundary.conf" \
-          --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" \
-          --render-hermes-boundary-python "$HERMES_PYTHON" \
-          --render-hermes-boundary-helper "$REPO_DIR/deploy/ensure_hermes_profile_boundary.py" \
-          --render-hermes-boundary-host-root "$HERMES_HOME_DIR/hermes-agent" ;;
-    esac
   done
-  _install_as_service_user 0644 \
-    "$metadata_release/deploy/systemd/hermes-gateway-eimemory.conf" \
-    "$USER_SYSTEMD_DIR/hermes-gateway.service.d/91-eimemory-hermes.conf"
-  _install_as_service_user 0755 \
-    "$metadata_release/deploy/systemd/hermes-gateway-eimemory.sh" \
-    "$USER_SYSTEMD_DIR/hermes-gateway-eimemory.sh"
+  # The common renderer above supplies the complete memory environment.
+  # Do not reinstall the retired gateway command wrapper, umask or startup
+  # prerequisites, including while the application rolls back to an old release.
 }
 
 _refresh_current_runtime_metadata() {
@@ -3202,6 +3188,9 @@ if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ];
    'from pathlib import Path; import sys; raise SystemExit(0 if Path(sys.argv[1]).resolve(strict=True) == Path(sys.argv[2]).resolve(strict=True) else 1)' \
   "$CURRENT_LINK" "$RELEASE_DIR"; then
   _clean_existing_release_and_validate_source
+  "$PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" "$REPO_DIR/deploy/clean_release_bytecode.py" \
+    --verify-source-seal --release-dir "$RELEASE_DIR" --releases-root "$INSTALL_ROOT/releases" \
+    --repo-root "$REPO_DIR" --commit "$COMMIT"
   _run_managed_already_current
   if [ "$PREVIOUS_COMMIT" = "$COMMIT" ]; then
     BASELINE_PRIOR_COMMIT="$(_find_prior_release_commit)"
@@ -3416,6 +3405,9 @@ done
 "$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" "$RELEASE_DIR/.venv/bin/eimemory" --help >/dev/null
 fi
 _source_checkpoint "$RELEASE_DIR" console_verified
+"$PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" "$REPO_DIR/deploy/clean_release_bytecode.py" \
+  --seal-source --release-dir "$RELEASE_DIR" --releases-root "$INSTALL_ROOT/releases" \
+  --repo-root "$REPO_DIR" --commit "$COMMIT"
 _preflight_release_readonly
 _preflight_research_review_configuration
 

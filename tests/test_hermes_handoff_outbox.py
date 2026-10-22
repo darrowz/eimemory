@@ -503,7 +503,7 @@ def test_missing_profile_refuses_unrecoverable_capture_instead_of_sending(tmp_pa
 
 
 @pytest.mark.parametrize("level", ["profile", "ancestor"])
-def test_writable_profile_or_unprotected_ancestor_cannot_replace_private_state(tmp_path, level):
+def test_writable_native_profile_or_ancestor_cannot_control_independent_private_state(tmp_path, level):
     ancestor = tmp_path / "ancestor"
     profile = ancestor / "profile"
     profile.mkdir(parents=True, mode=0o700)
@@ -511,10 +511,10 @@ def test_writable_profile_or_unprotected_ancestor_cannot_replace_private_state(t
     unsafe.chmod(0o777)
     try:
         box = HermesOutbox(str(profile), {"scope": SCOPE})
-        with pytest.raises(ValueError, match="ancestor"):
-            box.put("one", "write", {"event": 1})
-        assert box.status()["error"] == "outbox_unavailable"
-        assert not box.path.exists()
+        assert box.put("one", "write", {"event": 1})
+        assert box.status()["error"] == ""
+        assert not box.path.is_relative_to(ancestor)
+        assert unsafe.stat().st_mode & 0o777 == 0o777
     finally:
         unsafe.chmod(0o700)
 
