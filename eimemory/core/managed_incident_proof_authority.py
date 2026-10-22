@@ -454,7 +454,7 @@ def _anchor_gap(conn, anchor, high_water):
 
 
 def _reviewed_manifest_archive():
-    """Only completed Root bootstrap histories can bridge skipped checkpoints."""
+    """Completed controller/authority custody histories bridge skipped checkpoints."""
     archive={}
     try:
         histories=sorted(path for path in Path(CONTROLLER_HISTORY_DIRECTORY).iterdir()

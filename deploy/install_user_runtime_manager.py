@@ -123,6 +123,23 @@ def write(path,raw,uid,mode=0o640):
         temporary.unlink(missing_ok=True)
 
 
+def retain_manifest_history(state, raw, generation, uid):
+    """Archive reviewed manifest bytes before replacement, including skipped releases."""
+    if re.fullmatch('[0-9a-f]{64}',generation or '') is None:
+        raise ValueError('user_install_prior_generation_invalid')
+    from datetime import datetime,timezone
+    name='authority-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+str(os.getpid())
+    history=Path(state)/name
+    history.mkdir(mode=0o750)  # Existing histories are never overwritten.
+    write(history/'managed-manifest.snapshot',raw,uid,0o600)
+    write(history/'complete.json',canonical({'registry_generation':generation,
+        'manifest_sha256':sha256(raw).hexdigest()}),uid,0o600)
+    parent=os.open(history.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:os.fsync(parent)
+    finally:os.close(parent)
+    return history
+
+
 def install(args):
     if os.name!='posix' or os.geteuid()<=0 or os.getuid()!=os.geteuid():
         raise ValueError('user_install_nonroot_identity_required')
@@ -142,7 +159,8 @@ def install(args):
     managed=strict(managed_raw)
     commit=manifest['controller_commit'];runtime=seed['runtime_commit']
     prior_path=home/'.config/eimemory/control-plane/managed-code-incident-manifest.v1.json'
-    prior=strict(reviewed(prior_path,seed['managed_incident_authority']['manifest_sha256'],1048576))
+    prior_raw=reviewed(prior_path,seed['managed_incident_authority']['manifest_sha256'],1048576)
+    prior=strict(prior_raw)
     if (seed['runtime_uid']!=uid or seed['runtime_gid']!=account.pw_gid
             or seed['runtime_user']!=account.pw_name
             or Path('/opt/eimemory/current').resolve(strict=True)!=Path('/opt/eimemory/releases')/runtime
@@ -249,6 +267,7 @@ def install(args):
     backup_parent=os.open(backup_directory,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
     try:os.fsync(backup_parent)
     finally:os.close(backup_parent)
+    retain_manifest_history(state,prior_raw,seed['generation'],uid)
     for name,raw in files.items():
         if name!='eimemory-runtime-manager.service':write(code/name,raw,uid)
     cache=code/'empty-pycache'

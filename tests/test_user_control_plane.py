@@ -481,3 +481,30 @@ def test_user_subject_projection_ignores_legacy_environment_path(tmp_path,monkey
     monkeypatch.setattr(identity,'coordinates',lambda:{'authority':root})
     monkeypatch.setenv('EIMEMORY_SUBJECT_PROJECTION_AUTHORITY_DIR','/etc/eimemory-subject-projection')
     assert projection.projection_authority_directory()==root/'subject-projection'
+
+
+@POSIX
+def test_user_manifest_archive_preserves_skipped_release_chain(tmp_path,monkeypatch):
+    from eimemory.core import managed_incident_proof_authority as issuer
+    module=standalone('install_user_runtime_manager')
+    state=tmp_path/'state';state.mkdir()
+    def fixture_directory(path,uid,mode=0o750):
+        path=Path(path);path.mkdir(parents=True,exist_ok=True);path.chmod(mode)
+    monkeypatch.setattr(module,'directory',fixture_directory)
+    base={'schema':'managed_code_incident_manifest.v1','qualification_domain':issuer.DOMAIN,
+          'enabled':True,'defect_key_semantics':issuer.KEY_SEMANTICS,'previous_manifest_digest':''}
+    prior={**base,'previous_manifest_digest':issuer.digest(base),'release_commit':'a'*40}
+    raw=(json.dumps(prior,indent=2)+'\n').encode()
+    history=module.retain_manifest_history(state,raw,'b'*64,os.geteuid())
+    assert (history/'managed-manifest.snapshot').read_bytes()==raw
+    assert (history/'complete.json').stat().st_mode&0o777==0o600
+    complete=json.loads((history/'complete.json').read_bytes())
+    assert complete=={'registry_generation':'b'*64,'manifest_sha256':sha256(raw).hexdigest()}
+    monkeypatch.setattr(issuer,'CONTROLLER_HISTORY_DIRECTORY',str(state))
+    monkeypatch.setattr(issuer,'_read',lambda path,**kw:Path(path).read_bytes())
+    current={**base,'previous_manifest_digest':issuer.digest(prior),'release_commit':'c'*40}
+    archive=issuer._reviewed_manifest_archive()
+    assert issuer._reviewed_manifest_chain(current,issuer.digest(base),archive)==[prior,current]
+    with pytest.raises(ValueError,match='prior_generation_invalid'):
+        module.retain_manifest_history(state,raw,'invalid',os.geteuid())
+    assert (history/'managed-manifest.snapshot').read_bytes()==raw
