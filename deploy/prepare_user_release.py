@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import tempfile
+import secrets
 
 sys.dont_write_bytecode=True
 
@@ -83,6 +83,13 @@ def verify(repository,commit,releases,record):
     return root
 
 
+def allocate_stage(releases,commit):
+    # The immutable-release contract admits alphanumeric stage suffixes.
+    stage=Path(releases)/('.eimemory-stage-'+commit+'-'+secrets.token_hex(12))
+    stage.mkdir(mode=0o750)
+    return stage
+
+
 def prepare(repository,commit,releases):
     state,cache=coordinates()
     for directory in (state/'prepared-releases',releases):private_directory(directory)
@@ -95,7 +102,7 @@ def prepare(repository,commit,releases):
     receipt=state/'prepared-releases'/(commit+'.json')
     if root.exists() or root.is_symlink() or receipt.exists():
         raise ValueError('user_release_existing_candidate_preserved')
-    stage=Path(tempfile.mkdtemp(prefix='.eimemory-stage-'+commit+'-',dir=releases))
+    stage=allocate_stage(releases,commit)
     archive=stage.with_suffix('.tar')
     try:
         run(['/usr/bin/git','-C',repository,'archive','--format=tar','--output',archive,commit])

@@ -514,3 +514,15 @@ def test_user_manifest_archive_preserves_skipped_release_chain(tmp_path,monkeypa
     with pytest.raises(ValueError,match='prior_generation_invalid'):
         module.retain_manifest_history(state,raw,'invalid',os.geteuid())
     assert (history/'managed-manifest.snapshot').read_bytes()==raw
+
+
+def test_user_release_stage_matches_existing_contract_and_preserves_collision(tmp_path,monkeypatch):
+    module=standalone('prepare_user_release')
+    cleanup=standalone('clean_release_bytecode')
+    monkeypatch.setattr(module.secrets,'token_hex',lambda size:'a'*(size*2))
+    commit='b'*40
+    stage=module.allocate_stage(tmp_path,commit)
+    assert cleanup.resolve_release_paths(stage,tmp_path,allow_stage=True)==(stage.resolve(),tmp_path.resolve())
+    sentinel=stage/'retained';sentinel.write_bytes(b'original attempt')
+    with pytest.raises(FileExistsError):module.allocate_stage(tmp_path,commit)
+    assert sentinel.read_bytes()==b'original attempt'
