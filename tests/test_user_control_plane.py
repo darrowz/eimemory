@@ -589,3 +589,11 @@ def test_gateway_private_pid_requires_same_native_process_start(tmp_path,damage)
     finally:sys.argv=original
     if damage=='symlink':assert isinstance(caught.value,OSError)
     else:assert caught.value.code==(0 if damage is None else 1)
+def test_reviewed_operator_module_has_no_product_package_dependency(tmp_path):
+    module=standalone('install_user_runtime_manager')
+    source=tmp_path/'runtime_manager_contract.py'
+    raw=b'assert not __package__, "standalone helper became a product package"\nvalue=42\n'
+    source.write_bytes(raw)
+    loaded=module.execute_reviewed_module(source.name,source,raw)
+    assert loaded.value==42
+    assert loaded.__package__==''

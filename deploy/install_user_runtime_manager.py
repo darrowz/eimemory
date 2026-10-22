@@ -36,6 +36,15 @@ def canonical(value):
     return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
 
 
+def execute_reviewed_module(name,path,raw):
+    # A dotted module name such as "helper.py" creates a package context and
+    # defeats the controller contract's stdlib-only standalone import path.
+    specification=importlib.util.spec_from_file_location('user_reviewed_'+Path(name).stem,path)
+    module=importlib.util.module_from_spec(specification)
+    exec(compile(raw,str(path),'exec'),module.__dict__)
+    return module
+
+
 def reviewed(path,expected,maximum=16*1024*1024):
     path=Path(path)
     if re.fullmatch('[0-9a-f]{64}',expected or '') is None:
@@ -357,10 +366,7 @@ def stage_release(args):
     def load(name,source):
         expected=declared['compatibility_hashes'][source]
         data=reviewed(code/name,expected,1024*1024)
-        spec=importlib.util.spec_from_file_location('user_stage_'+name.removesuffix('.py'),code/name)
-        module=importlib.util.module_from_spec(spec)
-        exec(compile(data,str(code/name),'exec'),module.__dict__)
-        return module
+        return execute_reviewed_module(name,code/name,data)
     helper=load('user_control_plane.py','eimemory/contracts/user_control_plane.py')
     for path in (authority,state,code):helper.trusted_directory(path)
     contract=load('runtime_manager_contract.py','eimemory/contracts/runtime_manager.py')
@@ -508,10 +514,7 @@ def abandon_failed_manual(args):
     os.environ['EIMEMORY_CONTROL_PLANE']='user'
     def load(name,source):
         data=reviewed(code/name,registry['compatibility_hashes'][source],1024*1024)
-        spec=importlib.util.spec_from_file_location('user_recovery_'+name,code/name)
-        module=importlib.util.module_from_spec(spec)
-        exec(compile(data,str(code/name),'exec'),module.__dict__)
-        return module
+        return execute_reviewed_module(name,code/name,data)
     helper=load('user_control_plane.py','eimemory/contracts/user_control_plane.py')
     contract=load('runtime_manager_contract.py','eimemory/contracts/runtime_manager.py')
     registry=contract.validate_registry(registry)
