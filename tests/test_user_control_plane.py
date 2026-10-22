@@ -462,7 +462,7 @@ def test_prepared_release_directory_mode_survives_service_umask(tmp_path, monkey
         cache.chmod(0o750)
 
 
-@pytest.mark.parametrize('configured',[None,'fixed','identity','legacy','outside'])
+@pytest.mark.parametrize('configured',[None,'empty','fixed','identity','legacy','outside'])
 def test_user_subject_projection_uses_separate_fixed_authority(tmp_path,monkeypatch,configured):
     from eimemory import identity_authority as identity,subject_projection as projection
     root=tmp_path/'control'
@@ -470,8 +470,8 @@ def test_user_subject_projection_uses_separate_fixed_authority(tmp_path,monkeypa
     monkeypatch.setattr(identity,'coordinates',lambda:{'authority':root})
     monkeypatch.delenv('EIMEMORY_SUBJECT_PROJECTION_AUTHORITY_DIR',raising=False)
     fixed=root/'subject-projection'
-    value={'fixed':fixed,'identity':root/'identity','legacy':Path('/etc/eimemory-subject-projection'),'outside':tmp_path/'other'}.get(configured)
-    if configured in {None,'fixed'}:
+    value={'empty':'','fixed':fixed,'identity':root/'identity','legacy':Path('/etc/eimemory-subject-projection'),'outside':tmp_path/'other'}.get(configured)
+    if configured in {None,'empty','fixed'}:
         assert projection.projection_authority_directory(value)==fixed
         assert identity.authority_directory(fixed)==fixed
         assert identity.authority_directory()==root/'identity'
