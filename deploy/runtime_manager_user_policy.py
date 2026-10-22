@@ -82,6 +82,23 @@ def apply(commit):
             raise ValueError('manager_user_policy_dropin_untrusted')
         unit_raw=raw
         if USER_MODE:
+            if unit=='hermes-gateway.service' or unit.startswith('hermes-gateway-'):
+                policies={'93-eimemory-handoff.conf':'hermes-handoff-permissions.conf',
+                          '94-eimemory-hermes-profile-boundary.conf':'hermes-profile-boundary.conf'}
+                if unit=='hermes-gateway.service':
+                    policies['91-eimemory-hermes.conf']='hermes-gateway-eimemory.conf'
+                for destination,source in policies.items():
+                    content=user_control.read_file(root/'hermes-policy'/source)
+                    content=content.replace(b'@EIMEMORY_HERMES_BOUNDARY_PYTHON@',
+                        str(Path(account.pw_dir)/'.hermes/hermes-agent/venv/bin/python').encode())
+                    content=content.replace(b'@EIMEMORY_HERMES_BOUNDARY_HELPER@',
+                        str(root/'ensure_hermes_profile_boundary.py').encode())
+                    content=content.replace(b'@EIMEMORY_HERMES_BOUNDARY_HOST_ROOT@',
+                        str(Path(account.pw_dir)/'.hermes/hermes-agent').encode())
+                    write_user_metadata(directory/destination,content,uid,0o644)
+                if unit=='hermes-gateway.service':
+                    write_user_metadata(home/'hermes-gateway-eimemory.sh',
+                        user_control.read_file(root/'hermes-policy/hermes-gateway-eimemory.sh'),uid,0o755)
             template=root/'templates'/unit
             if template.is_file():
                 original=user_control.read_file(template)
@@ -113,6 +130,27 @@ def apply(commit):
     subprocess.run(['/usr/bin/systemctl','--user','daemon-reload'],check=True,
         env={'PATH':'/usr/bin:/bin','XDG_RUNTIME_DIR':'/run/user/'+str(uid),
             'DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/'+str(uid)+'/bus'})
+
+
+def write_user_metadata(target, raw, uid, mode):
+    """Publish reviewed controller bytes without exposing writable native units."""
+    if os.path.lexists(target):
+        info=target.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=uid or info.st_nlink!=1:
+            raise ValueError('manager_user_policy_metadata_untrusted')
+    temporary=target.with_name('.eimemory-metadata-'+str(os.getpid()))
+    fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,mode)
+    try:
+        os.fchmod(fd,mode)
+        with os.fdopen(fd,'wb',closefd=False) as output:
+            output.write(raw);output.flush();os.fsync(fd)
+        os.replace(temporary,target)
+        parent=os.open(target.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:os.fsync(parent)
+        finally:os.close(parent)
+    finally:
+        os.close(fd)
+        if temporary.exists():temporary.unlink()
 
 
 if __name__=='__main__':

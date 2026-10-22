@@ -1636,7 +1636,14 @@ _install_hermes_integration() {
   fi
   _run_as_service_user env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME_DIR" \
     "$HERMES_PYTHON" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" "$metadata_release/deploy/install_hermes_integration.py" \
-      "${helper_args[@]}"
+      "${helper_args[@]}" || return 2
+  if [ "${EIMEMORY_CONTROL_PLANE:-}" = "user" ] && \
+     [[ "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" =~ ^[0-9a-f]{64}$ ]]; then
+    # The controller publishes reviewed gateway metadata. The candidate must
+    # never receive write access to native units or the user manager bus.
+    echo "hermes_unit_metadata=controller_owned"
+    return 0
+  fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return 0
   fi
