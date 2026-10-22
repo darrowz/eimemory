@@ -142,7 +142,7 @@ def prepare_handoff_directories(home: Path) -> dict[str, Any]:
     # validation for system ancestors; profile directories still require the
     # exact runtime owner below.
     system_owner = lambda info, path: info.st_uid == 0
-    if owner > 0:
+    if owner > 0 and os.getuid() == owner:
         source = Path(__file__).resolve().parents[1] / "eimemory/contracts/user_control_plane.py"
         specification = importlib.util.spec_from_file_location("_handoff_user_control", source)
         control = importlib.util.module_from_spec(specification)

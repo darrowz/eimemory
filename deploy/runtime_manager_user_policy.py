@@ -111,6 +111,8 @@ def apply(commit):
                                                        'ExecStop=','ExecStopPost=','ExecCondition=')))
                 unit_raw=resets.encode()+commands.encode()+b'\n'+raw
             unit_raw+=('EnvironmentFile='+str(USER_COORDINATES['authority']/'user-runtime.env')+'\n').encode()
+            if unit=='hermes-gateway.service' or unit.startswith('hermes-gateway-'):
+                unit_raw+=b'UMask=0077\n'
         target=directory/('zzzzzz-eimemory-user-control-plane.conf' if USER_MODE else 'zzzz-eimemory-host-manager.conf')
         temporary=directory/('.eimemory-host-manager-'+str(os.getpid()))
         fd=os.open(temporary,os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_WRONLY,0o600)

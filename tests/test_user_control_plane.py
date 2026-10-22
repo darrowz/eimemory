@@ -81,6 +81,10 @@ def test_user_bundle_keeps_bus_and_signing_material_out_of_products(tmp_path):
     assert manifest['schema']=='eimemory.user_runtime_manager_bundle.v1'
     assert manifest['files']=={name:sha256(raw).hexdigest() for name,raw in files.items() if name!='manifest.json'}
     for name,raw in files.items():
+        # These are controller inputs, not installed unit/drop-in policies.
+        if name.startswith('hermes-policy/'):
+            assert raw==(ROOT/'deploy/systemd'/name.removeprefix('hermes-policy/')).read_bytes()
+            continue
         if not name.endswith(('.service','.conf')):continue
         text=raw.decode()
         assert not any(line.startswith(('User=','Group=')) for line in text.splitlines())
