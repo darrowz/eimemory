@@ -114,6 +114,15 @@ class _CachedRecall:
     trusted_retrieval: bool = False
 
 
+_HOST_NOTIFICATION = re.compile(
+    r"^\s*\[(?:System note:|IMPORTANT: Background process\b)", re.IGNORECASE)
+
+
+def _is_host_notification(query: str) -> bool:
+    """Host-injected gateway notices (restart notes, background job results)."""
+    return bool(_HOST_NOTIFICATION.match(str(query or "")))
+
+
 class ProactiveRecallService:
     """Deterministic proactive recall and explicit use-feedback coordinator.
 
@@ -278,6 +287,21 @@ class ProactiveRecallService:
                     query_id=normalized_query_id,
                     cache_key=cache_key, release=release,
                 )
+            return self._empty_decision(
+                query_id=normalized_query_id,
+                cache_key=cache_key,
+                release=release,
+                bypassed=True,
+            )
+        if recall_bundle is None and _is_host_notification(normalized_query):
+            # Gateway status/background-job notices are not user requests:
+            # no retrieval, no durable empty decision, no quality sample.
+            self._record_bypass(
+                channel=channel_id,
+                session_id=normalized_session,
+                query_digest=query_digest,
+                reason="host_notification",
+            )
             return self._empty_decision(
                 query_id=normalized_query_id,
                 cache_key=cache_key,
