@@ -320,6 +320,9 @@ def pipeline(tmp_path, monkeypatch):
         run_weak_capability_replay_gate=lambda **kwargs: replay(),
         run_live_task_acceptance=lambda **kwargs: live(),
         record_external_channel_acceptance=lambda **kwargs: complete_report()["channel_acceptance"])
+    # Even an orchestration fake names a real isolated authority file; the
+    # production acceptance window must never silently bypass missing storage.
+    runtime.store.sqlite.path.touch()
     def run():
         return closure.run_release_closure(runtime, scope=SCOPE, repo_root="/fixture/repo",
             current_link="/fixture/current", health_url="http://127.0.0.1:8091/health",

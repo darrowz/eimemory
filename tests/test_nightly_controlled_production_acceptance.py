@@ -1,6 +1,7 @@
 from copy import deepcopy
 import json
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import pytest
 
@@ -93,17 +94,20 @@ def test_unconfigured_policy_does_not_reject_legacy_partial_scopes():
     assert load_controlled_policy(object(), {"agent_id": "legacy"}) is None
 
 
-def test_native_run_requires_successful_second_verification():
+def test_native_run_requires_successful_second_verification(tmp_path):
     from eimemory.scheduler.jobs import _run_controlled_production_acceptance
     module = "eimemory.evaluation.controlled_production_acceptance"
     report = accepted_receipt()
     report.pop("runtime_authority_verified")
     report.pop("verification")
+    authority = tmp_path / 'sqlite.db'
+    authority.touch()
+    runtime = SimpleNamespace(store=SimpleNamespace(sqlite=SimpleNamespace(path=authority)))
     with patch(module + ".load_controlled_policy", return_value={}), \
          patch(module + ".run_controlled_production_acceptance", return_value=report), \
          patch(module + ".verify_controlled_production_acceptance",
                return_value={"ok": False, "accepted": False}):
-        result = _run_controlled_production_acceptance(object(), scope={}, stable_before="")
+        result = _run_controlled_production_acceptance(runtime, scope={}, stable_before="")
     assert result["ok"] is False and result["accepted"] is False
     assert result["runtime_authority_verified"] is False
     assert result["error"] == "controlled_production_receipt_invalid"

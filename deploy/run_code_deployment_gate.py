@@ -15,12 +15,16 @@ import sys
 
 
 def main() -> int:
-    if (len(sys.argv) != 5 or sys.argv[1] != "--job-key" or sys.argv[3] != "--operation"
+    worker_finalization = len(sys.argv) == 6 and sys.argv[5] == "--worker-finalization"
+    if (len(sys.argv) not in {5, 6} or len(sys.argv) == 6 and not worker_finalization
+        or sys.argv[1] != "--job-key" or sys.argv[3] != "--operation"
         or re.fullmatch(r"[0-9a-f]{64}", sys.argv[2]) is None
         or sys.argv[4] not in {"receipt", "pre_observation", "post_resume"}
         or os.geteuid() != 1001):
         raise SystemExit("deployment_gate_fixed_low_privilege_arguments_required")
     key, operation = sys.argv[2], sys.argv[4]
+    if worker_finalization is not (operation == "post_resume"):
+        raise ValueError("deployment_gate_worker_finalization_entry_required")
     # This bootstrap only authenticates protected files/socket, before product
     # imports. It is also used by the fixed child entry itself.
     path = Path(__file__).with_name("run_code_deployment_validation.py")

@@ -2784,8 +2784,10 @@ _run_post_deploy_validation() {
       _managed_validation_gate pre_observation || return $?
       BUSINESS_CLOSURE_OUTCOME="ready_for_observation"
     else
-      _managed_validation_gate post_resume || return $?
-      BUSINESS_CLOSURE_OUTCOME="closure_complete"
+      # The worker still has to refresh receipt bindings, clean bytecode and
+      # validate settings. Its independent native child seals those facts
+      # before the controller may complete this manual release.
+      BUSINESS_CLOSURE_OUTCOME="deferred_to_worker"
     fi
     echo "post_deploy_validation=process_succeeded business_closure_outcome=$BUSINESS_CLOSURE_OUTCOME"
     return 0

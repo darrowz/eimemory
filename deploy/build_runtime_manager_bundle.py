@@ -239,8 +239,19 @@ def build_user(root, commit, *, account=None):
             lines.append(line)
         text='\n'.join(lines)+'\n'
         if name=='eimemory-runtime-manager.service':
-            # The controller alone sees host native PIDs and the user bus.
-            text+='\n[Service]\nEnvironment=EIMEMORY_CONTROL_PLANE=user\nCapabilityBoundingSet=\nAmbientCapabilities=\n'
+            # A user manager enters a single-ID user namespace to implement
+            # mount isolation. That makes sibling runtime /proc observations
+            # inaccessible. This reviewed controller stays in the native host
+            # namespace; the product policies below retain complete isolation.
+            # Dropping the bounding set here would require CAP_SETPCAP and fail
+            # with 218/CAPABILITIES. NNP plus zero effective/permitted/ambient
+            # capabilities is checked by the controller before it can serve.
+            text='\n'.join(line for line in text.splitlines()
+                           if not line.startswith(('PrivateTmp=','PrivateUsers=','PrivatePIDs=',
+                               'CapabilityBoundingSet=','ReadOnlyPaths=','ReadWritePaths=',
+                               'InaccessiblePaths=','ProtectSystem=','ProtectHome=')))+'\n'
+            text+='\n[Service]\nEnvironment=EIMEMORY_CONTROL_PLANE=user\nAmbientCapabilities=\n'
+            text+='PrivateTmp=no\nPrivateUsers=no\nPrivatePIDs=no\n'
             text+='RuntimeDirectory=eimemory-manager\nRuntimeDirectoryMode=0700\nRuntimeDirectoryPreserve=yes\n'
             text+='Environment=XDG_RUNTIME_DIR='+str(runtime)+'\n'
             text+='Environment=DBUS_SESSION_BUS_ADDRESS=unix:path='+str(runtime/'bus')+'\n'

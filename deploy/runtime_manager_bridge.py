@@ -786,6 +786,170 @@ class Bridge:
         excluded={'eimemory-console.service'}
         return [u for u,v in registry['units'].items() if v['installed'] and u not in excluded]
 
+    def verify_restore_capture(self,registry,active,enabled):
+        allowed=set(self.writers(registry))
+        states={'enabled','enabled-runtime','disabled','static','indirect','generated',
+            'not-found','masked','masked-runtime','linked','linked-runtime','alias','transient',''}
+        if (not isinstance(active,list) or any(not isinstance(unit,str) for unit in active)
+                or len(active)!=len(set(active)) or not set(active)<=allowed
+                or not isinstance(enabled,dict) or not set(enabled)<=allowed
+                or any(not isinstance(value,str) or value not in states for value in enabled.values())):
+            raise ValueError('manager_restore_capture_invalid')
+
+    def manual_recovery_capture(self,registry,record,current):
+        """Authenticate the failed transaction and its original restore set."""
+        reference=record.get('recovery_capture')
+        fixed=self.state/'manual-recovery-capture.json'
+        if reference is None:
+            if USER_MODE and os.path.lexists(fixed):raise ValueError('manager_manual_recovery_capture_required')
+            return None
+        if (record.get('manual_release') is not True or not isinstance(reference,dict)
+                or set(reference)!={'basename','sha256'} or reference['basename']!=fixed.name):
+            raise ValueError('manager_recovery_capture_reference_invalid')
+        digest=self.c.hex_value(reference['sha256'],64,'manager_recovery_capture_digest_invalid')
+        applied=record.get('recovery_capture_applied')
+        if os.path.lexists(fixed):
+            raw=read_file(fixed)
+            if sha256(raw).hexdigest()!=digest:raise ValueError('manager_recovery_capture_digest_mismatch')
+        else:
+            if (not isinstance(applied,dict) or applied.get('sha256')!=digest
+                    or re.fullmatch('manual-abandon-[0-9]+',applied.get('history_basename','')) is None):
+                raise ValueError('manager_recovery_capture_missing')
+            raw=read_file(self.state/'managed-incident-receipts'/applied['history_basename']/'recovery-capture.json',mode=0o600)
+        capture=self.c.strict_json(raw)
+        fields={'schema','source_job_key','source_job_sha256','source_invocation_id','source_registry_generation',
+            'base_commit','scope','active_before','enabled_before','source_native_exit','history_basename'}
+        if (not isinstance(capture,dict) or set(capture)!=fields
+                or capture['schema']!='eimemory.manual_release_recovery_capture.v1'
+                or self.c.canonical(capture)!=raw or sha256(raw).hexdigest()!=digest
+                or capture['base_commit']!=record['request']['base_commit']
+                or capture['scope']!=record['request']['scope'] or current.parent!=RELEASES
+                or current.name not in {capture['base_commit'],record['request']['candidate_commit']}
+                or applied is None and current.name!=capture['base_commit']
+                or re.fullmatch('manual-abandon-[0-9]+',capture['history_basename']) is None):
+            raise ValueError('manager_recovery_capture_binding_invalid')
+        self.verify_restore_capture(record['registry'],capture['active_before'],capture['enabled_before'])
+        source=self.c.hex_value(capture['source_job_key'],64,'manager_recovery_source_key_invalid')
+        self.c.hex_value(capture['source_job_sha256'],64,'manager_recovery_source_digest_invalid')
+        invocation=self.c.hex_value(capture['source_invocation_id'],32,'manager_recovery_source_invocation_invalid')
+        history=self.state/'managed-incident-receipts'/capture['history_basename']
+        trusted_directory(history,mode=0o700)
+        original=read_file(history/'job.original',mode=0o600)
+        if (sha256(original).hexdigest()!=capture['source_job_sha256']
+                or read_file(self.record_path(source))!=original
+                or read_file(history/'recovery-capture.json',mode=0o600)!=raw):
+            raise ValueError('manager_recovery_source_changed')
+        prior=self.c.strict_json(original)
+        self.c.validate_manual_permit(prior.get('request'),source)
+        old_registry=self.c.validate_registry(prior.get('registry'))
+        if (prior.get('job_key')!=source or prior.get('unit')!=self.c.job_unit(source)
+                or prior.get('manual_release') is not True or prior.get('quiesced') is not True
+                or prior.get('original_invocation')!=invocation
+                or old_registry['generation']!=capture['source_registry_generation']
+                or prior.get('active_before')!=capture['active_before']
+                or prior['request']['scope']!=capture['scope']
+                or capture['base_commit'] not in {prior['request']['base_commit'],prior['request']['candidate_commit']}):
+            raise ValueError('manager_recovery_source_binding_invalid')
+        native=self.c.strict_json(read_file(history/'native-exit.json',mode=0o600))
+        if (native!=capture['source_native_exit'] or set(native)!=set(self.c.NATIVE_EXIT_PROPERTIES)
+                or native.get('Result') not in {'exit-code','signal','timeout','core-dump','watchdog'}
+                or native.get('ControlGroup')!=''
+                or not self.c.native_terminal_exit(native,invocation,prior['unit'])):
+            raise ValueError('manager_recovery_source_failure_unproven')
+        observed=self.unit_state(old_registry,prior['unit'],list(self.c.NATIVE_EXIT_PROPERTIES))
+        if (observed.get('ControlGroup')!=''
+                or not self.c.native_terminal_readback(native,observed,invocation,prior['unit'])):
+            raise ValueError('manager_recovery_source_native_changed')
+        complete=self.c.strict_json(read_file(history/'complete.json',mode=0o600))
+        if (complete.get('complete') is not True or complete.get('job_key')!=source
+                or complete.get('outcome')!='operator_abandoned_failed_manual_release'
+                or complete.get('recovery_history')!=capture['history_basename']
+                or complete.get('recovery_capture_sha256')!=digest
+                or complete.get('runtime_commit')!=capture['base_commit']
+                or complete.get('failed_deployment_preserved') is not True
+                or complete.get('release_accepted') is not False
+                or complete.get('autonomous_repair_credit') is not False):
+            raise ValueError('manager_recovery_abandonment_unproven')
+        sources=self.c.strict_json(read_file(history/'enabled-before-sources.json',mode=0o600))
+        if not isinstance(sources,dict):raise ValueError('manager_recovery_enabled_source_invalid')
+        if sources=={'source':'original_job','job_sha256':capture['source_job_sha256']}:
+            expected_enabled=prior.get('enabled_before',{})
+        elif set(sources)=={'source','audits'} and sources['source']=='original_migration_native_audits':
+            audits=sources['audits'];loaded={}
+            if not isinstance(audits,list) or not 1<=len(audits)<=2:
+                raise ValueError('manager_recovery_enabled_source_invalid')
+            for audit in audits:
+                if (not isinstance(audit,dict) or set(audit)!={'kind','basename','sha256'}
+                        or audit['kind'] not in {'user_units','system_units'} or audit['kind'] in loaded
+                        or audit['basename']!={'user_units':'enabled-before-user-audit.original',
+                            'system_units':'enabled-before-system-audit.original'}[audit['kind']]):
+                    raise ValueError('manager_recovery_enabled_source_invalid')
+                audit_raw=read_file(history/audit['basename'],mode=0o600)
+                if sha256(audit_raw).hexdigest()!=audit['sha256']:
+                    raise ValueError('manager_recovery_enabled_source_changed')
+                loaded[audit['kind']]=self.c.strict_json(audit_raw)
+            user=loaded.get('user_units',{})
+            host=loaded.get('system_units',{})
+            if ('user_units' in loaded and user.get('schema')!='manual_user_owner_before.v1'
+                    or 'system_units' in loaded and (host.get('schema')!='manual_user_owner_custody.v1'
+                        or host.get('manual_bootstrap') is not True or host.get('autonomous_credit') is not False
+                        or host.get('current_commit')!=prior['request']['base_commit'])):
+                raise ValueError('manager_recovery_enabled_source_invalid')
+            user_states=user.get('states',{});system_states=host.get('system_units',{})
+            if not isinstance(user_states,dict) or not isinstance(system_states,dict):
+                raise ValueError('manager_recovery_enabled_source_invalid')
+            compatibility=self.c.compatibility_units(prior['registry']['units'])
+            expected_enabled={}
+            for unit in prior['active_before']:
+                native=(user_states.get(unit) if unit in compatibility or unit not in system_states else system_states.get(unit))
+                if isinstance(native,dict) and 'UnitFileState' in native:
+                    if native.get('LoadState')!='loaded':raise ValueError('manager_recovery_enabled_source_invalid')
+                    expected_enabled[unit]=native['UnitFileState']
+        elif (set(sources)=={'source','audit_basename','audit_sha256'}
+                and sources['source']=='original_user_migration_native_audit'
+                and sources['audit_basename']=='user-native-before.initial.json'):
+            audit=read_file(history/'enabled-before-audit.original',mode=0o600)
+            if sha256(audit).hexdigest()!=sources['audit_sha256']:
+                raise ValueError('manager_recovery_enabled_source_changed')
+            states=self.c.strict_json(audit).get('states')
+            if not isinstance(states,dict):raise ValueError('manager_recovery_enabled_source_invalid')
+            expected_enabled={unit:states[unit]['UnitFileState'] for unit in prior['active_before']
+                if unit in states and isinstance(states[unit],dict) and 'UnitFileState' in states[unit]}
+        elif sources=={'source':'unavailable','claimed_enabled_units':[]}:
+            expected_enabled={}
+        else:raise ValueError('manager_recovery_enabled_source_invalid')
+        if expected_enabled!=capture['enabled_before']:
+            raise ValueError('manager_recovery_enabled_source_mismatch')
+        binding={'schema':'eimemory.manual_recovery_capture_consumption.v1','sha256':digest,
+            'job_key':record['job_key'],'invocation_id':record.get('original_invocation'),
+            'source_job_key':source,'history_basename':capture['history_basename']}
+        self.c.hex_value(binding['invocation_id'],32,'manager_recovery_consumer_invocation_invalid')
+        if applied is not None and applied!=binding:raise ValueError('manager_recovery_consumer_changed')
+        consumed=history/'capture-consumption.json'
+        if os.path.lexists(consumed) and self.c.strict_json(read_file(consumed))!=binding:
+            raise ValueError('manager_recovery_capture_already_consumed')
+        return capture,binding,history
+
+    def consume_manual_recovery_capture(self,registry,record,recovery):
+        if recovery is None:return
+        capture,binding,history=recovery
+        if (not set(capture['active_before'])<=set(record['active_before'])
+                or any(record['enabled_before'].get(unit)!=value for unit,value in capture['enabled_before'].items())):
+            raise ValueError('manager_recovery_restore_set_lost')
+        record['recovery_capture_applied']=binding
+        self.save(registry,record)
+        consumed=history/'capture-consumption.json'
+        if not os.path.lexists(consumed):atomic_json(consumed,binding,gid=registry['runtime_gid'],exclusive=True)
+        elif self.c.strict_json(read_file(consumed))!=binding:raise ValueError('manager_recovery_capture_already_consumed')
+        fixed=self.state/'manual-recovery-capture.json'
+        if os.path.lexists(fixed):
+            if sha256(read_file(fixed)).hexdigest()!=binding['sha256']:
+                raise ValueError('manager_recovery_capture_digest_mismatch')
+            fixed.unlink()
+            descriptor=os.open(fixed.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            try:os.fsync(descriptor)
+            finally:os.close(descriptor)
+
     def transition(self,registry,key,phase,pid,uid):
         record=self.record(key);self.verify_job_peer(registry,record,pid,uid)
         if phase not in {'quiesce','publish','activate','resume_watchers','resume','rollback'}:raise ValueError('manager_transition_phase_invalid')
@@ -797,6 +961,7 @@ class Bridge:
             current=CURRENT.resolve(strict=True)
             if current.parent!=RELEASES or current.name not in {record['request']['base_commit'],record['request']['candidate_commit']}:
                 raise ValueError('manager_quiesce_current_unbound')
+            recovery=self.manual_recovery_capture(registry,record,current)
             active_path=self.state/'active-transition.json'
             if active_path.exists():
                 existing=self.c.strict_json(read_file(active_path))
@@ -819,6 +984,7 @@ class Bridge:
                     self.fence_job_processes(registry,prior)
                     if prior.get('active_before') is not None:
                         record['active_before']=list(prior['active_before']);record['inherited_capture_from']=prior['job_key']
+                        if 'enabled_before' in prior:record['enabled_before']=dict(prior['enabled_before'])
                     prior['superseded_by']=key;self.save(registry,prior)
                 elif existing.get('job_key')!=key and existing.get('held') is True:
                     # A legacy rollback retained stopped writers. Only an
@@ -832,17 +998,21 @@ class Bridge:
                     for unit in prior['active_before']:
                         if unit not in record['registry']['units']:raise ValueError('manager_held_restore_unit_unknown')
                     record['active_before']=list(prior['active_before'])
+                    if 'enabled_before' in prior:record['enabled_before']=dict(prior['enabled_before'])
                     record['inherited_held_capture_from']=prior['job_key']
             atomic_json(active_path,{'job_key':key,'complete':False},gid=registry['runtime_gid'])
             if record['resumed']:raise ValueError('manager_transition_already_resumed')
             self.fence_job_processes(registry,record,include_parent=False)
-            if record['active_before'] is None:
-                active=[]
+            if record['active_before'] is None or USER_MODE and 'enabled_before' not in record:
+                active=[] if record['active_before'] is None else list(record['active_before'])
+                enabled={}
                 for unit in self.writers(record['registry']):
-                    state=self.unit_state(record['registry'],unit,['LoadState','ActiveState'])
+                    state=self.unit_state(record['registry'],unit,['LoadState','ActiveState']+(['UnitFileState'] if USER_MODE else []))
                     if state['LoadState'] not in {'loaded','not-found'}:raise ValueError('manager_writer_load_unknown')
-                    if state['ActiveState'] in {'active','activating','reloading','deactivating'}:active.append(unit)
+                    if state['ActiveState'] in {'active','activating','reloading','deactivating'}:
+                        if unit not in active:active.append(unit)
                     elif state['ActiveState'] not in {'inactive','failed'}:raise ValueError('manager_writer_state_unknown')
+                    if USER_MODE:enabled[unit]=state['UnitFileState']
                 migration=self.state/'migration-prior-active.json'
                 if record.get('manual_release') is True and migration.exists():
                     original=self.c.strict_json(read_file(migration))
@@ -850,7 +1020,20 @@ class Bridge:
                         for unit in original['active_before']:
                             if unit not in record['registry']['units']:raise ValueError('manager_migration_unit_unknown')
                             if unit not in active:active.append(unit)
-                record['active_before']=active;record['phase']='quiesce_intent';self.save(registry,record)
+                record['active_before']=active
+                if USER_MODE:
+                    record['enabled_before']=enabled
+                    record['enabled_before_sources']={'source':'native_pre_quiesce','registry_generation':registry['generation']}
+                record['phase']='quiesce_intent';self.save(registry,record)
+            if recovery is not None:
+                capture,binding,_history=recovery
+                for unit in capture['active_before']:
+                    if unit not in record['active_before']:record['active_before'].append(unit)
+                record.setdefault('enabled_before',{}).update(capture['enabled_before'])
+                record['enabled_before_sources']={'source':'native_pre_quiesce_with_verified_recovery',
+                    'recovery_capture_sha256':binding['sha256'],'history_basename':binding['history_basename']}
+            if USER_MODE:self.verify_restore_capture(record['registry'],record['active_before'],record['enabled_before'])
+            self.consume_manual_recovery_capture(registry,record,recovery)
             record['phase']='quiesce_intent';self.save(registry,record)
             # Timers first; RPC/gateways last. A partial failure preserves the
             # original set and never resets it from the now-stopped inventory.
@@ -1042,33 +1225,86 @@ class Bridge:
                 if (not isinstance(report.get('record_ids'),dict)
                         or report['record_ids'].get('deployment_receipt')!=receipt_artifact['report'].get('promotion_request_id')):
                     raise ValueError('manager_complete_business_receipt_mismatch')
+                if record.get('manual_release') is True:
+                    final=report.get('worker_finalization')
+                    if (not isinstance(final,dict)
+                            or set(final)!={'schema','ok','commit','repository_root','receipt_id','binding_configured',
+                                'binding_count','binding_digest','settings_digest','source_verified','source_readonly',
+                                'bytecode_clean','l5_credit'}
+                            or final.get('schema')!='managed_worker_finalization.v1'
+                            or final.get('ok') is not True or final.get('commit')!=target_commit
+                            or final.get('repository_root')!=registry['repository_root']
+                            or final.get('receipt_id')!=report['record_ids']['deployment_receipt']
+                            or final.get('binding_configured') is not True
+                            or type(final.get('binding_count')) is not int or final['binding_count']<=0
+                            or final.get('source_verified') is not True or final.get('source_readonly') is not True
+                            or final.get('bytecode_clean') is not True or final.get('l5_credit') is not False):
+                        raise ValueError('manager_complete_worker_finalization_unproven')
+                    for name in ('binding_digest','settings_digest'):
+                        self.c.hex_value(final[name],64,'manager_complete_worker_finalization_digest_invalid')
 
     def complete(self,registry,key,pid,uid):
         record=self.record(key);self.verify_job_peer(registry,record,pid,uid)
         if record.get('superseded_by'):raise ValueError('manager_job_superseded')
-        if record.get('finalized') is True:
-            self.cleanup_validation_units(registry,key)
-            return {'job_key':key,'complete':True,'resumed':record['resumed'],'phase':record['phase'],'operational_complete':record['phase']=='completed','held_background':record.get('held_background',[]),'idempotent':True}
-        held=record.get('phase')=='held_incompatible_runtime'
+        finalized=record.get('finalized') is True
+        if finalized and record.get('phase') not in {'completed','completed_held'}:
+            raise ValueError('manager_complete_finalized_phase_invalid')
+        held=record.get('phase') in {'held_incompatible_runtime','completed_held'}
         if not record.get('resumed') and not held:raise ValueError('manager_complete_before_resume')
         target=CURRENT.resolve(strict=True)
-        if target.parent!=RELEASES or registry['runtime_commit']!=target.name:
+        if target.parent!=RELEASES or registry['runtime_commit']!=target.name or self.registry()!=registry:
             raise ValueError('manager_complete_current_unbound')
         operations=['receipt']
         if record['request']['operation']=='deploy':
             operations.append('post_resume')
             if record.get('manual_release') is not True:operations.append('pre_observation')
         for operation in operations:self.verify_completed_validation(registry,record,operation,target.name)
+        active_path=self.state/'active-transition.json'
+        if not active_path.exists():raise ValueError('manager_complete_transition_missing')
+        transition_raw=read_file(active_path);transition=self.c.strict_json(transition_raw)
+        expected_pointer={'job_key':key,'complete':True,'held':held}
+        if (not isinstance(transition,dict) or type(transition.get('complete')) is not bool
+                or 'held' in transition and type(transition['held']) is not bool
+                or transition.get('job_key')!=key
+                or transition not in ({'job_key':key,'complete':False},expected_pointer)
+                or transition==expected_pointer and not finalized):
+            raise ValueError('manager_complete_transition_changed')
         self.cleanup_validation_units(registry,key)
+        migration=self.state/'migration-prior-active.json';original_migration=None;migration_raw=None
+        if USER_MODE and not held:
+            record['restoration_verification']=self.verify_restoration(registry,record)
+            if record.get('manual_release') is True and migration.exists():
+                migration_raw=read_file(migration);original_migration=self.c.strict_json(migration_raw)
+                active=original_migration.get('active_before')
+                enabled=original_migration.get('enabled_before',{})
+                self.verify_restore_capture(record['registry'],active,enabled)
+                if (not set(active)<=set(record['active_before'])
+                        or any(record['enabled_before'].get(unit)!=value for unit,value in enabled.items())):
+                    raise ValueError('manager_migration_restore_set_lost')
+        if (CURRENT.resolve(strict=True)!=target or self.registry()!=registry
+                or read_file(active_path)!=transition_raw
+                or migration_raw is not None and read_file(migration)!=migration_raw):
+            raise ValueError('manager_complete_context_changed')
         record['finalized']=True;record['phase']='completed_held' if held else 'completed'
         self.save(registry,record)
-        migration=self.state/'migration-prior-active.json'
         if not held and record.get('manual_release') is True and migration.exists():
-            original=self.c.strict_json(read_file(migration));original['restored']=True
-            atomic_json(migration,original,gid=registry['runtime_gid'])
-        atomic_json(self.state/'active-transition.json',{'job_key':key,'complete':True,'held':held},gid=registry['runtime_gid'])
+            original=original_migration if original_migration is not None else self.c.strict_json(read_file(migration))
+            if original.get('restored') is not True or USER_MODE and 'restoration_verification' not in original:
+                original['restored']=True
+                if USER_MODE:
+                    original['restoration_job_key']=key
+                    original['restoration_verification']=record['restoration_verification']
+                atomic_json(migration,original,gid=registry['runtime_gid'])
+        # The job receipt and migration flag can already be durable after a
+        # controller crash. Revalidate them above and finish only this pointer;
+        # never overwrite a newer transaction or treat finalization as a waiver.
+        if (CURRENT.resolve(strict=True)!=target or self.registry()!=registry
+                or read_file(active_path)!=transition_raw):
+            raise ValueError('manager_complete_context_changed')
+        if transition!=expected_pointer:atomic_json(active_path,expected_pointer,gid=registry['runtime_gid'])
         return {'job_key':key,'complete':True,'resumed':record['resumed'],'phase':record['phase'],
-            'held_background':record.get('held_background',[]),'operational_complete':not held}
+            'held_background':record.get('held_background',[]),'operational_complete':not held,
+            **({'idempotent':True} if finalized else {})}
 
     def publish_runtime(self,registry,record,target,*,activate):
         # Only a reviewed immutable root template is rendered. Candidate unit
@@ -1138,11 +1374,92 @@ class Bridge:
     def resume(self,registry,record):
         active=record['active_before']
         if active is None:raise ValueError('manager_restore_set_missing')
+        if USER_MODE:
+            self.restore_enablement(registry,record)
         core={'eimemory-rpc.service','hermes-gateway.service','openclaw-gateway.service'}
         for unit in sorted(active,key=lambda x:(x not in core,x.endswith('.timer'),x)):
+            if USER_MODE:
+                progress=record.setdefault('restore_progress',{})
+                if unit in progress:
+                    if progress[unit].get('phase')=='start_submitted':continue
+                    self.verify_restored_unit(record,unit)
+                    progress[unit]['phase']='start_submitted';self.save(registry,record)
+                    continue
+                before=self.restoration_unit_state(record,unit)
+                progress[unit]={'phase':'start_intent','before':before}
+                self.save(registry,record)
             args=['start']
             if unit.endswith('.service') and unit not in core:args+=['--no-block']
             self.systemctl(record['registry'],unit,*args)
+            if USER_MODE:
+                record['restore_progress'][unit]['phase']='start_submitted'
+                self.save(registry,record)
+
+    def restore_enablement(self,registry,record):
+        self.verify_restore_capture(record['registry'],record['active_before'],record.get('enabled_before'))
+        for unit,desired in sorted(record['enabled_before'].items()):
+            current=self.unit_state(record['registry'],unit,['UnitFileState'])['UnitFileState']
+            if current==desired:continue
+            if desired in {'enabled','enabled-runtime'}:
+                if current=='enabled-runtime' and desired=='enabled':
+                    self.systemctl(record['registry'],unit,'disable','--runtime')
+                elif current=='enabled' and desired=='enabled-runtime':
+                    self.systemctl(record['registry'],unit,'disable')
+                self.systemctl(record['registry'],unit,'enable',*(['--runtime'] if desired=='enabled-runtime' else []))
+            elif desired=='disabled' and current in {'enabled','enabled-runtime'}:
+                self.systemctl(record['registry'],unit,'disable',*(['--runtime'] if current=='enabled-runtime' else []))
+            else:raise ValueError('manager_restore_enablement_changed')
+            if self.unit_state(record['registry'],unit,['UnitFileState'])['UnitFileState']!=desired:
+                raise ValueError('manager_restore_enablement_unverified')
+
+    def restoration_unit_state(self,record,unit):
+        properties=(list(self.c.NATIVE_EXIT_PROPERTIES)+['Type'] if unit.endswith('.service')
+            else ['LoadState','ActiveState','UnitFileState'])
+        return self.unit_state(record['registry'],unit,properties)
+
+    def verify_restored_unit(self,record,unit):
+        actual=self.restoration_unit_state(record,unit)
+        if actual.get('LoadState')!='loaded':raise ValueError('manager_restored_unit_not_loaded')
+        if actual.get('ActiveState')=='active':return actual
+        progress=record.get('restore_progress',{}).get(unit)
+        if unit.endswith('.service') and actual.get('Type')=='oneshot' and isinstance(progress,dict):
+            before=progress.get('before',{});invocation=actual.get('InvocationID','')
+            item=record['registry']['units'].get(unit,{})
+            prior=before.get('InvocationID')
+            prior_known=(isinstance(prior,str) and re.fullmatch('[0-9a-f]{32}',prior) is not None)
+            prior_released=((prior is None or prior=='') and 'InvocationID' in before
+                and before.get('LoadState') in {'loaded','not-found'}
+                and before.get('ActiveState') in {'inactive','failed'})
+            running=(unit in self.c.PRODUCT_SERVICES and unit in record['active_before']
+                and item.get('installed') is True and item.get('manager')==('user' if USER_MODE else 'system')
+                and progress.get('phase')=='start_submitted'
+                and (prior_known or prior_released)
+                and actual.get('ActiveState')=='activating' and actual.get('SubState')=='start'
+                and actual.get('Result')=='success' and isinstance(actual.get('MainPID'),str)
+                and actual['MainPID'].isdigit() and int(actual['MainPID'])>0
+                and isinstance(invocation,str) and re.fullmatch('[0-9a-f]{32}',invocation) is not None
+                and invocation!=prior and self.c.fixed_system_unit_cgroup(actual.get('ControlGroup'),unit))
+            # A captured backup may still be doing real work after a legal
+            # restart. Prove the newly running invocation twice; do not wait for
+            # maintenance to finish, accept an unknown start or dispatch it again.
+            if running and self.restoration_unit_state(record,unit)==actual:return actual
+            successful=(actual.get('ActiveState')=='inactive' and actual.get('SubState')=='dead'
+                and actual.get('Result')=='success' and actual.get('ExecMainStatus')=='0'
+                and actual.get('MainPID')=='0' and re.fullmatch('[0-9a-f]{32}',invocation) is not None
+                and actual.get('ExecMainExitTimestampMonotonic','').isdigit()
+                and int(actual['ExecMainExitTimestampMonotonic'])>0
+                and (invocation!=before.get('InvocationID') or before.get('ActiveState') in {'active','activating','reloading'}))
+            if successful:return actual
+        raise ValueError('manager_restored_unit_not_running')
+
+    def verify_restoration(self,registry,record):
+        self.verify_restore_capture(record['registry'],record['active_before'],record.get('enabled_before'))
+        for unit,desired in record['enabled_before'].items():
+            if self.unit_state(record['registry'],unit,['UnitFileState'])['UnitFileState']!=desired:
+                raise ValueError('manager_restore_enablement_unverified')
+        for unit in record['active_before']:self.verify_restored_unit(record,unit)
+        return {'schema':'eimemory.native_runtime_restoration.v1','active_before':list(record['active_before']),
+            'enabled_before':dict(record['enabled_before']),'source':'authenticated_native_unit_readback'}
 
     def runtime_process_environment(self,registry,unit):
         # Only the runtime UID may observe its own registered runtime processes.
@@ -1311,13 +1628,23 @@ def serve(bridge):
             threading.Thread(target=handle,args=(stream,),daemon=True).start()
 
 
-if __name__=='__main__':
+def main():
     if (USER_MODE and os.geteuid()<=0) or (not USER_MODE and os.geteuid()!=0):raise SystemExit('manager_control_identity_required')
     if USER_MODE:
         import ctypes
         if ctypes.CDLL(None,use_errno=True).prctl(4,0,0,0,0)!=0:raise SystemExit('manager_process_protection_failed')
     trusted_directory(STATE,mode=0o750)
+    if USER_MODE:
+        with user_control.verified_lock(STATE/'bridge.lock'):
+            user_control.controller_startup_guard()
+            serve(Bridge(load_contract()))
+        return
+    # Preserve the historical privileged profile; it is never selected as a
+    # fallback for an enrolled user installation.
     import fcntl
     lock=os.open(STATE/'bridge.lock',os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600)
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     serve(Bridge(load_contract()))
+
+
+if __name__=='__main__':main()

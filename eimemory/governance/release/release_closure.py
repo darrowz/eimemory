@@ -560,6 +560,22 @@ def _run_controlled_operational_closure(
     runtime: Any, *, report: dict[str, Any], scope: dict[str, Any],
     identity_kwargs: dict[str, Any], release: ReleaseIdentity, policy: dict[str, Any],
 ) -> dict[str, Any]:
+    """Keep the signed current attempt stable through final closure readback."""
+    from eimemory.evaluation.controlled_acceptance_window import (
+        controlled_acceptance_window, ControlledAcceptanceWindowError,
+    )
+    try:
+        with controlled_acceptance_window(runtime):
+            return _run_controlled_operational_closure_locked(runtime, report=report,
+                scope=scope, identity_kwargs=identity_kwargs, release=release, policy=policy)
+    except ControlledAcceptanceWindowError as exc:
+        return _blocked(report, 'controlled_acceptance_window', str(exc))
+
+
+def _run_controlled_operational_closure_locked(
+    runtime: Any, *, report: dict[str, Any], scope: dict[str, Any],
+    identity_kwargs: dict[str, Any], release: ReleaseIdentity, policy: dict[str, Any],
+) -> dict[str, Any]:
     """Exercise the release under explicit operator authority, without L5 claims."""
     from eimemory.evaluation.controlled_production_acceptance import (
         run_controlled_production_acceptance, verify_controlled_production_acceptance,

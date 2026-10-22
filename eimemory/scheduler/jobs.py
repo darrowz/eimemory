@@ -56,21 +56,28 @@ def _run_controlled_production_acceptance(runtime: Runtime, *, scope: dict,
             return {"ok": True, "accepted": False, "status": "not_configured",
                     "mode": "disabled", "certifies_natural_queries": False,
                     "natural_samples_created": 0}
-        report = run_controlled_production_acceptance(
-            runtime, scope=scope, persist=True, stable_before=stable_before)
-        if not isinstance(report, dict):
-            return {"ok": False, "error": "controlled_production_report_invalid"}
-        if report.get("ok") is not True or report.get("accepted") is not True:
-            return report
-        verification = verify_controlled_production_acceptance(
-            runtime, scope=scope, record_id=str(report.get("record_id") or ""))
-        verified = (isinstance(verification, dict) and verification.get("ok") is True
-                    and verification.get("accepted") is True
-                    and verification.get("record_id") == report.get("record_id"))
-        return {**report, "ok": verified, "accepted": verified,
-                "runtime_authority_verified": verified, "verification": verification,
-                **({} if verified else {"error": "controlled_production_receipt_invalid"})}
+        from eimemory.evaluation.controlled_acceptance_window import controlled_acceptance_window
+        with controlled_acceptance_window(runtime):
+            report = run_controlled_production_acceptance(
+                runtime, scope=scope, persist=True, stable_before=stable_before)
+            if not isinstance(report, dict):
+                return {"ok": False, "error": "controlled_production_report_invalid"}
+            if report.get("ok") is not True or report.get("accepted") is not True:
+                return report
+            verification = verify_controlled_production_acceptance(
+                runtime, scope=scope, record_id=str(report.get("record_id") or ""))
+            verified = (isinstance(verification, dict) and verification.get("ok") is True
+                        and verification.get("accepted") is True
+                        and verification.get("record_id") == report.get("record_id"))
+            return {**report, "ok": verified, "accepted": verified,
+                    "runtime_authority_verified": verified, "verification": verification,
+                    **({} if verified else {"error": "controlled_production_receipt_invalid"})}
     except (OSError, ValueError, RuntimeError) as exc:
+        from eimemory.evaluation.controlled_acceptance_window import ControlledAcceptanceWindowError
+        if isinstance(exc, ControlledAcceptanceWindowError):
+            return {"ok": False, "accepted": False, "status": "blocked",
+                    "error": str(exc), "blocked_reason": str(exc),
+                    "error_type": type(exc).__name__}
         return {"ok": False, "accepted": False, "status": "unavailable",
                 "error": "controlled_production_acceptance_unavailable",
                 "error_type": type(exc).__name__}

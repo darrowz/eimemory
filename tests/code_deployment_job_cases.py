@@ -802,7 +802,13 @@ def test_registered_installer_runs_original_gates_in_children_without_reordering
     receipt = source[source.index("_record_deployment_receipt() {"):source.index("_record_release_lineage() {")]
     assert receipt.index("_managed_validation_gate receipt") < receipt.index("record_deployment_receipt.py")
     gate = source[source.index("_run_post_deploy_validation() {"):source.index("_rollback_current_release() {")]
-    assert "_managed_validation_gate pre_observation" in gate and "_managed_validation_gate post_resume" in gate
+    assert "_managed_validation_gate pre_observation" in gate
+    assert "_managed_validation_gate post_resume" not in gate
+    assert 'deferred_to_worker' in gate
+    worker = (Path(__file__).resolve().parents[1] / 'deploy/eimemory-deploy-worker').read_text(encoding='utf8')
+    final_gate = worker.index('--operation post_resume --worker-finalization')
+    assert worker.index('refresh_release_scope_bindings.py') < final_gate
+    assert worker.index('settings_rc=$?') < final_gate
     assert source.index('echo "technical_commit_complete=1"') < source.rindex("_run_post_deploy_validation")
     for path in ("deploy/run_code_deployment_gate.py", "deploy/run_code_deployment_validation.py"):
         from eimemory.governance.evolution.code_evolution_path_policy import path_allowed_for_evolution

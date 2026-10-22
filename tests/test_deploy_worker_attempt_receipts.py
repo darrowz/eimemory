@@ -36,8 +36,17 @@ def harness(tmp_path, deploy_worker_environment):
     installer.chmod(0o755)
     (repo / "deploy" / "collect_release_health.py").write_text(
         f'import json; print(json.dumps({{"ok": True, "commit": "{COMMIT}"}}))\n')
-    (repo / "deploy" / "refresh_release_scope_bindings.py").write_text("print('bindings ok')\n")
-    (repo / "deploy" / "clean_release_bytecode.py").write_text("print('bytecode clean')\n")
+    (repo / "deploy" / "refresh_release_scope_bindings.py").write_text(
+        "import os,sys\nprint('bindings ok')\nsys.exit(int(os.environ.get('FAKE_BINDING_RC','0')))\n")
+    (repo / "deploy" / "clean_release_bytecode.py").write_text(
+        "import os,sys\nprint('bytecode clean')\nsys.exit(int(os.environ.get('FAKE_CLEANUP_RC','0')))\n")
+    (repo / "deploy" / "run_code_deployment_gate.py").write_text(
+        "import json,os,sys\n"
+        "assert sys.argv[1:]==['--job-key','a'*64,'--operation','post_resume','--worker-finalization']\n"
+        "settings=json.load(open(os.environ.get('EIMEMORY_CONFIG_PATH') or os.path.join(os.environ['EIMEMORY_CONFIG_DIR'],'settings.json')))\n"
+        "assert settings['trusted_repository_root']==os.environ['REPO_DIR']\n"
+        "print('worker final gate after settings')\n"
+        "sys.exit(int(os.environ.get('FAKE_GATE_RC','0')))\n")
     # The worker uses the registered manager CLI, not a PATH systemctl. Stub
     # only that OS boundary; every receipt/settings step below remains real.
     (repo / "deploy" / "runtime_manager_control.py").write_text(
@@ -63,18 +72,23 @@ def harness(tmp_path, deploy_worker_environment):
     worker.chmod(0o755)
     py_dir = Path(sys.executable).parent
 
-    def run(rc: int, *, inactive=False):
+    def run(rc: int, *, inactive=False, binding_rc=0, cleanup_rc=0, gate_rc=0,
+            settings_failure=False, automatic=False):
         isolated, settings = deploy_worker_environment
+        if settings_failure:
+            settings.write_text('[]')
         if inactive:
             (repo / 'deploy' / 'runtime_manager_control.py').write_text("import sys\nprint('inactive')\nsys.exit(3)\n")
             (bin_dir / 'systemctl').write_text('#!/bin/sh\n[ "$1" = --user ] || exit 99\necho inactive\nexit 3\n')
         env = {**isolated, "PATH": f"{bin_dir}:{py_dir}:/usr/bin:/bin", "FAKE_INSTALLER_RC": str(rc), "REPO_DIR": str(repo)}
+        env.update(FAKE_BINDING_RC=str(binding_rc), FAKE_CLEANUP_RC=str(cleanup_rc),
+                   FAKE_GATE_RC=str(gate_rc), EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE='1' if automatic else '0')
         if not inactive:
             env['EIMEMORY_RUNTIME_TRANSITION_JOB'] = 'a' * 64
         else:
             env.pop('EIMEMORY_RUNTIME_TRANSITION_JOB', None)
         result = subprocess.run([str(worker), "deploy", COMMIT], env=env, capture_output=True, text=True, timeout=60)
-        if rc == 0:
+        if rc == 0 and not settings_failure:
             assert json.loads(settings.read_text()) == {"trusted_repository_root": str(repo), "preserve": True}
         return result
 
@@ -139,6 +153,40 @@ def test_success_receipt_records_bytecode_cleanup(harness):
     payload = json.loads((state / f"{COMMIT}.json").read_text())
     assert payload["bytecode_cleanup_exit_code"] == 0
     assert b"bytecode clean" in (state / f"{COMMIT}.log").read_bytes()
+    assert payload['settings_exit_code'] == payload['post_resume_gate_exit_code'] == 0
+    assert payload['post_resume_gate_required'] is payload['post_resume_gate_attempted'] is True
+    text = (state / f'{COMMIT}.log').read_text()
+    assert text.index('bindings ok') < text.index('bytecode clean') < text.index('worker final gate after settings')
+
+
+@pytest.mark.parametrize('fault', ['binding', 'cleanup', 'settings'])
+def test_worker_prerequisite_failure_preserves_incomplete_manual_attempt(harness, fault):
+    run, state = harness
+    result = run(0, binding_rc=2 if fault == 'binding' else 0,
+        cleanup_rc=2 if fault == 'cleanup' else 0, settings_failure=fault == 'settings')
+    assert result.returncode == 1
+    payload = json.loads((state / f'{COMMIT}.json').read_text())
+    assert payload['ok'] is False
+    assert payload['post_resume_gate_required'] is True
+    assert payload['post_resume_gate_attempted'] is False
+    assert payload['post_resume_gate_exit_code'] == 125
+    assert 'worker final gate after settings' not in Path(payload['log']).read_text()
+
+
+def test_failed_final_native_gate_cannot_publish_success(harness):
+    run, state = harness
+    assert run(0, gate_rc=2).returncode == 1
+    payload = json.loads((state / f'{COMMIT}.json').read_text())
+    assert payload['post_resume_gate_attempted'] is True
+    assert payload['post_resume_gate_exit_code'] == 2 and payload['ok'] is False
+
+
+def test_automatic_owner_keeps_its_existing_finalization_chain(harness):
+    run, state = harness
+    assert run(0, automatic=True).returncode == 0
+    payload = json.loads((state / f'{COMMIT}.json').read_text())
+    assert payload['post_resume_gate_required'] is payload['post_resume_gate_attempted'] is False
+    assert payload['post_resume_gate_exit_code'] == 0
 
 
 @pytest.mark.parametrize("deploy_worker_environment", ["path", "dir"], indirect=True)

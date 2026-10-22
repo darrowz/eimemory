@@ -36,6 +36,50 @@ knowledge/backups and both user-manager bus sockets. The user controller alone
 observes native host PIDs and operates the user manager. Same UID alone does not
 establish the authority boundary.
 
+The controller runs in the host user and PID namespaces. It has
+`NoNewPrivileges=yes` and zero effective, permitted and ambient capabilities.
+Its inherited capability bounding set is not expanded. Mount isolation such
+as `PrivateTmp` would cause the unprivileged user manager to create a child
+user namespace, preventing the controller from authenticating sibling host
+processes. Startup therefore verifies the actual namespace mappings and
+capability state. Products and deployment children keep their private
+namespaces and empty capability sets.
+
+Installation holds the verified bridge and lifecycle locks throughout
+publication. A durable `controller-installation.json` and fixed native unit
+conditions prevent starts until the entire generation has been read back and
+sealed. An interrupted publication retains the barrier and originals; an
+operator must verify the exact completed generation or recover the original
+files. Removing the barrier without that verification is not recovery.
+
+Failed manual attempts retain their native failure, original invocation and
+captured activity/enablement. A reviewed retry uses a fresh nonce and explicit
+prior-job binding. Private recovery capture and consumption records transfer
+the original set to that attempt, including services stopped by the failed
+attempt. Resume restores only the recorded enablement and verifies actual
+service/timer/path state before completion. An ambiguous start is preserved
+until its native outcome can be established.
+
+Manual installation defers its post-resume business gate to the deployment
+worker. The worker first refreshes receipt bindings, removes source bytecode
+and verifies settings and serving identity. A separate native child then
+independently checks the immutable Git source, live RPC configuration, physical
+deployment receipt and every scope binding before sealing finalization. The
+controller requires that sealed proof before marking the transition complete.
+A successful installer process by itself does not complete deployment.
+
+Controlled closure and nightly acceptance share a lock on their physical
+SQLite authority. The closure holds it through its final independent readback;
+nested acceptance retains the same lock, while other threads and processes
+wait for at most 600 seconds. A busy or replaced authority blocks validation
+without creating a signed sample. The newest-attempt rule remains unchanged.
+
+`retire_manual_code_policy.py` provides explicit user-operator retirement of a
+superseded, unused manual permit. Exact policy/current-release pins, absence
+of active transactions or a native-owned policy, and unchanged read-only
+ledger facts are required. Original bytes and retirement facts are archived
+privately. Retirement does not consume the permit or create repair credit.
+
 `prepare_user_release.py prepare` creates a candidate as the operator before
 cutover. It validates source, dependencies and console hashes, and records
 `activated=false`, `release_accepted=false`. The normal installer may reuse this

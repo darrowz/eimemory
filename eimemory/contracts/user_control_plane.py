@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from contextlib import contextmanager
+import re
 import stat
 
 MODE_ENV = 'EIMEMORY_CONTROL_PLANE'
@@ -57,6 +59,124 @@ def coordinates():
 
 def control_uid():
     return account().pw_uid if user_mode() else 0
+
+
+@contextmanager
+def verified_lock(path):
+    """Hold one authenticated user lock without following a substituted name.
+
+    The controller holds bridge.lock for its entire lifetime. Installers acquire
+    that lock before lifecycle.lock, so a controller restart cannot race a
+    partially published installation. A busy or replaced lock is never repaired.
+    """
+    import fcntl
+    path = Path(path)
+    trusted_directory(path.parent)
+    uid = account().pw_uid
+    descriptors = []
+    in_body = False
+    try:
+        parent = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        descriptors.append(parent)
+        names = [Path(path.anchor)]
+        current = names[0]
+        for part in path.parts[1:-1]:
+            parent = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+            descriptors.append(parent)
+            current /= part
+            names.append(current)
+        identity = lambda s: (s.st_dev, s.st_ino, s.st_uid, s.st_gid, s.st_mode)
+        original = [identity(os.fstat(item)) for item in descriptors]
+        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+        created = False
+        try:
+            descriptor = os.open(path.name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
+            created = True
+        except FileExistsError:
+            descriptor = os.open(path.name, flags, dir_fd=parent)
+        descriptors.append(descriptor)
+        if created:
+            os.fchmod(descriptor, 0o600)
+
+        def verify():
+            meta = os.fstat(descriptor)
+            named = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != uid or meta.st_nlink != 1
+                    or stat.S_IMODE(meta.st_mode) != 0o600):
+                raise ValueError('user_control_plane_lock_untrusted')
+            if identity(meta) != identity(named) or meta.st_nlink != named.st_nlink:
+                raise ValueError('user_control_plane_lock_changed')
+            if any(identity(os.fstat(item)) != prior or identity(name.lstat()) != prior
+                   for item, name, prior in zip(descriptors[:-1], names, original)):
+                raise ValueError('user_control_plane_lock_changed')
+
+        verify()
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError('user_control_plane_lock_busy') from exc
+        verify()
+        in_body = True
+        yield descriptor
+        in_body = False
+        verify()
+    except OSError as exc:
+        if in_body:
+            raise
+        raise ValueError('user_control_plane_lock_untrusted') from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def verify_controller_host_namespace(proc=Path('/proc')):
+    """Require the native Linux user controller, never a partial user map.
+
+    This profile deliberately supports the host's initial user namespace. Its
+    fixed-action controller must observe sibling product namespaces; entering a
+    user namespace implicitly through a mount sandbox makes that impossible.
+    Nonzero inherited CapBnd is a ceiling, not a granted capability; with NNP and
+    zero permitted/effective/ambient capabilities it cannot elevate on exec.
+    """
+    value = account()
+    if os.getgid() != value.pw_gid:
+        raise ValueError('user_control_plane_controller_identity_invalid')
+    proc = Path(proc)
+    try:
+        fields = dict(row.split(':', 1) for row in (proc/'self/status').read_text().splitlines() if ':' in row)
+        if (fields.get('Uid', '').split() != [str(value.pw_uid)] * 4
+                or fields.get('Gid', '').split() != [str(value.pw_gid)] * 4):
+            raise ValueError('user_control_plane_controller_identity_invalid')
+        if fields.get('NoNewPrivs', '').strip() != '1':
+            raise ValueError('user_control_plane_controller_nnp_required')
+        for name in ('CapEff', 'CapPrm', 'CapAmb'):
+            raw = fields.get(name, '').strip()
+            if re.fullmatch('[0-9a-fA-F]{1,16}', raw) is None or int(raw, 16):
+                raise ValueError('user_control_plane_controller_capabilities_forbidden')
+        # PID1 is readable without following its protected ns/user symlink.
+        # Equality alone is insufficient if a private PID1 was also substituted;
+        # both sides must have the full initial Linux identity mapping.
+        expected = [(0, 0, 2**32 - 1)]
+        for name in ('uid_map', 'gid_map'):
+            for owner in ('self', '1'):
+                try:
+                    rows = [tuple(map(int, row.split())) for row in (proc/owner/name).read_text().splitlines()]
+                except ValueError as exc:
+                    raise ValueError('user_control_plane_controller_namespace_unverified') from exc
+                if rows != expected:
+                    raise ValueError('user_control_plane_controller_host_namespace_required')
+    except OSError as exc:
+        raise ValueError('user_control_plane_controller_namespace_unverified') from exc
+    except (TypeError, OverflowError) as exc:
+        raise ValueError('user_control_plane_controller_namespace_unverified') from exc
+
+
+def controller_startup_guard():
+    """Refuse an incomplete installation before loading authority or serving."""
+    marker = coordinates()['state']/'controller-installation.json'
+    if os.path.lexists(marker):
+        raise ValueError('user_control_plane_controller_installation_incomplete')
+    verify_controller_host_namespace()
 
 
 def _system_owner(info, path, uid):

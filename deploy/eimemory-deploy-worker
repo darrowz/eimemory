@@ -85,20 +85,7 @@ fi
 set -e
 
 current="$(basename "$(readlink -f /opt/eimemory/current 2>/dev/null || true)")"
-# Preserve status failures as evidence; never exit before writing the attempt.
 set +e
-if [[ -n "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" ]]; then
-  service="$(/usr/bin/python3 -I -B "$REPO/deploy/runtime_manager_control.py" systemctl is-active eimemory-rpc.service)"
-else
-  service="$(systemctl --user is-active eimemory-rpc.service 2>/dev/null)"
-fi
-service_rc=$?
-set -e
-# urllib collector: exits only 0/1/2. Never use curl redirect (exit 23 write/pipe).
-# Isolated interpreter still needs the repo on PYTHONPATH to import eimemory.
-set +e
-health_json="$(PYTHONPATH="$REPO" /usr/bin/python3 -B "$COLLECTOR" --url http://127.0.0.1:8091/health --probe-only)"
-health_rc=$?
 # Post-deploy hygiene: remove any source-tree bytecode written into the live
 # immutable release after the installer's own checks (e.g. by a gateway
 # importing the release). This is the documented operator step, now owned by
@@ -113,7 +100,7 @@ fi
 # Record the trusted deployment checkout in settings.json so operator CLIs
 # (live-acceptance, l5-readiness, deployment-receipt) resolve the same trust
 # anchor as the managed units without ad-hoc env. Backed up before change;
-# unchanged files are not rewritten. Failure is logged, not fatal.
+# unchanged files are not rewritten. Failure blocks final release completion.
 settings_rc=0
 if [[ "$installer_rc" -eq 0 ]]; then
   python3 - "${EIMEMORY_CONFIG_PATH:-${EIMEMORY_CONFIG_DIR:-/etc/eimemory}/settings.json}" "$REPO" >>"$log" 2>&1 <<'PY'
@@ -146,10 +133,63 @@ PY
 fi
 set -e
 
-python3 - "$tmp" "$COMMIT" "$started" "$installer_rc" "$current" "$service" "$health_rc" "$health_json" "$log" "$binding_rc" "$attempt_id" "$bytecode_rc" "$service_rc" <<'PY'
+_collect_serving_state() {
+  current="$(basename "$(readlink -f /opt/eimemory/current 2>/dev/null || true)")"
+  set +e
+  if [[ -n "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" ]]; then
+    service="$(/usr/bin/python3 -I -B "$REPO/deploy/runtime_manager_control.py" systemctl is-active eimemory-rpc.service)"
+  else
+    service="$(systemctl --user is-active eimemory-rpc.service 2>/dev/null)"
+  fi
+  service_rc=$?
+  health_json="$(PYTHONPATH="$REPO" /usr/bin/python3 -B "$COLLECTOR" --url http://127.0.0.1:8091/health --probe-only)"
+  health_rc=$?
+  python3 - "$COMMIT" "$health_json" <<'PY'
+import json, sys
+try:
+    value = json.loads(sys.argv[2])
+    valid = isinstance(value, dict) and value.get('ok') is True and value.get('commit') == sys.argv[1]
+except (TypeError, ValueError):
+    valid = False
+raise SystemExit(0 if valid else 1)
+PY
+  health_identity_rc=$?
+  set -e
+}
+
+# A manual managed job remains globally incomplete until all worker-owned
+# binding, hygiene and settings work has succeeded. The separate native gate
+# then restores the captured components, evaluates business and completes it.
+# Automatic repair keeps its original owner's pre-observation/finalize chain.
+_collect_serving_state
+post_resume_rc=0
+post_resume_attempted=0
+post_resume_required=0
+if [[ -n "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" && "${EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE:-0}" != "1" ]]; then
+  post_resume_required=1
+  post_resume_rc=125
+  if [[ "$installer_rc" -eq 0 && "$binding_rc" -eq 0 && "$bytecode_rc" -eq 0 && "$settings_rc" -eq 0 &&
+        "$current" == "$COMMIT" && "$service_rc" -eq 0 && "$service" == "active" && "$health_rc" -eq 0 && "$health_identity_rc" -eq 0 ]]; then
+    post_resume_attempted=1
+    set +e
+    control_cache_prefix="$(/usr/bin/python3 -I -B -c 'import os,pwd; from pathlib import Path; print(str(Path(pwd.getpwuid(os.geteuid()).pw_dir)/".local/lib/eimemory/control-plane/empty-pycache") if os.environ.get("EIMEMORY_CONTROL_PLANE")=="user" else "/var/lib/eimemory-manager/empty-pycache")')"
+    post_resume_rc=$?
+    if [[ "$post_resume_rc" -eq 0 ]]; then
+      /opt/eimemory/current/.venv/bin/python -I -B -X "pycache_prefix=$control_cache_prefix" "$REPO/deploy/run_code_deployment_gate.py" \
+        --job-key "$EIMEMORY_RUNTIME_TRANSITION_JOB" --operation post_resume --worker-finalization >>"$log" 2>&1
+      post_resume_rc=$?
+    fi
+    set -e
+    _collect_serving_state
+  else
+    echo "post_resume_validation=blocked worker_prerequisites_failed" >>"$log"
+  fi
+fi
+
+python3 - "$tmp" "$COMMIT" "$started" "$installer_rc" "$current" "$service" "$health_rc" "$health_json" "$log" "$binding_rc" "$attempt_id" "$bytecode_rc" "$service_rc" "$settings_rc" "$post_resume_rc" "$post_resume_attempted" "$post_resume_required" <<'PY'
 import json, os, sys
 from datetime import datetime, timezone
-out, commit, started, installer_rc, current, service, health_rc, health_json, log, binding_rc, attempt_id, bytecode_rc, service_rc = sys.argv[1:]
+out, commit, started, installer_rc, current, service, health_rc, health_json, log, binding_rc, attempt_id, bytecode_rc, service_rc, settings_rc, post_resume_rc, post_resume_attempted, post_resume_required = sys.argv[1:]
 try:
     health = json.loads(health_json)
     if not isinstance(health, dict):
@@ -162,7 +202,7 @@ health_ok = (
     and health.get("ok") is True
     and str(health.get("commit") or "") == commit
 )
-ok = int(service_rc) == 0 and int(bytecode_rc) == 0 and int(binding_rc) == 0 and int(installer_rc) == 0 and current == commit and service == "active" and health_ok
+ok = int(settings_rc) == 0 and int(post_resume_rc) == 0 and int(service_rc) == 0 and int(bytecode_rc) == 0 and int(binding_rc) == 0 and int(installer_rc) == 0 and current == commit and service == "active" and health_ok
 payload = {
     "ok": ok,
     "commit": commit,
@@ -172,6 +212,10 @@ payload = {
     "installer_exit_code": int(installer_rc),
     "binding_refresh_exit_code": int(binding_rc),
     "bytecode_cleanup_exit_code": int(bytecode_rc),
+    "settings_exit_code": int(settings_rc),
+    "post_resume_gate_required": bool(int(post_resume_required)),
+    "post_resume_gate_attempted": bool(int(post_resume_attempted)),
+    "post_resume_gate_exit_code": int(post_resume_rc),
     "current_commit": current,
     "rpc_service": service,
     "rpc_service_exit_code": int(service_rc),

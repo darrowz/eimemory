@@ -13,6 +13,10 @@ import struct
 import sys
 import importlib.util
 
+_WORKER_RELEASES_ROOT = Path('/opt/eimemory/releases')
+_WORKER_CURRENT_LINK = Path('/opt/eimemory/current')
+_WORKER_CONFIG_DIR = Path('/etc/eimemory')
+
 USER_MODE = os.environ.get('EIMEMORY_CONTROL_PLANE', '') == 'user'
 CONTROL_UID = os.geteuid() if USER_MODE else 0
 if USER_MODE:
@@ -155,6 +159,128 @@ def _assert_execution_identity(request, key, operation, native, invocation, stat
         or re.fullmatch("0+", fields.get("CapPrm", "").strip()) is None
         or re.fullmatch("0+", fields.get("CapAmb", "").strip()) is None):
         raise ValueError("validation_actual_execution_identity_unverified")
+
+
+def _worker_config_bytes(path, *, maximum=262144):
+    """Read ordinary user-owned configuration without following replacements."""
+    path = Path(path)
+    if (not path.is_absolute() or '..' in path.parts
+            or any(parent.is_symlink() for parent in (path.parent, *path.parent.parents))):
+        raise ValueError('worker_finalization_config_path_untrusted')
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        before = os.fstat(descriptor)
+        identity = lambda row: (row.st_dev, row.st_ino, row.st_mode, row.st_uid,
+            row.st_nlink, row.st_size, row.st_mtime_ns, row.st_ctime_ns)
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or before.st_uid != os.geteuid() or before.st_mode & 0o022
+                or not 0 < before.st_size <= maximum):
+            raise ValueError('worker_finalization_config_untrusted')
+        raw = os.read(descriptor, maximum + 1)
+        if (len(raw) != before.st_size or identity(before) != identity(os.fstat(descriptor))
+                or identity(before) != identity(path.lstat())):
+            raise ValueError('worker_finalization_config_changed')
+        return raw
+    finally:
+        os.close(descriptor)
+
+
+def verify_worker_finalization(runtime, *, body, report):
+    """Independently measure final manual-release facts inside the sealed child.
+
+    No parent exit status or environment flag proves these facts. The receipt
+    is physically re-read, the scope file comes from the authenticated running
+    RPC process, and the exact immutable source is compared with trusted Git.
+    """
+    from eimemory.core.runtime_manager import read_registry
+    from eimemory.models.records import ScopeRef
+    from eimemory.version import __version__
+    from eimemory.governance.release.evidence_contract import (
+        current_deployment_receipt_for_owner, deployment_receipt_for_scope,
+        same_release_authority, verified_deployment_receipt_identity,
+    )
+    from eimemory.governance.release.release_binding_refresh import refresh_bindings
+    from deploy.refresh_release_scope_bindings import rpc_process_environment
+    from deploy.clean_release_bytecode import validate_release_source
+
+    commit = body.get('target_commit')
+    if (body.get('manual_release') is not True or commit != body.get('candidate_commit')
+            or re.fullmatch('[0-9a-f]{40}', str(commit)) is None
+            or report.get('ok') is not True or report.get('business_qualified') is not True
+            or report.get('l5_certification') != 'not_certified'):
+        raise ValueError('worker_finalization_manual_business_required')
+    registry = read_registry()
+    repository = registry['repository_root']
+    releases = _WORKER_RELEASES_ROOT
+    target = releases / commit
+    current = _WORKER_CURRENT_LINK
+    if (target.is_symlink() or current.resolve(strict=True) != target
+            or not os.statvfs(target).f_flag & os.ST_RDONLY
+            or not os.statvfs(target / 'eimemory').f_flag & os.ST_RDONLY):
+        raise ValueError('worker_finalization_source_not_readonly')
+    # Includes untracked source bytecode: a cleanup claim is never sufficient.
+    validate_release_source(release_dir=target, releases_root=releases,
+        repo_root=repository, commit=commit)
+    scope = ScopeRef.from_dict(body['scope'])
+    receipt_id = (report.get('record_ids') or {}).get('deployment_receipt')
+    if not isinstance(receipt_id, str) or not receipt_id:
+        raise ValueError('worker_finalization_receipt_reference_required')
+    identity = current_deployment_receipt_for_owner(runtime, receipt_id, scope,
+        expected_commit=commit, expected_version=__version__)
+    if identity is None or identity.commit != commit or identity.receipt_id != receipt_id:
+        raise ValueError('worker_finalization_current_receipt_unverified')
+    process = rpc_process_environment(commit)
+    config_dir = Path(process.get('EIMEMORY_CONFIG_DIR') or _WORKER_CONFIG_DIR)
+    settings = Path(process.get('EIMEMORY_CONFIG_PATH') or config_dir / 'settings.json')
+    if config_dir != _WORKER_CONFIG_DIR or settings != config_dir / 'settings.json':
+        raise ValueError('worker_finalization_settings_path_unexpected')
+    settings_bytes = _worker_config_bytes(settings)
+    value = _strict_json(settings_bytes)
+    if not isinstance(value, dict) or value.get('trusted_repository_root') != repository:
+        raise ValueError('worker_finalization_settings_repository_mismatch')
+    binding_value = process.get('EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE')
+    if not isinstance(binding_value, str) or not binding_value:
+        raise ValueError('worker_finalization_scope_bindings_required')
+    binding = Path(binding_value)
+    if binding.parent != config_dir:
+        raise ValueError('worker_finalization_binding_path_unexpected')
+    # The normal worker refresh precedes this child. Business validation can
+    # advance metadata on the same physical receipt, so refresh idempotently
+    # through the existing pin-preserving writer, then independently re-read.
+    count = refresh_bindings(runtime, binding, receipt_id)
+    raw = _worker_config_bytes(binding, maximum=65536)
+    entries = _strict_json(raw)
+    if (type(count) is not int or count <= 0 or not isinstance(entries, list)
+            or len(entries) != count):
+        raise ValueError('worker_finalization_binding_inventory_invalid')
+    previous = os.environ.get('EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE')
+    try:
+        os.environ['EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE'] = str(binding)
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get('receipt_id') != receipt_id:
+                raise ValueError('worker_finalization_binding_receipt_mismatch')
+            record = deployment_receipt_for_scope(runtime, receipt_id, ScopeRef.from_dict(entry['scope']))
+            actual = verified_deployment_receipt_identity(record)
+            physical_digest = sha256(json.dumps(record.to_dict(), ensure_ascii=False,
+                sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest() if record else ''
+            if (not same_release_authority(actual, identity)
+                    or entry.get('receipt_sha256') != physical_digest):
+                raise ValueError('worker_finalization_binding_unverified')
+    finally:
+        if previous is None:
+            os.environ.pop('EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE', None)
+        else:
+            os.environ['EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE'] = previous
+    if (_worker_config_bytes(settings) != settings_bytes
+            or _worker_config_bytes(binding, maximum=65536) != raw
+            or rpc_process_environment(commit) != process
+            or current.resolve(strict=True) != target):
+        raise ValueError('worker_finalization_changed_during_verification')
+    return dict(schema='managed_worker_finalization.v1', ok=True, commit=commit,
+        repository_root=repository, receipt_id=receipt_id, binding_configured=True,
+        binding_count=count, binding_digest=sha256(raw).hexdigest(),
+        settings_digest=sha256(settings_bytes).hexdigest(), source_verified=True,
+        source_readonly=True, bytecode_clean=True, l5_credit=False)
 
 
 def main():

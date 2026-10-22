@@ -11,6 +11,15 @@ AIGC:
 
 # Changelog
 
+## [1.15.22] — 2026-10-22
+
+- Keep the user controller in the host user and PID namespaces with no effective, permitted or ambient capabilities, so authenticated process observations work without privileged runtime access.
+- Serialize controller installation, preserve a durable startup barrier and original files, and verify the published generation before clearing the barrier.
+- Carry the original activity and enablement capture across failed manual attempts; restore and verify the original user services, timers and paths before completing a release.
+- Complete manual deployment only after the worker's binding refresh, settings, bytecode cleanup and independent native finalization have passed. Preserve failed attempts and require genuine receipt and business evidence.
+- Serialize controlled acceptance through final readback so a concurrent nightly cannot replace the evidence high-water during the release's observation window.
+- Add explicit user-operator retirement of an obsolete, unused manual code permit, retaining the original policy and ledger facts without creating autonomous repair credit.
+
 ## [1.15.21] — 2026-10-22
 
 - Use authenticated controller observations for Hermes adapter timeouts and the live RPC scope binding inside private PID namespaces; retain process owner, invocation, cgroup and start-time checks.

@@ -584,6 +584,18 @@ def run_controlled_production_acceptance(runtime, *, scope, persist=True, stable
     policy = load_controlled_policy(runtime, owner)
     if policy is None:
         return {**_unavailable('controlled_acceptance_not_configured'), 'status': 'not_configured'}
+    from eimemory.evaluation.controlled_acceptance_window import (
+        controlled_acceptance_window, ControlledAcceptanceWindowError,
+    )
+    try:
+        with controlled_acceptance_window(runtime):
+            return _run_controlled_production_acceptance_locked(runtime, owner=owner,
+                policy=policy, persist=persist, stable_before=stable_before)
+    except ControlledAcceptanceWindowError as exc:
+        return {**_unavailable(str(exc)), 'status': 'blocked'}
+
+
+def _run_controlled_production_acceptance_locked(runtime, *, owner, policy, persist, stable_before):
     try:
         release, receipt = _release(runtime, owner)
         cutoff = policy['stable_before']

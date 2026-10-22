@@ -635,6 +635,9 @@ def run_validation(runtime, *, key: str, operation: str) -> dict:
                     arguments = native
         result, target_transport = _target_validation_report(runtime, key=key, operation=operation,
             body=body, transaction=transaction, arguments=arguments)
+        if body["manual_release"] is True and operation == "post_resume" and result.get("ok") is True:
+            from deploy.run_code_deployment_validation import verify_worker_finalization
+            result["worker_finalization"] = verify_worker_finalization(runtime, body=body, report=result)
         _, after = validation_context(key, operation)
         if any(native.get(name) != after.get(name) for name in ("unit", "original_invocation",
             "parent_original_invocation", "target_commit", "controller_commit", "phase", "manual_release", "launch_controller_commit")):
