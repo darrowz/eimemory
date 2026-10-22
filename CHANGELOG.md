@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.15.21] — 2026-10-22
+
+- Use authenticated controller observations for Hermes adapter timeouts and the live RPC scope binding inside private PID namespaces; retain process owner, invocation, cgroup and start-time checks.
+- Handle SIGTERM explicitly in RPC so a PID 1 service can close the server and durable store normally.
+- Recover a failed manual deployment after its verified rollback has deferred automation restoration, retaining the failed native exit and original runtime capture.
+
 ## [1.15.20] — 2026-10-22
 
 - Keep gateway unit metadata in the reviewed user controller while deployment jobs retain read-only native units and hidden manager sockets.

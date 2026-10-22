@@ -84,3 +84,48 @@ def test_registered_stability_uses_native_host_observation_without_proc_fallback
     if fault=='none':assert s._process_environment(state)==(123,Path('/proc/123'),{'CAPTURE':'1'})
     else:
         with pytest.raises((ValueError,RuntimeError)):s._process_environment(state)
+
+@pytest.mark.parametrize('fault',['none','too_large','nan','missing','wrong_pid','denied'])
+def test_managed_hermes_timeout_uses_authenticated_host_observation(monkeypatch,capsys,fault):
+    module=standalone('runtime_manager_control')
+    from eimemory.core import runtime_manager as client
+    monkeypatch.setattr(module.os,'geteuid',lambda:1001,raising=False)
+    monkeypatch.setattr(module,'unit_state',lambda unit,properties:{'Id':unit,'MainPID':'123'})
+    environment={'EIMEMORY_ADAPTER_TIMEOUT_SECONDS':'8','PRIVATE_TOKEN':'never-print-this-secret'}
+    if fault=='too_large':environment['EIMEMORY_ADAPTER_TIMEOUT_SECONDS']='31'
+    if fault=='nan':environment['EIMEMORY_ADAPTER_TIMEOUT_SECONDS']='nan'
+    if fault=='missing':environment.pop('EIMEMORY_ADAPTER_TIMEOUT_SECONDS')
+    def request(operation,**kw):
+        assert operation=='runtime_process_environment' and kw=={'unit':'hermes-gateway.service'}
+        if fault=='denied':raise RuntimeError('host denied')
+        return {'observation':dict(schema='eimemory.runtime_process_environment.v1',unit='hermes-gateway.service',
+            pid=124 if fault=='wrong_pid' else 123,start_ticks=10,invocation_id='a'*32,environment=environment)}
+    monkeypatch.setattr(client,'request',request)
+    if fault=='none':
+        assert module.main(['hermes-adapter-timeout'])==0
+        assert capsys.readouterr().out=='8\n'
+    else:
+        with pytest.raises((ValueError,RuntimeError)):module.main(['hermes-adapter-timeout'])
+        assert capsys.readouterr().out==''
+
+
+@pytest.mark.parametrize('denied',[False,True])
+def test_managed_bootstrap_uses_host_binding_observation_without_proc_fallback(monkeypatch,denied):
+    module=standalone('bootstrap_production_recall')
+    from eimemory.ops import runtime_service_observation as owner,controlled_stability as stability
+    monkeypatch.delenv('EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE',raising=False)
+    monkeypatch.setattr(owner,'registered_runtime_context',lambda:True)
+    monkeypatch.setattr(owner,'service_state',lambda unit,properties:{'Id':unit,'MainPID':'123'})
+    def observe(state):
+        if denied:raise RuntimeError('host observation denied')
+        return {'environment':{'EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE':'/var/lib/eimemory/state/real-bindings.json'}}
+    monkeypatch.setattr(stability,'_host_process_observation',observe)
+    import subprocess
+    monkeypatch.setattr(subprocess,'check_output',lambda *a,**k:pytest.fail('direct host discovery is forbidden'))
+    if denied:
+        with pytest.raises(RuntimeError,match='host observation denied'):module._adopt_release_scope_bindings_env()
+        assert 'EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE' not in module.os.environ
+    else:
+        module._adopt_release_scope_bindings_env()
+        assert module.os.environ['EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE']=='/var/lib/eimemory/state/real-bindings.json'
+        monkeypatch.delenv('EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE')

@@ -480,7 +480,7 @@ def validate_failed_manual_recovery(contract, registry, record, transition, nati
             or record.get('manual_release') is not True
             or record.get('finalized') is True or record.get('resumed') is True
             or record.get('quiesced') is not True
-            or record.get('phase') not in {'publish','activate','rollback'}
+            or record.get('phase') not in {'publish','activate','rollback','resume_deferred_until_terminal'}
             or record.get('unit')!=contract.job_unit(key)):
         raise ValueError('user_recovery_failed_manual_binding_invalid')
     contract.validate_manual_permit(record['request'],key)

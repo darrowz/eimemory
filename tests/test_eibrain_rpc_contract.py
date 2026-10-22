@@ -188,3 +188,17 @@ def test_eibrain_rpc_reuses_http11_connection(tmp_path: Path) -> None:
     finally:
         connection.close()
         server.stop()
+
+
+def test_rpc_sigterm_runs_normal_cleanup_and_restores_signal_handler():
+    import signal
+    from types import SimpleNamespace
+    calls=[]
+    original=signal.getsignal(signal.SIGTERM)
+    server=EIBrainRPCServer.__new__(EIBrainRPCServer)
+    server._loopback_health_server=None
+    server._server=SimpleNamespace(serve_forever=lambda:signal.raise_signal(signal.SIGTERM),
+        server_close=lambda:calls.append('closed'))
+    server.serve_forever()
+    assert calls==['closed']
+    assert signal.getsignal(signal.SIGTERM)==original

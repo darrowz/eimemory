@@ -203,7 +203,7 @@ _install_as_service_user() {
 _preflight_release_readonly() {
   if _runtime_manager_enabled; then
     _runtime_manager_control probe || return $?
-    echo "release_readonly_preflight=passed manager=system"
+    echo "release_readonly_preflight=passed manager=${EIMEMORY_CONTROL_PLANE:-system}"
     return 0
   fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then return 0; fi
@@ -575,7 +575,7 @@ _stop_storage_writers() {
     _capture_storage_writers || return $?
     STORAGE_WRITERS_STOPPED=1
     _runtime_manager_phase quiesce || return $?
-    echo "storage_writer_stop=complete captured=${#ACTIVE_STORAGE_WRITER_UNITS[@]} manager=system"
+    echo "storage_writer_stop=complete captured=${#ACTIVE_STORAGE_WRITER_UNITS[@]} manager=${EIMEMORY_CONTROL_PLANE:-system}"
     return 0
   fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
@@ -661,7 +661,7 @@ _restart_storage_writers() {
     [ "$STORAGE_WRITERS_STOPPED" = "1" ] || return 0
     _runtime_manager_phase resume || return $?
     STORAGE_WRITERS_STOPPED=0
-    echo "storage_writer_restart=complete restored=${#ACTIVE_STORAGE_WRITER_UNITS[@]} manager=system"
+    echo "storage_writer_restart=complete restored=${#ACTIVE_STORAGE_WRITER_UNITS[@]} manager=${EIMEMORY_CONTROL_PLANE:-system}"
     return 0
   fi
   if [ "$STORAGE_WRITERS_STOPPED" != "1" ]; then
@@ -899,7 +899,7 @@ _install_storage_release_guards() {
     _install_storage_release_transaction_helper || return $?
     # The root-reviewed PID1 template has the same fixed storage ExecCondition.
     _runtime_manager_control inventory >/dev/null || return $?
-    echo "storage_release_guard=registered manager=system"
+    echo "storage_release_guard=registered manager=${EIMEMORY_CONTROL_PLANE:-system}"
     return 0
   fi
   _install_storage_release_transaction_helper
@@ -2166,6 +2166,12 @@ _verify_hermes_integration() {
   rpc_token="$("$PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" -c \
     'from pathlib import Path; import sys; line=Path(sys.argv[1]).read_text(encoding="utf-8").strip(); key,sep,value=line.partition("="); sys.exit(2) if key != "EIMEMORY_RPC_AUTH_TOKEN" or not sep or not value else print(value)' \
     "$EIMEMORY_CONFIG_DIR/rpc.env")"
+  if _runtime_manager_enabled; then
+    hermes_runtime_env="$(_runtime_manager_control hermes-adapter-timeout)" || {
+      echo "hermes_closed_loop=failed registered_runtime_environment_unavailable" >&2
+      return 2
+    }
+  else
   hermes_runtime_env="$(_user_systemctl show hermes-gateway.service --property=MainPID --value | \
     "$PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" -c '
 import sys
@@ -2200,7 +2206,8 @@ except ValueError:
 if not 0.1 <= timeout <= 30.0:
     raise SystemExit(2)
 print(f"{timeout:g}")
-')"
+')" || { echo "hermes_closed_loop=failed runtime_environment_unavailable" >&2; return 2; }
+  fi
   mapfile -t hermes_runtime_values <<< "$hermes_runtime_env"
   if [ "${#hermes_runtime_values[@]}" != "1" ]; then
     echo "hermes_closed_loop=failed invalid_runtime_environment" >&2

@@ -302,6 +302,13 @@ def _adopt_release_scope_bindings_env() -> None:
     """
     if os.environ.get("EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE", "").strip():
         return
+    from eimemory.ops.runtime_service_observation import registered_runtime_context, service_state
+    if registered_runtime_context():
+        from eimemory.ops.controlled_stability import _host_process_observation
+        state=service_state('eimemory-rpc.service',('Id','MainPID'))
+        value=_host_process_observation(state)['environment'].get('EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE','')
+        if value.strip():os.environ['EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE']=value
+        return
     import subprocess
 
     try:

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 from typing import Mapping
 import socket
 import subprocess
@@ -343,21 +344,32 @@ class EIBrainRPCServer:
         self._thread.start()
 
     def serve_forever(self) -> None:
+        # A service may be PID 1 in a private namespace, where an unhandled
+        # SIGTERM is ignored. Interrupt the serving loop so normal cleanup and
+        # the CLI's durable-store close run before systemd's stop deadline.
+        def terminate(signum, frame):
+            raise KeyboardInterrupt
+        handles_term = threading.current_thread() is threading.main_thread()
         if self._loopback_health_server is not None:
             self._loopback_health_thread = threading.Thread(
                 target=self._loopback_health_server.serve_forever,
                 daemon=True,
             )
             self._loopback_health_thread.start()
+        previous_term = signal.signal(signal.SIGTERM, terminate) if handles_term else None
         try:
             self._server.serve_forever()
         except KeyboardInterrupt:
             pass
         finally:
-            self._server.server_close()
-            if self._loopback_health_server is not None:
-                self._loopback_health_server.shutdown()
-                self._loopback_health_server.server_close()
+            try:
+                self._server.server_close()
+                if self._loopback_health_server is not None:
+                    self._loopback_health_server.shutdown()
+                    self._loopback_health_server.server_close()
+            finally:
+                if handles_term:
+                    signal.signal(signal.SIGTERM, previous_term)
 
     def stop(self) -> None:
         self._server.shutdown()

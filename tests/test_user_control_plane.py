@@ -531,7 +531,7 @@ def test_user_release_stage_matches_existing_contract_and_preserves_collision(tm
     with pytest.raises(FileExistsError):module.allocate_stage(tmp_path,commit)
     assert sentinel.read_bytes()==b'original attempt'
 
-@pytest.mark.parametrize('damage',[None,'automatic','resumed','wrong_current','missing_exit','live','wrong_invocation','success','changed_transition'])
+@pytest.mark.parametrize('damage',[None,'deferred_rollback','automatic','resumed','wrong_current','missing_exit','live','wrong_invocation','success','changed_transition'])
 def test_failed_manual_recovery_preserves_native_failure_requirement(damage):
     from eimemory.contracts import runtime_manager as contract
     module=standalone('install_user_runtime_manager')
@@ -548,6 +548,7 @@ def test_failed_manual_recovery_preserves_native_failure_requirement(damage):
     transition={'complete':False,'job_key':key}
     native=dict(LoadState='loaded',ActiveState='failed',SubState='failed',Result='exit-code',
         InvocationID='d'*32,MainPID='0',ExecMainStatus='1',ExecMainExitTimestampMonotonic='123',ControlGroup='')
+    if damage=='deferred_rollback':record['phase']='resume_deferred_until_terminal'
     if damage=='automatic':record['manual_release']=False
     if damage=='resumed':record['resumed']=True
     if damage=='wrong_current':current='a'*40
@@ -558,7 +559,7 @@ def test_failed_manual_recovery_preserves_native_failure_requirement(damage):
     if damage=='changed_transition':transition['job_key']='e'*64
     import copy
     original=copy.deepcopy((registry,record,transition,native))
-    if damage:
+    if damage not in {None,'deferred_rollback'}:
         with pytest.raises(ValueError):module.validate_failed_manual_recovery(contract,registry,record,transition,native,current)
     else:module.validate_failed_manual_recovery(contract,registry,record,transition,native,current)
     assert (registry,record,transition,native)==original

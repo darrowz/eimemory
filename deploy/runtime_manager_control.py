@@ -78,6 +78,13 @@ def main(argv=None):
         print(json.dumps(request('readonly_probe',job_key=os.environ.get('EIMEMORY_RUNTIME_TRANSITION_JOB',''))));return 0
     if argv[0]=='single-owner' and len(argv)==1:
         print(json.dumps(request('single_rpc_owner')));return 0
+    if argv==['hermes-adapter-timeout']:
+        from eimemory.ops.controlled_stability import _host_process_observation
+        state=unit_state('hermes-gateway.service',('Id','MainPID'))
+        observation=_host_process_observation(state)
+        timeout=float(observation['environment'].get('EIMEMORY_ADAPTER_TIMEOUT_SECONDS',''))
+        if not 0.1<=timeout<=30.0:raise ValueError('manager_hermes_adapter_timeout_invalid')
+        print(f'{timeout:g}');return 0
     if argv==['fused-scope']:
         scope=fused_scope()
         for name in ('tenant_id','agent_id','workspace_id','user_id'):print(scope[name])
