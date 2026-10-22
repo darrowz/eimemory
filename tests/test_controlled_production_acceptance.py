@@ -523,6 +523,77 @@ def test_native_recall_diagnostics_omit_private_names_and_malformed_numbers():
     assert value['source_samples'] == [{}]
 
 
+@pytest.mark.parametrize('damage',['unavailable','degraded','collection','budget','fallback'])
+def test_incomplete_recall_preserves_actual_references_without_claiming_compact_failure(setup,damage):
+    def recall(**kwargs):
+        bundle=setup.recall(**kwargs)
+        selector=bundle.explanation['relevance_selector'];engine=bundle.explanation['engine_diagnostics']
+        if damage in {'unavailable','degraded'}:
+            selector.update(status=damage,collection_complete=False)
+            bundle.explanation['retrieval_status']=damage
+        if damage=='collection':selector['collection_complete']=False
+        if damage=='budget':engine['drops']['recall_budget_exhausted']=1
+        if damage=='fallback':engine.update(fallback=True,fallback_error_codes={'postgres_timeout':1})
+        return bundle
+    setup.monkeypatch.setattr(setup.runtime.memory,'recall',recall)
+    setup.monkeypatch.setattr(RecallBundle,'to_compact_dict',lambda *_a,**_k:pytest.fail('incomplete recall projected'))
+    result=run(setup)
+    assert not result['accepted'] and not verified(setup)['accepted']
+    packet=setup.runtime.store.get_by_exact_ref(result['record_id'],scope=OWNER,source_id='default')
+    for agent in packet.content['agents']:
+        for sample in agent['samples']:
+            assert sample['failure_reason']=='controlled_acceptance_retrieval_incomplete'
+            assert sample['bundle_observed'] and sample['returned_counts']==dict(items=1,rules=0,reflections=0)
+            assert len(sample['returned'])==len(sample['returned_versions'])==1
+            assert sample['returned'][0]['record_id']==sample['source_binding']['record_id']
+            assert sample['compact_observation']==dict(attempted=False,structure_valid=None)
+            assert sample['complete'] is False and sample['compact_refs']==[]
+            if damage in {'unavailable','degraded'}:assert sample['state']['retrieval_status']==damage
+
+
+@pytest.mark.parametrize('damage,reason',[
+    ('size','compact_result_size_exceeded'),('non_object','compact_result_structure_invalid'),
+    ('section','compact_result_structure_invalid'),('row','compact_result_structure_invalid'),
+    ('encoding','compact_result_structure_invalid'),('status','compact_result_status_invalid'),
+    ('boundary','compact_result_boundary_invalid'),('projection','compact_result_projection_failed')])
+def test_compact_rejection_is_distinct_and_keeps_bundle_observation(setup,damage,reason):
+    original=RecallBundle.to_compact_dict
+    def compact(bundle,*args,**kwargs):
+        if damage=='projection':raise RuntimeError('PRIVATE_TEXT')
+        result=original(bundle,*args,**kwargs)
+        if damage=='size':result['private_padding']='PRIVATE_TEXT'*2000
+        if damage=='non_object':return []
+        if damage=='section':result['items']='PRIVATE_TEXT'
+        if damage=='row':result['items']=['PRIVATE_TEXT']
+        if damage=='encoding':result['private_padding']=object()
+        if damage=='status':result['retrieval_status']='unavailable'
+        if damage=='boundary':result['items'][0]['record_id']='mem_foreign'
+        return result
+    setup.monkeypatch.setattr(RecallBundle,'to_compact_dict',compact)
+    result=run(setup)
+    assert not result['accepted'] and not verified(setup)['accepted']
+    packet=setup.runtime.store.get_by_exact_ref(result['record_id'],scope=OWNER,source_id='default')
+    sample=packet.content['agents'][0]['samples'][0]
+    assert sample['failure_reason']=='controlled_acceptance_'+reason
+    assert sample['bundle_observed'] and len(sample['returned'])==len(sample['returned_versions'])==1
+    assert sample['state']['collection_complete'] is True and sample['complete'] is False
+    assert sample['compact_observation']['attempted'] is True
+    assert 'PRIVATE_TEXT' not in cpa.canonical(packet.content)
+    if damage=='size':assert sample['compact_observation']['size_bytes']>16384
+    if damage=='status':assert sample['compact_observation']['retrieval_status']=='unavailable'
+
+
+def test_native_exception_before_bundle_is_explicitly_unobserved(setup):
+    def recall(**kwargs):raise TimeoutError('PRIVATE_TEXT')
+    setup.monkeypatch.setattr(setup.runtime.memory,'recall',recall)
+    result=run(setup)
+    packet=setup.runtime.store.get_by_exact_ref(result['record_id'],scope=OWNER,source_id='default')
+    sample=packet.content['agents'][0]['samples'][0]
+    assert not sample['bundle_observed'] and sample['returned_counts']=={} and sample['returned']==[]
+    assert sample['failure_reason']=='controlled_acceptance_native_recall_failed'
+    assert 'PRIVATE_TEXT' not in cpa.canonical(packet.content)
+
+
 def two_owner_policy(setup):
     # The deployment caller uses its actual channel owner; nightly uses its
     # independently configured logical owner. Neither identity is rewritten.

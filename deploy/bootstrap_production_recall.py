@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -350,7 +351,56 @@ def _per_agent_targets(root: Path) -> dict[str, tuple[dict[str, Any], str]]:
     return targets
 
 
+def _prior_health_observation(snapshot: Any, args: Any) -> dict[str, Any]:
+    """Keep bounded diagnostics from the exact captured object, never its secrets."""
+    body = snapshot if isinstance(snapshot, dict) else {}
+    health = body.get("health") if isinstance(body.get("health"), dict) else {}
+    paths = health.get("paths")
+    prior = str(getattr(args,"prior_commit","")).strip().lower()
+    checks = {
+        "snapshot_schema": body.get("schema") == "prior_health_snapshot.v1",
+        "health_object": isinstance(body.get("health"), dict),
+        "health_ok_boolean": type(health.get("ok")) is bool,
+        "health_ok": health.get("ok") is True,
+        "commit": bool(re.fullmatch('[0-9a-f]{40}',prior)) and str(health.get("commit") or "").strip().lower() == prior,
+        "health_url": bool(body.get("health_url")) and body.get("health_url") == getattr(args,"health_url",None),
+        "paths_object": paths is None or isinstance(paths, dict),
+        "release_path": False,
+        "current_prior": False,
+    }
+    try:
+        current = Path(args.current_link).expanduser().resolve(strict=True)
+        checks["current_prior"] = current.parent.name == "releases" and current.name.lower() == str(args.prior_commit).strip().lower()
+        value = (paths or {}).get("release") if isinstance(paths, dict) else None
+        value = value or health.get("release_path")
+        if isinstance(value, str) and value:
+            checks["release_path"] = Path(value).expanduser().resolve(strict=True) == current
+    except (OSError, RuntimeError, AttributeError, TypeError, ValueError):
+        pass
+    try:
+        raw = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"), sort_keys=True, allow_nan=False).encode("utf-8")
+        capture_digest = sha256(raw).hexdigest() if snapshot is not None and len(raw) <= _MAX_PRIOR_HEALTH_SNAPSHOT_BYTES else ""
+    except (TypeError, ValueError, UnicodeError):
+        capture_digest = ""
+    return {"schema": "prior_health_observation.v1", "measurement_origin": (
+        "protected_pre_switch_capture" if isinstance(snapshot,dict) else "not_captured"),
+        "snapshot_digest": capture_digest, "checks": checks,
+        "failed_checks": [name for name, passed in checks.items() if not passed]}
+
+
 def _run_scope(runtime: Runtime, args: Any, *, scope: dict[str, Any], scope_resolution: Any,
+               prior_health_snapshot: Any, forced_dataset: str = "",
+               prep_scope: dict[str, Any] | None = None) -> tuple[dict[str, Any], int]:
+    report, code = _run_scope_impl(runtime, args, scope=scope, scope_resolution=scope_resolution,
+        prior_health_snapshot=prior_health_snapshot, forced_dataset=forced_dataset, prep_scope=prep_scope)
+    # The original worker log retains this before the private snapshot is
+    # removed. Diagnostic metadata never substitutes for the authority checks.
+    if prior_health_snapshot is None:
+        return report, code
+    return {**report, "prior_health_observation": _prior_health_observation(prior_health_snapshot, args)}, code
+
+
+def _run_scope_impl(runtime: Runtime, args: Any, *, scope: dict[str, Any], scope_resolution: Any,
                prior_health_snapshot: Any, forced_dataset: str = "",
                prep_scope: dict[str, Any] | None = None) -> tuple[dict[str, Any], int]:
     # Channel-scope repair, collection and auto-review operate on the deploy's

@@ -4,16 +4,27 @@ from types import SimpleNamespace
 import pytest
 
 from eimemory.contracts import runtime_manager as c
-from test_runtime_manager import standalone
+from test_runtime_manager import lifecycle_fixture, standalone
 from test_runtime_manager_handoff import module
 
 
-def test_release_resume_starts_real_failed_observers_and_refreshes_provider_once(monkeypatch):
-    bridge=standalone('runtime_manager_bridge').Bridge(c)
+def observer_completion(monkeypatch,tmp_path,active):
+    module,bridge,registry,_request,key,records,_stored,_target,_calls,persist=lifecycle_fixture(monkeypatch,tmp_path)
+    record=records[key]
+    record.update(manual_release=True,active_before=active,finalized=True,resumed=True,phase='completed',
+        original_invocation='b'*32,terminal_state=dict(LoadState='loaded',ActiveState='active',SubState='exited',
+            Result='success',MainPID='0',ExecMainStatus='0',InvocationID='b'*32,
+            ControlGroup='',ExecMainExitTimestampMonotonic='456'))
+    persist(dict(job_key=key,complete=True,held=False))
+    return module,bridge,registry,record,persist
+
+
+def test_release_terminal_starts_real_failed_observers_and_refreshes_provider_once(monkeypatch,tmp_path):
     fixed=['eimemory-code-implementation-refresh.service','eimemory-l5-effect-review.service',
         'eimemory-nightly.service','eimemory-timer-monitor.service']
-    registry={'units':{unit:{'installed':True} for unit in fixed}}
-    record={'manual_release':True,'active_before':[u.replace('.service','.timer') for u in fixed]}
+    _module,bridge,registry,record,_persist=observer_completion(monkeypatch,tmp_path,
+        [unit.replace('.service','.timer') for unit in fixed])
+    for unit in fixed:registry['units'][unit]['installed']=True
     def native(_registry,unit,properties):
         failed=unit in fixed[1:3]
         return dict(LoadState='loaded',ActiveState='failed' if failed else 'inactive',SubState='failed' if failed else 'dead',
@@ -33,10 +44,12 @@ def test_release_resume_starts_real_failed_observers_and_refreshes_provider_once
 
 
 @pytest.mark.parametrize('fault',['automatic','uncaptured','uninstalled','running','remaining_process','unproven_exit'])
-def test_observer_recovery_has_no_generic_or_unproven_restart_authority(monkeypatch,fault):
-    bridge=standalone('runtime_manager_bridge').Bridge(c);unit='eimemory-nightly.service'
-    registry={'units':{unit:{'installed':fault!='uninstalled'}}}
-    record={'manual_release':fault!='automatic','active_before':[] if fault=='uncaptured' else ['eimemory-nightly.timer']}
+def test_observer_recovery_has_no_generic_or_unproven_restart_authority(monkeypatch,tmp_path,fault):
+    unit='eimemory-nightly.service'
+    _module,bridge,registry,record,_persist=observer_completion(monkeypatch,tmp_path,
+        [] if fault=='uncaptured' else ['eimemory-nightly.timer'])
+    registry['units'][unit]['installed']=fault!='uninstalled'
+    record['manual_release']=fault!='automatic'
     state=dict(LoadState='loaded',ActiveState='active' if fault=='running' else 'failed',SubState='failed',
         Result='exit-code',MainPID='0',ControlGroup='/system.slice/'+unit if fault=='remaining_process' else '',
         ExecMainStatus='1',InvocationID='a'*32,ExecMainExitTimestampMonotonic='0' if fault=='unproven_exit' else '123')
@@ -47,6 +60,23 @@ def test_observer_recovery_has_no_generic_or_unproven_restart_authority(monkeypa
         with pytest.raises(ValueError,match='observer_recovery_not_terminal'):
             bridge.recover_release_observers(registry,record)
     else:bridge.recover_release_observers(registry,record)
+
+
+@pytest.mark.parametrize('fault',['not_finalized','no_terminal','failed_worker','wrong_pointer','wrong_current','changed_registry'])
+def test_observer_recovery_cannot_precede_successful_worker_completion(monkeypatch,tmp_path,fault):
+    module,bridge,registry,record,persist=observer_completion(monkeypatch,tmp_path,['eimemory-nightly.timer'])
+    registry['units']['eimemory-nightly.service']['installed']=True
+    if fault=='not_finalized':record['finalized']=False
+    elif fault=='no_terminal':record.pop('terminal_state')
+    elif fault=='failed_worker':record['terminal_state']['Result']='exit-code'
+    elif fault=='wrong_pointer':persist(dict(job_key=record['job_key'],complete=False))
+    elif fault=='wrong_current':
+        monkeypatch.setattr(module,'CURRENT',SimpleNamespace(resolve=lambda **_:module.RELEASES/('f'*40)))
+    else:monkeypatch.setattr(bridge,'registry',lambda:{})
+    monkeypatch.setattr(bridge,'unit_state',lambda *_:pytest.fail('native observations start only after the worker terminal'))
+    monkeypatch.setattr(bridge,'systemctl',lambda *_:pytest.fail('observer dispatch before worker terminal'))
+    with pytest.raises(ValueError,match='observer_recovery_before_native_completion'):
+        bridge.recover_release_observers(registry,record)
 
 
 @pytest.mark.parametrize('unit', ['openclaw-loop-watch.timer', 'openclaw-loop-compact.timer',

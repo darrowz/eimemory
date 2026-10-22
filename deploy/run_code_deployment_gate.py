@@ -14,6 +14,60 @@ import re
 import sys
 
 
+def _root_record(key):
+    path = Path(__file__).with_name("run_code_deployment_validation.py")
+    spec = importlib.util.spec_from_file_location("_fixed_validation_bootstrap", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module._root_job(key)
+
+
+def _post_resume_gate(key):
+    from eimemory.core.runtime_manager import (
+        prepare_deployment_business, restore_deployment_background, complete_deployment_job,
+    )
+    from eimemory.governance.evolution.code_deployment_job import managed_validation_report
+
+    try:
+        ready = prepare_deployment_business(key)
+        if (ready.get("job_key") != key or ready.get("phase") != "serving_awaiting_business"
+            or ready.get("core_serving_ready") is not True or ready.get("background_held") is not True
+            or ready.get("resumed") is not False):
+            raise ValueError("deployment_gate_core_serving_not_verified")
+        report, native = managed_validation_report(key, "post_resume", heartbeat=lambda: None)
+        print(json.dumps(report, ensure_ascii=False, sort_keys=True, allow_nan=False))
+        if native["exit_status"] != 0 or report.get("ok") is not True:
+            return 2
+        capture = native["target_transport"].get("closure_capture")
+        if (not isinstance(capture, dict) or capture.get("capture_saved") is not True
+            or capture.get("recording_ok") is not True or capture.get("exit_code") != 0):
+            raise ValueError("deployment_gate_original_capture_unverified")
+        print(json.dumps(capture, ensure_ascii=False, sort_keys=True, allow_nan=False))
+        if report.get("business_qualified") is not True or report.get("l5_certification") != "not_certified":
+            raise ValueError("deployment_gate_manual_business_not_qualified")
+    finally:
+        # The manager may have durably held the background before its reply was
+        # lost. Always request the same authenticated restoration, even when
+        # preparation or the independent business child raises an exception.
+        primary = sys.exc_info()[1]
+        try:
+            restored = restore_deployment_background(key)
+            if (restored.get("job_key") != key or restored.get("phase") != "resumed_awaiting_business"
+                or restored.get("resumed") is not True or restored.get("background_held") is not False
+                or restored.get("held_background")):
+                raise ValueError("deployment_gate_background_restoration_unverified")
+        except BaseException as exc:
+            if primary is None:
+                raise
+            primary.add_note("background restoration also failed: " + type(exc).__name__)
+    completed = complete_deployment_job(key)
+    if (completed.get("job_key") != key or completed.get("complete") is not True
+        or completed.get("phase") != "completed" or completed.get("resumed") is not True
+        or completed.get("operational_complete") is not True or completed.get("held_background")):
+        raise ValueError("deployment_gate_manual_completion_unknown")
+    return 0
+
+
 def main() -> int:
     worker_finalization = len(sys.argv) == 6 and sys.argv[5] == "--worker-finalization"
     if (len(sys.argv) not in {5, 6} or len(sys.argv) == 6 and not worker_finalization
@@ -27,11 +81,7 @@ def main() -> int:
         raise ValueError("deployment_gate_worker_finalization_entry_required")
     # This bootstrap only authenticates protected files/socket, before product
     # imports. It is also used by the fixed child entry itself.
-    path = Path(__file__).with_name("run_code_deployment_validation.py")
-    spec = importlib.util.spec_from_file_location("_fixed_validation_bootstrap", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    record = module._root_job(key)
+    record = _root_record(key)
     original = record["request"]
     manual = record.get("manual_release") is True
     controller = original.get("validation_controller_commit") if manual else original.get("controller_commit")
@@ -41,7 +91,7 @@ def main() -> int:
     if release.is_symlink() or not release.is_dir():
         raise ValueError("deployment_gate_controller_unavailable")
     sys.path.insert(0, str(release))
-    from eimemory.core.runtime_manager import deployment_job_status, finalize_deployment_job, complete_deployment_job
+    from eimemory.core.runtime_manager import deployment_job_status
     from eimemory.governance.evolution.code_deployment_job import managed_validation_report
     parent = deployment_job_status(key)
     if (parent.get("original_invocation") != record.get("original_invocation")
@@ -50,13 +100,7 @@ def main() -> int:
     if operation == "post_resume":
         if not manual:
             raise ValueError("deployment_gate_automatic_owner_finishes_business")
-        if parent.get("phase") != "resumed_awaiting_business":
-            restored = finalize_deployment_job(key)
-            if (restored.get("job_key") != key or restored.get("phase") != "resumed_awaiting_business"
-                or restored.get("resumed") is not True):
-                raise ValueError("deployment_gate_manual_restoration_held")
-        elif parent.get("resumed") is not True or parent.get("held_background"):
-            raise ValueError("deployment_gate_manual_restoration_held")
+        return _post_resume_gate(key)
     report, native = managed_validation_report(key, operation, heartbeat=lambda: None)
     print(json.dumps(report, ensure_ascii=False, sort_keys=True, allow_nan=False))
     if native["exit_status"] != 0 or report.get("ok") is not True:
@@ -74,14 +118,6 @@ def main() -> int:
             or capture.get("recording_ok") is not True or capture.get("exit_code") != 0):
             raise ValueError("deployment_gate_original_capture_unverified")
         print(json.dumps(capture, ensure_ascii=False, sort_keys=True, allow_nan=False))
-        if operation == "post_resume":
-            if report.get("business_qualified") is not True or report.get("l5_certification") != "not_certified":
-                raise ValueError("deployment_gate_manual_business_not_qualified")
-            completed = complete_deployment_job(key)
-            if (completed.get("job_key") != key or completed.get("complete") is not True
-                or completed.get("phase") != "completed" or completed.get("resumed") is not True
-                or completed.get("operational_complete") is not True or completed.get("held_background")):
-                raise ValueError("deployment_gate_manual_completion_unknown")
     return 0
 
 

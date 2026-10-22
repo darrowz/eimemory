@@ -45,6 +45,7 @@ if USER_MODE:
  EMPTY_PYCACHE = str(_user_coordinates['pycache'])
 FUSED_UNIT = 'eimemory-l5-fused-closure.service'
 FUSED_L1_UNITS = ('eimemory-l1-extract.timer','eimemory-l1-extract.service')
+CORE_SERVING_UNITS = frozenset({'eimemory-rpc.service','hermes-gateway.service','openclaw-gateway.service'})
 VALIDATION_PREFIXES = {'receipt':'eimemory-code-validation-receipt@',
  'pre_observation':'eimemory-code-validation-pre-observation@','post_resume':'eimemory-code-validation-post-resume@'}
 VALIDATION_RUNTIME_SECONDS = {'receipt':420,'pre_observation':1860,'post_resume':1860}

@@ -11,6 +11,17 @@ AIGC:
 
 # Changelog
 
+## [1.15.24] — 2026-10-22
+
+- Restore core serving processes before business acceptance, then restore captured background services and timers on both success and failure. Keep the original recovery capture, exact final readback and strict release gates across manual and autonomous deployments.
+- Validate the native user manager during autonomous business acceptance and retain separate evidence for serving readiness and complete background restoration.
+- Wait for the real deployment worker exit before nightly opens its database; recover failed observers only after successful native completion, and retain failed deployment status in nightly's overall result.
+- Preserve actual retrieval state, returned references and timings when controlled acceptance fails; distinguish incomplete collection from compact projection errors without changing recall budgets or acceptance thresholds.
+- Carry a failed release's original activity capture through subsequent recovery using its verified restoration history, including retired gateways, without restarting those gateways or re-enrolling an unchanged topology.
+- Retain bounded prior-health identity diagnostics and fixed control-plane checkpoint error codes so failed baseline and authority operations remain diagnosable from their original reports.
+- Continue historical incident checkpoints at verified archive boundaries while preserving the 64-frame and 5,000-row limits, original signatures and complete coverage checks.
+- Register profile, topology and nightly admission changes in release-impact classification, and run the classification and lineage regressions in both CI suites.
+
 ## [1.15.23] — 2026-10-22
 
 - Check existing eiMemory control files before publishing a user controller, so invalid legacy metadata is reported before installation changes begin.

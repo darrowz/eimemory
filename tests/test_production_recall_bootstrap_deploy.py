@@ -1254,3 +1254,48 @@ def test_bootstrap_pending_can_follow_patch_lineage_but_cannot_regress_after_anc
 
     assert rejected["ok"] is False
     assert rejected["reason"] == "bootstrap_pending_regression_forbidden"
+
+
+@pytest.mark.parametrize('fault',['','health','commit','release','current','paths','missing_health'])
+def test_bootstrap_report_retains_only_bounded_observations_from_the_original_health_capture(tmp_path,monkeypatch,fault):
+    from hashlib import sha256
+    prior='b'*40;release=tmp_path/'releases'/prior;release.mkdir(parents=True)
+    current=tmp_path/'current';_link(current,release)
+    snapshot={'schema':'prior_health_snapshot.v1','health_url':'http://127.0.0.1:8091/health',
+        'health':{'ok':True,'commit':prior,'paths':{'release':str(release)},
+            'unexpected_secret':'must-never-be-printed','unexpected_path':'/private/business-path'}}
+    if fault=='health':snapshot['health']['ok']=False
+    elif fault=='commit':snapshot['health']['commit']='c'*40
+    elif fault=='release':snapshot['health']['paths']['release']=str(tmp_path/'unavailable')
+    elif fault=='current':prior='c'*40
+    elif fault=='paths':snapshot['health']['paths']='unexpected-value'
+    elif fault=='missing_health':snapshot['health']=None
+    args=SimpleNamespace(prior_commit=prior,current_link=str(current),health_url=snapshot['health_url'])
+    original={'ok':not fault,'reason':'prior_health_identity_mismatch' if fault else '',
+        'sample_count':0,'persisted':False}
+    received=[]
+    def evaluate(*args,**kwargs):
+        received.append(kwargs['prior_health_snapshot'])
+        return original,1 if fault else 0
+    monkeypatch.setattr(bootstrap_deploy,'_run_scope_impl',evaluate)
+    report,code=bootstrap_deploy._run_scope(object(),args,scope=SCOPE,scope_resolution={},prior_health_snapshot=snapshot)
+    assert received==[snapshot] and received[0] is snapshot
+    assert {k:v for k,v in report.items() if k!='prior_health_observation'}==original
+    assert code==(1 if fault else 0)
+    observed=report['prior_health_observation']
+    assert observed['snapshot_digest']==sha256(json.dumps(snapshot,ensure_ascii=False,
+        sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+    assert observed['measurement_origin']=='protected_pre_switch_capture'
+    assert all(type(value) is bool for value in observed['checks'].values())
+    assert len(json.dumps(observed).encode())<1024
+    assert 'must-never-be-printed' not in json.dumps(observed) and '/private/business-path' not in json.dumps(observed)
+    expected={'health':'health_ok','commit':'commit','release':'release_path','current':'current_prior',
+        'paths':'paths_object','missing_health':'health_object'}
+    if fault:assert expected[fault] in observed['failed_checks']
+    else:assert observed['failed_checks']==[]
+
+
+def test_bootstrap_without_snapshot_cannot_claim_a_protected_capture():
+    observed=bootstrap_deploy._prior_health_observation(None,SimpleNamespace())
+    assert observed['measurement_origin']=='not_captured' and observed['snapshot_digest']==''
+    assert observed['checks']['health_ok'] is False and observed['checks']['commit'] is False

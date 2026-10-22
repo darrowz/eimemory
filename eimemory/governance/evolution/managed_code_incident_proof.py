@@ -9,6 +9,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import sqlite3
 from types import SimpleNamespace
 
@@ -21,12 +22,19 @@ PROOF_RECORD_SOURCE = 'eimemory.managed_code_incident_proof'
 
 
 def checkpoint_managed_ingress():
+    manager_errors=()
     try:
-        from eimemory.core.runtime_manager import checkpoint_managed_incident_knowledge
+        from eimemory.core.runtime_manager import checkpoint_managed_incident_knowledge, RuntimeManagerError
+        manager_errors=(RuntimeManagerError,)
         return checkpoint_managed_incident_knowledge()
     except (ImportError,AttributeError,TypeError,ValueError,RuntimeError,OSError) as exc:
-        return {'qualification_domain':DOMAIN,'status':'unproven','reason':'managed_ingress_checkpoint_unavailable',
+        report={'qualification_domain':DOMAIN,'status':'unproven','reason':'managed_ingress_checkpoint_unavailable',
                 'error_type':type(exc).__name__,'qualifies_for_product_completion':False}
+        # The control plane returns only these fixed code families. Other
+        # exceptions may contain paths, commands or credentials and stay hidden.
+        if isinstance(exc,manager_errors) and re.fullmatch(r'(?:manager|managed_authority)_[a-z0-9_]{1,96}',str(exc)):
+            report['error_code']=str(exc)
+        return report
 
 
 def native_activation_reference():
@@ -247,7 +255,10 @@ bounded call never declares an unfinished prefix complete.
             key = stable_defect_key(incident['incident_class'], incident['diagnostic_codes'])
         if type(after) is not int or not 0 <= after <= high:
             raise ValueError('managed_incident_receive_sequence_changed')
-        through = min(high, after + 5000)
+        # A row-count page may span more than the strict cold-frame budget.
+        # Stop at the verified reader's prefix boundary and let the existing
+        # authority cursor continue on its next call; never skip or unbound it.
+        through = cold.bounded_read_through(JOURNAL,after,min(high, after + 5000))
         hot = [dict(row) for row in conn.execute(f'SELECT * FROM {JOURNAL} WHERE sequence>? AND sequence<=? ORDER BY sequence', (after, through))]
         rows = sorted(hot + cold.range_rows(JOURNAL, after, through), key=lambda row: row['sequence'])
         if len(rows) != through - after or any(row['sequence'] != after + i + 1 for i, row in enumerate(rows)):

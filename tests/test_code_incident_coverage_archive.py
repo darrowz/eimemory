@@ -249,3 +249,27 @@ def test_evidence_authority_cannot_patch_itself_even_with_an_exact_allow(path):
     from eimemory.governance.evolution.code_evolution_path_policy import path_allowed_for_evolution
     assert path_allowed_for_evolution(path, exact_allow_files=[path],
         allowed_path_globs=['**'], denied_path_globs=[], deny_self_paths=[]) == (False, 'deny_self')
+def test_small_signed_frames_continue_without_expanding_the_per_read_limit(runtime,monkeypatch):
+    from eimemory.storage import code_incident_coverage_archive as module
+    prepare(runtime);conn=connection(runtime)
+    original=[dict(row) for row in conn.execute(f'SELECT * FROM {JOURNAL} ORDER BY sequence')]
+    with monkeypatch.context() as patch:
+        patch.setattr(module,'MAX_ROWS',1)
+        compact(runtime,batches=64)
+    monkeypatch.setattr(module,'MAX_READ_SEGMENTS',2)
+    cold=CoverageArchive(runtime.store,verify);high=original[-1]['sequence']
+    with pytest.raises(ValueError,match='read_bound_exceeded'):cold.range_rows(JOURNAL,0,high)
+    seen=[];after=0;pages=0
+    while after<high:
+        through=cold.bounded_read_through(JOURNAL,after,min(high,after+5000))
+        assert after<through<=min(high,after+5000)
+        frames=conn.execute(f'SELECT count(*) FROM {ARCHIVES} WHERE table_name=? AND last_sequence>? AND first_sequence<=?',
+            (JOURNAL,after,through)).fetchone()[0]
+        assert frames<=2
+        rows=cold.range_rows(JOURNAL,after,through)+[dict(row) for row in conn.execute(
+            f'SELECT * FROM {JOURNAL} WHERE sequence>? AND sequence<=?',(after,through))]
+        rows.sort(key=lambda row:row['sequence'])
+        assert [row['sequence'] for row in rows]==list(range(after+1,through+1))
+        seen.extend(rows);after=through;pages+=1
+    assert pages>1 and seen==original
+    assert module.MAX_READ_SEGMENTS==2

@@ -93,6 +93,7 @@ def run_nightly_jobs(
     scope: dict,
     replay_datasets: dict[str, list[dict]] | None = None,
     external_fetch_text: Callable[[str], str] | None = None,
+    deployment_admission: dict | None = None,
 ) -> dict:
     started_at = time.perf_counter()
     # Same-run writes are not stable known items. Sample only records already
@@ -108,6 +109,15 @@ def run_nightly_jobs(
         tracemalloc.start()
     step_reports: list[dict] = []
     try:
+        if deployment_admission is not None:
+            _nightly_step(step_reports, "deployment_admission", lambda: {
+                **deployment_admission,
+                "ok": deployment_admission.get("status") in {
+                    "not_user_managed", "no_deployment_transition"}
+                    or (deployment_admission.get("status") == "terminal"
+                        and deployment_admission.get("worker_succeeded") is True
+                        and deployment_admission.get("release_complete") is True),
+            })
         roi = _nightly_step(step_reports, "roi", lambda: runtime.evolution.build_roi_report(scope=scope))
         active_rules = runtime.store.list_records(kinds=["rule"], scope=scope, status="active", limit=500)
         promotion_candidate_count = runtime.store.count_records(kinds=["rule"], scope=scope, status="accepted")

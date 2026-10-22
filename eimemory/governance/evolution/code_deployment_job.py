@@ -325,6 +325,8 @@ def post_resume_business_error(runtime, transaction: Mapping) -> str:
         if not binding or payload.get("post_resume_business_job_key") != binding[0]:
             return "managed_post_resume_business_required"
         key, body = binding
+        if os.path.lexists(JOBS_ROOT/key/'admission-failure.json'):
+            return 'managed_post_resume_admission_failed'
         report = _read(JOBS_ROOT / key / "post-resume-business.json", maximum=4 * 1024 * 1024)
         original, transport = managed_validation_report(key, "post_resume", heartbeat=lambda: None)
         saved_transport = report.get("native_transport") or {}
@@ -341,9 +343,14 @@ def post_resume_business_error(runtime, transaction: Mapping) -> str:
             return "managed_post_resume_business_proof_invalid"
         native = deployment_job_status(key)
         invocation = payload.get("post_resume_business_invocation")
+        admission_phase=(native.get('phase')=='serving_awaiting_business'
+            and native.get('core_serving_ready') is True and native.get('background_held') is True
+            and native.get('resumed') is False)
+        restored_phase=(native.get('phase') in {'resumed_awaiting_business','completed'}
+            and native.get('resumed') is True and not native.get('held_background'))
         if (not isinstance(invocation, str) or not re.fullmatch(r"[0-9a-f]{32}", invocation)
             or _read(JOBS_ROOT / key / "started.json") != {"request_key": key, "invocation": invocation}
-            or native.get("phase") not in {"resumed_awaiting_business", "completed"}
+            or not (admission_phase or restored_phase)
             or native.get("original_invocation") != invocation
             or (native.get("state") or {}).get("InvocationID") not in {"", None, invocation}):
             return "managed_post_resume_native_identity_changed"
@@ -410,6 +417,59 @@ def _after_storage_call(call, *, manager, transaction_id: str, interval: float =
         while not wait((future,), timeout=interval).done:
             manager.renew_lease(transaction_id)
         return future.result()
+
+
+def _managed_business_admission(runtime, *, adapter, transaction, policy, key, invocation, manager,
+                                on_business=None,on_failure=None):
+    """Keep captured background work held until the one strict business child ends."""
+    from eimemory.core.runtime_manager import prepare_deployment_business, restore_deployment_background
+    import sys
+
+    transaction_id=transaction['transaction_id']
+    try:
+        ready=_after_storage_call(lambda:prepare_deployment_business(key),
+            manager=manager,transaction_id=transaction_id)
+        _exclusive(JOBS_ROOT/key/'serving-ready.json',{'request_key':key,'invocation':invocation,'native':ready})
+        if (ready.get('job_key')!=key or ready.get('phase')!='serving_awaiting_business'
+                or ready.get('core_serving_ready') is not True or ready.get('background_held') is not True
+                or ready.get('resumed') is not False):
+            raise ValueError('deployment_job_core_serving_not_verified')
+        business=adapter.run_post_resume_business(runtime,transaction=transaction,policy=policy,
+            job_key=key,heartbeat=lambda:manager.renew_lease(transaction_id))
+        _exclusive(JOBS_ROOT/key/'post-resume-business.json',business)
+        if on_business is not None:on_business(business)
+        return business
+    except BaseException as exc:
+        try:
+            _exclusive(JOBS_ROOT/key/'admission-failure.json',{
+                'schema':'eimemory.deployment_business_admission_failure.v1','request_key':key,
+                'invocation':invocation,'error_type':type(exc).__name__,'ok':False})
+        except (OSError,ValueError) as diagnostic:
+            exc.add_note('admission failure archive also failed: '+type(diagnostic).__name__)
+        if on_failure is not None:
+            try:on_failure(exc)
+            except BaseException as reconcile:
+                exc.add_note('admission failure reconciliation also failed: '+type(reconcile).__name__)
+        raise
+    finally:
+        # A preparation timeout can follow the manager's durable hold. The
+        # exact same job must attempt restoration even without a success reply.
+        primary=sys.exc_info()[1]
+        try:
+            # Cleanup cannot depend on another SQL lease write succeeding.
+            # The manager authenticates the original worker and sealed plan.
+            restored=restore_deployment_background(key)
+            _exclusive(JOBS_ROOT/key/'background-restore.json',
+                {'request_key':key,'invocation':invocation,'native':restored})
+            if (restored.get('job_key')!=key or restored.get('phase')!='resumed_awaiting_business'
+                    or restored.get('resumed') is not True or restored.get('background_held') is not False
+                    or restored.get('held_background')):
+                raise ValueError('deployment_job_background_restoration_unverified')
+            _exclusive(JOBS_ROOT/key/'finalized.json',
+                {'request_key':key,'invocation':invocation,'native':restored})
+        except BaseException as exc:
+            if primary is None:raise
+            primary.add_note('background restoration also failed: '+type(exc).__name__)
 
 
 def _validation_unit(key, operation):
@@ -961,37 +1021,41 @@ def run_job(runtime, key: str, *, wait_seconds: float = 310) -> dict:
                     updates={"deployed_commit": body["candidate_commit"], "payload_json": payload})
                 fresh = manager.record_result(body["transaction_id"], step="health", result_state="HEALTHY",
                     output_data={"deployment_receipt_digest": result["receipt_digest"], "job_key": key})
-                from eimemory.core.runtime_manager import finalize_deployment_job
-                finalized = _after_storage_call(lambda: finalize_deployment_job(key),
-                    manager=manager, transaction_id=body["transaction_id"])
-                _exclusive(JOBS_ROOT / key / "finalized.json", {"request_key": key, "invocation": invocation, "native": finalized})
-                if (finalized.get("job_key") != key or finalized.get("resumed") is not True
-                    or finalized.get("phase") != "resumed_awaiting_business"):
-                    result.update(ok=False, deployment_verified=True, automation_resumed=False,
-                                  status="held_background", finalization=finalized)
-                else:
-                    business = adapter.run_post_resume_business(reopened, transaction=fresh, policy=policy,
-                        job_key=key, heartbeat=lambda: manager.renew_lease(body["transaction_id"]))
-                    _exclusive(JOBS_ROOT / key / "post-resume-business.json", business)
-                    business_digest = sha256(canonical_bytes(business)).hexdigest()
+                def reject_business(exc):
+                    nonlocal fresh
+                    latest=manager.store.get_transaction(body['transaction_id'])
+                    if latest and latest.get('current_state')=='ROLLBACK_INTENT':
+                        fresh=latest
+                    elif latest and latest.get('current_state') in {'HEALTHY','OBSERVING'}:
+                        fresh=manager.begin_intent(body['transaction_id'],step='rollback',intent_state='ROLLBACK_INTENT',
+                            input_data={'deployment_evidence_digest':sha256(canonical_bytes(result)).hexdigest(),
+                                'job_key':key,'business_error_type':type(exc).__name__})
+                def admit_business(business):
+                    nonlocal fresh
+                    business_digest=sha256(canonical_bytes(business)).hexdigest()
                     result.update(post_resume_business_digest=business_digest,
-                                  business_qualified=business.get("business_qualified") is True)
-                    if business.get("ok") is not True or business.get("business_qualified") is not True:
-                        result.update(ok=False, deployment_verified=True, reason="post_resume_business_not_qualified")
-                    else:
-                        adapter._verify_managed_result(reopened, fresh, policy, result, operation="deploy")
-                        fresh = manager.update_metadata(body["transaction_id"], payload_updates={
-                            "post_resume_business_digest": business_digest, "post_resume_business_job_key": key,
-                            "post_resume_business_invocation": invocation,
-                            "post_resume_business_record_ids": business.get("record_ids") or {}})
-                        error = post_resume_business_error(reopened, fresh)
-                        if error:
-                            raise ValueError(error)
-                        owner = CodeEvolutionEffectOwner(reopened, owner_id=manager.owner_id, adapter=adapter,
-                            policy_loader=lambda: policy, policy_consumer=lambda **kw: None)
-                        fresh = owner._start_observing(body["transaction_id"], fresh, policy)
-                        result.update(deployment_verified=True, automation_resumed=True,
-                                      business_qualified=True, status="observing")
+                        business_qualified=business.get('business_qualified') is True)
+                    if business.get('ok') is not True or business.get('business_qualified') is not True:
+                        result.update(ok=False,deployment_verified=True,reason='post_resume_business_not_qualified')
+                        reject_business(ValueError('post_resume_business_not_qualified'))
+                        return
+                    adapter._verify_managed_result(reopened, fresh, policy, result, operation="deploy")
+                    fresh = manager.update_metadata(body["transaction_id"], payload_updates={
+                        "post_resume_business_digest": business_digest, "post_resume_business_job_key": key,
+                        "post_resume_business_invocation": invocation,
+                        "post_resume_business_record_ids": business.get("record_ids") or {}})
+                    error = post_resume_business_error(reopened, fresh)
+                    if error:
+                        raise ValueError(error)
+                    owner = CodeEvolutionEffectOwner(reopened, owner_id=manager.owner_id, adapter=adapter,
+                        policy_loader=lambda: policy, policy_consumer=lambda **kw: None)
+                    fresh = owner._start_observing(body["transaction_id"], fresh, policy)
+                    result.update(deployment_verified=True,
+                                  business_qualified=True, status="observing")
+                _managed_business_admission(reopened,adapter=adapter,transaction=fresh,
+                    policy=policy,key=key,invocation=invocation,manager=manager,
+                    on_business=admit_business,on_failure=reject_business)
+                result['automation_resumed']=True
             else:
                 decision = reconcile_rollback({"current_commit": result["commit"], "prior_commit": body["base_commit"],
                     "receipt_valid": True, "health_ok": True, "storage_clean": _storage_release_state(reopened) == "clean"})
