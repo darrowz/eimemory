@@ -88,7 +88,13 @@ def test_user_bundle_keeps_bus_and_signing_material_out_of_products(tmp_path):
         assert '/var/lib/eimemory-manager' not in text
         assert 'Environment=EIMEMORY_CONTROL_PLANE=user' in text
         assert 'CapabilityBoundingSet=\n' in text and 'AmbientCapabilities=\n' in text
-        if name!='eimemory-runtime-manager.service':
+        if name=='eimemory-runtime-manager.service':
+            assert 'RuntimeDirectory=eimemory-manager\n' in text
+            assert 'RuntimeDirectoryMode=0700\n' in text
+            assert 'RuntimeDirectoryPreserve=yes\n' in text
+        else:
+            assert 'Wants=eimemory-runtime-manager.service\n' in text
+            assert 'After=eimemory-runtime-manager.service\n' in text
             assert 'PrivatePIDs=yes' in text and 'PrivateUsers=yes' in text
             inaccessible=next(line for line in text.splitlines() if line.startswith('InaccessiblePaths='))
             assert 'UMask=0027' in text

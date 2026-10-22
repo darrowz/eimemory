@@ -216,7 +216,8 @@ def build_user(root, commit, *, account=None):
         ('/etc/eimemory-controlled-production-acceptance',str(authority/'controlled-production-acceptance')),
         ('/etc/eimemory-code-automation-authority',str(authority)),
         ('/var/lib/eimemory-manager',str(state)))
-    isolation=('\n[Service]\nEnvironment=EIMEMORY_CONTROL_PLANE=user\n'
+    isolation=('\n[Unit]\nWants=eimemory-runtime-manager.service\n'
+        'After=eimemory-runtime-manager.service\n[Service]\nEnvironment=EIMEMORY_CONTROL_PLANE=user\n'
         'PrivateUsers=yes\nPrivatePIDs=yes\nNoNewPrivileges=yes\nUMask=0027\n'
         'CapabilityBoundingSet=\nAmbientCapabilities=\n'
         f'ReadOnlyPaths={home_seal} {code} {authority} {state} {home}/.config/systemd {home}/.local/share/systemd {runtime}/systemd {runtime}/eimemory-manager\n'
@@ -240,6 +241,7 @@ def build_user(root, commit, *, account=None):
         if name=='eimemory-runtime-manager.service':
             # The controller alone sees host native PIDs and the user bus.
             text+='\n[Service]\nEnvironment=EIMEMORY_CONTROL_PLANE=user\nCapabilityBoundingSet=\nAmbientCapabilities=\n'
+            text+='RuntimeDirectory=eimemory-manager\nRuntimeDirectoryMode=0700\nRuntimeDirectoryPreserve=yes\n'
             text+='Environment=XDG_RUNTIME_DIR='+str(runtime)+'\n'
             text+='Environment=DBUS_SESSION_BUS_ADDRESS=unix:path='+str(runtime/'bus')+'\n'
         elif name.endswith(('.service','.conf')):
