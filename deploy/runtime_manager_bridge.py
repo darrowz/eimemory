@@ -1503,9 +1503,11 @@ class Bridge:
         self.restore_plan(registry,record)
         for unit in self.writers(record['registry']):
             if unit in self.c.CORE_SERVING_UNITS:continue
-            state=self.unit_state(record['registry'],unit,['ActiveState','MainPID','ControlPID'])
-            if (state['ActiveState'] not in {'inactive','failed'} or state['MainPID']!='0'
-                    or state['ControlPID']!='0'):
+            properties=['ActiveState','MainPID','ControlPID'] if unit.endswith('.service') else ['ActiveState']
+            state=self.unit_state(record['registry'],unit,properties)
+            if state['ActiveState'] not in {'inactive','failed'}:
+                raise ValueError('manager_business_background_not_quiet')
+            if unit.endswith('.service') and (state['MainPID']!='0' or state['ControlPID']!='0'):
                 raise ValueError('manager_business_background_not_quiet')
 
     def verify_serving_restoration(self,registry,record):

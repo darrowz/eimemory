@@ -7,7 +7,7 @@ import pytest
 
 from eimemory.contracts import runtime_manager as c
 from test_manual_recovery_capture import recovery
-from test_runtime_manager import lifecycle_fixture, validation_fixture
+from test_runtime_manager import lifecycle_fixture, validation_fixture, standalone
 
 
 @pytest.fixture
@@ -222,3 +222,44 @@ def test_explicit_failed_nightly_recovery_waits_for_actual_successful_worker_ter
     r.bridge.release_job(r.registry, key)
     assert r.calls == [(unit, ('start', '--no-block'))]
     assert r.bridge.record(key)['observer_recovery'][unit]['before']['Result'] == 'exit-code'
+
+
+def test_background_quiet_accepts_timers_without_process_ids():
+    asked = []
+
+    def unit_state(_registry, unit, properties):
+        asked.append((unit, tuple(properties)))
+        if unit.endswith('.service'):
+            return {'ActiveState': 'inactive', 'MainPID': '0', 'ControlPID': '0'}
+        if 'MainPID' in properties or 'ControlPID' in properties:
+            raise ValueError('manager_state_incomplete')
+        return {'ActiveState': 'inactive'}
+
+    bridge = SimpleNamespace(
+        c=SimpleNamespace(CORE_SERVING_UNITS=frozenset({'eimemory-rpc.service'})),
+        restore_plan=lambda *_: None,
+        writers=lambda _registry: ['eimemory-nightly.timer', 'eimemory-release-closure.path', 'eimemory-backup.service', 'eimemory-rpc.service'],
+        unit_state=unit_state,
+    )
+    from test_runtime_manager import standalone
+    Bridge = standalone('runtime_manager_bridge').Bridge
+    Bridge.verify_background_quiet(bridge, {}, {'registry': {}})
+    assert ('eimemory-nightly.timer', ('ActiveState',)) in asked
+    assert ('eimemory-release-closure.path', ('ActiveState',)) in asked
+    assert ('eimemory-backup.service', ('ActiveState', 'MainPID', 'ControlPID')) in asked
+
+
+def test_active_timer_is_not_quiet_without_asking_for_process_ids():
+    def unit_state(_registry, unit, properties):
+        assert 'MainPID' not in properties
+        return {'ActiveState': 'active'}
+
+    bridge = SimpleNamespace(
+        c=SimpleNamespace(CORE_SERVING_UNITS=frozenset()),
+        restore_plan=lambda *_: None,
+        writers=lambda _registry: ['eimemory-nightly.timer'],
+        unit_state=unit_state,
+    )
+    Bridge = standalone('runtime_manager_bridge').Bridge
+    with pytest.raises(ValueError, match='manager_business_background_not_quiet'):
+        Bridge.verify_background_quiet(bridge, {}, {'registry': {}})

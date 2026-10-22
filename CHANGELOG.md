@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.25] — 2026-10-22
+
+- Treat timer and path units as quiet when inactive, without requiring process IDs that systemd does not return. Service units still require zero main and control PIDs.
+
 ## [1.15.24] — 2026-10-22
 
 - Restore core serving processes before business acceptance, then restore captured background services and timers on both success and failure. Keep the original recovery capture, exact final readback and strict release gates across manual and autonomous deployments.
