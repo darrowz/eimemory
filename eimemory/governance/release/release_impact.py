@@ -664,6 +664,8 @@ for _domain in ("memory.governance", "code.evolution", "deployment.runtime"):
         "deploy/run_code_deployment_validation.py", "deploy/runtime_manager_control.py",
         "deploy/runtime_manager_owner_files.py", "deploy/runtime_manager_settings.py",
         "deploy/runtime_manager_user_policy.py", "eimemory/core/runtime_manager.py",
+        "eimemory/contracts/user_control_plane.py", "deploy/install_user_runtime_manager.py",
+        "deploy/prepare_user_release.py",
         "eimemory/ops/prepare_managed_incident_authority.py")
 for _domain in ("memory.recall", "memory.governance", "deployment.runtime"):
     DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], "eimemory/ops/candidate_readiness_barrier.py",

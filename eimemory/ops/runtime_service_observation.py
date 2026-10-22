@@ -8,6 +8,11 @@ import subprocess
 
 
 def registered_runtime_context() -> bool:
+    from eimemory.contracts.user_control_plane import user_mode
+    if user_mode():
+        # The user controller owns native process inspection outside the
+        # product PID namespace; product services cannot inspect host peers.
+        return True
     job = os.environ.get('EIMEMORY_RUNTIME_TRANSITION_JOB', '')
     if job:
         if re.fullmatch('[0-9a-f]{64}', job) is None:

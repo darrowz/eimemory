@@ -13,12 +13,17 @@ import pytest
 
 from eimemory.llm.command_client import CommandLLMClient, CommandCompletionError
 from eimemory.llm.completion_timing import BRIDGE_TIMING_FIELDS, FAILURE_SCHEMA
-from make_luna_patch import instrument, Unsupported
-from luna_observability import BridgeTrace
+from deploy.luna_bridge.make_luna_patch import instrument, Unsupported
+from deploy.luna_bridge.luna_observability import BridgeTrace
 
 HERE = Path(__file__).resolve().parent
 BRIDGE_DIR = HERE.parent
 FIXTURE = HERE/'fixtures/luna_review_fixture.py'
+# This legacy instrumentation observes stage durations, not bridge retry waits.
+# An unobserved retry duration must remain absent rather than become zero.
+OBSERVED_TIMING_FIELDS = ('bridge_import_ms', 'bridge_client_setup_ms',
+    'provider_response_ms', 'bridge_response_validation_ms', 'bridge_elapsed_ms')
+assert set(OBSERVED_TIMING_FIELDS) <= set(BRIDGE_TIMING_FIELDS)
 
 FAKE_PROVIDER = '''# Test-only; there are no network calls.
 import json,os,sys,time
@@ -94,7 +99,7 @@ def test_generated_success_preserves_exact_inner_text_and_actual_identity(genera
     assert data['text'] == '{ "selected" : [] }'
     assert data['model_id'] == 'gpt-5.6-luna' and data['provider_id'] == 'openai-codex'
     assert set(data) == {'text', 'provider_id', 'model_id', 'diagnostics'}
-    assert set(data['diagnostics']) == set(BRIDGE_TIMING_FIELDS)
+    assert set(data['diagnostics']) == set(OBSERVED_TIMING_FIELDS)
     assert data['diagnostics']['bridge_import_ms'] >= 2
     assert data['diagnostics']['bridge_client_setup_ms'] >= 2
     assert data['diagnostics']['provider_response_ms'] >= 2
@@ -105,11 +110,11 @@ def test_generated_success_preserves_exact_inner_text_and_actual_identity(genera
     ('import', 'bridge_import_failed', ['bridge_import_ms'], ['bridge_client_setup_ms', 'provider_response_ms', 'bridge_response_validation_ms']),
     ('setup', 'bridge_client_setup_failed', ['bridge_import_ms', 'bridge_client_setup_ms'], ['provider_response_ms', 'bridge_response_validation_ms']),
     ('api', 'provider_request_failed', ['bridge_import_ms', 'bridge_client_setup_ms', 'provider_response_ms'], ['bridge_response_validation_ms']),
-    ('identity', 'bridge_response_validation_failed', list(BRIDGE_TIMING_FIELDS), []),
-    ('tools', 'bridge_response_validation_failed', list(BRIDGE_TIMING_FIELDS), []),
-    ('empty', 'bridge_response_validation_failed', list(BRIDGE_TIMING_FIELDS), []),
-    ('json', 'bridge_response_validation_failed', list(BRIDGE_TIMING_FIELDS), []),
-    ('shape', 'bridge_response_validation_failed', list(BRIDGE_TIMING_FIELDS), []),
+    ('identity', 'bridge_response_validation_failed', list(OBSERVED_TIMING_FIELDS), []),
+    ('tools', 'bridge_response_validation_failed', list(OBSERVED_TIMING_FIELDS), []),
+    ('empty', 'bridge_response_validation_failed', list(OBSERVED_TIMING_FIELDS), []),
+    ('json', 'bridge_response_validation_failed', list(OBSERVED_TIMING_FIELDS), []),
+    ('shape', 'bridge_response_validation_failed', list(OBSERVED_TIMING_FIELDS), []),
 ])
 def test_failed_bridge_returns_safe_bounded_partial_frame(generated, monkeypatch, mode, category, present, absent):
     monkeypatch.setenv('FAKE_LUNA_MODE', mode)
@@ -125,12 +130,14 @@ def test_failed_bridge_returns_safe_bounded_partial_frame(generated, monkeypatch
     for key in absent:
         assert key not in data['diagnostics']
     assert 'bridge_elapsed_ms' in data['diagnostics']
+    assert 'provider_retry_wait_ms' not in data['diagnostics']
 
 
 def test_real_command_parent_receives_child_timings(generated):
     command = CommandLLMClient([sys.executable, str(generated)], timeout_seconds=3)
     result = command.complete(system_prompt='fixture', user_prompt='fixture')
-    assert all(k in result.diagnostics for k in BRIDGE_TIMING_FIELDS)
+    assert all(k in result.diagnostics for k in OBSERVED_TIMING_FIELDS)
+    assert 'provider_retry_wait_ms' not in result.diagnostics
     assert result.diagnostics['command_prepared'] is False
     assert 'command_io_ms' in result.diagnostics
 

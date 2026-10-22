@@ -18,6 +18,7 @@ import sys
 import uuid
 
 from eimemory.core.strict_json import loads
+from eimemory.contracts.user_control_plane import user_mode, coordinates, account, trusted_directory
 
 DEFAULT_DIRECTORY = "/etc/eimemory-identity-governance"
 MAX_JOURNAL_BYTES = 16 * 1024 * 1024
@@ -37,10 +38,18 @@ def digest(value):
 
 
 def authority_directory(value=None):
+    if user_mode():
+        fixed=coordinates()['authority']/'identity'
+        if value is not None and Path(value)!=fixed:
+            raise IdentityAuthorityError('identity_user_authority_path_fixed')
+        return fixed
     return Path(value or os.environ.get("EIMEMORY_IDENTITY_AUTHORITY_DIR") or DEFAULT_DIRECTORY)
 
 
 def _require_root():
+    if user_mode():
+        account()
+        return
     if os.name != "posix" or os.geteuid() != 0:
         raise IdentityAuthorityError("identity_authenticated_root_operator_required")
 
@@ -92,6 +101,10 @@ def _seal_required(fd, flag):
 
 
 def _directory(path):
+    if user_mode():
+        try:trusted_directory(path)
+        except (ValueError,OSError) as exc:raise IdentityAuthorityError('identity_user_authority_directory_untrusted') from exc
+        return
     if os.name != "posix" or not path.is_absolute() or ".." in path.parts:
         raise IdentityAuthorityError("identity_authority_path_invalid")
     owner, private = _namespace_owner()
@@ -114,7 +127,7 @@ def _open(path, flags):
     fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     try:
         meta = os.fstat(fd)
-        owner, private = _namespace_owner()
+        owner, private = (account().pw_uid,False) if user_mode() else _namespace_owner()
         if (not stat.S_ISREG(meta.st_mode) or meta.st_uid != owner
                 or meta.st_mode & 0o022 or meta.st_nlink != 1):
             raise IdentityAuthorityError("identity_authority_file_untrusted")
@@ -149,12 +162,20 @@ def _policy(path):
         policy = loads(_read(fd, 65536), max_bytes=65536, max_depth=12)
     finally:
         os.close(fd)
-    if (not isinstance(policy, dict) or policy.get("schema") != "identity_operator_policy.v1"
-            or type(policy.get("requester_uid")) is not int or policy["requester_uid"] != 0
+    current_user=user_mode() and isinstance(policy,dict) and policy.get('schema')=='identity_operator_policy.v2'
+    expected_uid=account().pw_uid if current_user else 0
+    if (not isinstance(policy, dict) or policy.get("schema") != ('identity_operator_policy.v2' if current_user else 'identity_operator_policy.v1')
+            or type(policy.get("requester_uid")) is not int or policy["requester_uid"] != expected_uid
             or not _scope(policy.get("owner_scope"))
             or not isinstance(policy.get("source_ids"), list) or not policy["source_ids"]
             or any(not isinstance(s, str) or not s or "*" in s for s in policy["source_ids"])):
         raise IdentityAuthorityError("identity_operator_policy_invalid")
+    if current_user:
+        retained=policy.get('retained_policy_digests')
+        if (not isinstance(retained,list) or len(retained)>32
+                or any(not isinstance(item,str) or len(item)!=64 or any(c not in '0123456789abcdef' for c in item) for item in retained)
+                or len(set(retained))!=len(retained)):
+            raise IdentityAuthorityError('identity_retained_policy_inventory_invalid')
     return policy
 
 
@@ -168,14 +189,16 @@ def initialize(directory, *, owner_scope, source_ids, service_group):
         raise IdentityAuthorityError("identity_operator_policy_invalid")
     group = grp.getgrnam(service_group).gr_gid
     path.mkdir(mode=0o750)
-    os.chown(path, 0, group)
+    owner_uid=account().pw_uid if user_mode() else 0
+    os.chown(path, owner_uid, group)
     os.chmod(path, 0o750)
-    policy = {"schema": "identity_operator_policy.v1", "requester_uid": os.geteuid(),
+    policy = {"schema": "identity_operator_policy.v2" if user_mode() else "identity_operator_policy.v1", "requester_uid": os.geteuid(),
               "owner_scope": owner_scope, "source_ids": sorted(set(source_ids))}
+    if user_mode():policy['retained_policy_digests']=[]
     for name, data in [("policy.json", canonical(policy) + "\n"), ("requests.jsonl", "")]:
         fd = os.open(path / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
         try:
-            os.fchown(fd, 0, group)
+            os.fchown(fd, owner_uid, group)
             os.fchmod(fd, 0o640)
             os.write(fd, data.encode())
             os.fsync(fd)
@@ -191,6 +214,8 @@ def initialize(directory, *, owner_scope, source_ids, service_group):
 
 def seal(directory=None, *, enabled=True):
     """Initial-namespace root seals policy/directory and append-only requests."""
+    if user_mode():
+        raise IdentityAuthorityError('identity_user_authority_uses_namespace_seal')
     _require_root()
     if _namespace_owner()[1]:
         raise IdentityAuthorityError('identity_authority_seal_requires_host_root')
@@ -217,9 +242,10 @@ def seal(directory=None, *, enabled=True):
 
 
 class AuthoritySnapshot:
-    def __init__(self, policy, events):
+    def __init__(self, policy, events, retained_policies=()):
         self.policy = policy
         self.policy_digest = digest(policy)
+        self.policies={digest(item):item for item in (*retained_policies,policy)}
         self.events = events
         self.grants = {}
         self.revoked = set()
@@ -235,14 +261,16 @@ class AuthoritySnapshot:
 
     def active(self, grant_id):
         grant = self.grants.get(grant_id)
+        policy=self.policies.get(grant.get('policy_digest')) if grant is not None else None
         if (grant is None or grant_id in self.revoked
-                or grant.get("requester_uid") != self.policy["requester_uid"]
-                or grant.get("policy_digest") != self.policy_digest):
+                or policy is None or grant.get("requester_uid") != policy["requester_uid"]):
             return None
         manifest = grant.get("manifest")
         if (not isinstance(manifest, dict) or digest(manifest) != grant.get("manifest_digest")
                 or manifest.get("owner_scope") != self.policy["owner_scope"]
-                or manifest.get("source_id") not in self.policy["source_ids"]):
+                or manifest.get("source_id") not in self.policy["source_ids"]
+                or manifest.get('owner_scope')!=policy['owner_scope']
+                or manifest.get('source_id') not in policy['source_ids']):
             return None
         return grant
 
@@ -260,6 +288,15 @@ def snapshot(directory=None, *, exclusive=False, blocking=True):
         mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
         fcntl.flock(fd, mode if blocking else mode | fcntl.LOCK_NB)
         policy = _policy(path / "policy.json")
+        retained=[]
+        if user_mode():
+            for reference in policy.get('retained_policy_digests',[]):
+                archived=_policy(path/'retained-policies'/(reference+'.json'))
+                if (digest(archived)!=reference or archived.get('schema')!='identity_operator_policy.v1'
+                        or archived['owner_scope']!=policy['owner_scope']):
+                    raise IdentityAuthorityError('identity_retained_policy_unbound')
+                retained.append(archived)
+        requesters={item['requester_uid'] for item in (*retained,policy)}
         raw = _read(fd, MAX_JOURNAL_BYTES)
         if raw and not raw.endswith(b"\n"):
             raise IdentityAuthorityError("identity_authority_journal_incomplete")
@@ -273,17 +310,19 @@ def snapshot(directory=None, *, exclusive=False, blocking=True):
             if (not isinstance(event_id, str) or not event_id or event_id in seen
                     or event.get("previous_hash") != previous
                     or digest(body) != event.get("event_hash")
-                    or type(event.get("requester_uid")) is not int or event["requester_uid"] != 0):
+                    or type(event.get("requester_uid")) is not int or event["requester_uid"] not in requesters):
                 raise IdentityAuthorityError("identity_authority_chain_invalid")
             seen.add(event_id)
             previous = event["event_hash"]
             events.append(event)
-        yield AuthoritySnapshot(policy, events), fd
+        yield AuthoritySnapshot(policy, events,retained), fd
     finally:
         os.close(fd)
 
 
 def _append(authority, fd, payload):
+    if user_mode() and authority.policy['requester_uid']!=account().pw_uid:
+        raise IdentityAuthorityError('identity_user_policy_upgrade_required')
     event = {**payload, "event_id": uuid.uuid4().hex, "requester_uid": os.geteuid(),
              "requested_at": datetime.now(timezone.utc).isoformat(),
              "previous_hash": authority.events[-1]["event_hash"] if authority.events else ""}
@@ -300,6 +339,41 @@ def _append(authority, fd, payload):
         view = view[written:]
     os.fsync(fd)
     return event
+
+
+def migrate_user_policy():
+    """Retain every original grant/hash while changing only future operator identity."""
+    if not user_mode():raise IdentityAuthorityError('identity_user_control_plane_required')
+    _require_root()
+    path=authority_directory()
+    with snapshot(exclusive=True) as (authority,_fd):
+        if authority.policy['schema']=='identity_operator_policy.v2':
+            return {'ok':True,'status':'existing','policy_digest':authority.policy_digest}
+        legacy=authority.policy
+        history=path/'retained-policies'
+        history.mkdir(mode=0o750,exist_ok=True);_directory(history)
+        archive=history/(authority.policy_digest+'.json')
+        raw=(canonical(legacy)+'\n').encode()
+        if archive.exists():
+            if _policy(archive)!=legacy:raise IdentityAuthorityError('identity_retained_policy_changed')
+        else:
+            fd=os.open(archive,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o640)
+            with os.fdopen(fd,'wb') as stream:
+                stream.write(raw);stream.flush();os.fsync(stream.fileno())
+        current={**legacy,'schema':'identity_operator_policy.v2','requester_uid':account().pw_uid,
+                 'retained_policy_digests':[authority.policy_digest]}
+        temporary=path/('.user-policy-'+uuid.uuid4().hex)
+        fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o640)
+        with os.fdopen(fd,'wb') as stream:
+            stream.write((canonical(current)+'\n').encode());stream.flush();os.fsync(stream.fileno())
+        os.replace(temporary,path/'policy.json')
+        for directory in (history,path):
+            fd=os.open(directory,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            try:os.fsync(fd)
+            finally:os.close(fd)
+        return {'ok':True,'status':'migrated','previous_policy_digest':authority.policy_digest,
+                'policy_digest':digest(current),'retained_events':len(authority.events),
+                'historical_requester_ids_rewritten':False}
 
 
 def authorize(directory, *, database, manifest, request_text):

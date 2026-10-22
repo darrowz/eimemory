@@ -1,10 +1,23 @@
 #!/bin/bash
 set -euo pipefail
+if [ -z "${EIMEMORY_CONTROL_PLANE:-}" ] && [ "$(id -u)" -ne 0 ] &&
+   python3 -I -B -c 'import os,pwd,pathlib; p=pathlib.Path(pwd.getpwuid(os.geteuid()).pw_dir)/".config/eimemory/control-plane"; raise SystemExit(0 if any(os.path.lexists(p/n) for n in ("installation.v1.json","runtime-manager.v1.json")) else 1)'; then
+  export EIMEMORY_CONTROL_PLANE=user
+fi
+case "${EIMEMORY_CONTROL_PLANE:-}" in ""|user) ;; *) echo user_control_plane_mode_invalid >&2; exit 2 ;; esac
+CONTROL_PYCACHE_PREFIX=/var/lib/eimemory-manager/empty-pycache
+CONTROL_MANAGER_LAUNCH=/usr/libexec/eimemory-manager/runtime_manager_launch.py
+if [ "${EIMEMORY_CONTROL_PLANE:-}" = user ]; then
+  if [ "$(id -u)" -eq 0 ]; then echo user_control_plane_nonroot_required >&2; exit 2; fi
+  CONTROL_USER_HOME="$(python3 -I -B -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')"
+  CONTROL_PYCACHE_PREFIX="$CONTROL_USER_HOME/.local/lib/eimemory/control-plane/empty-pycache"
+  CONTROL_MANAGER_LAUNCH="$CONTROL_USER_HOME/.local/lib/eimemory/control-plane/runtime_manager_launch.py"
+fi
 export HOME="${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6)}"
 export EIMEMORY_ROOT=/var/lib/eimemory
 export EIMEMORY_CONFIG_DIR=/etc/eimemory
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPYCACHEPREFIX=/var/lib/eimemory-manager/empty-pycache
+export PYTHONPYCACHEPREFIX="$CONTROL_PYCACHE_PREFIX"
 CURRENT="${EIMEMORY_DEPLOYMENT_CURRENT_LINK:-/opt/eimemory/current}"
 BIN="${CURRENT}/.venv/bin/python"
 REPO="${EIMEMORY_TRUSTED_REPOSITORY_ROOT:-${EIMEMORY_DEPLOYMENT_REPO_ROOT:-}}"
@@ -37,7 +50,7 @@ fi
 # Root selects the fixed L1 pair and saves its original active set. A runtime
 # shell has no generic unit-control permission and cannot choose another owner.
 CONTROL="$CURRENT/deploy/runtime_manager_control.py"
-CACHE=/var/lib/eimemory-manager/empty-pycache
+CACHE="$CONTROL_PYCACHE_PREFIX"
 mapfile -t coordinates < <("$BIN" -I -B -X "pycache_prefix=$CACHE" "$CONTROL" fused-scope)
 if [ "${#coordinates[@]}" != 4 ]; then
   echo "error=fused_owner_scope_unavailable"
@@ -71,11 +84,11 @@ export EIMEMORY_DEPLOY_SCOPE_WORKSPACE="$SCOPE_WORKSPACE"
 export EIMEMORY_DEPLOY_SCOPE_USER="$SCOPE_USER"
 
 echo "stage=memory_plane_eval"
-EIMEMORY_L1_WORKER_ACTION=eval "$BIN" -I -B -X "pycache_prefix=$CACHE" /usr/libexec/eimemory-manager/runtime_manager_launch.py --product-module eimemory.cli.l1_worker
+EIMEMORY_L1_WORKER_ACTION=eval "$BIN" -I -B -X "pycache_prefix=$CACHE" "$CONTROL_MANAGER_LAUNCH" --product-module eimemory.cli.l1_worker
 echo "stage=memory_plane_eval ok"
 
 echo "stage=production_query_collect"
-"$BIN" -I -B -X "pycache_prefix=$CACHE" /usr/libexec/eimemory-manager/runtime_manager_launch.py --product-module eimemory.cli.main eval production-query collect \
+"$BIN" -I -B -X "pycache_prefix=$CACHE" "$CONTROL_MANAGER_LAUNCH" --product-module eimemory.cli.main eval production-query collect \
   --scope-tenant "$SCOPE_TENANT" \
   --scope-agent "$SCOPE_AGENT" \
   --scope-workspace "$SCOPE_WORKSPACE" \
@@ -84,7 +97,7 @@ echo "stage=production_query_collect"
 echo "stage=production_query_collect ok"
 
 echo "stage=production_query_status"
-"$BIN" -I -B -X "pycache_prefix=$CACHE" /usr/libexec/eimemory-manager/runtime_manager_launch.py --product-module eimemory.cli.main eval production-query status \
+"$BIN" -I -B -X "pycache_prefix=$CACHE" "$CONTROL_MANAGER_LAUNCH" --product-module eimemory.cli.main eval production-query status \
   --scope-tenant "$SCOPE_TENANT" \
   --scope-agent "$SCOPE_AGENT" \
   --scope-workspace "$SCOPE_WORKSPACE" \
@@ -100,7 +113,7 @@ if [ "$ready" != "1" ]; then
 fi
 
 echo "stage=release_closure"
-"$BIN" -I -B -X "pycache_prefix=$CACHE" /usr/libexec/eimemory-manager/runtime_manager_launch.py --product-module eimemory.cli.main learn release-closure \
+"$BIN" -I -B -X "pycache_prefix=$CACHE" "$CONTROL_MANAGER_LAUNCH" --product-module eimemory.cli.main learn release-closure \
   --repo-root "$REPO" \
   --current-link "$CURRENT" \
   --health-url "$HEALTH" \

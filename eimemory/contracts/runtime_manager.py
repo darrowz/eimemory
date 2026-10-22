@@ -7,6 +7,7 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 import re
+import os
 from typing import Any
 
 REGISTRY_SCHEMA = 'eimemory.runtime_manager_registry.v1'
@@ -15,11 +16,33 @@ RESPONSE_SCHEMA = 'eimemory.runtime_manager_response.v1'
 JOB_SCHEMA = 'eimemory.code_deployment_job.v1'
 REGISTRY_PATH = '/etc/eimemory-code-automation-authority/runtime-manager.v1.json'
 SOCKET_PATH = '/run/eimemory-manager/bridge.sock'
+USER_MODE = os.environ.get('EIMEMORY_CONTROL_PLANE', '') == 'user'
+if not USER_MODE and not os.environ.get('EIMEMORY_CONTROL_PLANE') and os.name=='posix' and os.geteuid()>0:
+ import pwd
+ from pathlib import Path
+ _directory=Path(pwd.getpwuid(os.geteuid()).pw_dir)/'.config/eimemory/control-plane'
+ USER_MODE=any(os.path.lexists(_directory/name) for name in ('installation.v1.json','runtime-manager.v1.json'))
+if USER_MODE:
+ if __package__:
+  from eimemory.contracts.user_control_plane import coordinates
+ else:
+  import importlib.util
+  from pathlib import Path
+  _helper = Path(__file__).with_name('user_control_plane.py')
+  _spec = importlib.util.spec_from_file_location('eimemory_user_control_plane', _helper)
+  _module = importlib.util.module_from_spec(_spec)
+  exec(compile(_helper.read_bytes(), str(_helper), 'exec'), _module.__dict__)
+  coordinates = _module.coordinates
+ _user_coordinates = coordinates()
+ REGISTRY_PATH = str(_user_coordinates['registry'])
+ SOCKET_PATH = str(_user_coordinates['socket'])
 JOB_ROOT = '/var/lib/eimemory/state/code-deployment-jobs'
 JOB_UNIT_PREFIX = 'eimemory-code-deployment-job@'
 CONTROLLER_ENTRY = 'deploy/run_code_deployment_job.py'
 VALIDATION_ENTRY = 'deploy/run_code_deployment_validation.py'
 EMPTY_PYCACHE = '/var/lib/eimemory-manager/empty-pycache'
+if USER_MODE:
+ EMPTY_PYCACHE = str(_user_coordinates['pycache'])
 FUSED_UNIT = 'eimemory-l5-fused-closure.service'
 FUSED_L1_UNITS = ('eimemory-l1-extract.timer','eimemory-l1-extract.service')
 VALIDATION_PREFIXES = {'receipt':'eimemory-code-validation-receipt@',
@@ -66,6 +89,8 @@ def compatibility_units(units):
 REGISTERED_UNITS = frozenset((*PRODUCT_SERVICES,*PRODUCT_TIMERS,*PRODUCT_PATHS,*USER_COMPAT_UNITS))
 COMPATIBILITY_PATHS = (
  'eimemory/contracts/runtime_manager.py','eimemory/core/runtime_manager.py',
+ 'eimemory/contracts/user_control_plane.py',
+ 'eimemory/identity_authority.py',
  'eimemory/ops/timer_monitor.py','eimemory/ops/controlled_stability.py',
  'eimemory/ops/runtime_identity_drift.py','eimemory/ops/code_implementation_owner.py',
  'eimemory/ops/openclaw_loop.py','eimemory/governance/safety/prompt_safety_executor.py',
@@ -135,7 +160,7 @@ def validate_registry(value: Any) -> dict:
  if set(units)!=registered:raise ValueError('manager_registry_unit_inventory_invalid')
  for name,item in units.items():
   if not isinstance(item,dict) or set(item)!={'manager','installed'} or type(item['installed']) is not bool or item['manager'] not in {'system','user'}:raise ValueError('manager_registry_unit_invalid')
-  if item['manager']!=('user' if name in compat else 'system'):raise ValueError('manager_registry_unit_manager_mismatch')
+  if item['manager']!=('user' if USER_MODE or name in compat else 'system'):raise ValueError('manager_registry_unit_manager_mismatch')
  if not isinstance(value['template_hashes'],dict) or any(name not in registered and name not in {'eimemory-code-deployment-job@.service',*(prefix+'.service' for prefix in VALIDATION_PREFIXES.values())} for name in value['template_hashes']):raise ValueError('manager_registry_template_invalid')
  for item in value['template_hashes'].values():hex_value(item,64,'manager_registry_template_digest_invalid')
  if not isinstance(value['compatibility_hashes'],dict) or set(value['compatibility_hashes'])!=set(COMPATIBILITY_PATHS):raise ValueError('manager_registry_compatibility_invalid')
@@ -178,6 +203,10 @@ def validate_manual_permit(value: Any, job_key: str) -> dict:
 def validate_managed_authority(value: Any) -> dict:
  if value=={'enabled':False}:return value
  fixed={'database_path':'/var/lib/eimemory/state/eimemory.sqlite','manifest_path':'/etc/eimemory-code-automation-authority/managed-code-incident-manifest.v1.json','receipt_directory':'/var/lib/eimemory-manager/managed-incident-receipts','key_path':'/etc/eimemory-code-automation-authority/managed-incident-proof.key'}
+ if USER_MODE:
+  fixed.update(manifest_path=str(_user_coordinates['authority']/'managed-code-incident-manifest.v1.json'),
+   receipt_directory=str(_user_coordinates['state']/'managed-incident-receipts'),
+   key_path=str(_user_coordinates['authority']/'managed-incident-proof.key'))
  if not isinstance(value,dict) or set(value)!={'enabled','manifest_sha256',*fixed} or value.get('enabled') is not True or any(value[k]!=v for k,v in fixed.items()):raise ValueError('manager_managed_authority_registry_invalid')
  hex_value(value['manifest_sha256'],64,'manager_managed_authority_manifest_digest_invalid')
  return value
@@ -204,6 +233,12 @@ NATIVE_EXIT_PROPERTIES = ('LoadState','ActiveState','SubState','Result','Invocat
 def fixed_system_unit_cgroup(value: Any, unit: str) -> bool:
  """Only the reviewed flat/static or exact PID1 template slice is admissible."""
  if not isinstance(unit,str) or not isinstance(value,str):return False
+ if USER_MODE:
+  if unit not in REGISTERED_UNITS and not is_dynamic_unit(unit):return False
+  prefix='/user.slice/user-'+str(_user_coordinates['uid'])+'.slice/user@'+str(_user_coordinates['uid'])+'.service/'
+  suffix=value.removeprefix(prefix)
+  return (value.startswith(prefix) and suffix.endswith('/'+unit)
+   and all(re.fullmatch(r'[A-Za-z0-9_.@\\-]+\.slice', part) for part in suffix.split('/')[:-1]))
  flat='/system.slice/'+unit
  if unit in REGISTERED_UNITS:
   return unit not in USER_COMPAT_UNITS and value==flat

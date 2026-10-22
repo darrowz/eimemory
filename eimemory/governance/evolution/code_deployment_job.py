@@ -20,6 +20,13 @@ from eimemory.contracts.code_deployment_job import (SCHEMA, MANUAL_SCHEMA, VALID
 from eimemory.core.release_source_guard import open_new_file_at_directory
 
 JOBS_ROOT = Path("/var/lib/eimemory/state/code-deployment-jobs")
+from eimemory.contracts.user_control_plane import user_mode, coordinates, read_file as read_user_authority
+
+def _control_state():
+    return coordinates()['state'] if user_mode() else Path('/var/lib/eimemory-manager')
+
+def _manager_name():
+    return 'user' if user_mode() else 'system'
 
 def _stable(info):
     return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
@@ -225,7 +232,7 @@ def job_state(key: str, body: dict) -> dict:
     state = native.get("state") if isinstance(native.get("state"), dict) else {}
     unit = f"eimemory-code-deployment-job@{key}.service"
     invocation = native.get("original_invocation") or ""
-    if native and (native.get("job_key") != key or native.get("manager") != "system"
+    if native and (native.get("job_key") != key or native.get("manager") != _manager_name()
         or native.get("unit") != unit
         or (invocation and re.fullmatch(r"[0-9a-f]{32}", str(invocation)) is None)
         or state.get("InvocationID") not in {"", None, invocation}):
@@ -374,7 +381,7 @@ def observation_completion_error(transaction: Mapping) -> str:
         started = _read(JOBS_ROOT / key / "started.json")
         policy = (transaction.get("payload") or {}).get("authorized_policy") or {}
         current = Path(policy["deployment"]["current_link"]).resolve(strict=True)
-        if (native.get("manager") != "system" or native.get("unit") != f"eimemory-code-deployment-job@{key}.service"
+        if (native.get("manager") != _manager_name() or native.get("unit") != f"eimemory-code-deployment-job@{key}.service"
             or native.get("phase") != "completed" or started.get("request_key") != key
             or native.get("complete") is not True or native.get("resumed") is not True
             or native.get("held_background")
@@ -415,9 +422,14 @@ def _native_child_cgroup() -> str:
     return Path("/proc/self/cgroup").read_text()
 
 
+def _native_control_cgroup(value,unit):
+    from eimemory.contracts.runtime_manager import fixed_system_unit_cgroup
+    return fixed_system_unit_cgroup(value,unit)
+
+
 def _assert_child_cgroup(native: dict, actual: str) -> None:
     expected = (native.get("state") or {}).get("ControlGroup", "")
-    if (not expected.startswith("/system.slice/") or expected.rsplit("/", 1)[-1] != native.get("unit")
+    if (not _native_control_cgroup(expected,native.get("unit"))
         or [line[3:] for line in actual.splitlines() if line.startswith("0::")] != [expected]):
         raise ValueError("deployment_validation_actual_cgroup_unverified")
 
@@ -430,7 +442,7 @@ def validation_binding(key: str, operation: str, native: dict | None = None) -> 
     """
     from eimemory.core.runtime_manager import deployment_validation_status
     _validation_unit(key, operation)
-    root = json.loads(_root_file_bytes(Path("/var/lib/eimemory-manager/jobs") / (key + ".json"), maximum=65536))
+    root = json.loads(_root_file_bytes((_control_state()/"jobs") / (key + ".json"), maximum=65536))
     original = root.get("request")
     manual = root.get("manual_release") is True
     original = validate_manual_permit(original) if manual else validate_request(original)
@@ -465,7 +477,7 @@ def _manual_revalidation_rollback(record, target, scope):
         if not isinstance(key, str) or re.fullmatch(r'[0-9a-f]{64}', key) is None or key in seen:
             raise ValueError('deployment_revalidation_predecessor_unbound')
         seen.add(key)
-        record = json.loads(_root_file_bytes(Path('/var/lib/eimemory-manager/jobs') / (key + '.json'), maximum=65536))
+        record = json.loads(_root_file_bytes((_control_state()/'jobs') / (key + '.json'), maximum=65536))
         permit = validate_manual_permit(record.get('request'))
         if (record.get('job_key') != key or sha256(canonical_bytes(permit)).hexdigest() != key
             or record.get('manual_release') is not True or permit['target_commit'] != target
@@ -491,7 +503,7 @@ def validation_context(key: str, operation: str) -> tuple[dict, dict]:
     invocation = os.environ.get("INVOCATION_ID", "")
     if (not re.fullmatch(r"[0-9a-f]{32}", invocation)
         or native.get("job_key") != key or native.get("operation") != operation
-        or native.get("manager") != "system" or native.get("unit") != unit
+        or native.get("manager") != _manager_name() or native.get("unit") != unit
         or native.get("artifact_basename") != f"validation-{operation}-result.json"
         or native.get("original_invocation") != invocation
         or (native.get("state") or {}).get("InvocationID") != invocation
@@ -502,6 +514,7 @@ def validation_context(key: str, operation: str) -> tuple[dict, dict]:
 
 
 def _root_file_bytes(path: Path, *, maximum=8 * 1024 * 1024 + 65536) -> bytes:
+    if user_mode():return read_user_authority(path,maximum=maximum)
     for parent in (path.parent, *path.parent.parents):
         info = parent.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
@@ -523,7 +536,7 @@ def _root_file_bytes(path: Path, *, maximum=8 * 1024 * 1024 + 65536) -> bytes:
 
 def _root_validation_envelope(key: str, operation: str) -> bytes:
     """Read only the root's immutable copy, never a late UID1001 replacement."""
-    return _root_file_bytes(Path("/var/lib/eimemory-manager/validation-results") / f"{key}-{operation}.json")
+    return _root_file_bytes((_control_state()/"validation-results") / f"{key}-{operation}.json")
 
 
 def _sealed_validation_artifact(native: dict, *, key: str, operation: str, child: str, parent: str) -> tuple[dict, str]:
@@ -742,7 +755,7 @@ finally:
 '''
     env = dict(os.environ, EIMEMORY_RUNTIME_COMMIT=body["target_commit"])
     argv = [str(target / ".venv/bin/python"), "-I", "-B", "-X",
-        "pycache_prefix=/var/lib/eimemory-manager/empty-pycache", "-c", program,
+        "pycache_prefix="+(str(coordinates()["pycache"]) if user_mode() else "/var/lib/eimemory-manager/empty-pycache"), "-c", program,
         str(target), key, operation, json.dumps(arguments, sort_keys=True, separators=(",", ":")), str(runtime.store.root)]
     envelope, transport, raw, errors = _run_native_json_report(argv, cwd=target, env=env, heartbeat=lambda: None,
         max_seconds=VALIDATION_BUDGETS[operation][0])
@@ -779,7 +792,7 @@ def managed_validation_report(key: str, operation: str, *, heartbeat) -> tuple[d
     while True:
         state = native.get("state") if isinstance(native.get("state"), dict) else {}
         if (native.get("job_key") != key or native.get("operation") != operation
-            or native.get("manager") != "system" or native.get("unit") != unit
+            or native.get("manager") != _manager_name() or native.get("unit") != unit
             or native.get("target_commit") != body["target_commit"]
             or native.get("controller_commit") != body["controller_commit"]
             or native.get("parent_original_invocation") != parent.get("invocation")
@@ -845,7 +858,7 @@ def managed_validation_report(key: str, operation: str, *, heartbeat) -> tuple[d
     report = dict(artifact["report"])
     if exit_status != 0 or state.get("Result") != "success":
         report.update(ok=False, business_qualified=False)
-    transport = {"exit_status": exit_status, "manager": "system", "unit": unit,
+    transport = {"exit_status": exit_status, "manager": _manager_name(), "unit": unit,
         "invocation": child, "parent_invocation": parent["invocation"], "source_readonly": True,
         "artifact_digest": artifact_digest, "native_state": state, "current_native_state": native.get("state"),
         "target_transport": artifact["target_transport"]}

@@ -77,6 +77,8 @@ jobs:
           tests/test_code_automation_policy_issue.py
           tests/test_runtime_identity_drift.py
           tests/test_runtime_manager.py
+          tests/test_user_control_plane.py
+          tests/test_user_runtime_inventory.py
           tests/test_system_code_repair.py
           tests/test_system_code_repair_failure.py
           tests/test_l5_v3_lineage_contract.py
@@ -230,8 +232,7 @@ jobs:
           tests/test_llm_command_client.py
           tests/test_caller_assistance.py
           tests/test_luna_fallback_deadline.py
-          deploy/luna_bridge/tests/test_luna_serve_pool.py
-          deploy/luna_bridge/tests/test_luna_setup_budget.py
+          deploy/luna_bridge/tests
           tests/test_runtime_channel_adapter.py
           tests/test_semantic_gap_replay_context.py
           tests/test_semantic_repair_reporting.py

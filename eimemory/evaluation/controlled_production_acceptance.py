@@ -39,6 +39,9 @@ SOURCE = 'eimemory.evaluation.controlled_production_acceptance'
 EVIDENCE_CLASS = 'operator_controlled_existing_memory'
 POLICY_ENV = 'EIMEMORY_CONTROLLED_PRODUCTION_ACCEPTANCE_POLICY'
 DEFAULT_POLICY = '/etc/eimemory-controlled-production-acceptance/policy.json'
+from eimemory.contracts.user_control_plane import user_mode, coordinates, read_file as read_user_authority
+if user_mode():
+    DEFAULT_POLICY = str(coordinates()['authority']/'controlled-production-acceptance/policy.json')
 _SCOPE = {'tenant_id', 'agent_id', 'workspace_id', 'user_id'}
 
 
@@ -80,6 +83,8 @@ def _read_policy(path):
     if path.name != 'policy.json':
         _error('policy_path_invalid')
     try:
+        if user_mode():
+            return strict_json.loads(read_user_authority(path), max_bytes=65536, max_depth=12)
         identity_authority._directory(path.parent)
         fd = identity_authority._open(path, os.O_RDONLY)
         try:

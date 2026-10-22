@@ -1,4 +1,58 @@
-# Host runtime manager and controlled deployment jobs
+# User-level runtime control plane
+
+The user profile uses `EIMEMORY_CONTROL_PLANE=user`. Installed enrollment also
+selects this profile for operator commands. Missing or corrupt user authority
+never falls back to the historical privileged manager. Coordinates come from
+the real account database, ignoring caller HOME/XDG overrides:
+
+- `~/.config/eimemory/control-plane`: registry and operator authorities.
+- `~/.local/state/eimemory/control-plane`: controller state and retained knowledge.
+- `~/.local/lib/eimemory/control-plane`: reviewed standalone controller code.
+- `/run/user/UID/eimemory-manager/bridge.sock`: authenticated fixed-action transport.
+
+`build_runtime_manager_bundle.py --user` builds the separate user service
+profile. `install_user_runtime_manager.py` runs as the actual non-root account,
+authenticates reviewed inputs by digest, requires the original signing keys and
+complete knowledge ledger, and preserves the original identity authorization
+journal. New requests use the account UID; original requester identities and
+hashes remain unchanged. The controller must be stopped for installation.
+Installation backs up prior user authority/code/unit definitions inside the
+product-inaccessible knowledge directory. It does not switch the serving link,
+start products, regenerate keys, or claim deployment acceptance.
+The same user installer provides `stage-release` with an exact reviewed registry
+and scope digest, full target commit and unique attempt ID. It records a typed
+manual permit, checks retirement of system owners, validates the prepared target
+and starts only the fixed user job. Existing or ambiguous attempts remain
+preserved; submission grants no autonomous repair or release acceptance credit.
+
+Product namespaces seal the account home (including user-owned ancestors) read-only,
+with writable product subdirectories limited to `.hermes`, `.cache`, `.codex`
+and `.openclaw`. This prevents renaming a writable ancestor to replace a
+protected authority path. Writable product roots must be real owned directories.
+Products have no capabilities, `NoNewPrivileges=yes`, private user/PID namespaces,
+read-only authority/controller/unit paths, and inaccessible signing material,
+knowledge/backups and both user-manager bus sockets. The user controller alone
+observes native host PIDs and operates the user manager. Same UID alone does not
+establish the authority boundary.
+
+`prepare_user_release.py prepare` creates a candidate as the operator before
+cutover. It validates source, dependencies and console hashes, and records
+`activated=false`, `release_accepted=false`. The normal installer may reuse this
+verified candidate; all storage, receipt, binding and release gates still run.
+
+A host still running historical system units is not migrated by installing this
+source. Normal user promotion requires the old system RPC to be inactive and
+autostart disabled, preserves a single listener, and never attempts privileged
+host cleanup. Original control keys, full ledgers, manifest history and identity
+authorizations must be preserved before enabling the user owner. Until native
+migration and deployment receipts succeed, this is an unaccepted candidate.
+Business recall results cannot replace L5 terminal/observation evidence.
+
+## Historical privileged deployment reference
+
+The following describes the earlier profile and retained evidence contracts;
+it is not the installation procedure for the user profile.
+
 
 This change moves registered eimemory services to PID1 with `User=darrow`,
 `PrivateUsers=self`, `NoNewPrivileges=yes` and empty product capabilities.

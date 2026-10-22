@@ -14,11 +14,38 @@ import runpy
 import ast
 from hashlib import sha256
 
+USER_MODE = os.environ.get('EIMEMORY_CONTROL_PLANE', '') == 'user'
+CONTROL_UID = os.geteuid() if USER_MODE else 0
+if USER_MODE:
+    import pwd
+    home=Path(pwd.getpwuid(os.geteuid()).pw_dir)
+    helper=home/'.local/lib/eimemory/control-plane/user_control_plane.py'
+    info=helper.lstat()
+    if helper.is_symlink() or info.st_uid!=CONTROL_UID or info.st_mode&0o022:
+        raise ValueError('manager_user_helper_untrusted')
+    specification=importlib.util.spec_from_file_location('eimemory_user_control_plane',helper)
+    user_control=importlib.util.module_from_spec(specification)
+    exec(compile(helper.read_bytes(),str(helper),'exec'),user_control.__dict__)
+    USER_COORDINATES=user_control.coordinates()
+
+
+
+def _user_pairs(items):
+    value={}
+    for key,item in items:
+        if key in value:raise ValueError('manager_launcher_duplicate_json_key')
+        value[key]=item
+    return value
+
 
 def read_root(path,*,raw=False):
+    if USER_MODE:
+        content=user_control.read_file(path)
+        return content if raw else json.loads(content,object_pairs_hook=_user_pairs,parse_constant=lambda _:(_ for _ in ()).throw(ValueError('manager_launcher_nonfinite_json')))
     return_raw=raw
     path=Path(path)
-    for parent in (path.parent,*path.parent.parents):
+    if USER_MODE:user_control.trusted_directory(path.parent,private=True)
+    for parent in (() if USER_MODE else (path.parent,*path.parent.parents)):
         st=parent.lstat()
         if not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or stat.S_IMODE(st.st_mode)&0o022:
             raise ValueError('manager_launcher_parent_untrusted')
@@ -46,6 +73,9 @@ REGISTRY=Path('/etc/eimemory-code-automation-authority/runtime-manager.v1.json')
 CURRENT=Path('/opt/eimemory/current')
 RELEASES=Path('/opt/eimemory/releases')
 CGROUP=Path('/proc/self/cgroup')
+if USER_MODE:
+    EMPTY_PYCACHE=USER_COORDINATES['pycache']
+    REGISTRY=USER_COORDINATES['registry']
 PRODUCT_MODULES=frozenset({'eimemory.cli.main','eimemory.cli.l1_worker',
     'eimemory.governance.serve_console','eimemory.governance.safety.audit_verifier',
     'eimemory.retrieval.vector_sync_worker'})
@@ -213,7 +243,8 @@ def exec_runtime_settings(module,args):
 
 
 def protected_cache():
-    for parent in (EMPTY_PYCACHE,*EMPTY_PYCACHE.parents):
+    if USER_MODE:user_control.trusted_directory(EMPTY_PYCACHE)
+    for parent in (() if USER_MODE else (EMPTY_PYCACHE,*EMPTY_PYCACHE.parents)):
         st=parent.lstat()
         if not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or stat.S_IMODE(st.st_mode)&0o022:
             raise ValueError('manager_launcher_pycache_untrusted')
@@ -230,7 +261,7 @@ def recover_fused():
     protected_cache();registry=root_contract().validate_registry(read_root(REGISTRY))
     if os.getuid()!=registry['runtime_uid'] or os.geteuid()!=registry['runtime_uid'] or os.geteuid()==0:
         raise ValueError('manager_launcher_runtime_uid_required')
-    active=Path('/var/lib/eimemory-manager/active-transition.json')
+    active=(USER_COORDINATES['state'] if USER_MODE else Path('/var/lib/eimemory-manager'))/'active-transition.json'
     if not active.exists() and not active.is_symlink():
         print(json.dumps({'restored':True,'phase':'no_pending_context'}));return
     context=read_root(active)
@@ -241,12 +272,13 @@ def recover_fused():
         # unrelated context. Only the root-owned pending fused pointer needs
         # recovery; that pointer itself prevents deployment quiesce admission.
         print(json.dumps({'restored':True,'phase':'no_pending_context'}));return
-    path=Path('/run/eimemory-manager/bridge.sock')
-    for parent in (path.parent,*path.parent.parents):
+    path=USER_COORDINATES['socket'] if USER_MODE else Path('/run/eimemory-manager/bridge.sock')
+    if USER_MODE:user_control.trusted_directory(path.parent,private=True)
+    for parent in (() if USER_MODE else (path.parent,*path.parent.parents)):
         st=parent.lstat()
         if not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or st.st_mode&0o022:raise ValueError('manager_launcher_socket_parent_untrusted')
     st=path.lstat()
-    if not stat.S_ISSOCK(st.st_mode) or st.st_uid!=0 or stat.S_IMODE(st.st_mode)!=0o660 or st.st_nlink!=1:
+    if not stat.S_ISSOCK(st.st_mode) or st.st_uid!=CONTROL_UID or stat.S_IMODE(st.st_mode)!=0o660 or st.st_nlink!=1:
         raise ValueError('manager_launcher_socket_untrusted')
     value={'schema':'eimemory.runtime_manager_request.v1','operation':'recover_fused_closure','registry_generation':registry['generation']}
     raw=json.dumps(value,sort_keys=True,separators=(',',':')).encode()
@@ -259,7 +291,7 @@ def recover_fused():
         return result
     with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as stream:
         stream.settimeout(610);stream.connect(str(path))
-        if struct.unpack('3i',stream.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))[1]!=0:
+        if struct.unpack('3i',stream.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))[1]!=CONTROL_UID:
             raise ValueError('manager_launcher_host_root_peer_required')
         stream.sendall(struct.pack('>I',len(raw))+raw)
         size=struct.unpack('>I',receive(stream,4))[0]
@@ -274,8 +306,8 @@ def recover_fused():
 def validate(key,operation):
     if re.fullmatch('[0-9a-f]{64}',key) is None or operation not in {'receipt','pre_observation','post_resume'}:
         raise ValueError('manager_launcher_validation_identity_invalid')
-    record=read_root('/var/lib/eimemory-manager/validations/'+key+'-'+operation+'.json')
-    parent=read_root('/var/lib/eimemory-manager/jobs/'+key+'.json')
+    record=read_root((USER_COORDINATES['state'] if USER_MODE else Path('/var/lib/eimemory-manager'))/'validations'/(key+'-'+operation+'.json'))
+    parent=read_root((USER_COORDINATES['state'] if USER_MODE else Path('/var/lib/eimemory-manager'))/'jobs'/(key+'.json'))
     c=root_contract();registry=c.validate_registry(record['registry']);uid=registry['runtime_uid']
     request=parent['request'];manual=parent.get('manual_release') is True
     if manual:c.validate_manual_permit(request,key)
@@ -304,7 +336,7 @@ def validate(key,operation):
 def launch(key,*,preflight=False):
     if re.fullmatch('[0-9a-f]{64}',key) is None:raise ValueError('manager_launcher_key_invalid')
     flags=protected_cache()
-    record=read_root('/var/lib/eimemory-manager/jobs/'+key+'.json')
+    record=read_root((USER_COORDINATES['state'] if USER_MODE else Path('/var/lib/eimemory-manager'))/'jobs'/(key+'.json'))
     registry=record['registry']
     if os.getuid()!=registry['runtime_uid'] or os.geteuid()!=registry['runtime_uid'] or os.geteuid()==0:
         raise ValueError('manager_launcher_runtime_uid_required')

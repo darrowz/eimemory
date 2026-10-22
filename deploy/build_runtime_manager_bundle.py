@@ -12,11 +12,13 @@ import zipfile
 SOURCE_ROOT=Path(__file__).resolve().parents[1]
 
 
-def build(root,commit, *, account=None):
+def build(root,commit, *, account=None, _user_profile=False):
     if account is None:
         import pwd
         account = pwd.getpwuid(1001)
-    if account.pw_uid != 1001 or account.pw_gid != 1001:
+    import os
+    if ((not _user_profile and (account.pw_uid != 1001 or account.pw_gid != 1001))
+            or (_user_profile and (account.pw_uid<=0 or account.pw_uid!=os.geteuid() or account.pw_gid!=os.getegid()))):
         raise ValueError("manager_bundle_runtime_identity_invalid")
     if (re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", account.pw_name) is None
             or re.fullmatch(r"/[A-Za-z0-9_./-]+", account.pw_dir) is None
@@ -183,12 +185,82 @@ WantedBy=multi-user.target
     return files
 
 
+def build_user(root, commit, *, account=None):
+    """Render a separate user profile; never soften the legacy profile in place."""
+    import os
+    if account is None:
+        import pwd
+        account=pwd.getpwuid(os.geteuid())
+    if account.pw_uid<=0 or account.pw_uid!=os.geteuid():
+        raise ValueError('manager_user_bundle_nonroot_identity_required')
+    files=build(root,commit,account=account,_user_profile=True)
+    home=Path(account.pw_dir)
+    import stat
+    home_seal=home
+    for path in (home,*home.parents):
+        info=path.lstat()
+        if info.st_uid!=account.pw_uid:
+            if path==home:raise ValueError('manager_user_home_owner_invalid')
+            break
+        if not stat.S_ISDIR(info.st_mode) or info.st_mode&0o022:
+            raise ValueError('manager_user_home_ancestor_untrusted')
+        home_seal=path
+    authority=home/'.config/eimemory/control-plane'
+    state=home/'.local/state/eimemory/control-plane'
+    code=home/'.local/lib/eimemory/control-plane'
+    runtime=Path('/run/user')/str(account.pw_uid)
+    files['user_control_plane.py']=(root/'eimemory/contracts/user_control_plane.py').read_bytes()
+    rewrites=(('/var/lib/eimemory-manager/empty-pycache',str(code/'empty-pycache')),
+        ('/run/user/1001',str(runtime)),
+        ('/usr/libexec/eimemory-manager',str(code)),
+        ('/etc/eimemory-controlled-production-acceptance',str(authority/'controlled-production-acceptance')),
+        ('/etc/eimemory-code-automation-authority',str(authority)),
+        ('/var/lib/eimemory-manager',str(state)))
+    isolation=('\n[Service]\nEnvironment=EIMEMORY_CONTROL_PLANE=user\n'
+        'PrivateUsers=yes\nPrivatePIDs=yes\nNoNewPrivileges=yes\nUMask=0027\n'
+        'CapabilityBoundingSet=\nAmbientCapabilities=\n'
+        f'ReadOnlyPaths={home_seal} {code} {authority} {state} {home}/.config/systemd {home}/.local/share/systemd {runtime}/systemd {runtime}/eimemory-manager\n'
+        f'ReadWritePaths=-{home}/.hermes -{home}/.cache -{home}/.codex -{home}/.openclaw\n'
+        f'InaccessiblePaths={authority}/managed-incident-proof.key {state}/activation-signing.key {state}/managed-incident-receipts {runtime}/bus {runtime}/systemd/private\n')
+    for name in tuple(files):
+        if not name.endswith(('.service','.conf','.timer','.path')):
+            continue
+        text=files[name].decode()
+        for old,new in rewrites:
+            text=text.replace(old,new)
+        lines=[]
+        for line in text.splitlines():
+            if line.startswith(('User=','Group=','AmbientCapabilities=','RuntimeDirectory=',
+                                'RuntimeDirectoryMode=','ProtectHome=','ReadWritePaths=')):
+                continue
+            line=line.replace('WantedBy=multi-user.target','WantedBy=default.target')
+            line=line.replace('PrivateUsers=self','PrivateUsers=yes')
+            lines.append(line)
+        text='\n'.join(lines)+'\n'
+        if name=='eimemory-runtime-manager.service':
+            # The controller alone sees host native PIDs and the user bus.
+            text+='\n[Service]\nEnvironment=EIMEMORY_CONTROL_PLANE=user\nCapabilityBoundingSet=\nAmbientCapabilities=\n'
+            text+='Environment=XDG_RUNTIME_DIR='+str(runtime)+'\n'
+            text+='Environment=DBUS_SESSION_BUS_ADDRESS=unix:path='+str(runtime/'bus')+'\n'
+        elif name.endswith(('.service','.conf')):
+            text+=isolation
+        files[name]=text.encode()
+    manifest={'schema':'eimemory.user_runtime_manager_bundle.v1','controller_commit':commit,
+        'runtime_uid':account.pw_uid,'runtime_gid':account.pw_gid,
+        'files':{name:sha256(raw).hexdigest() for name,raw in sorted(files.items()) if name!='manifest.json'}}
+    files['manifest.json']=json.dumps(manifest,sort_keys=True,separators=(',',':')).encode()
+    return files
+
+
 def main():
     import os
     if hasattr(os,'geteuid') and os.geteuid()==0:
         raise ValueError('manager_bundle_build_requires_unprivileged_operator')
     p=argparse.ArgumentParser();p.add_argument('--controller-commit',required=True);p.add_argument('--output',type=Path,required=True)
-    a=p.parse_args();files=build(SOURCE_ROOT,a.controller_commit)
+    p.add_argument('--user',action='store_true')
+    a=p.parse_args()
+    if a.user:files=build_user(SOURCE_ROOT,a.controller_commit)
+    else:files=build(SOURCE_ROOT,a.controller_commit)
     with zipfile.ZipFile(a.output,'x',compression=zipfile.ZIP_DEFLATED) as archive:
         for name,raw in sorted(files.items()):archive.writestr(name,raw)
     print(json.dumps({'bundle':str(a.output),'sha256':sha256(a.output.read_bytes()).hexdigest(),'files':len(files)}))

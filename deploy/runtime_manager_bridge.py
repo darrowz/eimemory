@@ -29,9 +29,28 @@ SOCKET = Path('/run/eimemory-manager/bridge.sock')
 CURRENT = Path('/opt/eimemory/current')
 RELEASES = Path('/opt/eimemory/releases')
 
+USER_MODE = os.environ.get('EIMEMORY_CONTROL_PLANE', '') == 'user'
+CONTROL_UID = os.geteuid() if USER_MODE else 0
+if USER_MODE:
+    helper = Path(__file__).with_name('user_control_plane.py')
+    info = helper.lstat()
+    if helper.is_symlink() or info.st_uid != CONTROL_UID or info.st_mode & 0o022:
+        raise ValueError('manager_user_helper_untrusted')
+    specification = importlib.util.spec_from_file_location('eimemory_user_control_plane', helper)
+    user_control = importlib.util.module_from_spec(specification)
+    exec(compile(helper.read_bytes(), str(helper), 'exec'), user_control.__dict__)
+    USER_COORDINATES = user_control.coordinates()
+    ROOT, STATE, REGISTRY, SOCKET = (USER_COORDINATES[key] for key in ('code','state','registry','socket'))
+
+
 
 def trusted_directory(path, *, mode=None):
     path = Path(path)
+    if USER_MODE:
+        user_control.trusted_directory(path)
+        if mode is not None and stat.S_IMODE(path.stat().st_mode) != mode:
+            raise ValueError('manager_user_directory_mode_invalid')
+        return
     for item in (path, *path.parents):
         st = item.lstat()
         if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or stat.S_IMODE(st.st_mode) & 0o022:
@@ -40,7 +59,8 @@ def trusted_directory(path, *, mode=None):
         raise ValueError('manager_root_directory_mode_invalid')
 
 
-def read_file(path, *, uid=0, mode=0o640, maximum=65536):
+def read_file(path, *, uid=None, mode=0o640, maximum=65536):
+    uid = CONTROL_UID if uid is None else uid
     path = Path(path)
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
@@ -73,7 +93,7 @@ def atomic_json(path, value, *, gid, exclusive=False):
     temporary = path.with_name(path.name+'.tmp.'+str(os.getpid())+'.'+str(threading.get_ident()))
     fd = os.open(temporary, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o640)
     try:
-        os.fchown(fd,0,gid);os.fchmod(fd,0o640)
+        os.fchown(fd,CONTROL_UID,gid);os.fchmod(fd,0o640)
         with os.fdopen(fd,'wb',closefd=False) as stream:
             stream.write(raw);stream.flush();os.fsync(fd)
         if exclusive:
@@ -105,7 +125,7 @@ class Bridge:
         fd=os.open(path,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
         try:
             meta=os.fstat(fd);named=path.lstat()
-            if (not stat.S_ISREG(meta.st_mode) or meta.st_uid!=0 or meta.st_nlink!=1
+            if (not stat.S_ISREG(meta.st_mode) or meta.st_uid!=CONTROL_UID or meta.st_nlink!=1
                     or stat.S_IMODE(meta.st_mode)!=0o600 or (meta.st_dev,meta.st_ino)!=(named.st_dev,named.st_ino)):
                 raise ValueError('manager_lifecycle_lock_untrusted')
             deadline=time.monotonic()+5
@@ -121,7 +141,7 @@ class Bridge:
     @staticmethod
     def _command(args):
         result=subprocess.run(args,check=False,capture_output=True,text=True,timeout=600,
-            env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C','TZ':'UTC'})
+            env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C','TZ':'UTC', **({'XDG_RUNTIME_DIR':'/run/user/'+str(CONTROL_UID),'DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/'+str(CONTROL_UID)+'/bus','EIMEMORY_CONTROL_PLANE':'user'} if USER_MODE else {})})
         if result.returncode!=0:raise ValueError('manager_command_failed')
         if len(result.stdout.encode())>8*1024*1024:raise ValueError('manager_output_limit')
         return result.stdout
@@ -132,12 +152,15 @@ class Bridge:
 
     def systemctl(self,registry,unit,*args):
         if self.c.is_dynamic_unit(unit):
-            manager='system'
+            manager='user' if USER_MODE else 'system'
         else:
             if unit not in registry['units']:raise ValueError('manager_unit_not_registered')
             manager=registry['units'][unit]['manager']
         command=['/usr/bin/systemctl']
-        if manager=='user':
+        if USER_MODE:
+            if manager!='user':raise ValueError('manager_user_system_operation_forbidden')
+            command+=['--user']
+        elif manager=='user':
             uid=registry['runtime_uid']
             command=['/usr/sbin/runuser','-u',registry['runtime_user'],'--','/usr/bin/env',
                 'XDG_RUNTIME_DIR=/run/user/'+str(uid),'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/'+str(uid)+'/bus',
@@ -161,7 +184,7 @@ class Bridge:
         if type(limit) is not int or not 1<=limit<=5000:raise ValueError('manager_journal_limit_invalid')
         actual=self.unit_state(registry,unit,['InvocationID'])['InvocationID']
         if actual!=invocation:raise ValueError('manager_journal_invocation_mismatch')
-        manager='system' if self.c.is_dynamic_unit(unit) else registry['units'][unit]['manager']
+        manager=('user' if USER_MODE else 'system') if self.c.is_dynamic_unit(unit) else registry['units'][unit]['manager']
         args=['/usr/bin/journalctl','--quiet','--no-pager','--output=json','--lines='+str(limit+1),
             '_SYSTEMD_INVOCATION_ID='+invocation]
         if manager=='system':args+=['_SYSTEMD_UNIT='+unit]
@@ -226,14 +249,14 @@ class Bridge:
     def bus_property(self,path,interface,name):
         if not isinstance(path,str) or not re.fullmatch(r'/org/freedesktop/systemd1/(?:unit/[A-Za-z0-9_]+|job/[0-9]+)',path):
             raise ValueError('manager_bus_object_invalid')
-        raw=self.command(['/usr/bin/busctl','--json=short','--system','get-property',
+        raw=self.command(['/usr/bin/busctl','--json=short','--user' if USER_MODE else '--system','get-property',
             'org.freedesktop.systemd1',path,interface,name])
         value=self.c.strict_json(raw.encode())
         if not isinstance(value,dict) or set(value)!={'type','data'}:raise ValueError('manager_bus_property_shape_invalid')
         return value
 
     def unit_bus_path(self,unit):
-        raw=self.command(['/usr/bin/busctl','--json=short','--system','call','org.freedesktop.systemd1',
+        raw=self.command(['/usr/bin/busctl','--json=short','--user' if USER_MODE else '--system','call','org.freedesktop.systemd1',
             '/org/freedesktop/systemd1','org.freedesktop.systemd1.Manager','GetUnit','s',unit])
         value=self.c.strict_json(raw.encode())
         if not isinstance(value,dict) or value.get('type')!='o' or not isinstance(value.get('data'),list) or len(value['data'])!=1:
@@ -263,7 +286,7 @@ class Bridge:
             values=dict(pairs)
             if len(values)!=len(pairs):return unknown
             timer=values.get('trigger_unit','')
-            if not timer.endswith('.timer') or timer not in registry['units'] or registry['units'][timer]['manager']!='system' or not registry['units'][timer]['installed']:
+            if not timer.endswith('.timer') or timer not in registry['units'] or registry['units'][timer]['manager']!=('user' if USER_MODE else 'system') or not registry['units'][timer]['installed']:
                 return unknown
             stamp=values.get('trigger_timer_monotonic_usec','')
             if not stamp.isdigit() or int(stamp)<=0:return unknown
@@ -298,12 +321,12 @@ class Bridge:
             self.verify_job_peer(registry,record,pid,uid);scope=record['request'].get('scope')
             if scope is None:raise ValueError('manager_activation_manual_release_has_no_incident_owner')
         else:
-            if unit not in registry['unit_scopes'] or registry['units'][unit]['manager']!='system' or not registry['units'][unit]['installed']:
+            if unit not in registry['unit_scopes'] or registry['units'][unit]['manager']!=('user' if USER_MODE else 'system') or not registry['units'][unit]['installed']:
                 raise ValueError('manager_activation_unit_scope_not_reviewed')
             scope=registry['unit_scopes'][unit]
         state=self.unit_state(registry,unit,['InvocationID','ControlGroup','ExecMainStartTimestampMonotonic'])
         self.c.hex_value(state['InvocationID'],32,'manager_activation_invocation_invalid')
-        if not cgroup.startswith('/system.slice/') or state['ControlGroup']!=cgroup:
+        if not self.c.fixed_system_unit_cgroup(cgroup,unit) or state['ControlGroup']!=cgroup:
             raise ValueError('manager_activation_native_cgroup_mismatch')
         if CURRENT.resolve(strict=True)!=RELEASES/registry['runtime_commit']:
             raise ValueError('manager_activation_current_registry_mismatch')
@@ -313,7 +336,7 @@ class Bridge:
         if int((process/'stat').read_text().rsplit(')',1)[1].split()[19])!=start_ticks:
             raise ValueError('manager_activation_peer_changed')
         payload={'schema':'eimemory.runtime_activation_attestation.v1','registry_generation':registry['generation'],
-            'scope':scope,'manager':'system','unit':unit,'runtime_commit':registry['runtime_commit'],'controller_commit':registry['controller_commit'],'invocation_id':state['InvocationID'],'boot_id':boot,
+            'scope':scope,'manager':('user' if USER_MODE else 'system'),'unit':unit,'runtime_commit':registry['runtime_commit'],'controller_commit':registry['controller_commit'],'invocation_id':state['InvocationID'],'boot_id':boot,
             'observed_at':datetime.now(timezone.utc).isoformat(),'observed_monotonic_ns':time.monotonic_ns(),
             'service_start_monotonic_usec':int(state['ExecMainStartTimestampMonotonic']),
             'peer_pid':pid,'peer_uid':uid,'peer_start_ticks':start_ticks,'actual_unit_cgroup':cgroup,**cause}
@@ -414,7 +437,7 @@ class Bridge:
             if record.get('original_invocation') is None:
                 record['original_invocation']=invocation;self.save(registry,record)
         if self.pin_terminal(record,state,'job'):self.save(registry,record)
-        return {'manager':'system','unit':record['unit'],'state':state,'phase':record['phase'],'job_key':key,
+        return {'manager':('user' if USER_MODE else 'system'),'unit':record['unit'],'state':state,'phase':record['phase'],'job_key':key,
             'original_invocation':record.get('original_invocation'),'resumed':record.get('resumed') is True,
             'terminal_state':record.get('terminal_state'),'request':record['request'],
             'manual_release':record.get('manual_release') is True,
@@ -484,7 +507,7 @@ class Bridge:
             if seal is None and state['Result']=='success' and state.get('ExecMainStatus')=='0':
                 raise ValueError('manager_validation_success_artifact_not_sealed')
             atomic_json(path,record,gid=registry['runtime_gid'])
-        return {'job_key':key,'operation':operation,'manager':'system','unit':record['unit'],'state':state,
+        return {'job_key':key,'operation':operation,'manager':('user' if USER_MODE else 'system'),'unit':record['unit'],'state':state,
             'artifact_sha256':seal['artifact_sha256'] if seal else None,'sealed_artifact':seal['reference'] if seal else None,'terminal_state':record.get('terminal_state'),
             'original_invocation':record.get('original_invocation'),'parent_original_invocation':record['parent_original_invocation'],
             'target_commit':record['target_commit'],'controller_commit':record['controller_commit'],
@@ -525,7 +548,7 @@ class Bridge:
         state=self.unit_state(record['registry'],record['unit'],['ActiveState','InvocationID','ControlGroup'])
         cg=state['ControlGroup']
         groups=(process/'cgroup').read_text().splitlines()
-        if (not cg.startswith('/system.slice/') or cg.rsplit('/',1)[-1]!=record['unit']
+        if (not self.c.fixed_system_unit_cgroup(cg,record['unit'])
                 or not any(line.startswith('0::') and (line[3:]==cg or line[3:].startswith(cg+'/')) for line in groups)
                 or state['ActiveState'] not in {'active','activating'} or state['InvocationID']!=invocation
                 or record.get('original_invocation') not in {None,invocation}):
@@ -586,7 +609,7 @@ class Bridge:
         # held kernel flocks. It runs as UID1001 so its own marker lock never
         # becomes a root-owned runtime DB/state file.
         path=ROOT/'storage_release_transaction.py';read_file(path,maximum=1048576)
-        result=subprocess.run(['/usr/sbin/runuser','-u',registry['runtime_user'],'--','/usr/bin/python3',
+        result=subprocess.run([* ([] if USER_MODE else ['/usr/sbin/runuser','-u',registry['runtime_user'],'--']),'/usr/bin/python3',
             '-I','-B','-X','pycache_prefix='+self.c.EMPTY_PYCACHE,str(path),'guard',
             '--marker','/var/lib/eimemory/state/storage-release-transaction.json'],
             capture_output=True,timeout=10,env={'PATH':'/usr/bin:/bin','LC_ALL':'C','TZ':'UTC'})
@@ -604,7 +627,7 @@ class Bridge:
         groups=(self.proc/str(pid)/'cgroup').read_text().splitlines()
         state=self.unit_state(record['registry'],record['unit'],['ActiveState','InvocationID','ControlGroup'])
         expected=state.get('ControlGroup','')
-        if not expected.startswith('/system.slice/') or expected.rsplit('/',1)[-1]!=record['unit'] or not any(line.startswith('0::') and (line[3:]==expected or line[3:].startswith(expected+'/')) for line in groups):
+        if not self.c.fixed_system_unit_cgroup(expected,record['unit']) or not any(line.startswith('0::') and (line[3:]==expected or line[3:].startswith(expected+'/')) for line in groups):
             raise ValueError('manager_peer_job_cgroup_required')
         if record.get('original_invocation') not in {None,state['InvocationID']}:raise ValueError('manager_job_invocation_changed')
         self.c.hex_value(state['InvocationID'],32,'manager_job_invocation_invalid')
@@ -614,7 +637,7 @@ class Bridge:
 
     def fused_peer(self,registry,pid,uid):
         unit=self.c.FUSED_UNIT
-        if registry['units'][unit]!={'manager':'system','installed':True}:
+        if registry['units'][unit]!={'manager':('user' if USER_MODE else 'system'),'installed':True}:
             raise ValueError('manager_fused_unit_not_registered')
         process=self.proc/str(pid)
         values=dict(line.split(':',1) for line in (process/'status').read_text().splitlines() if ':' in line)
@@ -624,7 +647,7 @@ class Bridge:
             raise ValueError('manager_fused_peer_identity_invalid')
         state=self.unit_state(registry,unit,['LoadState','ActiveState','InvocationID','MainPID','ControlGroup','KillMode','SendSIGKILL'])
         cg=state['ControlGroup']
-        if (state['LoadState']!='loaded' or not cg.startswith('/system.slice/') or cg.rsplit('/',1)[-1]!=unit
+        if (state['LoadState']!='loaded' or not self.c.fixed_system_unit_cgroup(cg,unit)
                 or not any(line.startswith('0::') and (line[3:]==cg or line[3:].startswith(cg+'/'))
                     for line in (process/'cgroup').read_text().splitlines())
                 or state['KillMode']!='control-group' or state['SendSIGKILL']!='yes'):
@@ -659,7 +682,7 @@ class Bridge:
 
     def save_fused(self,registry,record,*,exclusive=False):
         directory=self.state/'fused-closures'
-        if not directory.exists():directory.mkdir(mode=0o750);os.chown(directory,0,registry['runtime_gid'])
+        if not directory.exists():directory.mkdir(mode=0o750);os.chown(directory,CONTROL_UID,registry['runtime_gid'])
         trusted_directory(directory,mode=0o750)
         atomic_json(directory/(record['context_key']+'.json'),record,gid=registry['runtime_gid'],exclusive=exclusive)
 
@@ -735,7 +758,7 @@ class Bridge:
             if CURRENT.resolve(strict=True)!=RELEASES/registry['runtime_commit']:raise ValueError('manager_fused_current_release_changed')
             states={}
             for unit in self.c.FUSED_L1_UNITS:
-                if registry['units'][unit]!={'manager':'system','installed':True}:raise ValueError('manager_fused_l1_unit_not_registered')
+                if registry['units'][unit]!={'manager':('user' if USER_MODE else 'system'),'installed':True}:raise ValueError('manager_fused_l1_unit_not_registered')
                 value=self.unit_state(registry,unit,['LoadState','ActiveState'])
                 if value['LoadState']!='loaded' or value['ActiveState'] not in {'active','activating','reloading','inactive','failed'}:
                     raise ValueError('manager_fused_l1_state_unknown')
@@ -1063,7 +1086,7 @@ class Bridge:
             raw=read_file(source)
             if sha256(raw).hexdigest()!=pin:raise ValueError('manager_template_digest_mismatch')
             if unit.endswith('.service'):
-                destination=Path('/etc/systemd/system')/(unit+'.d')
+                destination=(USER_COORDINATES['home']/'.config/systemd/user' if USER_MODE else Path('/etc/systemd/system'))/(unit+'.d')
                 trusted_directory(destination,mode=0o750)
                 # Root-reviewed policy is separate from the static Exec* unit.
                 if unit=='eimemory-code-deployment-job@.service':
@@ -1076,11 +1099,11 @@ class Bridge:
                 if unit in {'eimemory-rpc.service','eimemory-console.service'}:
                     policy=policy.replace(('/opt/eimemory/releases/'+target+' ').encode(),b'/opt/eimemory/releases ')
                 self.write_root_bytes(destination/'90-eimemory-runtime.conf',policy,registry['runtime_gid'])
-        self.command(['/usr/sbin/runuser','-u',registry['runtime_user'],'--','/usr/bin/env',
+        self.command([* ([] if USER_MODE else ['/usr/sbin/runuser','-u',registry['runtime_user'],'--']),'/usr/bin/env',
             'XDG_RUNTIME_DIR=/run/user/'+str(registry['runtime_uid']),
             'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/'+str(registry['runtime_uid'])+'/bus',
             '/usr/bin/python3','-I','-B','-X','pycache_prefix='+self.c.EMPTY_PYCACHE,str(ROOT/'runtime_manager_user_policy.py'),target])
-        self.command(['/usr/bin/systemctl','daemon-reload'])
+        self.command(['/usr/bin/systemctl',*(['--user'] if USER_MODE else []),'daemon-reload'])
         if activate:
             fresh=dict(registry);fresh['runtime_commit']=target
             if record.get('manual_release') is True and target==record['request']['candidate_commit']:
@@ -1099,7 +1122,7 @@ class Bridge:
         temporary=path.with_name(path.name+'.tmp.'+str(os.getpid()))
         fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o640)
         try:
-            os.fchown(fd,0,gid)
+            os.fchown(fd,CONTROL_UID,gid)
             with os.fdopen(fd,'wb',closefd=False) as stream:
                 stream.write(raw);stream.flush();os.fsync(fd)
             if path.exists():read_file(path)
@@ -1181,14 +1204,20 @@ class Bridge:
         if op=='error_window':return {'report':self.error_window(registry)}
         if op=='single_rpc_owner':
             state=self.unit_state(registry,'eimemory-rpc.service',['ActiveState','UnitFileState'])
-            raw=self.command(['/usr/sbin/runuser','-u',registry['runtime_user'],'--','/usr/bin/env',
+            if USER_MODE:
+                raw=self.command(['/usr/bin/systemctl','show','eimemory-rpc.service','--property=ActiveState,UnitFileState'])
+                old=dict(line.split('=',1) for line in raw.splitlines() if '=' in line)
+                if state['ActiveState']!='active' or old.get('ActiveState') not in {'inactive','failed'} or old.get('UnitFileState') not in {'disabled','masked','not-found',''}:
+                    raise ValueError('manager_rpc_owner_not_unique')
+                return {'manager':'user','unit':'eimemory-rpc.service','single_owner':True}
+            raw=self.command([* ([] if USER_MODE else ['/usr/sbin/runuser','-u',registry['runtime_user'],'--']),'/usr/bin/env',
                 'XDG_RUNTIME_DIR=/run/user/'+str(registry['runtime_uid']),
                 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/'+str(registry['runtime_uid'])+'/bus',
                 '/usr/bin/systemctl','--user','show','eimemory-rpc.service','--property=ActiveState,UnitFileState'])
             old=dict(line.split('=',1) for line in raw.splitlines() if '=' in line)
             if state['ActiveState']!='active' or old.get('ActiveState') not in {'inactive','failed'} or old.get('UnitFileState') not in {'disabled','masked','not-found',''}:
                 raise ValueError('manager_rpc_owner_not_unique')
-            return {'manager':'system','unit':'eimemory-rpc.service','single_owner':True}
+            return {'manager':('user' if USER_MODE else 'system'),'unit':'eimemory-rpc.service','single_owner':True}
         if op=='unit_state':return {'state':self.unit_state(registry,value['unit'],value['properties'])}
         if op=='unit_journal':return self.journal(registry,value['unit'],value['invocation'],value['limit'])
         if op=='runtime_identity':
@@ -1223,9 +1252,9 @@ class Bridge:
                 target=record['request']['target_commit'];self.c.hex_value(target,40,'manager_probe_target_invalid')
                 root=RELEASES/target
                 if root.is_symlink() or not root.is_dir():raise ValueError('manager_probe_release_missing')
-                self.command(['/usr/bin/systemd-run','--quiet','--wait','--collect','--pipe',
+                self.command(['/usr/bin/systemd-run',*(['--user'] if USER_MODE else []),'--quiet','--wait','--collect','--pipe',
                     '--unit=eimemory-readonly-probe-'+value['job_key'],
-                    '--property=User='+registry['runtime_user'],'--property=Group='+str(registry['runtime_gid']),'--property=PrivateUsers=self',
+                    * ([] if USER_MODE else ['--property=User='+registry['runtime_user'],'--property=Group='+str(registry['runtime_gid'])]),'--property=PrivateUsers='+('yes' if USER_MODE else 'self'),
                     '--property=NoNewPrivileges=yes','--property=CapabilityBoundingSet=',
                     '--property=ReadOnlyPaths=/opt/eimemory/releases',
                     str(root/'.venv/bin/python'),'-I','-B','-X','pycache_prefix='+self.c.EMPTY_PYCACHE,'-c',
@@ -1250,14 +1279,14 @@ def receive(stream,size):
 
 
 def serve(bridge):
-    trusted_directory(SOCKET.parent,mode=0o750)
-    os.chown(SOCKET.parent,0,bridge.registry()['runtime_gid'])
+    trusted_directory(SOCKET.parent,mode=0o700 if USER_MODE else 0o750)
+    os.chown(SOCKET.parent,CONTROL_UID,bridge.registry()['runtime_gid'])
     if SOCKET.exists():
         st=SOCKET.lstat()
-        if not stat.S_ISSOCK(st.st_mode) or st.st_uid!=0:raise ValueError('manager_socket_untrusted')
+        if not stat.S_ISSOCK(st.st_mode) or st.st_uid!=CONTROL_UID:raise ValueError('manager_socket_untrusted')
         SOCKET.unlink()
     with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as listener:
-        listener.bind(str(SOCKET));os.chown(SOCKET,0,bridge.registry()['runtime_gid']);os.chmod(SOCKET,0o660)
+        listener.bind(str(SOCKET));os.chown(SOCKET,CONTROL_UID,bridge.registry()['runtime_gid']);os.chmod(SOCKET,0o660)
         listener.listen(16)
         while True:
             stream,_=listener.accept()
@@ -1283,7 +1312,10 @@ def serve(bridge):
 
 
 if __name__=='__main__':
-    if os.geteuid()!=0:raise SystemExit('host_root_required')
+    if (USER_MODE and os.geteuid()<=0) or (not USER_MODE and os.geteuid()!=0):raise SystemExit('manager_control_identity_required')
+    if USER_MODE:
+        import ctypes
+        if ctypes.CDLL(None,use_errno=True).prctl(4,0,0,0,0)!=0:raise SystemExit('manager_process_protection_failed')
     trusted_directory(STATE,mode=0o750)
     import fcntl
     lock=os.open(STATE/'bridge.lock',os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600)

@@ -23,6 +23,10 @@ from eimemory.contracts.code_provider_authority import (
 
 DELEGATION_SCHEMA = 'code_provider_scope_delegations.v1'
 DELEGATION_PATH = Path('/etc/eimemory-code-automation-authority/code-provider-delegations.v1.json')
+from eimemory.contracts.user_control_plane import user_mode, coordinates, read_file as read_user_authority
+if user_mode():
+    DELEGATION_PATH = coordinates()['authority']/'code-provider-delegations.v1.json'
+
 _ENTRY_KEYS = {'owner_scope', 'provider_scope', 'capability_id', 'capability_scope', 'operation',
                'profile_key', 'profile_digest'}
 
@@ -48,24 +52,27 @@ def _secure_delegations() -> dict | None:
         return None
     if os.name != 'posix' or _v2_no_symlink(path, missing_ok=False):
         raise ValueError('code_provider_delegation_path_invalid')
-    for parent in (path.parent, *path.parent.parents):
-        info = parent.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
-                or (info.st_mode & 0o022 and not (parent != path.parent and info.st_mode & stat.S_ISVTX))):
-            raise ValueError('code_provider_delegation_parent_not_root_controlled')
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_NONBLOCK', 0))
-    try:
-        before = os.fstat(descriptor);named = path.lstat()
-        if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or before.st_nlink != 1
-                or stat.S_IMODE(before.st_mode) not in {0o600, 0o640} or before.st_size > 65536
-                or (before.st_dev, before.st_ino) != (named.st_dev, named.st_ino)):
-            raise ValueError('code_provider_delegation_file_not_root_controlled')
-        raw = os.read(descriptor, 65537);after = os.fstat(descriptor)
-        if ((before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
-                (after.st_size, after.st_mtime_ns, after.st_ctime_ns) or len(raw) != before.st_size):
-            raise ValueError('code_provider_delegation_changed_during_read')
-    finally:
-        os.close(descriptor)
+    if user_mode():
+        raw = read_user_authority(path)
+    else:
+        for parent in (path.parent, *path.parent.parents):
+            info = parent.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
+                    or (info.st_mode & 0o022 and not (parent != path.parent and info.st_mode & stat.S_ISVTX))):
+                raise ValueError('code_provider_delegation_parent_not_root_controlled')
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_NONBLOCK', 0))
+        try:
+            before = os.fstat(descriptor);named = path.lstat()
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or before.st_nlink != 1
+                    or stat.S_IMODE(before.st_mode) not in {0o600, 0o640} or before.st_size > 65536
+                    or (before.st_dev, before.st_ino) != (named.st_dev, named.st_ino)):
+                raise ValueError('code_provider_delegation_file_not_root_controlled')
+            raw = os.read(descriptor, 65537);after = os.fstat(descriptor)
+            if ((before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
+                    (after.st_size, after.st_mtime_ns, after.st_ctime_ns) or len(raw) != before.st_size):
+                raise ValueError('code_provider_delegation_changed_during_read')
+        finally:
+            os.close(descriptor)
     value = loads(raw, max_bytes=65536, max_depth=16)
     if (not isinstance(value, dict) or set(value) != {'schema', 'enabled', 'delegations'}
             or value.get('schema') != DELEGATION_SCHEMA or value.get('enabled') is not True
@@ -106,7 +113,7 @@ def _basis(owner: dict, provider: dict, profile_key: str, profile_digest: str) -
             if entry['owner_scope'] == owner and entry['provider_scope'] == provider:
                 if entry['profile_key'] != profile_key or entry['profile_digest'] != profile_digest:
                     raise ValueError('code_provider_delegation_profile_mismatch')
-                return 'root_code_provider_delegation', _digest(entry)
+                return ('user_code_provider_delegation' if user_mode() else 'root_code_provider_delegation'), _digest(entry)
     raise ValueError('code_provider_scope_not_authorized')
 
 

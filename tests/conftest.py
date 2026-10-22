@@ -135,6 +135,9 @@ def isolate_eimemory_config_environment(monkeypatch, tmp_path: Path) -> None:
     synthetic records to a real operator store or task ledger.
     """
 
+    # Extracted installer functions need the same initialized legacy profile
+    # as the full script; dedicated user-profile tests override this value.
+    monkeypatch.setenv("CONTROL_PYCACHE_PREFIX", "/var/lib/eimemory-manager/empty-pycache")
     monkeypatch.delenv("EIMEMORY_CONFIG_DIR", raising=False)
     monkeypatch.delenv("EIMEMORY_CONFIG_PATH", raising=False)
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "eimemory-root"))
@@ -197,3 +200,20 @@ def local_collection_boundary(monkeypatch):
     )
     yield
     assert attempts == [], "Network errors must not be swallowed into passing reports"
+
+
+@pytest.fixture(autouse=True)
+def private_test_creation_mask():
+    """Match deployed UMask=0027 without inheriting the operator's shell mask.
+
+    Restore the original process mask even when the test raises. Permission
+    attack tests still create their deliberately unsafe modes explicitly.
+    """
+    if os.name != 'posix':
+        yield
+        return
+    previous = os.umask(0o027)
+    try:
+        yield
+    finally:
+        os.umask(previous)

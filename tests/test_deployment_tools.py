@@ -2232,7 +2232,7 @@ def test_immutable_release_installer_runs_fd_safe_cleanup_before_switch() -> Non
     assert '--from-stage "$OLD_STAGE_PATH"' in script
     assert '--to-release "$RELEASE_DIR"' in script
     assert 'mktemp -d "$INSTALL_ROOT/releases/.eimemory-stage-${COMMIT}-XXXXXXXX"' in script
-    assert ('"$PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache '
+    assert ('"$PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" '
             '-m venv --clear "$STAGE_DIR/.venv"') in script
     assert '--release-dir "$RELEASE_DIR"' in script
     assert '--releases-root "$INSTALL_ROOT/releases"' in script

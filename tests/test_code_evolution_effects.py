@@ -192,6 +192,8 @@ def test_verification_owns_disk_scratch_and_cleans_only_it(tmp_path, monkeypatch
         assert ["--bind", str(scratch), "/tmp"] == argv[argv.index("--bind"):argv.index("--bind") + 3]
         assert kwargs["env"]["TMPDIR"] == "/tmp/temp"
         assert "--unshare-net" in argv
+        assert "--unshare-pid" in argv
+        assert any(argv[index:index + 2] == ["--tmpfs", "/run"] for index in range(len(argv) - 1))
         if fails:
             raise RuntimeError("verification interrupted")
         return 0, b"verification log retained"

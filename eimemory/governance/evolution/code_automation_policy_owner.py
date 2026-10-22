@@ -33,6 +33,9 @@ from eimemory.storage.code_evolution_store import CodeEvolutionStore
 
 
 STANDING_AUTHORITY_DIRECTORY = Path('/etc/eimemory-code-automation-authority')
+from eimemory.contracts.user_control_plane import user_mode, coordinates, read_file as read_user_authority
+if user_mode():
+    STANDING_AUTHORITY_DIRECTORY = coordinates()['authority']/'standing'
 SOURCE = 'eimemory.code_automation_policy_owner'
 # One finite recovery generation; an unavailable machine never acquires an
 # unbounded stream of renewed child policies for the same incident/release.
@@ -73,30 +76,33 @@ def _secure_read_standing_grant(scope: ScopeRef | Mapping[str, Any]) -> dict:
         raise ValueError('standing_grant_missing_or_unsafe')
     if os.name != 'posix' or not hasattr(os, 'geteuid'):
         raise ValueError('standing_grant_owner_check_unsupported')
-    # Unlike /etc/eimemory, every authority directory is root controlled.
-    for directory in (path.parent, *path.parent.parents):
-        info = directory.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
-                or (stat.S_IMODE(info.st_mode) & 0o022
-                    and not (directory != path.parent and info.st_mode & stat.S_ISVTX))):
-            raise ValueError('standing_grant_parent_not_root_controlled')
-    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_NONBLOCK', 0)
-    descriptor = os.open(path, flags)
-    try:
-        info = os.fstat(descriptor)
-        named = path.lstat()
-        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != 0
-                or stat.S_IMODE(info.st_mode) not in {0o600, 0o640}
-                or (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)
-                or info.st_size > 65536):
-            raise ValueError('standing_grant_file_not_root_controlled')
-        raw = os.read(descriptor, 65537)
-        after = os.fstat(descriptor)
-        if (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (
-                after.st_size, after.st_mtime_ns, after.st_ctime_ns) or len(raw) != info.st_size:
-            raise ValueError('standing_grant_changed_during_read')
-    finally:
-        os.close(descriptor)
+    if user_mode():
+        raw = read_user_authority(path)
+    else:
+        # Unlike /etc/eimemory, every authority directory is root controlled.
+        for directory in (path.parent, *path.parent.parents):
+            info = directory.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
+                    or (stat.S_IMODE(info.st_mode) & 0o022
+                        and not (directory != path.parent and info.st_mode & stat.S_ISVTX))):
+                raise ValueError('standing_grant_parent_not_root_controlled')
+        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_NONBLOCK', 0)
+        descriptor = os.open(path, flags)
+        try:
+            info = os.fstat(descriptor)
+            named = path.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != 0
+                    or stat.S_IMODE(info.st_mode) not in {0o600, 0o640}
+                    or (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)
+                    or info.st_size > 65536):
+                raise ValueError('standing_grant_file_not_root_controlled')
+            raw = os.read(descriptor, 65537)
+            after = os.fstat(descriptor)
+            if (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (
+                    after.st_size, after.st_mtime_ns, after.st_ctime_ns) or len(raw) != info.st_size:
+                raise ValueError('standing_grant_changed_during_read')
+        finally:
+            os.close(descriptor)
     value = loads(raw, max_bytes=65536, max_depth=16)
     if not isinstance(value, dict):
         raise ValueError('standing_grant_object_required')

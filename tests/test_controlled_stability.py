@@ -34,9 +34,14 @@ def stability_fixture_contract():
 
 
 @pytest.fixture(autouse=True)
-def configured_team_observation_contract():
-    with stability_fixture_contract():
-        yield
+def configured_team_observation_contract(monkeypatch):
+    # Share pytest's patch stack with the test. Separate nested patch stacks
+    # restore in the wrong order when a test overrides this synthetic host.
+    monkeypatch.setattr(probe, 'RUNTIME_UNITS', FIXTURE_RUNTIME_UNITS)
+    monkeypatch.setattr(probe, 'UNITS', FIXTURE_RUNTIME_UNITS + probe.TIMER_UNITS + probe.JOB_UNITS)
+    monkeypatch.setattr(probe, '_runtime_units', lambda: FIXTURE_RUNTIME_UNITS)
+    monkeypatch.setattr(probe, '_required_agents', lambda: frozenset(
+        {'hongrui','hongtai','hongxin','xiaomage'}))
 
 
 COMMIT = "b" * 40

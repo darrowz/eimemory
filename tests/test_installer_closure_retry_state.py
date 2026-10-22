@@ -31,6 +31,7 @@ def _retry_state(tmp_path: Path, payload: object | None, *, raw: str | None = No
         env={
             "PATH": "/usr/bin:/bin",
             "PYTHON_BIN": sys.executable,
+            "CONTROL_PYCACHE_PREFIX": "/var/lib/eimemory-manager/empty-pycache",
             "EIMEMORY_ROOT": str(tmp_path / "unused-root"),
             "EIMEMORY_RELEASE_CLOSURE_PENDING_PATH": str(pending),
             "COMMIT": COMMIT,

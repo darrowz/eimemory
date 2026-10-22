@@ -1035,6 +1035,7 @@ class ProductionEffectAdapter:
             str(sandbox),
             "--die-with-parent",
             "--unshare-net",
+            "--unshare-pid",
             "--new-session",
             "--ro-bind",
             "/",
@@ -1052,6 +1053,9 @@ class ProductionEffectAdapter:
             "/etc/eimemory",
             "--tmpfs",
             "/var/lib/eimemory",
+            # Unix sockets remain usable through read-only mounts. Hide host brokers.
+            "--tmpfs",
+            "/run",
             *[item for source, target in runtime_mounts
               for item in ("--ro-bind", str(source), str(target))],
             "--chdir",
@@ -1952,6 +1956,9 @@ def _git_environment() -> dict[str, str]:
 
 def _base_effect_environment(runtime: Any) -> dict[str, str]:
     env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    from eimemory.contracts.user_control_plane import user_mode
+    if user_mode():
+        env['EIMEMORY_CONTROL_PLANE']='user'
     for key in ("DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"):
         if os.environ.get(key):
             env[key] = str(os.environ[key])

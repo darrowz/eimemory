@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+if [ -z "${EIMEMORY_CONTROL_PLANE:-}" ] && [ "$(id -u)" -ne 0 ] &&
+   python3 -I -B -c 'import os,pwd,pathlib; p=pathlib.Path(pwd.getpwuid(os.geteuid()).pw_dir)/".config/eimemory/control-plane"; raise SystemExit(0 if any(os.path.lexists(p/n) for n in ("installation.v1.json","runtime-manager.v1.json")) else 1)'; then
+  export EIMEMORY_CONTROL_PLANE=user
+fi
+case "${EIMEMORY_CONTROL_PLANE:-}" in ""|user) ;; *) echo user_control_plane_mode_invalid >&2; exit 2 ;; esac
+CONTROL_PYCACHE_PREFIX=/var/lib/eimemory-manager/empty-pycache
+CONTROL_MANAGER_LAUNCH=/usr/libexec/eimemory-manager/runtime_manager_launch.py
+if [ "${EIMEMORY_CONTROL_PLANE:-}" = user ]; then
+  if [ "$(id -u)" -eq 0 ]; then echo user_control_plane_nonroot_required >&2; exit 2; fi
+  CONTROL_USER_HOME="$(python3 -I -B -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')"
+  CONTROL_PYCACHE_PREFIX="$CONTROL_USER_HOME/.local/lib/eimemory/control-plane/empty-pycache"
+  CONTROL_MANAGER_LAUNCH="$CONTROL_USER_HOME/.local/lib/eimemory/control-plane/runtime_manager_launch.py"
+fi
 
 umask 077
 
@@ -23,12 +36,14 @@ managed_effect_review=0
 while IFS= read -r cgroup; do
   case "$cgroup" in
     0::/system.slice/*eimemory-l5-effect-review.service)
-      managed_effect_review=1 ;;
+      if [ "${EIMEMORY_CONTROL_PLANE:-}" != user ]; then managed_effect_review=1; fi ;;
+    0::/user.slice/user-"$(id -u)".slice/user@"$(id -u)".service/*/eimemory-l5-effect-review.service)
+      if [ "${EIMEMORY_CONTROL_PLANE:-}" = user ]; then managed_effect_review=1; fi ;;
   esac
 done </proc/self/cgroup
 if [ "$managed_effect_review" = 1 ]; then
-  EIMEMORY_TRUSTED_REPOSITORY_ROOT="$("$EIMEMORY_PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
-    /usr/libexec/eimemory-manager/runtime_manager_launch.py --repository-root)"
+  EIMEMORY_TRUSTED_REPOSITORY_ROOT="$("$EIMEMORY_PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" \
+    "$CONTROL_MANAGER_LAUNCH" --repository-root)"
   export EIMEMORY_TRUSTED_REPOSITORY_ROOT
 fi
 if [[ -z "${EIMEMORY_TRUSTED_REPOSITORY_ROOT:-}${EIMEMORY_DEPLOYMENT_REPO_ROOT:-}" ]]; then
@@ -38,18 +53,18 @@ fi
 if [ "$managed_effect_review" = 1 ]; then
   # The fixed PID1 owner cannot select a console-copy override. The reviewed
   # helper requires the protected registry and actual venv/raw-source identity.
-  "$EIMEMORY_PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache \
-    /usr/libexec/eimemory-manager/runtime_manager_launch.py --product-module \
+  "$EIMEMORY_PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" \
+    "$CONTROL_MANAGER_LAUNCH" --product-module \
     eimemory.cli.main learn l5-readiness --json >"$temporary" || readiness_exit=$?
 else
 EIMEMORY_ROOT="$EIMEMORY_ROOT" \
 EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
 PYTHONDONTWRITEBYTECODE=1 \
-PYTHONPYCACHEPREFIX=/var/lib/eimemory-manager/empty-pycache \
+PYTHONPYCACHEPREFIX="$CONTROL_PYCACHE_PREFIX" \
   "$EIMEMORY_BIN" learn l5-readiness --json >"$temporary" || readiness_exit=$?
 fi
 
-"$EIMEMORY_PYTHON_BIN" -I -B -X pycache_prefix=/var/lib/eimemory-manager/empty-pycache - "$temporary" "$readiness_exit" <<'PY'
+"$EIMEMORY_PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" - "$temporary" "$readiness_exit" <<'PY'
 import json
 from pathlib import Path
 import sys

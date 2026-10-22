@@ -25,6 +25,8 @@ from eimemory.governance.evolution.code_evolution_repository import remote_url_d
 from eimemory.governance.evolution.code_evolution_test_plans import protected_test_plan_digest
 from eimemory.governance.release.closure_verdict import report_digest
 
+from eimemory.contracts.user_control_plane import user_mode, account as user_account
+
 SUPPORTED_CLASSES = ('deployment.runtime_commit_drift', 'release.closure_internal_failure', 'release.closure_report_failure')
 
 
@@ -36,9 +38,9 @@ def _runtime_git(root: Path, account: Any, *arguments: str) -> str:
             and arguments[2] and not arguments[2].startswith('-')
             and not any(ord(char) < 32 for char in arguments[2]))):
         raise ValueError('standing_grant_git_read_operation_forbidden')
-    if os.name != 'posix' or os.geteuid() != 0 or account.pw_uid == 0:
+    if os.name != 'posix' or os.geteuid() != (account.pw_uid if user_mode() else 0) or account.pw_uid == 0:
         raise ValueError('standing_grant_git_runtime_account_required')
-    argv = ['/usr/sbin/runuser', '-u', account.pw_name, '--', '/usr/bin/env', '-i',
+    argv = [* ([] if user_mode() else ['/usr/sbin/runuser', '-u', account.pw_name, '--']), '/usr/bin/env', '-i',
             'PATH=/usr/bin:/bin', 'HOME='+account.pw_dir, 'GIT_CONFIG_GLOBAL=/dev/null',
             'GIT_CONFIG_NOSYSTEM=1', 'GIT_TERMINAL_PROMPT=0', 'GIT_OPTIONAL_LOCKS=0',
             '/usr/bin/git', '--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', str(root), *arguments]
@@ -95,8 +97,8 @@ def prepare_standing_grant(runtime: Any, *, scope: ScopeRef | Mapping[str, Any],
 
 def install_prepared_standing_grant(prepared: Mapping[str, Any], *, expected_grant_digest: str,
                                      runtime_user: str, replace_digest: str = '') -> dict:
-    if os.name != 'posix' or os.geteuid() != 0:
-        raise ValueError('standing_grant_install_requires_native_root')
+    if os.name != 'posix' or (not user_mode() and os.geteuid()!=0):
+        raise ValueError('standing_grant_install_control_identity_required' if user_mode() else 'standing_grant_install_requires_native_root')
     import pwd
     from eimemory.storage.atomic_file import _fsync_directory
     from eimemory.governance.evolution.code_automation_policy import _v2_no_symlink
@@ -106,6 +108,8 @@ def install_prepared_standing_grant(prepared: Mapping[str, Any], *, expected_gra
             or prepared.get('grant_digest') != digest):
         raise ValueError('standing_grant_review_digest_mismatch')
     account = pwd.getpwnam(runtime_user)
+    if user_mode() and account.pw_uid!=user_account().pw_uid:raise ValueError('standing_grant_install_user_mismatch')
+    control_uid=account.pw_uid if user_mode() else 0
     # Logical memory owners (for example a channel ou_* ID) are independent
     # from the explicitly selected POSIX service account/group.
     if account.pw_uid == 0:
@@ -130,10 +134,10 @@ def install_prepared_standing_grant(prepared: Mapping[str, Any], *, expected_gra
         raise ValueError('standing_grant_install_path_invalid')
     if not destination.parent.exists():
         destination.parent.mkdir(mode=0o750)
-        os.chown(destination.parent, 0, account.pw_gid)
+        os.chown(destination.parent, control_uid, account.pw_gid)
         os.chmod(destination.parent, 0o750)
     parent = destination.parent.stat()
-    if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0 or parent.st_gid != account.pw_gid
+    if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != control_uid or parent.st_gid != account.pw_gid
             or stat.S_IMODE(parent.st_mode) != 0o750):
         raise ValueError('standing_grant_install_parent_invalid')
     with _policy_lock(destination.with_name('.standing-grant.install.lock')):
@@ -149,7 +153,7 @@ def install_prepared_standing_grant(prepared: Mapping[str, Any], *, expected_gra
         fd, name = tempfile.mkstemp(prefix='.standing-grant-', dir=destination.parent)
         temporary = Path(name)
         try:
-            os.fchown(fd, 0, account.pw_gid); os.fchmod(fd, 0o640)
+            os.fchown(fd, control_uid, account.pw_gid); os.fchmod(fd, 0o640)
             with os.fdopen(fd, 'wb') as stream:
                 stream.write((json.dumps(grant, indent=2)+'\n').encode())
                 stream.flush(); os.fsync(stream.fileno())

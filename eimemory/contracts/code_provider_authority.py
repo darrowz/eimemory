@@ -53,9 +53,9 @@ def validate_provider_authority(snapshot: Any, *, owner_scope: ScopeRef | Mappin
             or owner['tenant_id'] != provider['tenant_id'] or owner['agent_id'] != provider['agent_id']):
         raise ValueError('code_provider_authority_owner_mismatch')
     basis = snapshot.get('authorization_basis');delegation = snapshot.get('delegation_digest')
-    if (basis not in {'exact_scope', 'existing_product_scope', 'root_code_provider_delegation'}
+    if (basis not in {'exact_scope', 'existing_product_scope', 'root_code_provider_delegation', 'user_code_provider_delegation'}
             or (basis == 'exact_scope') != (owner == provider)
-            or (not _hex64(delegation) if basis == 'root_code_provider_delegation' else delegation != '')
+            or (not _hex64(delegation) if basis in {'root_code_provider_delegation', 'user_code_provider_delegation'} else delegation != '')
             or snapshot.get('digest') != _digest({key: value for key, value in snapshot.items() if key != 'digest'})):
         raise ValueError('code_provider_authority_digest_invalid')
     return dict(snapshot)

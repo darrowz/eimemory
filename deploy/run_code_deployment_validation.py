@@ -11,6 +11,22 @@ import socket
 import stat
 import struct
 import sys
+import importlib.util
+
+USER_MODE = os.environ.get('EIMEMORY_CONTROL_PLANE', '') == 'user'
+CONTROL_UID = os.geteuid() if USER_MODE else 0
+if USER_MODE:
+    import pwd
+    home=Path(pwd.getpwuid(os.geteuid()).pw_dir)
+    helper=home/'.local/lib/eimemory/control-plane/user_control_plane.py'
+    info=helper.lstat()
+    if helper.is_symlink() or info.st_uid!=CONTROL_UID or info.st_mode&0o022:
+        raise ValueError('manager_user_helper_untrusted')
+    specification=importlib.util.spec_from_file_location('eimemory_user_control_plane',helper)
+    user_control=importlib.util.module_from_spec(specification)
+    exec(compile(helper.read_bytes(),str(helper),'exec'),user_control.__dict__)
+    USER_COORDINATES=user_control.coordinates()
+
 
 
 def _strict_json(raw):
@@ -26,6 +42,7 @@ def _strict_json(raw):
 
 
 def _root_json(path):
+    if USER_MODE:return _strict_json(user_control.read_file(path))
     for parent in (path.parent, *path.parent.parents):
         info = parent.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
@@ -49,7 +66,7 @@ def _root_json(path):
 
 
 def _root_job(key):
-    record = _root_json(Path("/var/lib/eimemory-manager/jobs") / (key + ".json"))
+    record = _root_json(((USER_COORDINATES["state"] if USER_MODE else Path("/var/lib/eimemory-manager"))/"jobs") / (key + ".json"))
     request = record["request"]
     canonical = json.dumps(request, ensure_ascii=False, sort_keys=True,
         separators=(",", ":"), allow_nan=False).encode()
@@ -71,21 +88,22 @@ def _receive(stream, size):
 
 def _root_validation_status(key, operation):
     """Fixed stdlib bootstrap: authenticate the root peer before product import."""
-    registry = _root_json(Path("/etc/eimemory-code-automation-authority/runtime-manager.v1.json"))
+    registry = _root_json((USER_COORDINATES["registry"] if USER_MODE else Path("/etc/eimemory-code-automation-authority/runtime-manager.v1.json")))
     if (registry.get("schema") != "eimemory.runtime_manager_registry.v1"
         or re.fullmatch("[0-9a-f]{64}", str(registry.get("generation"))) is None
-        or registry.get("runtime_uid") != 1001 or registry.get("runtime_gid") != 1001
+        or registry.get("runtime_uid") != (CONTROL_UID if USER_MODE else 1001) or registry.get("runtime_gid") != (USER_COORDINATES["gid"] if USER_MODE else 1001)
         or sha256(json.dumps({name:value for name,value in registry.items() if name!="generation"},
             sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
             != registry["generation"]):
         raise ValueError("validation_root_registry_identity_invalid")
-    path = Path("/run/eimemory-manager/bridge.sock")
-    for parent in (path.parent, *path.parent.parents):
+    path = (USER_COORDINATES["socket"] if USER_MODE else Path("/run/eimemory-manager/bridge.sock"))
+    if USER_MODE:user_control.trusted_directory(path.parent,private=True)
+    for parent in (() if USER_MODE else (path.parent, *path.parent.parents)):
         info = parent.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
             raise ValueError("validation_root_socket_parent_untrusted")
     info = path.lstat()
-    if (not stat.S_ISSOCK(info.st_mode) or info.st_uid != 0 or info.st_gid != 1001
+    if (not stat.S_ISSOCK(info.st_mode) or info.st_uid != CONTROL_UID or info.st_gid != (USER_COORDINATES["gid"] if USER_MODE else 1001)
         or stat.S_IMODE(info.st_mode) != 0o660 or info.st_nlink != 1):
         raise ValueError("validation_root_socket_untrusted")
     request = {"schema": "eimemory.runtime_manager_request.v1",
@@ -97,7 +115,7 @@ def _root_validation_status(key, operation):
         stream.connect(str(path))
         _, uid, _ = struct.unpack("3i", stream.getsockopt(socket.SOL_SOCKET,
             socket.SO_PEERCRED, struct.calcsize("3i")))
-        if uid != 0:
+        if uid != CONTROL_UID:
             raise ValueError("validation_root_peer_required")
         stream.sendall(struct.pack(">I", len(raw)) + raw)
         size = struct.unpack(">I", _receive(stream, 4))[0]
@@ -118,7 +136,7 @@ def _assert_execution_identity(request, key, operation, native, invocation, stat
     group = state.get("ControlGroup", "")
     fields = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
     if (native.get("job_key") != key or native.get("operation") != operation
-        or native.get("manager") != "system" or native.get("unit") != unit
+        or native.get("manager") != ("user" if USER_MODE else "system") or native.get("unit") != unit
         or native.get("target_commit") != request["target_commit"]
         or native.get("controller_commit") != request["controller_commit"]
         or native.get("manual_release", False) is not request["manual_release"]
@@ -128,10 +146,10 @@ def _assert_execution_identity(request, key, operation, native, invocation, stat
         or native.get("original_invocation") != invocation or state.get("InvocationID") != invocation
         or re.fullmatch("[0-9a-f]{32}", str(native.get("parent_original_invocation"))) is None
         or state.get("ActiveState") not in {"active", "activating"}
-        or not group.startswith("/system.slice/") or group.rsplit("/", 1)[-1] != unit
+        or (not group.startswith("/user.slice/user-"+str(CONTROL_UID)+".slice/user@"+str(CONTROL_UID)+".service/") if USER_MODE else not group.startswith("/system.slice/")) or group.rsplit("/", 1)[-1] != unit
         or [line[3:] for line in cgroups.splitlines() if line.startswith("0::")] != [group]
-        or fields.get("Uid", "").split() != ["1001"] * 4
-        or fields.get("Gid", "").split() != ["1001"] * 4
+        or fields.get("Uid", "").split() != [str(CONTROL_UID if USER_MODE else 1001)] * 4
+        or fields.get("Gid", "").split() != [str(USER_COORDINATES["gid"] if USER_MODE else 1001)] * 4
         or fields.get("NoNewPrivs", "").strip() != "1"
         or re.fullmatch("0+", fields.get("CapEff", "").strip()) is None
         or re.fullmatch("0+", fields.get("CapPrm", "").strip()) is None
@@ -143,7 +161,7 @@ def main():
     if (len(sys.argv) != 5 or sys.argv[1] != "--job-key" or sys.argv[3] != "--operation"
         or re.fullmatch("[0-9a-f]{64}", sys.argv[2]) is None
         or sys.argv[4] not in {"receipt", "pre_observation", "post_resume"}
-        or os.getuid() != 1001 or os.geteuid() != 1001):
+        or os.getuid() != (CONTROL_UID if USER_MODE else 1001) or os.geteuid() != (CONTROL_UID if USER_MODE else 1001)):
         raise SystemExit("validation_fixed_low_privilege_entry_required")
     key, operation = sys.argv[2], sys.argv[4]
     record = _root_job(key)
@@ -170,9 +188,10 @@ def main():
     # The root-reviewed launcher pins the interpreter's empty cache prefix
     # before Python starts. -B alone does not prevent loading an existing PYC.
     cache = Path(sys.pycache_prefix or "")
-    if cache != Path("/var/lib/eimemory-manager/empty-pycache"):
+    if cache != (USER_COORDINATES["pycache"] if USER_MODE else Path("/var/lib/eimemory-manager/empty-pycache")):
         raise ValueError("validation_empty_pycache_prefix_required")
-    for parent in (cache, *cache.parents):
+    if USER_MODE:user_control.trusted_directory(cache)
+    for parent in (() if USER_MODE else (cache, *cache.parents)):
         info = parent.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
             raise ValueError("validation_pycache_prefix_untrusted")
@@ -184,11 +203,11 @@ def main():
         os.environ.get("INVOCATION_ID", ""), Path("/proc/self/status").read_text(),
         Path("/proc/self/cgroup").read_text())
     print(json.dumps({"schema":"managed_code_validation_bootstrap.v1", "job_key":key,
-        "operation":operation, "invocation":native["original_invocation"], "host_root_peer_uid":peer_uid,
+        "operation":operation, "invocation":native["original_invocation"], ("controller_peer_uid" if USER_MODE else "host_root_peer_uid"):peer_uid, "control_plane":"user" if USER_MODE else "legacy_system",
         "uid_map":Path("/proc/self/uid_map").read_text(), "gid_map":Path("/proc/self/gid_map").read_text(),
-        "root_job_uid":(Path("/var/lib/eimemory-manager/jobs")/(key+".json")).lstat().st_uid,
-        "root_registry_uid":Path("/etc/eimemory-code-automation-authority/runtime-manager.v1.json").lstat().st_uid,
-        "root_pycache_uid":cache.lstat().st_uid, "root_socket_uid":Path("/run/eimemory-manager/bridge.sock").lstat().st_uid,
+        ("controller_job_uid" if USER_MODE else "root_job_uid"):(((USER_COORDINATES["state"] if USER_MODE else Path("/var/lib/eimemory-manager"))/"jobs")/(key+".json")).lstat().st_uid,
+        ("controller_registry_uid" if USER_MODE else "root_registry_uid"):(USER_COORDINATES["registry"] if USER_MODE else Path("/etc/eimemory-code-automation-authority/runtime-manager.v1.json")).lstat().st_uid,
+        ("controller_pycache_uid" if USER_MODE else "root_pycache_uid"):cache.lstat().st_uid, ("controller_socket_uid" if USER_MODE else "root_socket_uid"):(USER_COORDINATES["socket"] if USER_MODE else Path("/run/eimemory-manager/bridge.sock")).lstat().st_uid,
         "actual_cgroup":Path("/proc/self/cgroup").read_text()}, sort_keys=True), flush=True)
     sys.path.insert(0, str(release))
     # These are the same narrowly allowlisted configuration readers used by

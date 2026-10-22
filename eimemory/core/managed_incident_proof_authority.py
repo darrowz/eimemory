@@ -30,6 +30,26 @@ RECEIPT_DIRECTORY = '/var/lib/eimemory-manager/managed-incident-receipts'
 PYCACHE_DIRECTORY = RECEIPT_DIRECTORY + '/empty-pycache'
 CONTROLLER_HISTORY_DIRECTORY = '/var/lib/eimemory-manager'
 RELEASES_DIRECTORY = '/opt/eimemory/releases'
+USER_MODE = os.environ.get('EIMEMORY_CONTROL_PLANE', '') == 'user'
+CONTROL_UID = os.geteuid() if USER_MODE else 0
+if USER_MODE:
+    import importlib.util
+    helper=Path(__file__).with_name('user_control_plane.py')
+    if not helper.is_file():
+        helper=Path(__file__).parents[1]/'contracts/user_control_plane.py'
+    metadata=helper.lstat()
+    if helper.is_symlink() or metadata.st_uid!=CONTROL_UID or metadata.st_mode&0o022:
+        raise ValueError('managed_authority_user_helper_untrusted')
+    spec=importlib.util.spec_from_file_location('eimemory_user_control_plane',helper)
+    user_control=importlib.util.module_from_spec(spec)
+    exec(compile(helper.read_bytes(),str(helper),'exec'),user_control.__dict__)
+    USER_COORDINATES=user_control.coordinates()
+    MANIFEST_PATH=str(USER_COORDINATES['authority']/'managed-code-incident-manifest.v1.json')
+    KEY_PATH=str(USER_COORDINATES['authority']/'managed-incident-proof.key')
+    RECEIPT_DIRECTORY=str(USER_COORDINATES['state']/'managed-incident-receipts')
+    PYCACHE_DIRECTORY=RECEIPT_DIRECTORY+'/empty-pycache'
+    CONTROLLER_HISTORY_DIRECTORY=str(USER_COORDINATES['state'])
+
 FIELDS = ('known_before_detection', 'prior_user_reported', 'manual_bootstrap')
 SCOPE_FIELDS = ('tenant_id', 'agent_id', 'workspace_id', 'user_id')
 INGRESS = ('eimemory.release_closure_failure', 'eimemory.runtime_identity_drift',
@@ -132,6 +152,7 @@ def _directory_identity(meta):
 def _read(path, *, owners=(0,), gid=None, limit=16*1024*1024, mode=None,
           allow_empty=False, with_identity=False):
     """No-follow every component, with descriptor/name identity revalidation."""
+    if USER_MODE and owners==(0,):owners=(CONTROL_UID,)
     path = Path(path)
     if not path.is_absolute() or '..' in path.parts: raise ValueError('managed_authority_path_invalid')
     descriptors = []; names = []
@@ -144,7 +165,7 @@ def _read(path, *, owners=(0,), gid=None, limit=16*1024*1024, mode=None,
         before_dirs = [os.fstat(item) for item in descriptors]
         for index,meta in enumerate(before_dirs):
             sticky=(index<len(before_dirs)-1 and meta.st_uid==0 and bool(meta.st_mode&stat.S_ISVTX))
-            if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid not in owners or meta.st_mode & 0o002 and not sticky
+            if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid not in ({0,*owners} if USER_MODE else owners) or meta.st_mode & 0o002 and not sticky
                     or meta.st_mode & 0o020 and not sticky and not (gid is not None and meta.st_gid == gid and meta.st_uid in owners)):
                 raise ValueError('managed_authority_parent_untrusted')
         leaf = path.name
@@ -174,7 +195,7 @@ def _read(path, *, owners=(0,), gid=None, limit=16*1024*1024, mode=None,
 
 
 def _configuration(registry):
-    if os.geteuid() != 0: raise ValueError('managed_authority_host_root_required')
+    if os.geteuid()!=CONTROL_UID or (USER_MODE and CONTROL_UID<=0):raise ValueError('managed_authority_control_identity_required' if USER_MODE else 'managed_authority_host_root_required')
     value = registry.get('managed_incident_authority')
     expected = {'enabled', 'database_path', 'manifest_path', 'manifest_sha256', 'receipt_directory', 'key_path'}
     if not isinstance(value, dict) or set(value) != expected or value.get('enabled') is not True:
@@ -298,7 +319,7 @@ def _empty_pycache():
     path=Path(PYCACHE_DIRECTORY)
     for index,parent in enumerate((path,*path.parents)):
         meta=parent.lstat()
-        if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid!=0
+        if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid not in ({0,CONTROL_UID} if USER_MODE else {0})
                 or meta.st_mode&0o022 and not (index>0 and meta.st_mode&stat.S_ISVTX)):
             raise ValueError('managed_authority_pycache_untrusted')
     if any(path.iterdir()):raise ValueError('managed_authority_pycache_not_empty')
@@ -312,12 +333,12 @@ def _worker(manifest, registry, source_id, source_digest, after, cursor_anchor=N
     request = {'manifest': worker_manifest, 'runtime_uid': registry['runtime_uid'], 'database_path': DATABASE_PATH,
         'source_record_id': source_id, 'source_digest': source_digest, 'after': after,
         'cursor_anchor':cursor_anchor}
-    completed = subprocess.run(['/usr/sbin/runuser', '-u', registry['runtime_user'], '--',
+    completed = subprocess.run([* ([] if USER_MODE else ['/usr/sbin/runuser', '-u', registry['runtime_user'], '--']),
         '/usr/bin/python3', '-I', '-S', '-B', '-X', 'pycache_prefix='+pycache,
         str(Path(__file__).absolute()), '--readonly-worker'],
         input=canonical(request), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60,
         env={'PATH':'/usr/bin:/bin', 'LANG':'C.UTF-8', 'EIMEMORY_CONFIG_DIR':'/etc/eimemory',
-             'PYTHONDONTWRITEBYTECODE':'1'}, check=False)
+             'PYTHONDONTWRITEBYTECODE':'1', **({'EIMEMORY_CONTROL_PLANE':'user'} if USER_MODE else {})}, check=False)
     if before!=_producer_guard(manifest, registry):raise ValueError('managed_authority_producer_identity_changed')
     _empty_pycache()
     if completed.returncode != 0 or len(completed.stdout) > 16*1024*1024:
@@ -337,13 +358,13 @@ def _state(registry, manifest):
     # Bootstrap owns directory creation. Runtime code cannot create authority.
     for index,parent in enumerate((root, *root.parents)):
         meta = parent.lstat()
-        if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid != 0
+        if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid not in ({0,CONTROL_UID} if USER_MODE else {0})
                 or meta.st_mode & 0o022 and not (index>0 and meta.st_mode&stat.S_ISVTX)):
             raise ValueError('managed_authority_state_directory_untrusted')
     lock_fd = os.open(root / '.authority.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
         lock_meta = os.fstat(lock_fd)
-        if not stat.S_ISREG(lock_meta.st_mode) or lock_meta.st_uid != 0 or lock_meta.st_nlink != 1 or stat.S_IMODE(lock_meta.st_mode) != 0o600:
+        if not stat.S_ISREG(lock_meta.st_mode) or lock_meta.st_uid != CONTROL_UID or lock_meta.st_nlink != 1 or stat.S_IMODE(lock_meta.st_mode) != 0o600:
             raise ValueError('managed_authority_lock_untrusted')
         import fcntl
         deadline=time.monotonic()+10
@@ -357,7 +378,7 @@ def _state(registry, manifest):
         fd = os.open(state_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         try:
             meta = os.fstat(fd)
-            if not stat.S_ISREG(meta.st_mode) or meta.st_uid != 0 or meta.st_nlink != 1 or stat.S_IMODE(meta.st_mode) != 0o600:
+            if not stat.S_ISREG(meta.st_mode) or meta.st_uid != CONTROL_UID or meta.st_nlink != 1 or stat.S_IMODE(meta.st_mode) != 0o600:
                 raise ValueError('managed_authority_registry_untrusted')
         finally: os.close(fd)
         conn = sqlite3.connect(state_path); conn.row_factory = sqlite3.Row
@@ -662,7 +683,7 @@ def _activation_facts(facts, activation, registry, peer):
             or activation.get('scope') != facts['scope'] or activation.get('peer_uid') != registry['runtime_uid']
             or type(activation.get('peer_pid')) is not int or activation['peer_pid'] < 1
             or peer.get('uid') != registry['runtime_uid']
-            or activation.get('manager') != 'system' or activation.get('unit') not in {'eimemory-learn-watch.service','eimemory-nightly.service','eimemory-release-closure.service'}):
+            or activation.get('manager') != ('user' if USER_MODE else 'system') or activation.get('unit') not in {'eimemory-learn-watch.service','eimemory-nightly.service','eimemory-release-closure.service'}):
         return None, 'original_activation_unverified'
     if ('runtime_commit' in registry and (activation.get('runtime_commit')!=registry['runtime_commit']
             or activation.get('controller_commit')!=registry.get('controller_commit',registry['runtime_commit']))):
@@ -738,7 +759,7 @@ def issue(source_record_id, source_digest, *, verified_activation_receipt, regis
             defect_key_semantics=KEY_SEMANTICS,
             history_watermark=facts['through'],source_sequence=source_sequence,managed_facts=managed,global_facts=globals_,
             external_knowledge=None,external_user_reports=None,status=status,reason=reason or cause_reason)
-        receipt = {'schema':'root_managed_code_incident_receipt.v1','snapshot':snapshot,
+        receipt = {'schema':'user_managed_code_incident_receipt.v1' if USER_MODE else 'root_managed_code_incident_receipt.v1','snapshot':snapshot,
             'activation':original_activation,'issued_at':datetime.now(timezone.utc).isoformat()}
         signature = hmac.new(key,canonical(receipt),sha256).hexdigest()
         packet = {'payload':receipt,'signature':signature}; raw=canonical(packet)
@@ -800,12 +821,12 @@ def _readonly_state(snapshot, manifest):
     root=Path(RECEIPT_DIRECTORY)
     for index,parent in enumerate((root,*root.parents)):
         meta=parent.lstat()
-        if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid!=0
+        if (not stat.S_ISDIR(meta.st_mode) or meta.st_uid not in ({0,CONTROL_UID} if USER_MODE else {0})
                 or meta.st_mode&0o022 and not (index>0 and meta.st_mode&stat.S_ISVTX)):
             raise ValueError('managed_authority_state_directory_untrusted')
     path=root/'knowledge.sqlite'
     meta=path.lstat()
-    if not stat.S_ISREG(meta.st_mode) or meta.st_uid!=0 or meta.st_nlink!=1 or stat.S_IMODE(meta.st_mode)!=0o600:
+    if not stat.S_ISREG(meta.st_mode) or meta.st_uid!=CONTROL_UID or meta.st_nlink!=1 or stat.S_IMODE(meta.st_mode)!=0o600:
         raise ValueError('managed_authority_registry_untrusted')
     original=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True);original.row_factory=sqlite3.Row
     memory=sqlite3.connect(':memory:');memory.row_factory=sqlite3.Row
@@ -848,6 +869,7 @@ def verify(receipt_id, digest_value, *, registry):
     if sha256(raw).hexdigest()!=digest_value:raise ValueError('managed_authority_receipt_digest_changed')
     packet=_json(raw);receipt=packet.get('payload')
     if (set(packet)!={'payload','signature'} or not isinstance(receipt,dict) or digest(receipt)!=receipt_id
+            or receipt.get('schema') not in ({'root_managed_code_incident_receipt.v1','user_managed_code_incident_receipt.v1'} if USER_MODE else {'root_managed_code_incident_receipt.v1'})
             or not hmac.compare_digest(hmac.new(key,canonical(receipt),sha256).hexdigest(),str(packet['signature']))):
         raise ValueError('managed_authority_receipt_signature_invalid')
     snapshot=receipt['snapshot']

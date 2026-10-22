@@ -15,6 +15,17 @@ class RuntimeManagerError(RuntimeError):pass
 
 def read_registry(path: Path | None=None) -> dict:
  path=Path(REGISTRY_PATH) if path is None else Path(path)
+ from eimemory.contracts.user_control_plane import user_mode, read_file, account
+ if user_mode():
+  try:
+   value=validate_registry(strict_json(read_file(path)))
+   current=account()
+   if (value['runtime_uid']!=current.pw_uid or value['runtime_gid']!=current.pw_gid
+       or value['runtime_user']!=current.pw_name or any(item['manager']!='user' for item in value['units'].values())):
+    raise RuntimeManagerError('manager_user_registry_identity_mismatch')
+   return value
+  except (OSError,ValueError) as exc:
+   raise RuntimeManagerError('manager_user_registry_unavailable') from exc
  try:
   for parent in (path.parent,*path.parent.parents):
    metadata=parent.lstat()
@@ -45,22 +56,25 @@ def _receive(stream: socket.socket, size: int) -> bytes:
 
 def request(operation: str, **values: Any) -> dict:
  registry=read_registry()
+ from eimemory.contracts.user_control_plane import user_mode, trusted_directory
+ owner=registry['runtime_uid'] if user_mode() else 0
  body={'schema':REQUEST_SCHEMA,'operation':operation,'registry_generation':registry['generation'],**values}
  raw=canonical(body)
  if len(raw)>MAX_REQUEST_BYTES:raise RuntimeManagerError('manager_request_too_large')
  try:
   socket_path=Path(SOCKET_PATH)
-  for parent in (socket_path.parent,*socket_path.parent.parents):
+  if user_mode():trusted_directory(socket_path.parent,private=True)
+  for parent in (() if user_mode() else (socket_path.parent,*socket_path.parent.parents)):
    meta=parent.lstat()
    if not stat.S_ISDIR(meta.st_mode) or meta.st_uid!=0 or stat.S_IMODE(meta.st_mode)&0o022:raise RuntimeManagerError('manager_socket_parent_untrusted')
   meta=socket_path.lstat()
-  if not stat.S_ISSOCK(meta.st_mode) or meta.st_uid!=0 or meta.st_gid!=registry['runtime_gid'] or stat.S_IMODE(meta.st_mode)!=0o660 or meta.st_nlink!=1:raise RuntimeManagerError('manager_socket_untrusted')
+  if not stat.S_ISSOCK(meta.st_mode) or meta.st_uid!=owner or meta.st_gid!=registry['runtime_gid'] or stat.S_IMODE(meta.st_mode)!=0o660 or meta.st_nlink!=1:raise RuntimeManagerError('manager_socket_untrusted')
   with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as stream:
    stream.settimeout(610 if operation in {'transition','readonly_probe','finalize_job','begin_fused_closure','end_fused_closure','recover_fused_closure'} else
        120 if operation in {'issue_managed_incident_proof','verify_managed_incident_proof','checkpoint_managed_incident_knowledge'} else 30);stream.connect(SOCKET_PATH)
    if not hasattr(socket,'SO_PEERCRED'):raise RuntimeManagerError('manager_peer_credentials_unavailable')
    _pid,uid,_gid=struct.unpack('3i',stream.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize('3i')))
-   if uid!=0:raise RuntimeManagerError('manager_peer_is_not_host_root')
+   if uid!=owner:raise RuntimeManagerError('manager_peer_identity_mismatch' if user_mode() else 'manager_peer_is_not_host_root')
    stream.sendall(struct.pack('>I',len(raw))+raw)
    length=struct.unpack('>I',_receive(stream,4))[0]
    if length>MAX_RESPONSE_BYTES:raise RuntimeManagerError('manager_response_too_large')
