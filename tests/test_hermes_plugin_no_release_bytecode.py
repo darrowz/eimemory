@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import importlib.util
+import errno
 import os
 from pathlib import Path
 import shutil
 import stat
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -122,11 +124,23 @@ def test_prepared_source_seal_is_idempotent_inside_a_readonly_mount(tmp_path):
         '--gid', str(os.getegid()), '--ro-bind', '/', '/', '--dev-bind', '/dev', '/dev',
         '--proc', '/proc', '--', *command], text=True, capture_output=True, timeout=60)
     if result.returncode and any(text in result.stderr for text in (
-            'No permissions to create new namespace', 'Operation not permitted',
+            'No permissions to create a new namespace', 'Operation not permitted',
             'Creating new namespace failed')):
         pytest.skip('the host does not permit nested read-only mount probes')
     assert result.returncode == 0, result.stderr
     cleaner.seal_release_source_permissions(**arguments, verify_only=True)
+
+
+@POSIX_OWNER
+def test_existing_seal_needs_no_write_syscall_on_readonly_source(tmp_path, monkeypatch):
+    arguments = _release(tmp_path)
+    cleaner = _load(REPO / 'deploy/clean_release_bytecode.py', '_seal_no_write')
+    cleaner.seal_release_source_permissions(**arguments)
+    def readonly(*_args):
+        raise OSError(errno.EROFS, 'Read-only file system')
+    monkeypatch.setattr(cleaner, 'os', SimpleNamespace(**{
+        **vars(os), 'fchmod': readonly, 'fsync': readonly}))
+    cleaner.seal_release_source_permissions(**arguments)
 
 
 def test_path_helper_preserves_an_existing_host_cache_policy(monkeypatch):

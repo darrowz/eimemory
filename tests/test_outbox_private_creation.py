@@ -17,7 +17,7 @@ def test_private_queue_does_not_create_a_native_profile_under_group_writable_uma
         os.umask(old)
 
 
-def test_existing_group_writable_profile_is_not_changed(tmp_path):
+def test_existing_group_writable_profile_is_not_changed(tmp_path, trusted_dataset_path_ancestors):
     home = tmp_path / 'unsafe-profile'
     home.mkdir(mode=0o770)
     home.chmod(0o770)
