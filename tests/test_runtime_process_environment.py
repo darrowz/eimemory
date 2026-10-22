@@ -8,11 +8,15 @@ from test_runtime_manager import standalone
 from eimemory.contracts import runtime_manager as c
 
 
-@pytest.mark.parametrize('fault',['none','unit','owner','cgroup','duplicate','restart','inactive','unapplied'])
+@pytest.mark.parametrize('fault',['none','unit','owner','cgroup','duplicate','restart','inactive','unapplied',
+    'namespace_nested','namespace_invalid','namespace_zero','namespace_foreign','namespace_changed'])
 def test_host_observes_only_the_original_runtime_owned_process(tmp_path,monkeypatch,fault):
     m=standalone('runtime_manager_bridge');bridge=m.Bridge(c);bridge.proc=tmp_path/'proc'
     process=bridge.proc/'123';process.mkdir(parents=True)
-    (process/'status').write_text('Uid:\t1001\t1001\t1001\t1001\n')
+    owner_status='Uid:\t1001\t1001\t1001\t1001\n'
+    namespace={'namespace_nested':'123 1','namespace_invalid':'123 bad','namespace_zero':'123 0',
+        'namespace_foreign':'456 1','namespace_changed':'123 1'}.get(fault)
+    (process/'status').write_text(owner_status+('NSpid:\t'+namespace+'\n' if namespace else ''))
     (process/'stat').write_text('123 (runtime with spaces) '+' '.join(['S']+['0']*18+['4321']))
     group='/system.slice/eimemory-rpc.service'
     (process/'cgroup').write_text('0::'+('/other.service' if fault=='cgroup' else group)+'\n')
@@ -28,12 +32,14 @@ def test_host_observes_only_the_original_runtime_owned_process(tmp_path,monkeypa
     def native(*_):
         reads.append(True);result=deepcopy(state)
         if fault=='restart' and len(reads)>1:result['MainPID']='456'
+        if fault=='namespace_changed' and len(reads)>1:(process/'status').write_text(owner_status+'NSpid:\t123 2\n')
         return result
     monkeypatch.setattr(bridge,'unit_state',native)
-    if fault=='none':
+    if fault in {'none','namespace_nested'}:
         value=bridge.runtime_process_environment({'runtime_uid':1001,'units':{name:{'manager':'user' if name in c.USER_COMPAT_UNITS else 'system'} for name in c.REGISTERED_UNITS}},state['Id'])
         assert value['pid']==123 and value['start_ticks']==4321
         assert value['environment']=={'CAPTURE':'1','PATH':'/usr/bin','EIMEMORY_RUNTIME_SETTINGS_APPLIED':token}
+        assert value['namespace_pids']==([123,1] if fault=='namespace_nested' else [])
     else:
         with pytest.raises(ValueError):bridge.runtime_process_environment({'runtime_uid':1001,'units':{name:{'manager':'user' if name in c.USER_COMPAT_UNITS else 'system'} for name in c.REGISTERED_UNITS}},'sshd.service' if fault=='unit' else state['Id'])
 

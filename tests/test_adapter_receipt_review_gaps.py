@@ -1396,7 +1396,7 @@ class Context:
 ctx = Context()
 provider_module.register(ctx)
 hook_module.register(ctx)
-assert 'EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE' not in os.environ
+assert os.environ['EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE'], 'plugin must preserve native gateway environment'
 reloaded_hook_spec = importlib.util.spec_from_file_location(
     'hermes_plugins.eimemory_hook', hook_root / '__init__.py',
     submodule_search_locations=[str(hook_root)],

@@ -72,7 +72,8 @@ def _historical_business_reported(nightly, diagnostics, nightly_identities, *, e
     qualification = obj(controlled.get('business_qualification'))
     evidence = obj(diagnostics.get('recall_quality_evidence'))
     release = obj(qualification.get('release_identity'))
-    agents = _historical_business_agents(qualification.get('agents'))
+    agents = _historical_business_agents(qualification.get('agents'),
+        exact_scopes=controlled.get('scope_contract') == 'exact_scope_source_v2')
     count = sum(agent['sample_count'] for agent in agents.values())
     release_key = identity(qualification)
     if not (

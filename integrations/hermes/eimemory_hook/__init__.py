@@ -27,11 +27,11 @@ _ensure_release_on_path()
 
 from eimemory.adapters.hermes.provider_core import (
     current_turn_injected_citations,
-    hermes_client_from_env,
+    hermes_attestation_client_from_env,
     hermes_explicit_tool_context,
     host_message_text,
 )
-from eimemory.adapters.hermes.host_context import hermes_producer_token
+from eimemory.adapters.hermes.profile_context import native_context, verify_owner
 from eimemory.adapters.hermes.provider_registry import get_hermes_provider
 from eimemory.adapters.hermes.code_implementation import (
     CodeImplementationSocketServer,
@@ -41,7 +41,6 @@ from eimemory.adapters.hermes.channel_delivery import (
     bind_pending_external_delivery_captures,
     register_external_delivery_capture,
 )
-from eimemory.adapters.runtime.receipt_handoff import ReceiptIdHandoff
 
 
 def _explicit_provider_args(args: Any) -> Any:
@@ -61,6 +60,11 @@ def _explicit_provider_args(args: Any) -> Any:
 def register_code_implementation_task(ctx: Any) -> Any | None:
     """Start the gateway-only structured provider when the host API exists."""
 
+    # A multiplexed gateway shares its process flags. Only the native default
+    # profile owns this single eiMemory auxiliary socket.
+    owner = native_context()
+    if owner['native'] and owner['profile_name'] != 'default':
+        return None
     # Task ownership belongs to plugin discovery, even if another discovery
     # already owns the socket. Register before exposing the live provider.
     register_aux = getattr(ctx, "register_auxiliary_task", None)
@@ -90,14 +94,6 @@ def register_code_implementation_task(ctx: Any) -> Any | None:
 
 def register(ctx) -> None:
     register_code_implementation_task(ctx)
-    token = hermes_producer_token()
-    attestation_client = hermes_client_from_env() if token else None
-    if attestation_client is not None:
-        if attestation_client.auth_token == token:
-            attestation_client = None
-        else:
-            attestation_client.auth_token = token
-    receipt_handoff = ReceiptIdHandoff.from_env()
 
     def post_tool_call(
         tool_name: str,
@@ -119,9 +115,14 @@ def register(ctx) -> None:
         observer = getattr(provider, "observe_tool_execution", None)
         if callable(observer) and not kwargs.get("effect_already_observed"):
             observer(session_id=session_id, turn_id=run_id, tool_call_id=tool_call_id, result=result)
-        if attestation_client is None or not all((session_id, run_id, tool_call_id, str(tool_name or "").strip())):
+        if not all((session_id, run_id, tool_call_id, str(tool_name or "").strip())):
             return
         try:
+            verify_owner(getattr(provider, '_host_binding', None))
+            attestation_client = hermes_attestation_client_from_env(
+                hermes_home=str(getattr(provider, '_hermes_home', '') or ''))
+            if attestation_client is None:
+                return
             response = attestation_client.call_or_bypass(
                 "adapter.attest_tool_result",
                 {
@@ -142,6 +143,7 @@ def register(ctx) -> None:
             if not isinstance(receipt, dict) or not isinstance(receipt_id, str) or not receipt_id:
                 return
             if receipt.get("passed") is True:
+                receipt_handoff = getattr(provider, '_receipt_handoff', None)
                 if receipt_handoff is not None:
                     receipt_handoff.append(
                         channel="hermes",

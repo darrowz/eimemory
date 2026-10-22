@@ -156,6 +156,11 @@ def test_hermes_capture_persists_only_after_durable_delivery(tmp_path) -> None:
         "runtime_commit": commit,
         "received_at_ms": entry["received_at_ms"],
         "platform_accepted_at_ms": entry["platform_accepted_at_ms"],
+        "runtime_owner": {
+            "hermes_home": str(hermes_home.resolve()), "profile_name": "default",
+            "session_key_sha256": sha256(b"agent:main:telegram:dm:chat-1").hexdigest(),
+            "user_id_sha256": sha256(b"user-1").hexdigest(),
+        },
     }
     assert entry["platform_accepted_at_ms"] >= entry["received_at_ms"]
     assert os.stat(state_path).st_mode & 0o777 == 0o600

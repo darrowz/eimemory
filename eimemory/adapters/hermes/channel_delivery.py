@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from eimemory.storage.atomic_file import atomic_write_json, locked_json_update
+from eimemory.adapters.hermes.profile_context import current_home,source_home
 
 
 DELIVERY_STATE_SCHEMA = "external_channel_delivery.v1"
@@ -111,7 +112,8 @@ def register_external_delivery_capture(
         ):
             return
 
-        authorize = getattr(gateway, "_is_user_authorized", None)
+        authorize = getattr(gateway, "_is_user_authorized_for_source", None)
+        if not callable(authorize):authorize=getattr(gateway, "_is_user_authorized", None)
         if not callable(authorize) or authorize(source) is not True:
             return
 
@@ -124,16 +126,55 @@ def register_external_delivery_capture(
             return
 
         received_at_ms = int(time.time() * 1000)
-        home = _hermes_home(hermes_home)
+        home = source_home(gateway,source,hermes_home)
+        # Freeze the native source owner before delivery runs in another task.
+        profile=str(getattr(source,'profile','') or '')
+        try:
+            from gateway.session_identity import identity_of
+            pinned=identity_of(source)
+            if pinned is not None:profile=pinned.runtime_profile
+        except ImportError:pass
+        if not profile:profile=home.name if home.parent.name=='profiles' else 'default'
+        runtime_owner=dict(hermes_home=str(home),profile_name=profile,
+            session_key_sha256=sha256(session_key.encode()).hexdigest(),
+            user_id_sha256=sha256(user_id.encode()).hexdigest())
+        from eimemory.contracts.hermes_topology import load_topology,resolve_profile_binding
+        topology=load_topology()
+        if topology is not None:
+            try:
+                owner_binding=resolve_profile_binding(profile,str(home),user_id=user_id,topology=topology)
+            except ValueError as exc:
+                if str(exc) not in {'hermes_topology_identity_unbound',
+                                    'hermes_topology_request_scope_unbound'}:
+                    raise
+                # A real delivery can be observed without granting this user
+                # a memory scope or qualifying it as an accepted sample.
+                runtime_owner.update(identity_status='unbound',
+                    natural_sample_eligible=False,
+                    topology_digest=topology['topology_digest'])
+            else:
+                runtime_owner.update(identity_status='bound',
+                    scope=dict(owner_binding['scope']),source_ids=list(owner_binding['source_ids']),
+                    binding_kind=owner_binding['binding_kind'],
+                    natural_sample_eligible=owner_binding['natural_sample_eligible'],
+                    topology_digest=owner_binding['topology_digest'])
+        refs=_message_refs(event,source,inbound_message_id)
 
         def capture_after_delivery() -> None:
             try:
+                # Hermes assigns its durable ledger id after pre-dispatch.
+                # Preserve the frozen source references and admit only this
+                # host-owned late id, never a changed source/profile/home.
+                delivery_refs=list(refs)
+                ledger_ref=str(getattr(event,'ledger_message_id','') or '').strip()
+                if ledger_ref and ledger_ref not in delivery_refs:
+                    delivery_refs.append(ledger_ref)
                 delivered = _latest_delivered_obligation(
                     home / "state.db",
                     session_key=session_key,
                     platform=platform,
                     chat_id=chat_id,
-                    message_refs=_message_refs(event, source, inbound_message_id),
+                    message_refs=delivery_refs,
                     received_at_ms=received_at_ms,
                 )
                 if delivered is None:
@@ -150,6 +191,7 @@ def register_external_delivery_capture(
                     runtime_commit=commit,
                     received_at_ms=received_at_ms,
                     accepted_at_ms=accepted_at_ms,
+                    runtime_owner=runtime_owner,
                 )
             except Exception:
                 # Evidence capture must never break the user's Hermes turn.
@@ -222,6 +264,7 @@ def _persist_delivery(
     runtime_commit: str,
     received_at_ms: int,
     accepted_at_ms: int,
+    runtime_owner: dict[str,Any] | None = None,
 ) -> None:
     entry_id = sha256(
         f"hermes:{platform}:{inbound_message_id}:{obligation_id}".encode("utf-8")
@@ -237,6 +280,7 @@ def _persist_delivery(
         "received_at_ms": received_at_ms,
         "platform_accepted_at_ms": accepted_at_ms,
     }
+    if runtime_owner is not None:entry['runtime_owner']=dict(runtime_owner)
 
     def update(document: Any) -> dict[str, Any]:
         if not isinstance(document, dict):
@@ -361,5 +405,5 @@ def _conversation_kind(value: Any) -> str:
 def _hermes_home(value: str | Path | None) -> Path:
     if value is not None:
         return Path(value)
-    configured = str(os.environ.get("HERMES_HOME", "") or "").strip()
+    configured = current_home() or str(os.environ.get("HERMES_HOME", "") or "").strip()
     return Path(configured) if configured else Path.home() / ".hermes"

@@ -3,10 +3,19 @@ from __future__ import annotations
 from threading import RLock
 from typing import Any
 from weakref import WeakValueDictionary
+from pathlib import Path
+from contextlib import contextmanager
+
+from eimemory.adapters.hermes.profile_context import current_home
 
 
 _LOCK = RLock()
-_PROVIDERS: WeakValueDictionary[str, Any] = WeakValueDictionary()
+_PROVIDERS: WeakValueDictionary[tuple[str,str], Any] = WeakValueDictionary()
+
+
+def _owner(provider):
+    home=str(getattr(provider,'_hermes_home','') or '')
+    return str(Path(home).expanduser().resolve()) if home else ''
 
 
 def bind_hermes_provider(*, session_id: str, provider: Any) -> None:
@@ -16,7 +25,11 @@ def bind_hermes_provider(*, session_id: str, provider: Any) -> None:
     if not normalized:
         raise ValueError("session_id is required")
     with _LOCK:
-        _PROVIDERS[normalized] = provider
+        key=(_owner(provider),normalized)
+        previous=_PROVIDERS.get(key)
+        if previous is not None and previous is not provider:
+            raise ValueError('hermes_provider_session_already_bound')
+        _PROVIDERS[key] = provider
 
 
 def move_hermes_provider(*, old_session_id: str, new_session_id: str, provider: Any) -> None:
@@ -27,19 +40,50 @@ def move_hermes_provider(*, old_session_id: str, new_session_id: str, provider: 
     if not new_session:
         raise ValueError("new_session_id is required")
     with _LOCK:
-        if old_session and _PROVIDERS.get(old_session) is provider:
-            _PROVIDERS.pop(old_session, None)
-        _PROVIDERS[new_session] = provider
+        old_key=(_owner(provider),old_session);new_key=(_owner(provider),new_session)
+        previous=_PROVIDERS.get(new_key)
+        if previous is not None and previous is not provider:
+            raise ValueError('hermes_provider_session_already_bound')
+        if old_session and _PROVIDERS.get(old_key) is provider:
+            _PROVIDERS.pop(old_key, None)
+        _PROVIDERS[new_key] = provider
 
 
-def get_hermes_provider(session_id: str) -> Any | None:
+@contextmanager
+def moving_hermes_provider(*, old_session_id: str, new_session_id: str, provider: Any):
+    """Reserve the new owner before the provider mutates its session state."""
+    old=(_owner(provider),str(old_session_id or '').strip())
+    new=(_owner(provider),str(new_session_id or '').strip())
+    if not new[1]:raise ValueError('new_session_id is required')
+    with _LOCK:
+        current=_PROVIDERS.get(new)
+        if current is not None and current is not provider:
+            raise ValueError('hermes_provider_session_already_bound')
+        _PROVIDERS[new]=provider
+    try:yield
+    except BaseException:
+        with _LOCK:
+            if new!=old and _PROVIDERS.get(new) is provider:_PROVIDERS.pop(new,None)
+        raise
+    else:
+        with _LOCK:
+            if old!=new and _PROVIDERS.get(old) is provider:_PROVIDERS.pop(old,None)
+
+
+def get_hermes_provider(session_id: str, *, hermes_home: str | None = None) -> Any | None:
     """Return the exact provider instance owned by Hermes MemoryManager."""
 
     normalized = str(session_id or "").strip()
     if not normalized:
         return None
+    try:home=current_home() if hermes_home is None else str(Path(hermes_home).expanduser().resolve())
+    except (OSError,ValueError,RuntimeError):return None
     with _LOCK:
-        return _PROVIDERS.get(normalized)
+        if home:return _PROVIDERS.get((home,normalized))
+        # Offline embedders without a native home can inspect an unambiguous
+        # binding. A duplicated session in two profiles never picks a winner.
+        candidates=[provider for (_home,session),provider in _PROVIDERS.items() if session==normalized]
+        return candidates[0] if len(candidates)==1 else None
 
 
 def unbind_hermes_provider(provider: Any) -> None:

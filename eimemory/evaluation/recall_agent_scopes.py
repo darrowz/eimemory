@@ -27,6 +27,15 @@ def recall_agent_scopes(runtime: Any, scope: dict, *, window_days: int = DISCOVE
     """
     from datetime import datetime, timedelta, timezone
     import os
+    from eimemory.evaluation.hermes_profile_coverage import load_topology, natural_profile_scopes
+
+    topology = load_topology()
+    if topology is not None:
+        # A declared colleague never disappears from acceptance merely because
+        # capture is broken or that colleague has no recent proactive traffic.
+        # Neither an environment override nor stored rows can shrink this list.
+        return natural_profile_scopes(runtime, topology,
+            tenant_id=str(scope.get("tenant_id") or "default"), window_days=window_days)
 
     # Explicit installation override: a comma-separated agent id list.
     override = [item.strip() for item in os.environ.get("EIMEMORY_RECALL_GATE_AGENTS", "").split(",") if item.strip()]
@@ -162,14 +171,44 @@ def run_per_agent(scopes: list[dict], primary_scope: dict, primary_report: dict[
                   evaluate: Callable[[dict], dict[str, Any]]) -> dict[str, Any]:
     verdicts: dict[str, dict[str, Any]] = {}
     discovered: dict[str, int] = {}
+    scope_verdicts: dict[str, dict[str, Any]] = {}
     for item in scopes:
         scope = {key: item[key] for key in ("tenant_id", "agent_id", "workspace_id", "user_id")}
-        discovered[scope["agent_id"]] = int(item.get("discovered_decisions") or 0)
-        same = all(str(primary_scope.get(k) or "") == scope[k] for k in ("agent_id", "workspace_id", "user_id"))
+        discovered[scope["agent_id"]] = discovered.get(scope["agent_id"], 0) + int(item.get("discovered_decisions") or 0)
+        same = all(str(primary_scope.get(k) or "") == scope[k] for k in ("tenant_id", "agent_id", "workspace_id", "user_id"))
         report = primary_report if same else evaluate(scope)
-        verdicts[scope["agent_id"]] = agent_verdict(report if isinstance(report, dict) else {})
-    return {"schema": "recall_quality_per_agent.v1", "rule": "all_discovered_agents_must_pass_separately",
+        verdict = agent_verdict(report if isinstance(report, dict) else {})
+        agent = scope["agent_id"]
+        if item.get("source") == "trusted_hermes_topology":
+            key = item["scope_digest"]
+            if key in scope_verdicts:
+                raise ValueError("recall_profile_scope_duplicate")
+            scope_verdicts[key] = {**verdict, "agent_id": agent,
+                "profile_name": item["profile_name"], "source_ids": item["source_ids"],
+                "natural_decision_count": int(item.get("discovered_decisions") or 0)}
+        if agent not in verdicts:
+            verdicts[agent] = verdict
+        else:
+            previous = verdicts[agent]
+            verdicts[agent] = {**(verdict if verdict["ok"] is not True else previous),
+                "ok": previous["ok"] is True and verdict["ok"] is True,
+                "sample_count": previous["sample_count"] + verdict["sample_count"]}
+    result = {"schema": "recall_quality_per_agent.v1", "rule": "all_discovered_agents_must_pass_separately",
             "discovery": {"source": "EIMEMORY_RECALL_GATE_AGENTS" if any(i.get("source") == "override" for i in scopes)
                           else "proactive_decisions natural traffic", "window_days": DISCOVERY_WINDOW_DAYS,
                           "agents": discovered},
             "agents": verdicts, "combined": combine_agent_verdicts(verdicts)}
+    from eimemory.evaluation.hermes_profile_coverage import load_topology, roster_summary
+    topology = load_topology()
+    if topology is not None or scope_verdicts:
+        if topology is None or any(item.get("topology_digest") != topology["topology_digest"]
+                for item in scopes if item.get("source") == "trusted_hermes_topology"):
+            raise ValueError("recall_profile_topology_disappeared")
+        roster = roster_summary(topology)
+        result.update(rule="all_bound_business_profile_scopes_must_pass_separately",
+            profile_inventory=roster, scope_verdicts=scope_verdicts)
+        result["discovery"]["source"] = "trusted_hermes_topology"
+        result['unbound_profiles'] = [dict(profile_name=row['profile_name'], agent_id=row['agent_id'],
+            status='business_identity_unbound', business_qualified=False, natural_samples_created=0)
+            for row in roster['profiles'] if row['identity_status'] != 'bound']
+    return result

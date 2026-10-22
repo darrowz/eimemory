@@ -293,8 +293,7 @@ def test_execution_middleware_captures_parallel_results_without_observer_suppres
             seen.append(params)
             return {"ok": True, "result": {"ok": True, "receipt_id": params["tool_call_id"],
                     "receipt": {"passed": True}}}
-    monkeypatch.setattr(hook, "hermes_producer_token", lambda: "host-test-token")
-    monkeypatch.setattr(hook, "hermes_client_from_env", Client)
+    monkeypatch.setattr(hook, "hermes_attestation_client_from_env", lambda **_kwargs: Client())
     monkeypatch.setenv("EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE", str(tmp_path / "handoff.sqlite3"))
     provider = EIMemoryProvider()
     provider.initialize("middleware-session")
@@ -351,8 +350,7 @@ def test_execution_only_observation_binds_the_current_round_without_a_passed_rec
                 },
             }
 
-    monkeypatch.setattr(hook, "hermes_producer_token", lambda: "host-test-token")
-    monkeypatch.setattr(hook, "hermes_client_from_env", Client)
+    monkeypatch.setattr(hook, "hermes_attestation_client_from_env", lambda **_kwargs: Client())
     monkeypatch.setenv("EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE", str(tmp_path / "handoff.sqlite3"))
     provider = EIMemoryProvider()
     provider.initialize("middleware-session")
@@ -400,8 +398,7 @@ def test_execution_capture_requires_an_exact_inspectable_chain(monkeypatch) -> N
         def call_or_bypass(self, *args):
             calls.append(args)
             return {}
-    monkeypatch.setattr(hook, "hermes_producer_token", lambda: "host-test-token")
-    monkeypatch.setattr(hook, "hermes_client_from_env", Client)
+    monkeypatch.setattr(hook, "hermes_attestation_client_from_env", lambda **_kwargs: Client())
     monkeypatch.setattr(hook, "get_hermes_provider", lambda session: types.SimpleNamespace(_scope={}))
     middleware = {}
     ctx = types.SimpleNamespace(register_middleware=lambda name, cb: middleware.update({name: cb}))

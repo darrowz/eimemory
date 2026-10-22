@@ -32,7 +32,7 @@ def controlled_recall_gate_error(runtime: Any, *, scope: ScopeRef,
     if not (
         checked.get('ok') is True and checked.get('accepted') is True
         and checked.get('persisted') is True and checked.get('status') == 'accepted'
-        and checked.get('schema') == 'controlled_production_acceptance.v1'
+        and checked.get('schema') in {'controlled_production_acceptance.v1', 'controlled_production_acceptance.v2'}
         and checked.get('mode') == 'controlled_existing_memory'
         and checked.get('evidence_class') == 'operator_controlled_existing_memory'
         and checked.get('record_id') == references[0]

@@ -28,7 +28,7 @@ def middleware(monkeypatch):
     spec = importlib.util.spec_from_file_location("explicit_host_context_hook", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "hermes_producer_token", lambda: "")
+    monkeypatch.setattr(module, "hermes_attestation_client_from_env", lambda **_kwargs: None)
 
     class Context:
         def __init__(self):

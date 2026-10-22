@@ -12,6 +12,7 @@ import unicodedata
 from uuid import uuid4
 
 from eimemory.retrieval.effect_signals import validate_signal
+from eimemory.adapters.hermes.profile_context import spawn_owned_thread
 
 _CORRECTION = re.compile(r"^(?:不对|不是这个|我说的是|你理解错了|你搞错了|不是这个意思|no[,，! ]|that's wrong|i meant\b)", re.I)
 
@@ -224,7 +225,8 @@ class EffectObserver:
                 return
             if not self.pending or (self.worker and self.worker.is_alive()):
                 return
-            self.worker = threading.Thread(target=self.flush, name="eimemory-effect-signals", daemon=True)
+            self.worker = spawn_owned_thread(self.flush,
+                name="eimemory-effect-signals",daemon=True)
             self.worker.start()
 
     def flush(self):

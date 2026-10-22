@@ -136,15 +136,18 @@ def test_hermes_untrusted_outbox_explains_blocked_sampling_and_recovers(
     ancestor = tmp_path / "profiles"
     home = ancestor / "private-agent"
     home.mkdir(parents=True, mode=0o700)
-    unsafe_path = (home if unsafe == "profile_permissions" else ancestor)
-    if unsafe == "state_file":
-        (home / "state").write_text("private-existing-state", encoding="utf-8")
-    else:
-        unsafe_path.chmod(0o775)
     client = FakeClient()
     provider = HermesMemoryProviderCore(client=client)
     caplog.set_level(logging.WARNING, logger="eimemory.adapters.hermes.provider_core")
     provider.initialize("private-session", hermes_home=str(home))
+    # The native workspace is deliberately independent of memory handoff.
+    # Inject faults into EI's actual private data, not Hermes-owned folders.
+    unsafe_path=(provider._outbox.path if unsafe=='state_file' else
+        provider._outbox.path.parent if unsafe=='profile_permissions' else provider._outbox.path.parent.parent)
+    if unsafe=='state_file':
+        unsafe_path.write_text('private-existing-invalid-state',encoding='utf-8')
+        unsafe_path.chmod(0o600)
+    else:unsafe_path.chmod(0o775)
     try:
         assert provider.prefetch("private-query") == ""
         assert provider.prefetch("private-query-again") == ""
@@ -164,7 +167,8 @@ def test_hermes_untrusted_outbox_explains_blocked_sampling_and_recovers(
         assert "private" not in json.dumps(diagnostic) + "".join(warnings)
     finally:
         if unsafe == "state_file":
-            (home / "state").unlink()
+            assert unsafe_path.read_text(encoding='utf-8')=='private-existing-invalid-state'
+            unsafe_path.unlink()
         else:
             unsafe_path.chmod(0o700)
     try:

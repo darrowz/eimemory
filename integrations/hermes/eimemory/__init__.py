@@ -25,7 +25,8 @@ except ImportError:  # Allows package validation without Hermes dependency.
 from eimemory.adapters.hermes.provider_core import HermesMemoryProviderCore
 from eimemory.adapters.hermes.provider_registry import (
     bind_hermes_provider,
-    move_hermes_provider,
+    get_hermes_provider,
+    moving_hermes_provider,
     unbind_hermes_provider,
 )
 
@@ -34,6 +35,9 @@ class EIMemoryProvider(HermesMemoryProviderCore, MemoryProvider):
     """Hermes-native provider backed by the authenticated eimemory RPC."""
 
     def initialize(self, session_id: str, **kwargs) -> None:
+        existing=get_hermes_provider(session_id,hermes_home=kwargs.get('hermes_home'))
+        if existing is not None and existing is not self:
+            raise ValueError('hermes_provider_session_already_bound')
         super().initialize(session_id, **kwargs)
         bind_hermes_provider(session_id=self._session_id, provider=self)
 
@@ -47,18 +51,15 @@ class EIMemoryProvider(HermesMemoryProviderCore, MemoryProvider):
         **kwargs,
     ) -> None:
         old_session_id = self._session_id
-        super().on_session_switch(
-            new_session_id,
-            parent_session_id=parent_session_id,
-            reset=reset,
-            rewound=rewound,
-            **kwargs,
-        )
-        move_hermes_provider(
-            old_session_id=old_session_id,
-            new_session_id=self._session_id,
-            provider=self,
-        )
+        with moving_hermes_provider(old_session_id=old_session_id,
+                new_session_id=new_session_id or old_session_id,provider=self):
+            super().on_session_switch(
+                new_session_id,
+                parent_session_id=parent_session_id,
+                reset=reset,
+                rewound=rewound,
+                **kwargs,
+            )
 
     def shutdown(self) -> None:
         try:

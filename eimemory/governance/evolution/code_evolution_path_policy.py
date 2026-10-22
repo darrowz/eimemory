@@ -85,6 +85,9 @@ DENY_SELF_PATH_GLOBS: tuple[str, ...] = (
     "eimemory/governance/release_pre_observation.py",
     "eimemory/contracts/runtime_manager.py",
     "eimemory/contracts/user_control_plane.py",
+    "eimemory/contracts/hermes_topology.py",
+    "eimemory/ops/hermes_native_topology.py",
+    "eimemory/evaluation/hermes_profile_coverage.py",
     "eimemory/identity_authority.py",
     "deploy/install_user_runtime_manager.py",
     "deploy/retire_manual_code_policy.py",
@@ -147,6 +150,9 @@ DENY_SELF_PATH_GLOBS: tuple[str, ...] = (
 # real implementations. Both sides stay in the deny-self authority plane.
 DENY_SELF_PATHS: frozenset[str] = frozenset(
     {
+        "eimemory/contracts/hermes_topology.py",
+        "eimemory/ops/hermes_native_topology.py",
+        "eimemory/evaluation/hermes_profile_coverage.py",
         "eimemory/governance/release/release_closure.py",
         "eimemory/governance/release_closure.py",
         "deploy/run_code_deployment_validation.py",

@@ -80,6 +80,13 @@ jobs:
           tests/test_user_control_plane.py
           tests/test_gateway_native_boundary.py
           tests/test_user_release_recovery.py
+          tests/test_manual_recovery_capture.py
+          tests/test_user_topology_restore.py
+          tests/test_hermes_topology_contract.py
+          tests/test_hermes_native_profile_topology.py
+          tests/test_hermes_multiplex_context.py
+          tests/test_hermes_single_gateway_acceptance.py
+          tests/test_receipt_handoff_directory_ownership.py
           tests/test_hermes_private_handoff_migration.py
           tests/test_hermes_plugin_no_release_bytecode.py
           tests/test_outbox_private_creation.py

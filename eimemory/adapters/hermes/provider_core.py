@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections import OrderedDict, deque
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
+from copy import copy
 from hashlib import sha256
 import json
 import logging
@@ -17,6 +18,9 @@ from uuid import uuid4
 
 from eimemory.adapters.hermes.host_context import hermes_producer_token
 from eimemory.adapters.hermes.outbox import HermesOutbox, digest as outbox_digest
+from eimemory.adapters.hermes.profile_context import (
+    profile_value, resolve_host_binding, rpc_configuration, spawn_owned_thread, verify_owner,
+)
 from eimemory.adapters.runtime.http_client import AgentRuntimeRPCClient
 from eimemory.adapters.runtime.receipt_handoff import ReceiptIdHandoff
 from eimemory.governance.tool_receipts import MAX_ELIGIBLE_RECEIPTS_PER_RUN
@@ -109,15 +113,18 @@ def hermes_client_from_env(
 ) -> AgentRuntimeRPCClient:
     if timeout_seconds is None:
         timeout_seconds = _adapter_timeout_seconds_from_env()
-    ledger = os.getenv("EIMEMORY_ADAPTER_FAILURE_LEDGER", "").strip()
+    ledger = str(profile_value("EIMEMORY_ADAPTER_FAILURE_LEDGER", "") or '').strip()
     if not ledger and hermes_home:
         ledger = str(Path(hermes_home) / "logs" / "eimemory-adapter-failures.jsonl")
-    return AgentRuntimeRPCClient(
-        base_url=os.getenv("EIMEMORY_RPC_URL", "http://127.0.0.1:8091/").strip(),
-        auth_token=os.getenv("EIMEMORY_RPC_TOKEN", "").strip(),
+    configuration=rpc_configuration()
+    client=AgentRuntimeRPCClient(
+        base_url=configuration['base_url'],
+        auth_token=configuration['auth_token'],
         timeout_seconds=timeout_seconds,
         failure_ledger_path=ledger or None,
     )
+    client._eimemory_profile_rpc=True
+    return client
 
 
 def hermes_explicit_recall_client_from_env(*, hermes_home: str = "") -> AgentRuntimeRPCClient:
@@ -162,6 +169,7 @@ def hermes_attestation_client_from_env(*, hermes_home: str = "", timeout_seconds
     if token == client.auth_token:
         return None
     client.auth_token = token
+    client._eimemory_profile_rpc=False
     return client
 
 
@@ -192,6 +200,9 @@ class HermesMemoryProviderCore:
         self._write_enabled = True
         self._session_id = ""
         self._hermes_home = ""
+        self._host_binding = None
+        self._owner_context = None
+        self._profile_source_ids = None
         self.supporting_context_status = "not_attempted"
         self._scope = self._scope_from_context({})
         self._max_write_queue = max(1, min(128, int(max_write_queue)))
@@ -268,7 +279,8 @@ class HermesMemoryProviderCore:
     def is_available(self) -> bool:
         if self._client_injected:
             return True
-        return bool(os.getenv("EIMEMORY_RPC_TOKEN", "").strip())
+        try:return bool(rpc_configuration()['auth_token'])
+        except (OSError,ValueError,RuntimeError):return False
 
     def advertise_capabilities(
         self,
@@ -388,7 +400,9 @@ class HermesMemoryProviderCore:
         }
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
-        resolved_scope = self._scope_from_context(kwargs)
+        binding=resolve_host_binding(kwargs)
+        resolved_scope = dict(binding['scope']) if binding.get('scope') else self._scope_from_context(kwargs)
+        bound_sources=tuple(binding['source_ids']) if binding.get('source_ids') else tuple(_source_ids_from_env('default'))
         expected_scope = kwargs.get("expected_scope")
         if expected_scope is not None:
             from eimemory.adapters.runtime.channel import resolve_channel_scope
@@ -402,13 +416,16 @@ class HermesMemoryProviderCore:
         if expected_sources is not None:
             from eimemory.models.source_partitions import normalize_source_ids
             expected_sources = list(normalize_source_ids(expected_sources))
-            if not expected_sources or sorted(expected_sources) != sorted(_source_ids_from_env("default")):
+            if not expected_sources or sorted(expected_sources) != sorted(bound_sources):
                 raise ValueError("hermes_expected_sources_mismatch")
+        self._host_binding={**binding,'scope':dict(resolved_scope)}
+        self._owner_context=copy_context()
+        self._profile_source_ids=bound_sources
         self._expected_scope = dict(expected_scope) if expected_scope is not None else None
         self._expected_source_ids = expected_sources
         self._identity_context = {key: str(kwargs.get(key) or "") for key in ("agent_identity", "agent_workspace", "user_id")}
         self._session_id = str(session_id or "").strip() or "hermes-session"
-        hermes_home = str(kwargs.get("hermes_home") or os.getenv("HERMES_HOME", "")).strip()
+        hermes_home = str(binding.get('hermes_home') or kwargs.get("hermes_home") or os.getenv("HERMES_HOME", "")).strip()
         if not hermes_home and not self._client_injected:
             try:
                 from hermes_constants import get_hermes_home
@@ -417,6 +434,9 @@ class HermesMemoryProviderCore:
                 pass
         self._hermes_home = hermes_home
         self._scope = resolved_scope
+        handoff=str(profile_value('EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE','') or
+            os.environ.get('EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE','')).strip()
+        self._receipt_handoff=ReceiptIdHandoff(handoff) if handoff else None
         agent_context = str(kwargs.get("agent_context") or "primary").strip().lower()
         self._write_enabled = agent_context not in {"cron", "flush", "subagent"}
         self._last_turn_summary = ""
@@ -432,7 +452,7 @@ class HermesMemoryProviderCore:
         if self._proactive_client is None:
             self._proactive_client = hermes_proactive_client_from_env(hermes_home=hermes_home)
         namespace = {"channel": "hermes", "scope": dict(self._scope),
-                     "source_ids": _source_ids_from_env("default"),
+                     "source_ids": self._source_ids(),
                      "endpoint": str(getattr(self._client, "base_url", "injected"))}
         with self._lock:
             if self._outbox is None or self._outbox.namespace != namespace or self._outbox_home != hermes_home:
@@ -508,7 +528,7 @@ class HermesMemoryProviderCore:
                         previous_waiter.set()
                 self._pending_prefetch = (key, normalized_query, effective_session)
                 return
-            worker = threading.Thread(
+            worker = spawn_owned_thread(
                 target=self._prefetch_worker,
                 args=(key, normalized_query, effective_session),
                 daemon=True,
@@ -688,7 +708,7 @@ class HermesMemoryProviderCore:
             terminal_params = {
                 "channel": "hermes",
                 "scope": dict(pending.get("scope") or self._scope),
-                "source_ids": list(pending.get("source_ids") or _source_ids_from_env("default")),
+                "source_ids": list(pending.get("source_ids") or self._source_ids()),
                 "session_id": str(pending.get("session_id") or session),
                 "turn_id": pending["decision_turn_id"],
                 "decision_id": pending["decision_id"],
@@ -718,7 +738,7 @@ class HermesMemoryProviderCore:
                 "adapter.proactive_complete_turn",
                 {
                     **self._common_params(),
-                    "source_ids": _source_ids_from_env("default"),
+                    "source_ids": self._source_ids(),
                     "session_id": session,
                     "turn_id": completed_turn,
                     "user_summary": query,
@@ -882,7 +902,15 @@ class HermesMemoryProviderCore:
         rewound: bool = False,
         **kwargs: Any,
     ) -> None:
-        del parent_session_id, kwargs
+        del parent_session_id
+        verify_owner(self._host_binding)
+        # Native session rotation preserves the provider owner. A routed agent
+        # change must construct another provider, not mutate a live queue's scope.
+        if kwargs.get('hermes_home') and str(Path(kwargs['hermes_home']).resolve())!=str(Path(self._hermes_home).resolve()):
+            raise ValueError('hermes_session_owner_change_requires_new_provider')
+        if kwargs.get('agent_identity') and kwargs['agent_identity'] not in {
+                self._identity_context.get('agent_identity'),self._scope['agent_id']}:
+            raise ValueError('hermes_session_owner_change_requires_new_provider')
         self._flush_terminal_retries()
         next_session_id = str(new_session_id or "").strip() or self._session_id
         abandoned: list[dict[str, Any]] = []
@@ -1013,7 +1041,9 @@ class HermesMemoryProviderCore:
         common = self._common_params()
         if tool_name == "eimemory_recall":
             expected_sources = getattr(self, "_expected_source_ids", None)
-            if expected_sources is not None and sorted(expected_sources) != sorted(_source_ids_from_env("default")):
+            checked_sources = (self._source_ids() if (self._host_binding or {}).get('topology_digest')
+                               else _source_ids_from_env("default"))
+            if expected_sources is not None and sorted(expected_sources) != sorted(checked_sources):
                 return {"ok": False, "error": "hermes_expected_sources_mismatch"}
             from eimemory.recall.task_queries import task_recall_mode
             query = _required_text(args, "query")
@@ -1025,7 +1055,7 @@ class HermesMemoryProviderCore:
                 {
                     **common,
                     "query": query,
-                    "task_context": {"source_ids": _source_ids_from_env("default")},
+                    "task_context": {"source_ids": self._source_ids()},
                     "task_type": str(args.get("task_type") or (f"task.{task_mode}" if task_mode else "research.task")),
                     "limit": max(1, min(50, int(args.get("limit", 8)))),
                     **({"explicit_request": explicit_request} if explicit_request is not None else {}),
@@ -1135,7 +1165,10 @@ class HermesMemoryProviderCore:
             if requested and requested not in {"default", "hermes"} and requested != self._scope[field]:
                 overrides[field] = {"requested": requested, "effective": self._scope[field]}
         return {"channel": "hermes", "effective_scope": resolve_channel_scope("hermes", self._scope),
-                "source_ids": _source_ids_from_env("default"), "context_overrides": overrides,
+                "source_ids": self._source_ids(), "context_overrides": overrides,
+                "profile_binding":{key:value for key,value in (self._host_binding or {}).items()
+                    if key in {'native','profile_name','hermes_home','topology_digest',
+                               'binding_kind','natural_sample_eligible'}},
                 "expected_scope_checked": getattr(self, "_expected_scope", None) is not None,
                 "expected_sources_checked": getattr(self, "_expected_source_ids", None) is not None,
                 "process_import_path": __file__}
@@ -1250,13 +1283,21 @@ class HermesMemoryProviderCore:
             except Exception:
                 logger.debug("eimemory automatic Hermes task_end failed", exc_info=True)
 
-        worker = threading.Thread(target=_close, daemon=True, name="eimemory-hermes-task-end")
+        worker = spawn_owned_thread(target=_close, daemon=True, name="eimemory-hermes-task-end")
         self._auto_task_end_thread = worker
         worker.start()
         return True
 
     def _common_params(self) -> dict[str, Any]:
-        return {"channel": "hermes", "scope": dict(self._scope)}
+        verify_owner(self._host_binding)
+        params={"channel": "hermes", "scope": dict(self._scope)}
+        if (self._host_binding or {}).get('topology_digest'):
+            params['runtime_profile_binding']={key:self._host_binding[key] for key in
+                ('profile_name','hermes_home','topology_digest','binding_kind','natural_sample_eligible')}
+        return params
+
+    def _source_ids(self) -> list[str]:
+        return list(self._profile_source_ids) if self._profile_source_ids is not None else _source_ids_from_env('default')
 
     @staticmethod
     def _host_window_allows_fallback(started: float) -> bool:
@@ -1273,6 +1314,14 @@ class HermesMemoryProviderCore:
 
     def _safe_call_with(self, client: Any, method: str, params: dict[str, Any]) -> dict[str, Any]:
         try:
+            verify_owner(self._host_binding)
+            if getattr(client,'_eimemory_profile_rpc',False):
+                configuration=rpc_configuration()
+                # Workers may overlap a native secret-scope rotation. Keep
+                # per-call credentials local while sharing the circuit state.
+                client=copy(client)
+                client.base_url=configuration['base_url']
+                client.auth_token=configuration['auth_token']
             result = client.call_or_bypass(method, params)
         except Exception:
             return {"ok": False, "bypassed": True, "error": "adapter_unavailable", "result": None}
@@ -1286,7 +1335,7 @@ class HermesMemoryProviderCore:
     def _fetch_context(self, query: str, *, session_id: str = "") -> str:
         started = time.monotonic()
         session = str(session_id or self._session_id).strip() or "hermes-session"
-        source_ids = _source_ids_from_env("default")
+        source_ids = self._source_ids()
         key = self._prefetch_key(session, query)
         abandoned: list[dict[str, Any]] = []
         with self._lock:
@@ -1735,7 +1784,7 @@ class HermesMemoryProviderCore:
             str(self._scope.get("agent_id") or ""),
             str(self._scope.get("workspace_id") or ""),
             str(self._scope.get("user_id") or ""),
-            *tuple(_source_ids_from_env("default")),
+            *tuple(self._source_ids()),
             str(session_id or ""),
             str(query or ""),
         )
@@ -1770,7 +1819,7 @@ class HermesMemoryProviderCore:
         with self._lock:
             if self._write_thread is not None and self._write_thread.is_alive():
                 return
-            worker = threading.Thread(
+            worker = spawn_owned_thread(
                 target=self._write_worker,
                 args=(outbox, self._client),
                 daemon=True,
@@ -1919,10 +1968,8 @@ class HermesMemoryProviderCore:
 
     @staticmethod
     def _scope_from_context(context: Mapping[str, Any]) -> dict[str, str]:
-        # EIMEMORY_AGENT_ID is the deployed agent identity (matches the
-        # deployment receipt scope).  The host profile name ("default") is a
-        # UI concept and must not override it, or release lookups miss the
-        # receipt scope and every proactive decision bypasses.
+        # Native named profiles own their identity. Only a default/placeholder
+        # host label uses the deployment identity compatibility fallback.
         from eimemory.identity import HONGTU_AGENT_ID, HONGTU_WORKSPACE_ID
 
         host_labels = {"", "default", "hermes"}
@@ -1931,15 +1978,15 @@ class HermesMemoryProviderCore:
         return {
             "tenant_id": os.getenv("EIMEMORY_TENANT_ID", "default").strip() or "default",
             "agent_id": (
-                os.getenv("EIMEMORY_AGENT_ID", "").strip()
+                (host_agent if host_agent not in host_labels else "")
+                or os.getenv("EIMEMORY_AGENT_ID", "").strip()
                 or os.getenv("EIMEMORY_DEPLOY_SCOPE_AGENT", "").strip()
-                or (host_agent if host_agent not in host_labels else "")
                 or HONGTU_AGENT_ID
             ),
             "workspace_id": (
-                os.getenv("EIMEMORY_WORKSPACE_ID", "").strip()
+                (host_workspace if host_workspace not in host_labels else "")
+                or os.getenv("EIMEMORY_WORKSPACE_ID", "").strip()
                 or os.getenv("EIMEMORY_DEPLOY_SCOPE_WORKSPACE", "").strip()
-                or (host_workspace if host_workspace not in host_labels else "")
                 or HONGTU_WORKSPACE_ID
             ),
             "user_id": (
@@ -2002,9 +2049,12 @@ def _bounded_text(value: Any, limit: int) -> str:
 
 def _source_ids_from_env(default_source: str) -> list[str]:
     from eimemory.adapters.runtime.sources import runtime_source_ids
-    if default_source != "default" and not os.getenv("EIMEMORY_SOURCE_IDS", "").strip():
+    configured=str(profile_value('EIMEMORY_SOURCE_IDS','') or '').strip()
+    if default_source != "default" and not configured:
         return runtime_source_ids("hermes", [default_source])
-    return runtime_source_ids("hermes")
+    sources=list(dict.fromkeys(value.strip() for value in configured.split(',') if value.strip()))
+    if 'hermes' not in sources:sources.append('hermes')
+    return runtime_source_ids("hermes",sources)
 
 
 def _memory_write_fallback_event_id(

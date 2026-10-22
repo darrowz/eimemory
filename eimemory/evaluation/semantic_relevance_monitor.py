@@ -557,10 +557,34 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
         sources = targets[key][2]
         if sources is not None:
             sources.add(entry['source_id'])
+    profile_inventory = None
+    if include_capture_scopes:
+        from eimemory.evaluation.hermes_profile_coverage import (
+            load_topology, profile_bindings, capture_coverage, roster_summary,
+        )
+        topology = load_topology()
+        if topology is not None:
+            coverage = capture_coverage(allowed, topology)
+            if coverage['ok'] is not True:
+                raise ValueError('hermes_profile_capture_scope_not_enabled')
+            # Operator registration, not active gateway count or stored rows,
+            # chooses the complete logical roster for nightly observation.
+            targets = {}
+            for binding in profile_bindings(topology):
+                exact = ScopeRef.from_dict(binding['scope'])
+                if exact.tenant_id != resolved.tenant_id:
+                    continue
+                key = tuple(asdict(exact).values())
+                if key not in targets:
+                    targets[key] = (binding['channel'], exact, set())
+                targets[key][2].update(binding['source_ids'])
+            profile_inventory = roster_summary(topology)
     total = dict(new_count=0, reused_count=0, deferred_count=0, skipped_count=0, provider_calls=0,
                  verdict_counts=dict(unknown=0, relevant=0, mixed=0, off_topic=0), by_surface={}, by_channel={},
                  skip_reason_counts={}, not_applicable_counts={})
     findings = []
+    if profile_inventory is not None:
+        total['profile_inventory'] = profile_inventory
     explicit_total = dict(_explicit_counts(), by_agent={}) if include_explicit else None
     repair_total = dict(reviewed_count=0, provider_calls=0, replay_count=0, unresolved_count=0,
                         unverifiable_count=0, deferred_count=0, by_agent={}) if include_explicit else None

@@ -12,12 +12,13 @@ import re
 _BUSINESS_PURPOSE = "historical_business_qualification"
 
 
-def _historical_business_agents(agents: object) -> dict:
+def _historical_business_agents(agents: object, *, exact_scopes=False) -> dict:
     """Present only verified public counts, never source text or exact scopes."""
     if not isinstance(agents, list) or not 1 <= len(agents) <= 100:
         return {}
     results = {}
     scopes = set()
+    authorized_tuples = set()
     for entry in agents:
         if not isinstance(entry, dict):
             return {}
@@ -27,8 +28,8 @@ def _historical_business_agents(agents: object) -> dict:
         count = entry.get("sample_count")
         if (not isinstance(agent, str) or not 1 <= len(agent) <= 64
                 or agent.strip() != agent or not agent.isprintable()
-                or agent in results or not isinstance(scope, str)
-                or re.fullmatch(r"[0-9a-f]{64}", scope) is None or scope in scopes
+                or (not exact_scopes and agent in results) or not isinstance(scope, str)
+                or re.fullmatch(r"[0-9a-f]{64}", scope) is None
                 or not isinstance(sources, list) or not 1 <= len(sources) <= 64
                 or any(not isinstance(source, str) or not 1 <= len(source) <= 128
                        or re.fullmatch(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?", source) is None
@@ -40,8 +41,16 @@ def _historical_business_agents(agents: object) -> dict:
                 or entry.get("accepted") is not True or entry.get("complete") is not True
                 or entry.get("blocked_reason") != ""):
             return {}
-        scopes.add(scope)
-        results[agent] = {"sample_count": count}
+        identity = (scope, tuple(sorted(sources))) if exact_scopes else scope
+        if identity in scopes:
+            return {}
+        if exact_scopes:
+            tokens = {(scope, source) for source in sources}
+            if tokens.intersection(authorized_tuples):
+                return {}
+            authorized_tuples.update(tokens)
+        scopes.add(identity)
+        results.setdefault(agent, {"sample_count": 0})['sample_count'] += count
     return results
 
 
@@ -58,7 +67,7 @@ def controlled_acceptance_diagnostics(value: object) -> dict:
     accepted = bool(
         value.get("ok") is True and value.get("accepted") is True
         and value.get("runtime_authority_verified") is True
-        and value.get("schema") == "controlled_production_acceptance.v1"
+        and value.get("schema") in {"controlled_production_acceptance.v1", "controlled_production_acceptance.v2"}
         and value.get("mode") == "controlled_existing_memory"
         and value.get("evidence_class") == "operator_controlled_existing_memory"
         and value.get("certifies_natural_queries") is False
@@ -77,7 +86,8 @@ def controlled_acceptance_diagnostics(value: object) -> dict:
         and verification.get("mode") == value["mode"]
         and verification.get("certifies_natural_queries") is False
     )
-    historical_agents = _historical_business_agents(agents)
+    historical_agents = _historical_business_agents(agents,
+        exact_scopes=value.get('schema') == 'controlled_production_acceptance.v2')
     business = value.get("business_qualification")
     business = business if isinstance(business, dict) else {}
     sample_count = sum(item["sample_count"] for item in historical_agents.values())
@@ -127,7 +137,12 @@ def controlled_acceptance_diagnostics(value: object) -> dict:
             else "unknown",
         "certifies_natural_queries": False,
         "natural_samples_created": 0,
-        "agent_count": len(agents) if isinstance(agents, list) else 0,
+        "agent_count": len({row.get('agent_id') for row in agents if isinstance(row, dict)
+                            and isinstance(row.get('agent_id'), str)}) if isinstance(agents, list) else 0,
+        **({'scope_count': len(agents)} if value.get('schema') == 'controlled_production_acceptance.v2'
+           and isinstance(agents, list) else {}),
+        **({'scope_contract': 'exact_scope_source_v2'}
+           if value.get('schema') == 'controlled_production_acceptance.v2' else {}),
         "record_id": str(value.get("record_id") or "")[:128],
         "policy_digest": policy_digest if isinstance(policy_digest, str)
             and re.fullmatch(r"[0-9a-f]{64}", policy_digest) else "",

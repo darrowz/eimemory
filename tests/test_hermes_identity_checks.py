@@ -21,12 +21,21 @@ def initialize(provider, **kwargs):
                         user_id=BASE["user_id"], expected_scope=BASE, expected_source_ids=["hermes"], **kwargs)
 
 
-def test_wrong_gateway_scope_fails_before_rpc(monkeypatch):
+def test_named_host_scope_precedes_process_gateway_label(monkeypatch):
     monkeypatch.setenv("EIMEMORY_AGENT_ID", "other-gateway")
     client = FakeClient()
     provider = HermesMemoryProviderCore(client=client)
+    initialize(provider)
+    assert provider._scope == BASE
+    assert client.calls == []
+
+
+def test_wrong_host_scope_fails_before_rpc():
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client)
     with pytest.raises(ValueError, match="hermes_expected_scope_mismatch"):
-        initialize(provider)
+        provider.initialize('probe', agent_identity='other-profile', agent_workspace='office',
+                            user_id='feishu-user', expected_scope=BASE)
     assert client.calls == []
 
 
@@ -43,9 +52,9 @@ def test_status_exposes_actual_identity_and_import_path(monkeypatch):
     provider = HermesMemoryProviderCore(client=FakeClient())
     provider.initialize("probe", agent_identity="colleague", agent_workspace="office", user_id="feishu-user")
     status = json.loads(provider.handle_tool_call("eimemory_status", {}))["adapter_local"]["identity"]
-    assert status["effective_scope"]["agent_id"] == "deployment-agent"
+    assert status["effective_scope"]["agent_id"] == "colleague"
     assert status["effective_scope"]["user_id"] == "feishu-user"
-    assert status["context_overrides"]["agent_id"] == {"requested": "colleague", "effective": "deployment-agent"}
+    assert status["context_overrides"] == {}
     assert status["source_ids"] == ["hermes"]
     assert status["process_import_path"].endswith("eimemory/adapters/hermes/provider_core.py")
 

@@ -1188,6 +1188,8 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         "recall_quality_per_agent": _historical_business_per_agent_diagnostics(business)
             if historical_accepted else natural_agents,
         "natural_recall_quality_per_agent": natural_agents,
+        **({'hermes_profile_sampling': natural_agents['profile_sampling']}
+           if 'profile_sampling' in natural_agents else {}),
         "release_acceptance": "not_evaluated_by_scheduler",
         "last_success_at_semantics": "current_run_not_historical_last_success",
         **({"dynamic_capability_evolution": _dynamic_failure_diagnostics(
@@ -1206,14 +1208,19 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
 
 def _historical_business_per_agent_diagnostics(business: dict) -> dict:
     """Business origin and current validation method are separate dimensions."""
-    agents = {
-        entry["agent_id"]: {
+    agents = {}
+    for entry in business['agents']:
+        previous = agents.get(entry['agent_id'])
+        row = {
             "ok": True, "blocked_reason": "", "complete": True,
             **{key: entry[key] for key in ("sample_count", "pass_count", "fail_count")},
             "evaluation_contract": "historical_business_qualification.v1",
             "business_origin": "historical_business", "validation_method": "controlled_recall",
-        } for entry in business["agents"]
-    }
+        }
+        if previous is not None:
+            for key in ('sample_count', 'pass_count', 'fail_count'):
+                row[key] += previous[key]
+        agents[entry['agent_id']] = row
     return {
         "status": "evaluated", "rule": "all_authorized_historical_business_scopes_must_pass",
         "business_origin": "historical_business", "validation_method": "controlled_recall",
@@ -1234,8 +1241,27 @@ def _per_agent_diagnostics(value: object) -> dict:
         agents[str(agent)[:64]] = {key: verdict.get(key) for key in (
             "ok", "blocked_reason", "sample_count", "evaluation_contract", "label_trust_accepted",
             "false_recall_rate", "recall_at_k", "mrr") if key in verdict}
-    return {"status": "evaluated", "rule": value.get("rule"), "discovery": value.get("discovery"),
-            "agents": agents, "combined": value.get("combined")}
+    result = {"status": "evaluated", "rule": value.get("rule"), "discovery": value.get("discovery"),
+              "agents": agents, "combined": value.get("combined")}
+    from eimemory.scheduler.collection_diagnostics import profile_inventory_diagnostics, profile_sampling_diagnostics
+    if 'profile_inventory' in value:
+        result['profile_inventory'] = profile_inventory_diagnostics(value['profile_inventory'])
+    if 'profile_sampling' in value:
+        result['profile_sampling'] = profile_sampling_diagnostics(value['profile_sampling'])
+    if isinstance(value.get('unbound_profiles'), list):
+        result['unbound_profiles'] = [{key: row[key] for key in (
+            'profile_name', 'agent_id', 'status', 'business_qualified', 'natural_samples_created')}
+            for row in value['unbound_profiles'][:64] if isinstance(row, dict)
+            and row.get('status') == 'business_identity_unbound' and row.get('business_qualified') is False
+            and type(row.get('natural_samples_created')) is int and row['natural_samples_created'] == 0
+            and isinstance(row.get('profile_name'), str) and isinstance(row.get('agent_id'), str)]
+    if isinstance(value.get('scope_verdicts'), dict):
+        result['scope_verdicts'] = {key: {field: row.get(field) for field in (
+            'profile_name', 'agent_id', 'ok', 'blocked_reason', 'sample_count',
+            'evaluation_contract', 'label_trust_accepted', 'natural_decision_count')}
+            for key, row in list(value['scope_verdicts'].items())[:4096]
+            if isinstance(key, str) and re.fullmatch('[0-9a-f]{64}', key) and isinstance(row, dict)}
+    return result
 
 
 def _production_recall_smoke_diagnostics(value: object) -> dict:

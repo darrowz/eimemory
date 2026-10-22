@@ -142,3 +142,56 @@ def _empty_reason_counts(raw):
         if count is not None:
             out[key] = out.get(key, 0) + count
     return out
+
+
+def profile_inventory_diagnostics(raw):
+    if (not isinstance(raw, dict) or raw.get('schema') != 'hermes_logical_profile_inventory.v1'
+            or not _id(raw.get('topology_digest'), r'[0-9a-f]{64}')
+            or raw.get('physical_gateway_count') != 1
+            or raw.get('runtime_units') != ['eimemory-rpc.service', 'hermes-gateway.service']
+            or not isinstance(raw.get('profiles'), list) or not 1 <= len(raw['profiles']) <= 64):
+        return {'status': 'unavailable'}
+    profiles = []
+    for row in raw['profiles']:
+        if (not isinstance(row, dict) or not _id(row.get('profile_name'), r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}')
+                or not isinstance(row.get('agent_id'), str) or not 1 <= len(row['agent_id']) <= 256
+                or not row['agent_id'].isprintable() or row.get('identity_status') not in {'bound', 'unbound'}
+                or _count(row.get('authorized_scope_count')) is None):
+            return {'status': 'unavailable'}
+        profiles.append({key: row[key] for key in ('profile_name', 'agent_id', 'identity_status', 'authorized_scope_count')})
+    if raw.get('logical_profile_count') != len(profiles):
+        return {'status': 'unavailable'}
+    return {'status': 'reported', 'schema': raw['schema'], 'topology_digest': raw['topology_digest'],
+        'physical_gateway_count': 1, 'logical_profile_count': len(profiles),
+        'runtime_units': raw['runtime_units'], 'profiles': profiles}
+
+
+def profile_sampling_diagnostics(raw):
+    if (not isinstance(raw, dict) or raw.get('schema') != 'hermes_profile_sampling_diagnostics.v1'
+            or raw.get('formal_acceptance') is not False or raw.get('l5_credit') is not False):
+        return {'status': 'not_reported'}
+    inventory = profile_inventory_diagnostics(raw.get('inventory'))
+    if inventory.get('status') != 'reported':
+        return {'status': 'unavailable'}
+    count_keys = ('natural_decision_count', 'stored_release_bound_count', 'stored_terminal_count',
+        'stored_verified_terminal_count', 'private_input_count', 'explicit_capture_count',
+        'pending_case_count', 'accepted_case_count', 'semantic_observation_count')
+    codes = {'captured', 'disabled', 'scope_not_enabled', 'scope_policy_invalid',
+        'input_bounds_rejected', 'decision_identity_mismatch', 'host_input_identity_mismatch',
+        'capture_unavailable', 'unknown_capture_status'}
+    scopes = []
+    for row in raw.get('scopes', [])[:4096] if isinstance(raw.get('scopes'), list) else []:
+        if (not isinstance(row, dict) or not _id(row.get('scope_digest'), r'[0-9a-f]{64}')
+                or not any(profile['profile_name'] == row.get('profile_name')
+                    and profile['agent_id'] == row.get('agent_id') for profile in inventory['profiles'])):
+            continue
+        scopes.append({**{key: row.get(key) for key in ('profile_name', 'agent_id', 'scope_digest')},
+            'status': _code(row.get('status'), {'reported', 'unavailable'}),
+            **{key: _count(row.get(key)) for key in count_keys},
+            'capture_status_counts': {code: _count(count) for code, count in row.get('capture_status_counts', {}).items()
+                if code in codes and _count(count) is not None}
+                if isinstance(row.get('capture_status_counts'), dict) else {}})
+    return {'schema': raw['schema'], 'status': _code(raw.get('status'), {'reported', 'unavailable'}),
+        'inventory': inventory, 'window_days': _count(raw.get('window_days')), 'scopes': scopes,
+        'formal_acceptance': False, 'l5_credit': False,
+        'counts_semantics': 'stored_metadata_counts_not_verified_quality'}

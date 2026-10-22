@@ -21,7 +21,7 @@ def installer():
     return module
 
 
-@pytest.mark.parametrize('entry',['install','recover_completed_installation','stage_release','abandon_failed_manual'])
+@pytest.mark.parametrize('entry',['install','recover_completed_installation','stage_release','abandon_failed_manual','register_topology','inspect_topology_native'])
 @pytest.mark.parametrize('original',[None,'','user','inherited-legacy-value'])
 def test_public_operator_identity_failure_restores_exact_caller_profile(monkeypatch,entry,original):
     module=installer();name='EIMEMORY_CONTROL_PLANE'

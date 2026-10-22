@@ -40,6 +40,8 @@ def run_controlled_rpc_probe(runtime, *, scope, expected_commit):
         policy = acceptance.load_controlled_policy(runtime, owner)
         if policy is None:
             raise ValueError("controlled_rpc_policy_missing")
+        if policy['schema'] == acceptance.EXACT_SCOPE_POLICY_SCHEMA:
+            report['schema'] = 'controlled_production_rpc_probe.v2'
         release, receipt = acceptance._release(runtime, owner)
         if release["release_commit"] != expected_commit:
             raise ValueError("controlled_rpc_release_mismatch")

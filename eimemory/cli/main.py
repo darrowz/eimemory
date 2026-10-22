@@ -135,6 +135,8 @@ def _nightly_cli_summary(report: dict[str, Any]) -> dict[str, Any]:
             if type(diagnostics.get("natural_recall_quality_accepted")) is bool else None,
         "natural_recall_quality_per_agent": diagnostics.get("natural_recall_quality_per_agent")
             or {"status": "not_run"},
+        **({'hermes_profile_sampling': diagnostics['hermes_profile_sampling']}
+           if 'hermes_profile_sampling' in diagnostics else {}),
     }
 
 

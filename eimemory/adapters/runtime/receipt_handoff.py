@@ -100,9 +100,15 @@ class ReceiptIdHandoff:
 
     def _connect(self, *, create: bool = True) -> sqlite3.Connection:
         if create:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            if os.name == "posix":
-                self.path.parent.chmod(0o700)
+            # Native gateways own existing directories and their permissions.
+            # Only a leaf created by this handoff gets the private default.
+            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        parent_metadata = self.path.parent.lstat()
+        if (not stat.S_ISDIR(parent_metadata.st_mode)
+                or os.name == "posix" and (parent_metadata.st_uid != os.geteuid()
+                    or parent_metadata.st_mode & 0o022)):
+            raise ValueError("receipt handoff parent directory must be owned and not shared writable")
+        if create:
             if not self.path.exists():
                 try:
                     descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
@@ -115,7 +121,7 @@ class ReceiptIdHandoff:
         metadata = self.path.stat(follow_symlinks=False)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
             raise ValueError("receipt handoff path must be one regular file")
-        if os.name == "posix" and metadata.st_mode & 0o077:
+        if os.name == "posix" and (metadata.st_mode & 0o077 or metadata.st_uid != os.geteuid()):
             raise ValueError("receipt handoff file must be private")
         conn = sqlite3.connect(self.path, timeout=5)
         conn.execute("PRAGMA busy_timeout = 5000")

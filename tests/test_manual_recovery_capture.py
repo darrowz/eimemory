@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from eimemory.contracts import runtime_manager as c
+from eimemory.contracts import hermes_topology as topology
 from test_runtime_manager import registry, standalone
 
 
@@ -35,6 +36,8 @@ def recovery(monkeypatch,tmp_path):
         phase='publish',unit=c.job_unit(source),active_before=active,original_invocation='2'*32,
         enabled_before={unit:'enabled' for unit in active})
     current=deepcopy(old);current['controller_commit']='d'*40
+    retired=sorted(unit for unit in active if unit.startswith('hermes-gateway-'))
+    for unit in retired:current['units'][unit]['installed']=False
     current['generation']=c.digest({k:v for k,v in current.items() if k!='generation'})
     next_request={**request,'candidate_commit':'d'*40,'target_commit':'d'*40,'controller_commit':'d'*40,
         'validation_controller_commit':'d'*40,'reviewed_attempt_id':'3'*32}
@@ -48,8 +51,11 @@ def recovery(monkeypatch,tmp_path):
         ExecMainStatus='1',MainPID='0',ControlGroup='',ExecMainExitTimestampMonotonic='123')
     states={unit:dict(LoadState='loaded',ActiveState='inactive',SubState='dead',Result='success',
         InvocationID='',ExecMainStatus='0',MainPID='0',ControlGroup='',ExecMainExitTimestampMonotonic='0',
-        UnitFileState='disabled',Type='simple') for unit in active}
+        UnitFileState='disabled',Type='simple',ControlPID='0') for unit in active}
     states['eimemory-rpc.service']['ActiveState']='active'
+    states['hermes-gateway.service'].update(ActiveState='active',MainPID='17',InvocationID='6'*32,
+        ControlGroup='/native/hermes-gateway.service')
+    for unit in retired:states[unit].update(LoadState='not-found',UnitFileState='')
     states[prior['unit']]={**failure,'Type':'oneshot'}
     monkeypatch.setattr(bridge,'unit_state',lambda _,unit,props:{name:states[unit][name] for name in props})
     calls=[]
@@ -66,6 +72,8 @@ def recovery(monkeypatch,tmp_path):
     monkeypatch.setattr(bridge,'systemctl',native)
     monkeypatch.setattr(bridge,'verify_job_peer',lambda *_:None)
     monkeypatch.setattr(bridge,'registry',lambda:deepcopy(current))
+    monkeypatch.setattr(bridge,'topology_contract',lambda:topology)
+    monkeypatch.setattr(bridge,'topology_links',lambda *_:True)
     monkeypatch.setattr(bridge,'fence_job_processes',lambda *_,**__:None)
     history=tmp_path/'managed-incident-receipts/manual-abandon-12345';history.mkdir(parents=True)
     def save(_,value,**__):publish(bridge.record_path(value['job_key']),value)
@@ -90,8 +98,37 @@ def recovery(monkeypatch,tmp_path):
         record['recovery_capture']=reference;save(current,record)
         return capture
     capture=persist()
+    authority=tmp_path/'authority';authority.mkdir();bridge.registry_path=authority/'runtime-manager.v1.json'
+    publish(bridge.registry_path,current)
+    body=dict(schema=topology.SCHEMA,mode='single_native_gateway',runtime_uid=1001,runtime_gid=1001,
+        owner_unit=topology.MAIN_GATEWAY,runtime_units=list(topology.RUNTIME_UNITS),retired_gateways=retired,
+        profiles=[dict(profile_name='default',hermes_home='/profiles/default',agent_id='fixture',
+            identity_status='unbound',capture_scopes=[])])
+    source_transition=dict(complete=True,job_key=source,outcome='operator_abandoned_failed_manual_release',
+        failed_deployment_preserved=True,release_accepted=False,autonomous_repair_credit=False,runtime_commit='b'*40)
+    publish(tmp_path/'active-transition.json',source_transition)
+    snapshot=c.canonical(bridge.native_topology_snapshot(current,topology.MAIN_GATEWAY,retired))
+    originals={'registry.original':c.canonical(current),'transition.original':c.canonical(source_transition),
+        'job.original':c.canonical(prior),'capture.original':c.canonical(capture)}
+    intent=dict(schema='eimemory.hermes_topology_intent.v1',intent_id='5'*32,
+        runtime_uid=1001,runtime_gid=1001,mode='single_native_gateway',main_gateway=topology.MAIN_GATEWAY,
+        retired_gateways=retired,topology_sha256=topology.topology_digest(body),
+        native_snapshot_sha256=sha256(snapshot).hexdigest(),authorization='explicit_user_operator',
+        autonomous_repair_credit=False,source=dict(registry_sha256=sha256(originals['registry.original']).hexdigest(),
+            transition_sha256=sha256(originals['transition.original']).hexdigest(),job_key=source,
+            job_sha256=sha256(originals['job.original']).hexdigest(),invocation_id='2'*32,
+            base_commit='b'*40,capture_sha256=sha256(originals['capture.original']).hexdigest()))
+    publish(authority/'hermes-topology.v1.json',body);publish(authority/'hermes-topology-intent.v1.json',intent)
+    registration=tmp_path/'managed-incident-receipts'/('topology-intent-'+intent['intent_id']);registration.mkdir()
+    for name,data in {**originals,'intent.original':c.canonical(intent),'topology.original':c.canonical(body),
+            'native-snapshot.original':snapshot}.items():(registration/name).write_bytes(data)
+    publish(registration/'complete.json',dict(schema='eimemory.hermes_topology_registration.v1',
+        intent_sha256=sha256(c.canonical(intent)).hexdigest(),source=intent['source'],
+        topology_sha256=intent['topology_sha256'],native_snapshot_sha256=intent['native_snapshot_sha256'],
+        registered_by_uid=1001,registered_by_gid=1001,authorization='explicit_user_operator',autonomous_repair_credit=False))
     return SimpleNamespace(module=module,bridge=bridge,registry=current,prior=prior,original=original,
-        record=record,capture=capture,base=base,history=history,states=states,calls=calls,persist=persist,publish=publish)
+        record=record,capture=capture,base=base,history=history,states=states,calls=calls,persist=persist,publish=publish,
+        retired=retired,registration=registration,intent=intent)
 
 
 @pytest.mark.skipif(os.name!='posix',reason='native directory fsync')
@@ -106,11 +143,14 @@ def test_quiesce_and_resume_keep_every_original_writer_and_enabled_timer(recover
     assert not (r.bridge.state/'manual-recovery-capture.json').exists()
     assert r.bridge.record_path(r.prior['job_key']).read_bytes()==old_raw
     assert r.prior==r.original
+    r.bridge.restore_plan(r.registry,record,create=True)
     r.bridge.resume(r.registry,record)
     proof=r.bridge.verify_restoration(r.registry,record)
-    assert proof['active_before']==record['active_before']
-    assert all(r.states[unit]['UnitFileState']=='enabled' for unit in record['active_before'])
-    assert all(r.states[unit]['ActiveState']=='active' for unit in record['active_before'])
+    assert proof['historical_active_before']==record['active_before']
+    effective=[unit for unit in record['active_before'] if unit not in r.retired]
+    assert all(r.states[unit]['UnitFileState']=='enabled' for unit in effective)
+    assert all(r.states[unit]['ActiveState']=='active' for unit in effective)
+    assert not any(unit in r.retired for unit,_ in r.calls)
 
 
 @pytest.mark.parametrize('damage', ['digest','scope','unknown_unit','source_bytes','native_restart','native_live',
@@ -200,6 +240,7 @@ def test_restore_enablement_is_exact_and_never_enables_originally_disabled(recov
     record['enabled_before']=dict(r.capture['enabled_before'])
     record['enabled_before']['eimemory-l1-extract.timer']='enabled-runtime'
     record['enabled_before']['eimemory-vector-sync.timer']='disabled'
+    r.bridge.restore_plan(r.registry,record,create=True)
     r.bridge.resume(r.registry,record)
     assert r.states['eimemory-l1-extract.timer']['UnitFileState']=='enabled-runtime'
     assert r.states['eimemory-vector-sync.timer']['UnitFileState']=='disabled'
@@ -213,6 +254,7 @@ def test_restore_oneshot_accepts_only_real_new_success_and_never_replays_unknown
     r=recovery;unit='eimemory-rpc.service';record=r.record
     record['active_before']=[unit];record['enabled_before']={unit:'disabled'}
     r.states[unit].update(Type='oneshot',ActiveState='inactive',InvocationID='a'*32)
+    r.bridge.restore_plan(r.registry,record,create=True)
     r.bridge.resume(r.registry,record)
     r.bridge.verify_restoration(r.registry,record)
     calls=list(r.calls);r.bridge.resume(r.registry,record)
@@ -224,43 +266,51 @@ def test_restore_oneshot_accepts_only_real_new_success_and_never_replays_unknown
     assert r.calls==calls
 
 
+@pytest.mark.skipif(os.name!='posix',reason='native durable reconciliation')
 def test_completion_requires_real_active_and_enabled_restore_before_finalizing_migration(recovery,monkeypatch):
     r=recovery;record=r.record
     record.update(active_before=list(r.capture['active_before']),enabled_before=dict(r.capture['enabled_before']),
         resumed=True,phase='resumed_awaiting_business')
+    r.bridge.restore_plan(r.registry,record,create=True)
     r.bridge.save(r.registry,record)
     monkeypatch.setattr(r.bridge,'verify_completed_validation',lambda *_:None)
     monkeypatch.setattr(r.bridge,'cleanup_validation_units',lambda *_:None)
     r.publish(r.bridge.state/'active-transition.json',dict(job_key=record['job_key'],complete=False))
     migration=r.bridge.state/'migration-prior-active.json'
     r.publish(migration,dict(active_before=list(record['active_before']),restored=False))
-    for unit in record['active_before']:r.states[unit].update(ActiveState='active',UnitFileState='enabled')
+    for unit in record['active_before']:
+        if unit not in r.retired:r.states[unit].update(ActiveState='active',UnitFileState='enabled')
     r.states['eimemory-vector-sync.timer']['ActiveState']='inactive'
     with pytest.raises(ValueError,match='restored_unit_not_running'):
         r.bridge.complete(r.registry,record['job_key'],7,1001)
     assert r.bridge.record(record['job_key']).get('finalized') is not True
     assert c.strict_json(migration.read_bytes())['restored'] is False
     r.states['eimemory-vector-sync.timer']['ActiveState']='active'
-    r.states['hermes-gateway-hongtai.service']['UnitFileState']='disabled'
+    r.states['hermes-gateway.service']['UnitFileState']='disabled'
     with pytest.raises(ValueError,match='enablement_unverified'):
         r.bridge.complete(r.registry,record['job_key'],7,1001)
     assert r.bridge.record(record['job_key']).get('finalized') is not True
-    r.states['hermes-gateway-hongtai.service']['UnitFileState']='enabled'
+    r.states['hermes-gateway.service']['UnitFileState']='enabled'
     r.bridge.complete(r.registry,record['job_key'],7,1001)
     assert r.bridge.record(record['job_key'])['finalized'] is True
-    assert c.strict_json(migration.read_bytes())['restored'] is True
+    assert c.strict_json(migration.read_bytes())['restored'] is False
+    assert r.bridge.migration_reconciled(r.registry,migration.read_bytes())
+    assert not any(unit in r.retired for unit,_ in r.calls)
 
 
 @pytest.mark.parametrize('point',['after_record','after_migration','after_pointer'])
+@pytest.mark.skipif(os.name!='posix',reason='native durable reconciliation')
 def test_completion_reconciles_each_durable_crash_point_with_sealed_revalidation(recovery,monkeypatch,point):
     r=recovery;record=r.record
     record.update(active_before=list(r.capture['active_before']),enabled_before=dict(r.capture['enabled_before']),
         resumed=True,phase='resumed_awaiting_business')
+    r.bridge.restore_plan(r.registry,record,create=True)
     r.bridge.save(r.registry,record)
     pointer=r.bridge.state/'active-transition.json';migration=r.bridge.state/'migration-prior-active.json'
     r.publish(pointer,dict(job_key=record['job_key'],complete=False))
     r.publish(migration,dict(active_before=list(record['active_before']),restored=False))
-    for unit in record['active_before']:r.states[unit].update(ActiveState='active',UnitFileState='enabled')
+    for unit in record['active_before']:
+        if unit not in r.retired:r.states[unit].update(ActiveState='active',UnitFileState='enabled')
     sealed=[]
     monkeypatch.setattr(r.bridge,'verify_completed_validation',lambda _,__,operation,___:sealed.append(operation))
     monkeypatch.setattr(r.bridge,'cleanup_validation_units',lambda *_:None)
@@ -274,7 +324,7 @@ def test_completion_reconciles_each_durable_crash_point_with_sealed_revalidation
         else:
             def fail_published(path,value,**kwargs):
                 r.publish(path,value,**kwargs)
-                if path==(migration if point=='after_migration' else pointer):raise OSError('simulated_controller_crash')
+                if path==((r.bridge.state/'migration-reconciliation.json') if point=='after_migration' else pointer):raise OSError('simulated_controller_crash')
             patch.setattr(r.module,'atomic_json',fail_published)
         with pytest.raises(OSError,match='simulated_controller_crash'):
             r.bridge.complete(r.registry,record['job_key'],7,1001)
@@ -283,7 +333,9 @@ def test_completion_reconciles_each_durable_crash_point_with_sealed_revalidation
     assert result['idempotent'] is True and result['operational_complete'] is True
     assert sealed==['receipt','post_resume','receipt','post_resume']
     assert c.strict_json(pointer.read_bytes())==dict(job_key=record['job_key'],complete=True,held=False)
-    assert c.strict_json(migration.read_bytes())['restored'] is True
+    assert c.strict_json(migration.read_bytes())['restored'] is False
+    assert r.bridge.migration_reconciled(r.registry,migration.read_bytes())
+    assert not any(unit in r.retired for unit,_ in r.calls)
 
 
 @pytest.mark.parametrize('fault',['foreign_pointer','changed_registry','changed_current','failed_seal','failed_restore'])
@@ -291,11 +343,13 @@ def test_finalized_completion_never_overwrites_foreign_or_unverified_context(rec
     r=recovery;record=r.record
     record.update(active_before=list(r.capture['active_before']),enabled_before=dict(r.capture['enabled_before']),
         resumed=True,phase='completed',finalized=True)
+    r.bridge.restore_plan(r.registry,record,create=True)
     r.bridge.save(r.registry,record)
     pointer=r.bridge.state/'active-transition.json'
     value=dict(job_key='8'*64 if fault=='foreign_pointer' else record['job_key'],complete=False)
     r.publish(pointer,value);original=pointer.read_bytes()
-    for unit in record['active_before']:r.states[unit].update(ActiveState='active',UnitFileState='enabled')
+    for unit in record['active_before']:
+        if unit not in r.retired:r.states[unit].update(ActiveState='active',UnitFileState='enabled')
     monkeypatch.setattr(r.bridge,'verify_completed_validation',lambda *_:None)
     monkeypatch.setattr(r.bridge,'cleanup_validation_units',lambda *_:None)
     if fault=='changed_registry':monkeypatch.setattr(r.bridge,'registry',lambda:dict(r.registry,generation='9'*64))

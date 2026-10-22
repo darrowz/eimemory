@@ -796,6 +796,219 @@ class Bridge:
                 or any(not isinstance(value,str) or value not in states for value in enabled.values())):
             raise ValueError('manager_restore_capture_invalid')
 
+    def topology_contract(self):
+        trusted_directory(ROOT,mode=0o750)
+        path=ROOT/'hermes_topology_contract.py';raw=read_file(path,maximum=512*1024)
+        specification=importlib.util.spec_from_file_location('reviewed_hermes_topology',path)
+        module=importlib.util.module_from_spec(specification)
+        exec(compile(raw,str(path),'exec'),module.__dict__)
+        return module
+
+    def topology_links(self,registry,retired):
+        """No new guards or masks: prove native autostart links are absent."""
+        import pwd
+        home=Path(pwd.getpwuid(registry['runtime_uid']).pw_dir)
+        roots=(home/'.config/systemd/user',home/'.local/share/systemd/user',
+            Path('/run/user')/str(registry['runtime_uid'])/'systemd/user')
+        checked=0
+        for root in roots:
+            if not root.exists():continue
+            for path in root.rglob('*'):
+                checked+=1
+                if checked>8192:raise ValueError('manager_topology_link_inventory_limit')
+                if not path.is_symlink():continue
+                if any(part.endswith(('.wants','.requires','.upholds')) for part in path.relative_to(root).parts[:-1]):
+                    target=path.resolve(strict=False)
+                    if path.name in retired or target.name in retired:
+                        raise ValueError('manager_topology_retired_autostart_link')
+        return True
+
+    def retired_topology_readback(self,registry,retired):
+        result={}
+        properties=['LoadState','ActiveState','UnitFileState','MainPID','ControlPID','ControlGroup']
+        for unit in sorted(retired):
+            if unit not in registry['units']:raise ValueError('manager_topology_unit_unknown')
+            native=self.unit_state(registry,unit,properties)
+            absent=native['LoadState']=='not-found' and native['UnitFileState'] in {'','not-found','disabled'}
+            disabled=native['LoadState']=='loaded' and native['UnitFileState']=='disabled'
+            if (not (absent or disabled) or native['ActiveState'] not in {'inactive','failed'}
+                    or native['MainPID']!='0' or native['ControlPID']!='0' or native['ControlGroup']!=''):
+                raise ValueError('manager_topology_retired_unit_not_quiescent')
+            result[unit]=native
+        self.topology_links(registry,set(retired))
+        return result
+
+    def registered_topology(self,registry,reference=None):
+        path=self.registry_path.parent/'hermes-topology-intent.v1.json'
+        logical_path=self.registry_path.parent/'hermes-topology.v1.json'
+        if not os.path.lexists(path):
+            if reference is not None or os.path.lexists(logical_path):raise ValueError('manager_topology_intent_missing')
+            return None
+        raw=read_file(path);intent=self.c.strict_json(raw);digest=sha256(raw).hexdigest()
+        if self.c.canonical(intent)!=raw:raise ValueError('manager_topology_intent_noncanonical')
+        topology=self.topology_contract()
+        logical_raw=read_file(logical_path,maximum=1024*1024);logical=self.c.strict_json(logical_raw,max_bytes=1024*1024)
+        body=topology.validate_topology(logical)
+        logical_digest=topology.topology_digest(body)
+        if any(profile.get('operator_scope',{}).get('user_id',registry['runtime_user'])!=registry['runtime_user']
+                for profile in body['profiles']):
+            raise ValueError('manager_topology_operator_identity_invalid')
+        if (intent.get('topology_sha256')!=logical_digest
+                or body['runtime_uid']!=registry['runtime_uid'] or body['runtime_gid']!=registry['runtime_gid']):
+            raise ValueError('manager_topology_declaration_changed')
+        topology.validate_operator_topology_intent(intent,main=topology.MAIN_GATEWAY,
+            retired=body['retired_gateways'],uid=registry['runtime_uid'],gid=registry['runtime_gid'])
+        expected_reference={'basename':path.name,'sha256':digest}
+        if reference is not None and reference!=expected_reference:
+            raise ValueError('manager_topology_intent_changed')
+        history=self.state/'managed-incident-receipts'/('topology-intent-'+intent['intent_id'])
+        trusted_directory(history,mode=0o700)
+        if read_file(history/'intent.original',mode=0o600)!=raw:
+            raise ValueError('manager_topology_intent_history_changed')
+        if read_file(history/'topology.original',mode=0o600,maximum=1024*1024)!=logical_raw:
+            raise ValueError('manager_topology_declaration_changed')
+        source=intent['source']
+        pins={'registry.original':'registry_sha256','transition.original':'transition_sha256',
+            'job.original':'job_sha256','capture.original':'capture_sha256'}
+        originals={}
+        for basename,key in pins.items():
+            data=read_file(history/basename,mode=0o600)
+            if sha256(data).hexdigest()!=source[key]:raise ValueError('manager_topology_source_changed')
+            originals[basename]=self.c.strict_json(data)
+        snapshot=read_file(history/'native-snapshot.original',mode=0o600,maximum=1024*1024)
+        if sha256(snapshot).hexdigest()!=intent['native_snapshot_sha256']:
+            raise ValueError('manager_topology_native_snapshot_changed')
+        prior=originals['job.original'];capture=originals['capture.original']
+        self.c.validate_manual_permit(prior.get('request'),source['job_key'])
+        self.c.validate_registry(prior.get('registry'))
+        archived_registry=self.c.validate_registry(originals['registry.original'])
+        if (archived_registry['runtime_uid']!=registry['runtime_uid']
+                or archived_registry['runtime_gid']!=registry['runtime_gid']
+                or archived_registry['runtime_commit']!=source['base_commit']
+                or prior.get('job_key')!=source['job_key'] or prior.get('original_invocation')!=source['invocation_id']
+                or capture.get('source_job_sha256')!=source['job_sha256']
+                or capture.get('source_job_key')!=source['job_key']
+                or capture.get('source_invocation_id')!=source['invocation_id']
+                or capture.get('base_commit')!=source['base_commit']
+                or capture.get('active_before')!=prior.get('active_before')
+                or capture.get('scope')!=prior['request']['scope']
+                or not set(intent['retired_gateways'])<=set(self.c.compatibility_units(prior['registry']['units']))):
+            raise ValueError('manager_topology_source_binding_invalid')
+        receipt=self.c.strict_json(read_file(history/'complete.json',mode=0o600))
+        expected={'schema':'eimemory.hermes_topology_registration.v1','intent_sha256':digest,
+            'source':source,'topology_sha256':logical_digest,'native_snapshot_sha256':intent['native_snapshot_sha256'],
+            'registered_by_uid':registry['runtime_uid'],'registered_by_gid':registry['runtime_gid'],
+            'authorization':'explicit_user_operator','autonomous_repair_credit':False}
+        if receipt!=expected:raise ValueError('manager_topology_registration_unverified')
+        return intent,expected_reference
+
+    def native_topology_snapshot(self,registry,main,retired):
+        properties=['LoadState','ActiveState','UnitFileState','MainPID','ControlPID','ControlGroup','InvocationID']
+        owner=self.unit_state(registry,main,properties)
+        if (owner['LoadState']!='loaded' or owner['ActiveState']!='active'
+                or not owner['MainPID'].isdigit() or int(owner['MainPID'])<=0
+                or not owner['ControlGroup'] or re.fullmatch('[0-9a-f]{32}',owner['InvocationID']) is None):
+            raise ValueError('manager_topology_owner_unverified')
+        return {'schema':'eimemory.hermes_topology_native_snapshot.v1',
+            'runtime_uid':registry['runtime_uid'],'runtime_gid':registry['runtime_gid'],
+            'owner_unit':main,'owner_state':owner,'retired_units':self.retired_topology_readback(registry,retired),
+            'autostart_links_absent':True}
+
+    def restore_plan(self,registry,record,*,create=False):
+        """Retain capture facts; execute only an authenticated desired plan."""
+        active=record.get('active_before');enabled=record.get('enabled_before',{})
+        if (not isinstance(active,list) or any(not isinstance(unit,str) for unit in active)
+                or len(active)!=len(set(active)) or not isinstance(enabled,dict)
+                or any(not isinstance(unit,str) or not isinstance(state,str) for unit,state in enabled.items())):
+            raise ValueError('manager_restore_capture_invalid')
+        if not USER_MODE:
+            return {'active_units':active,'enabled_units':enabled,'retired_units':[]}
+        context=self.registered_topology(registry,record.get('topology_intent'))
+        if context is None:
+            if (isinstance(active,list) and any(unit.startswith('hermes-gateway-') for unit in active)
+                    or any(unit.startswith('hermes-gateway-') and state in {'enabled','enabled-runtime'}
+                        for unit,state in enabled.items())):
+                raise ValueError('manager_operator_topology_intent_required')
+            self.verify_restore_capture(record['registry'],active,enabled)
+            return {'active_units':active,'enabled_units':enabled,'retired_units':[]}
+        intent,reference=context;retired=set(intent['retired_gateways'])
+        desired_active=[unit for unit in active if unit not in retired]
+        desired_enabled={unit:value for unit,value in enabled.items() if unit not in retired}
+        self.verify_restore_capture(record['registry'],desired_active,desired_enabled)
+        retired_now=self.retired_topology_readback(record['registry'],retired)
+        expected={'schema':'eimemory.native_restore_plan.v1','job_key':record['job_key'],
+            'topology_intent':reference,'source_capture':record.get('recovery_capture'),
+            'captured_active_before':list(active),'captured_enabled_before':dict(enabled),
+            'active_units':desired_active,'enabled_units':desired_enabled,
+            'native_pre_quiesce':record.get('native_pre_quiesce'),
+            'retired_before':record.get('retired_topology_before',retired_now),
+            'retired_units':sorted(retired),'autonomous_repair_credit':False}
+        prior=record.get('restore_plan')
+        if prior is not None:
+            if prior!=expected:raise ValueError('manager_restore_plan_changed')
+        elif not create:raise ValueError('manager_restore_plan_missing')
+        else:
+            record['retired_topology_before']=retired_now
+            record['topology_intent']=reference;record['restore_plan']=expected
+            self.save(registry,record)
+        return expected
+
+    def migration_reconciled(self,registry,migration_raw):
+        path=self.state/'migration-reconciliation.json'
+        if not os.path.lexists(path):return False
+        value=self.c.strict_json(read_file(path))
+        fields={'schema','source_migration_sha256','job_key','topology_intent','restore_plan_sha256',
+            'restoration_verification_sha256','authorization','autonomous_repair_credit'}
+        if (not isinstance(value,dict) or set(value)!=fields
+                or value['schema']!='eimemory.native_migration_reconciliation.v1'
+                or value['source_migration_sha256']!=sha256(migration_raw).hexdigest()
+                or value['authorization']!='explicit_user_operator' or value['autonomous_repair_credit'] is not False):
+            raise ValueError('manager_migration_reconciliation_invalid')
+        prior=self.record(self.c.hex_value(value['job_key'],64,'manager_migration_reconciliation_job_invalid'))
+        if (prior.get('finalized') is not True or prior.get('phase')!='completed'
+                or prior.get('topology_intent')!=value['topology_intent']
+                or self.c.digest(prior.get('restore_plan'))!=value['restore_plan_sha256']
+                or self.c.digest(prior.get('restoration_verification'))!=value['restoration_verification_sha256']):
+            raise ValueError('manager_migration_reconciliation_unproven')
+        self.registered_topology(registry,value['topology_intent'])
+        history=self.state/'managed-incident-receipts'/('migration-reconciliation-'+value['job_key'])
+        trusted_directory(history,mode=0o700)
+        if (read_file(history/'migration.original',mode=0o600)!=migration_raw
+                or self.c.strict_json(read_file(history/'complete.json',mode=0o600))!=value):
+            raise ValueError('manager_migration_reconciliation_history_changed')
+        return True
+
+    def publish_migration_reconciliation(self,registry,record,migration_raw):
+        plan=self.restore_plan(registry,record)
+        value={'schema':'eimemory.native_migration_reconciliation.v1',
+            'source_migration_sha256':sha256(migration_raw).hexdigest(),'job_key':record['job_key'],
+            'topology_intent':plan['topology_intent'],'restore_plan_sha256':self.c.digest(plan),
+            'restoration_verification_sha256':self.c.digest(record['restoration_verification']),
+            'authorization':'explicit_user_operator','autonomous_repair_credit':False}
+        history=self.state/'managed-incident-receipts'/('migration-reconciliation-'+record['job_key'])
+        if not history.exists():
+            history.mkdir(mode=0o700)
+            descriptor=os.open(history.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            try:os.fsync(descriptor)
+            finally:os.close(descriptor)
+        trusted_directory(history,mode=0o700)
+        for basename,data in [('migration.original',migration_raw),('complete.json',self.c.canonical(value))]:
+            destination=history/basename
+            if os.path.lexists(destination):
+                if read_file(destination,mode=0o600)!=data:raise ValueError('manager_migration_reconciliation_history_changed')
+            else:
+                descriptor=os.open(destination,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+                with os.fdopen(descriptor,'wb') as stream:
+                    stream.write(data);stream.flush();os.fsync(stream.fileno())
+                descriptor=os.open(history,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+                try:os.fsync(descriptor)
+                finally:os.close(descriptor)
+        path=self.state/'migration-reconciliation.json'
+        if os.path.lexists(path):
+            if self.c.strict_json(read_file(path))!=value:raise ValueError('manager_migration_reconciliation_changed')
+        else:atomic_json(path,value,gid=registry['runtime_gid'],exclusive=True)
+        self.migration_reconciled(registry,migration_raw)
+
     def manual_recovery_capture(self,registry,record,current):
         """Authenticate the failed transaction and its original restore set."""
         reference=record.get('recovery_capture')
@@ -828,7 +1041,6 @@ class Bridge:
                 or applied is None and current.name!=capture['base_commit']
                 or re.fullmatch('manual-abandon-[0-9]+',capture['history_basename']) is None):
             raise ValueError('manager_recovery_capture_binding_invalid')
-        self.verify_restore_capture(record['registry'],capture['active_before'],capture['enabled_before'])
         source=self.c.hex_value(capture['source_job_key'],64,'manager_recovery_source_key_invalid')
         self.c.hex_value(capture['source_job_sha256'],64,'manager_recovery_source_digest_invalid')
         invocation=self.c.hex_value(capture['source_invocation_id'],32,'manager_recovery_source_invocation_invalid')
@@ -842,6 +1054,10 @@ class Bridge:
         prior=self.c.strict_json(original)
         self.c.validate_manual_permit(prior.get('request'),source)
         old_registry=self.c.validate_registry(prior.get('registry'))
+        # Historical membership belongs to the authenticated source registry.
+        # A later operator topology can legitimately retire an installed unit;
+        # that does not erase or invalidate its earlier capture.
+        self.verify_restore_capture(old_registry,capture['active_before'],capture['enabled_before'])
         if (prior.get('job_key')!=source or prior.get('unit')!=self.c.job_unit(source)
                 or prior.get('manual_release') is not True or prior.get('quiesced') is not True
                 or prior.get('original_invocation')!=invocation
@@ -1005,9 +1221,10 @@ class Bridge:
             self.fence_job_processes(registry,record,include_parent=False)
             if record['active_before'] is None or USER_MODE and 'enabled_before' not in record:
                 active=[] if record['active_before'] is None else list(record['active_before'])
-                enabled={}
+                enabled={};native_before={}
                 for unit in self.writers(record['registry']):
                     state=self.unit_state(record['registry'],unit,['LoadState','ActiveState']+(['UnitFileState'] if USER_MODE else []))
+                    native_before[unit]=dict(state)
                     if state['LoadState'] not in {'loaded','not-found'}:raise ValueError('manager_writer_load_unknown')
                     if state['ActiveState'] in {'active','activating','reloading','deactivating'}:
                         if unit not in active:active.append(unit)
@@ -1015,14 +1232,15 @@ class Bridge:
                     if USER_MODE:enabled[unit]=state['UnitFileState']
                 migration=self.state/'migration-prior-active.json'
                 if record.get('manual_release') is True and migration.exists():
-                    original=self.c.strict_json(read_file(migration))
-                    if original.get('restored') is not True:
+                    migration_raw=read_file(migration);original=self.c.strict_json(migration_raw)
+                    if original.get('restored') is not True and not (USER_MODE and self.migration_reconciled(registry,migration_raw)):
                         for unit in original['active_before']:
                             if unit not in record['registry']['units']:raise ValueError('manager_migration_unit_unknown')
                             if unit not in active:active.append(unit)
                 record['active_before']=active
                 if USER_MODE:
                     record['enabled_before']=enabled
+                    record['native_pre_quiesce']=native_before
                     record['enabled_before_sources']={'source':'native_pre_quiesce','registry_generation':registry['generation']}
                 record['phase']='quiesce_intent';self.save(registry,record)
             if recovery is not None:
@@ -1032,12 +1250,12 @@ class Bridge:
                 record.setdefault('enabled_before',{}).update(capture['enabled_before'])
                 record['enabled_before_sources']={'source':'native_pre_quiesce_with_verified_recovery',
                     'recovery_capture_sha256':binding['sha256'],'history_basename':binding['history_basename']}
-            if USER_MODE:self.verify_restore_capture(record['registry'],record['active_before'],record['enabled_before'])
+            plan=self.restore_plan(registry,record,create=True)
             self.consume_manual_recovery_capture(registry,record,recovery)
             record['phase']='quiesce_intent';self.save(registry,record)
             # Timers first; RPC/gateways last. A partial failure preserves the
             # original set and never resets it from the now-stopped inventory.
-            ordered=sorted(record['active_before'],key=lambda x:(x.endswith('.service'),x in {'eimemory-rpc.service','hermes-gateway.service','openclaw-gateway.service'},x))
+            ordered=sorted(plan['active_units'],key=lambda x:(x.endswith('.service'),x in {'eimemory-rpc.service','hermes-gateway.service','openclaw-gateway.service'},x))
             for unit in ordered:self.systemctl(record['registry'],unit,'stop')
             for unit in self.writers(record['registry']):
                 state=self.unit_state(record['registry'],unit,['ActiveState'])
@@ -1048,8 +1266,9 @@ class Bridge:
             target=record['request']['target_commit'] if phase!='rollback' else record['request']['base_commit']
             self.publish_runtime(registry,record,target,activate=phase in {'activate','rollback'})
             if phase in {'activate','rollback'}:
+                plan=self.restore_plan(registry,record)
                 for unit in ('eimemory-rpc.service','hermes-gateway.service','openclaw-gateway.service'):
-                    if record['registry']['units'][unit]['installed'] and (unit=='eimemory-rpc.service' or unit in record['active_before']):
+                    if record['registry']['units'][unit]['installed'] and (unit=='eimemory-rpc.service' or unit in plan['active_units']):
                         self.systemctl(record['registry'],unit,'restart')
         elif phase=='resume_watchers':
             if not record['quiesced']:raise ValueError('manager_transition_not_quiesced')
@@ -1271,15 +1490,24 @@ class Bridge:
             raise ValueError('manager_complete_transition_changed')
         self.cleanup_validation_units(registry,key)
         migration=self.state/'migration-prior-active.json';original_migration=None;migration_raw=None
+        migration_already_reconciled=False
         if USER_MODE and not held:
             record['restoration_verification']=self.verify_restoration(registry,record)
             if record.get('manual_release') is True and migration.exists():
                 migration_raw=read_file(migration);original_migration=self.c.strict_json(migration_raw)
                 active=original_migration.get('active_before')
                 enabled=original_migration.get('enabled_before',{})
-                self.verify_restore_capture(record['registry'],active,enabled)
-                if (not set(active)<=set(record['active_before'])
-                        or any(record['enabled_before'].get(unit)!=value for unit,value in enabled.items())):
+                if record.get('restore_plan') is not None:
+                    plan=self.restore_plan(registry,record);retired=set(plan['retired_units'])
+                    if not isinstance(active,list) or not isinstance(enabled,dict):
+                        raise ValueError('manager_migration_restore_capture_invalid')
+                    self.verify_restore_capture(record['registry'],[unit for unit in active if unit not in retired],
+                        {unit:value for unit,value in enabled.items() if unit not in retired})
+                    migration_already_reconciled=self.migration_reconciled(registry,migration_raw)
+                else:self.verify_restore_capture(record['registry'],active,enabled)
+                if (not migration_already_reconciled and original_migration.get('restored') is not True
+                        and (not set(active)<=set(record['active_before'])
+                            or any(record['enabled_before'].get(unit)!=value for unit,value in enabled.items()))):
                     raise ValueError('manager_migration_restore_set_lost')
         if (CURRENT.resolve(strict=True)!=target or self.registry()!=registry
                 or read_file(active_path)!=transition_raw
@@ -1289,7 +1517,9 @@ class Bridge:
         self.save(registry,record)
         if not held and record.get('manual_release') is True and migration.exists():
             original=original_migration if original_migration is not None else self.c.strict_json(read_file(migration))
-            if original.get('restored') is not True or USER_MODE and 'restoration_verification' not in original:
+            if USER_MODE and record.get('restore_plan') is not None:
+                if not migration_already_reconciled:self.publish_migration_reconciliation(registry,record,migration_raw)
+            elif original.get('restored') is not True or USER_MODE and 'restoration_verification' not in original:
                 original['restored']=True
                 if USER_MODE:
                     original['restoration_job_key']=key
@@ -1318,6 +1548,8 @@ class Bridge:
         if activate and CURRENT.resolve(strict=True)!=release:
             raise ValueError('manager_current_target_mismatch')
         for unit,pin in registry['template_hashes'].items():
+            if unit in {'hermes-gateway.service','openclaw-gateway.service'} or unit.startswith('hermes-gateway-'):
+                continue
             source=ROOT/'templates'/unit
             raw=read_file(source)
             if sha256(raw).hexdigest()!=pin:raise ValueError('manager_template_digest_mismatch')
@@ -1372,7 +1604,7 @@ class Bridge:
             if temporary.exists():temporary.unlink()
 
     def resume(self,registry,record):
-        active=record['active_before']
+        plan=self.restore_plan(registry,record);active=plan['active_units']
         if active is None:raise ValueError('manager_restore_set_missing')
         if USER_MODE:
             self.restore_enablement(registry,record)
@@ -1396,8 +1628,9 @@ class Bridge:
                 self.save(registry,record)
 
     def restore_enablement(self,registry,record):
-        self.verify_restore_capture(record['registry'],record['active_before'],record.get('enabled_before'))
-        for unit,desired in sorted(record['enabled_before'].items()):
+        plan=self.restore_plan(registry,record)
+        self.verify_restore_capture(record['registry'],plan['active_units'],plan['enabled_units'])
+        for unit,desired in sorted(plan['enabled_units'].items()):
             current=self.unit_state(record['registry'],unit,['UnitFileState'])['UnitFileState']
             if current==desired:continue
             if desired in {'enabled','enabled-runtime'}:
@@ -1453,11 +1686,21 @@ class Bridge:
         raise ValueError('manager_restored_unit_not_running')
 
     def verify_restoration(self,registry,record):
-        self.verify_restore_capture(record['registry'],record['active_before'],record.get('enabled_before'))
-        for unit,desired in record['enabled_before'].items():
+        plan=self.restore_plan(registry,record)
+        self.verify_restore_capture(record['registry'],plan['active_units'],plan['enabled_units'])
+        for unit,desired in plan['enabled_units'].items():
             if self.unit_state(record['registry'],unit,['UnitFileState'])['UnitFileState']!=desired:
                 raise ValueError('manager_restore_enablement_unverified')
-        for unit in record['active_before']:self.verify_restored_unit(record,unit)
+        for unit in plan['active_units']:self.verify_restored_unit(record,unit)
+        if record.get('restore_plan') is not None:
+            retired=self.retired_topology_readback(record['registry'],plan['retired_units'])
+            return {'schema':'eimemory.native_runtime_reconciliation.v1',
+                'historical_active_before':list(record['active_before']),
+                'historical_enabled_before':dict(record['enabled_before']),
+                'restore_plan_sha256':self.c.digest(plan),'topology_intent':plan['topology_intent'],
+                'restored_active_units':list(plan['active_units']),'restored_enablement':dict(plan['enabled_units']),
+                'retired_units':retired,'source':'authenticated_native_unit_readback',
+                'authorization':'explicit_user_operator','autonomous_repair_credit':False}
         return {'schema':'eimemory.native_runtime_restoration.v1','active_before':list(record['active_before']),
             'enabled_before':dict(record['enabled_before']),'source':'authenticated_native_unit_readback'}
 
@@ -1478,6 +1721,12 @@ class Bridge:
         if (process.stat().st_uid!=registry['runtime_uid']
                 or status.get('Uid','').split()!=[str(registry['runtime_uid'])]*4):
             raise ValueError('manager_process_owner_mismatch')
+        namespace_tokens=status.get('NSpid','').split()
+        if (len(namespace_tokens)>32 or any(re.fullmatch('[0-9]+',item) is None
+                or int(item)<=0 for item in namespace_tokens)
+                or namespace_tokens and int(namespace_tokens[0])!=int(before['MainPID'])):
+            raise ValueError('manager_process_namespace_pids_invalid')
+        namespace_pids=[int(item) for item in namespace_tokens]
         groups=(process/'cgroup').read_text().splitlines();group=before['ControlGroup']
         if not any(row.startswith('0::') and (row[3:]==group or row[3:].startswith(group+'/')) for row in groups):
             raise ValueError('manager_process_cgroup_mismatch')
@@ -1492,9 +1741,13 @@ class Bridge:
             if environment.get('EIMEMORY_RUNTIME_SETTINGS_APPLIED')!=token:
                 raise ValueError('manager_process_settings_exec_unverified')
         after=self.unit_state(registry,unit,properties)
-        if after!=before or ticks()!=start:raise ValueError('manager_process_identity_changed')
+        status_after=dict(line.split(':',1) for line in (process/'status').read_text().splitlines() if ':' in line)
+        if (after!=before or ticks()!=start or status_after.get('NSpid','').split()!=namespace_tokens
+                or status_after.get('Uid','').split()!=[str(registry['runtime_uid'])]*4):
+            raise ValueError('manager_process_identity_changed')
         return {'schema':'eimemory.runtime_process_environment.v1','unit':unit,'pid':int(before['MainPID']),
-            'start_ticks':start,'invocation_id':before['InvocationID'],'environment':environment}
+            'start_ticks':start,'invocation_id':before['InvocationID'],'environment':environment,
+            'namespace_pids':namespace_pids}
 
     def dispatch(self,value,*,pid,uid):
         registry=self.registry()

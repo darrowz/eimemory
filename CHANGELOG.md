@@ -13,6 +13,8 @@ AIGC:
 
 ## [1.15.22] — 2026-10-22
 
+- Follow Hermes' single native gateway and multiple logical profiles across request identity, credentials, callbacks, sampling, acceptance and recovery. Preserve retired gateway history without recreating old services or constraining the native gateway.
+- Bind stability v2 to the real served-profile roster and process lifetime; retain exact per-user sampling coverage and independent historical evidence contracts.
 - Keep Hermes/OpenClaw gateway execution under their native configuration. Publish memory integration environment only, retire verified historical eiMemory restrictions, and preserve native startup commands and directory permissions.
 - Move Hermes handoff data into a private eiMemory directory with exact legacy queue migration, and protect eiMemory source caches without changing the gateway's global Python policy.
 - Keep the user controller in the host user and PID namespaces with no effective, permitted or ambient capabilities, so authenticated process observations work without privileged runtime access.

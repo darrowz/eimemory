@@ -126,7 +126,7 @@ def test_real_hook_observes_exceptions_without_attestation_receipt(live, monkeyp
     from integrations.hermes import eimemory_hook as hook
     runtime, bridge, provider, host, calls = live
     monkeypatch.setattr(hook, "get_hermes_provider", lambda session: provider if session == "signal-session" else None)
-    monkeypatch.setattr(hook, "hermes_producer_token", lambda: "")
+    monkeypatch.setattr(hook, "hermes_attestation_client_from_env", lambda **_kwargs: None)
     monkeypatch.setattr(hook, "register_code_implementation_task", lambda ctx: None)
     hooks, middleware = {}, {}
     ctx = SimpleNamespace(register_hook=lambda name, cb: hooks.update({name: cb}),

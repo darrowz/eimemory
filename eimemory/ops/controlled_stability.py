@@ -7,6 +7,7 @@ An enclosing release acceptance receipt must authenticate this report.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from contextvars import ContextVar
 from hashlib import sha256
 import json
 import math
@@ -24,7 +25,11 @@ from eimemory.core.strict_json import loads as strict_json_loads
 
 SCHEMA = "controlled_operational_stability.v1"
 SAMPLE_SCHEMA = "controlled_operational_stability_sample.v1"
+TOPOLOGY_SCHEMA = "controlled_operational_stability.v2"
+TOPOLOGY_SAMPLE_SCHEMA = "controlled_operational_stability_sample.v2"
 RUNTIME_UNITS = ("eimemory-rpc.service", "hermes-gateway.service")
+_TOPOLOGY_UNSET = object()
+_OBSERVATION_TOPOLOGY = ContextVar("eimemory_stability_topology", default=_TOPOLOGY_UNSET)
 TIMER_UNITS = (
     "eimemory-nightly.timer", "eimemory-backup.timer", "eimemory-audit-verify.timer",
     "eimemory-timer-monitor.timer", "eimemory-vector-sync.timer",
@@ -33,7 +38,22 @@ TIMER_UNITS = (
 )
 JOB_UNITS = tuple(name.removesuffix(".timer") + ".service" for name in TIMER_UNITS)
 UNITS = RUNTIME_UNITS + TIMER_UNITS + JOB_UNITS
+
+
+def _topology():
+    value = _OBSERVATION_TOPOLOGY.get()
+    if value is _TOPOLOGY_UNSET:
+        from eimemory.contracts.hermes_topology import load_topology
+        return load_topology()
+    return value
+
+
 def _runtime_units() -> tuple[str, ...]:
+    topology = _topology()
+    if topology is not None:
+        # Expected owners come from the operator declaration, never from the
+        # subset that happens to be active after a gateway crash.
+        return tuple(topology['runtime_units'])
     from eimemory.ops.runtime_service_observation import registered_runtime_context
     if not registered_runtime_context():
         return _user_runtime_units()
@@ -209,13 +229,19 @@ def _host_process_observation(state: dict[str,str]) -> dict[str,Any]:
     from eimemory.core.runtime_manager import request
     value=request('runtime_process_environment',unit=state['Id'])['observation']
     fields={'schema','unit','pid','start_ticks','invocation_id','environment'}
-    if (not isinstance(value,dict) or set(value)!=fields
+    if (not isinstance(value,dict) or set(value) not in (fields, fields | {'namespace_pids'})
             or value['schema']!='eimemory.runtime_process_environment.v1' or value['unit']!=state['Id']
             or type(value['pid']) is not int or value['pid']!=int(state['MainPID']) or value['pid']<=0
             or type(value['start_ticks']) is not int or value['start_ticks']<=0
             or not isinstance(value['invocation_id'],str) or re.fullmatch('[0-9a-f]{32}',value['invocation_id']) is None
             or not isinstance(value['environment'],dict)
             or any(not isinstance(k,str) or not isinstance(v,str) or '\0' in k+v for k,v in value['environment'].items())):
+        raise ValueError('runtime_host_process_observation_invalid')
+    if 'namespace_pids' in value and (not isinstance(value['namespace_pids'], list)
+            or not 0 <= len(value['namespace_pids']) <= 64
+            or any(type(pid) is not int or pid <= 0 for pid in value['namespace_pids'])
+            or (value['namespace_pids'] and value['namespace_pids'][0] != value['pid'])
+            or len(set(value['namespace_pids'])) != len(value['namespace_pids'])):
         raise ValueError('runtime_host_process_observation_invalid')
     return value
 
@@ -355,6 +381,8 @@ def _process_status(state: dict[str, str], expected_commit: str) -> dict[str, An
         value=_host_process_observation(state)
         result=_capture_environment_status(value['environment'],state['Id'],expected_commit)
         result.update(pid=value['pid'],start_ticks=value['start_ticks'])
+        if _topology() is not None:
+            result['invocation_id'] = value['invocation_id']
         return result
     pid, process, env = _process_environment(state)
     result = _capture_environment_status(env, state["Id"], expected_commit)
@@ -382,12 +410,18 @@ def _credential_binding(states: list[dict[str, str]]) -> bool:
 
 def _capture_environment_status(env: dict[str, str], unit: str, expected_commit: str) -> dict[str, Any]:
     allowed = strict_json_loads(env.get("EIMEMORY_CAPTURE_QUERY_SCOPES", "null"), max_bytes=65536)
+    topology = _topology()
+    coverage = None
     fields = {"tenant_id", "agent_id", "workspace_id", "user_id", "channel", "source_id"}
-    valid = (isinstance(allowed, list) and len(allowed) == 6 and all(
+    valid = (isinstance(allowed, list) and (1 <= len(allowed) <= 100 if topology is not None else len(allowed) == 6) and all(
         isinstance(entry, dict) and set(entry) == fields and all(
             isinstance(v, str) and bool(v.strip()) and "*" not in v for v in entry.values())
         for entry in allowed))
-    if valid:
+    if topology is not None:
+        from eimemory.evaluation.hermes_profile_coverage import capture_coverage
+        coverage = capture_coverage(allowed, topology)
+        valid = valid and coverage['ok']
+    elif valid:
         valid = len({_digest(entry) for entry in allowed}) == 6 and _required_agents().issubset(
             {entry["agent_id"] for entry in allowed})
     from eimemory.adapters.runtime.host_auth import attestation_tokens_from_private_file, producer_token_from_private_file
@@ -397,12 +431,15 @@ def _capture_environment_status(env: dict[str, str], unit: str, expected_commit:
         producer_ready = bool(producer_token_from_private_file("hermes", environ=env))
     capture = env.get("EIMEMORY_CAPTURE_ORIGINAL_QUERY") == "1"
     budget = env.get("EIMEMORY_RECALL_BUDGET_SECONDS") == "8"
-    return {"unit": unit, "ok": valid and capture and budget and producer_ready
+    result = {"unit": unit, "ok": valid and capture and budget and producer_ready
                 and env.get("EIMEMORY_RUNTIME_COMMIT") == expected_commit,
             "capture_enabled": capture, "capture_scope_count": len(allowed) if isinstance(allowed, list) else 0,
             "capture_policy_valid": bool(valid), "capture_policy_digest": _digest(allowed) if valid else "",
             "recall_budget_seconds": 8 if budget else None, "hermes_attestation_ready": producer_ready,
             "runtime_commit_matches": env.get("EIMEMORY_RUNTIME_COMMIT") == expected_commit}
+    if coverage is not None:
+        result['profile_capture_coverage'] = coverage
+    return result
 
 
 def _database(path: Path) -> dict[str, Any]:
@@ -602,12 +639,26 @@ def _journal() -> dict[str, Any]:
 
 
 def collect_controlled_stability_sample(*, expected_commit: str, database_path: str | Path) -> dict[str, Any]:
+    """Freeze the registered identity inventory for this complete measurement."""
+    topology = _topology()
+    token = _OBSERVATION_TOPOLOGY.set(topology)
+    try:
+        return _collect_controlled_stability_sample(expected_commit=expected_commit,
+                                                     database_path=database_path)
+    finally:
+        _OBSERVATION_TOPOLOGY.reset(token)
+
+
+def _collect_controlled_stability_sample(*, expected_commit: str, database_path: str | Path) -> dict[str, Any]:
     """Collect once as the database owner; no recall, Runtime, DB writes or actions."""
     commit = _commit(expected_commit)
     result: dict[str, Any] = {"schema": SAMPLE_SCHEMA, "expected_commit": commit,
         "observed_at": datetime.now(timezone.utc).isoformat(), "monotonic_seconds": time.monotonic(),
         "boot_id": "", "collector_origin": "native_readonly_host_probe", "read_only": True,
         "natural_certified": False, "blocked_reasons": []}
+    topology = _topology()
+    if topology is not None:
+        result.update(schema=TOPOLOGY_SAMPLE_SCHEMA, topology=topology)
     if os.name != "posix" or not hasattr(os, "geteuid"):
         result["blocked_reasons"].append("linux_database_owner_probe_required")
     else:
@@ -632,6 +683,14 @@ def collect_controlled_stability_sample(*, expected_commit: str, database_path: 
                 result["blocked_reasons"].append(name + "_unavailable")
         try:
             states = _unit_states()
+            if topology is not None:
+                from eimemory.ops.hermes_native_topology import collect_native_profile_topology
+                native_profiles = collect_native_profile_topology(topology,
+                    next(state for state in states if state['Id'] == 'hermes-gateway.service'),
+                    expected_commit=commit)
+                result['native_profile_topology'] = native_profiles
+                if native_profiles.get('complete') is not True:
+                    result['blocked_reasons'].append('native_profile_topology_unverified')
             try:
                 result["postgres_snapshot"] = _postgres_snapshot(states, Path(database_path), commit)
             except Exception as exc:
@@ -677,7 +736,8 @@ def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commi
                                 minimum_interval_seconds: int = 60,
                                 expected_version: str | None = None,
                                 now: datetime | str | None = None,
-                                expected_runtime_units: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
+                                expected_runtime_units: list[str] | tuple[str, ...] | None = None,
+                                expected_topology: dict[str, Any] | None = None) -> dict[str, Any]:
     """Assess a current window, or reproduce a signed report at its assessed_at.
 
     Supplying ``now`` is for deterministic structural verification, not proof
@@ -686,8 +746,23 @@ def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commi
     # Native assessment freezes the protected inventory. A signed historical
     # report can explicitly replay that inventory without host I/O; this is
     # structural consistency only, never new authority or a current measurement.
-    runtime_units = tuple(_runtime_units()) if expected_runtime_units is None else expected_runtime_units
-    if (not isinstance(runtime_units, (list, tuple)) or not 5 <= len(runtime_units) <= 66
+    topology = None
+    topology_mode = isinstance(samples, list) and any(isinstance(s, dict)
+        and s.get('schema') == TOPOLOGY_SAMPLE_SCHEMA for s in samples)
+    if topology_mode:
+        from eimemory.contracts.hermes_topology import load_verified_topology, validate_snapshot
+        topology = validate_snapshot(load_verified_topology() if expected_topology is None else expected_topology)
+        runtime_units = tuple(topology['runtime_units'])
+        if expected_runtime_units is not None and tuple(expected_runtime_units) != runtime_units:
+            raise ValueError('stability_runtime_inventory_invalid')
+        from eimemory.evaluation.hermes_profile_coverage import required_capture_scopes
+        required_scopes = required_capture_scopes(topology)
+        required_scope_digest = _digest(required_scopes)
+    else:
+        # Archived v1 evidence retains its complete original five-owner and
+        # six-capture contract. A new two-owner sample cannot masquerade as v1.
+        runtime_units = tuple(_runtime_units()) if expected_runtime_units is None else expected_runtime_units
+    if (not isinstance(runtime_units, (list, tuple)) or not (2 if topology_mode else 5) <= len(runtime_units) <= 66
             or any(not isinstance(unit, str) for unit in runtime_units)
             or len(set(runtime_units)) != len(runtime_units)
             or tuple(runtime_units[:2]) != RUNTIME_UNITS[:2]
@@ -721,11 +796,21 @@ def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commi
                 body = {k: v for k, v in sample.items() if k != "sample_digest"}
                 if sample.get("sample_digest") != _digest(body):
                     reasons.append("sample_integrity_mismatch")
-                if (sample.get("schema") != SAMPLE_SCHEMA or sample.get("expected_commit") != commit
+                if (sample.get("schema") != (TOPOLOGY_SAMPLE_SCHEMA if topology_mode else SAMPLE_SCHEMA) or sample.get("expected_commit") != commit
                     or sample.get("collector_origin") != "native_readonly_host_probe"
                     or sample.get("read_only") is not True or sample.get("natural_certified") is not False
                     or sample.get("ok") is not True or sample.get("blocked_reasons") != []):
                     reasons.append("sample_not_current_or_healthy")
+                if topology_mode and sample.get('topology') != topology:
+                    reasons.append('sample_topology_changed_or_unverified')
+                if topology_mode:
+                    from eimemory.ops.hermes_native_topology import validate_native_profile_topology
+                    try:
+                        native_profiles = validate_native_profile_topology(sample.get('native_profile_topology'),
+                            topology, expected_commit=commit)
+                    except (ValueError, TypeError, KeyError):
+                        native_profiles = None
+                        reasons.append('native_profile_topology_unverified')
                 if any(sample.get(k, {}).get("ok") is not True for k in ("health", "database", "journal", "capture")):
                     reasons.append("sample_observation_incomplete")
                 native_pg = sample.get("postgres_snapshot", {})
@@ -765,13 +850,26 @@ def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commi
                         or len(processes) != len(runtime_units) or {p.get("unit") for p in processes} != set(runtime_units)
                         or len({p.get("capture_policy_digest") for p in processes}) != 1
                         or any(p.get("ok") is not True or p.get("capture_enabled") is not True
-                            or p.get("capture_policy_valid") is not True or p.get("capture_scope_count") != 6
+                            or p.get("capture_policy_valid") is not True
+                            or (p.get("capture_scope_count", 0) < len(required_scopes) if topology_mode
+                                else p.get("capture_scope_count") != 6)
                             or type(p.get("capture_scope_count")) is not int
                             or p.get("recall_budget_seconds") != 8 or type(p.get("recall_budget_seconds")) is not int
                             or p.get("hermes_attestation_ready") is not True or p.get("runtime_commit_matches") is not True
                             or not isinstance(p.get("capture_policy_digest"), str)
                             or _HEX64.fullmatch(p["capture_policy_digest"]) is None for p in processes)):
                     reasons.append("sample_capture_unverified")
+                if topology_mode and any(
+                        p.get('profile_capture_coverage') != {
+                            'ok': True, 'required_scope_count': len(required_scopes),
+                            'missing_scope_count': 0, 'required_scope_digest': required_scope_digest,
+                            'topology_digest': topology['topology_digest']} for p in processes):
+                    reasons.append('sample_profile_capture_unverified')
+                if topology_mode and native_profiles is not None:
+                    owner = native_profiles['owner']
+                    process = next((p for p in processes if p.get('unit') == 'hermes-gateway.service'), {})
+                    if any(owner[key] != process.get(key) for key in ('pid', 'start_ticks', 'invocation_id')):
+                        reasons.append('native_profile_owner_capture_mismatch')
                 units = sample.get("units", [])
                 if len(units) != len(observed_units) or {u.get("unit") for u in units} != set(observed_units) or any(u.get("ok") is not True for u in units):
                     reasons.append("sample_unit_inventory_incomplete")
@@ -779,6 +877,8 @@ def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commi
                 reasons.append("host_boot_changed")
             if len({s.get("database", {}).get("database_identity") for s in samples}) != 1:
                 reasons.append("database_identity_changed")
+            if topology_mode and len({s.get('native_profile_topology', {}).get('stable_digest') for s in samples}) != 1:
+                reasons.append('native_profile_topology_changed')
             if len({p.get("capture_policy_digest") for s in samples for p in s.get("capture", {}).get("processes", [])}) != 1:
                 reasons.append("capture_policy_changed")
             starts = [s["monotonic_seconds"] for s in samples]
@@ -805,7 +905,8 @@ def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commi
         except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError, StopIteration):
             reasons.append("sample_contract_invalid")
     reasons = sorted(set(reasons))
-    return {"schema": SCHEMA, "ok": not reasons, "status": "observed_healthy" if not reasons else "blocked",
+    result = {"schema": TOPOLOGY_SCHEMA if topology_mode else SCHEMA,
+            "ok": not reasons, "status": "observed_healthy" if not reasons else "blocked",
             "expected_commit": commit, "assessed_at": assessed.isoformat(),
             "runtime_units": list(runtime_units),
             "sample_count": len(samples) if isinstance(samples, list) else 0,
@@ -813,6 +914,9 @@ def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commi
             "observation_scope": "bounded_runtime_window", "short_window_only": True,
             "long_term_stability_certified": False, "natural_certified": False,
             "blocked_reasons": reasons, "samples": samples if valid else []}
+    if topology_mode:
+        result['topology'] = topology
+    return result
 
 
 __all__ = ["collect_controlled_endpoint_identity", "collect_controlled_stability_sample", "assess_controlled_stability"]

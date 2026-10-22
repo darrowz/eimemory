@@ -935,6 +935,131 @@ def capture_reference(helper,state,contract,registry,scope):
     return {'basename':path.name,'sha256':sha256(raw).hexdigest()}
 
 
+def topology_operator_context(args):
+    """Load the published reviewed controller for a native user operator."""
+    import pwd
+    if os.name!='posix' or os.geteuid()<=0 or os.getuid()!=os.geteuid():
+        raise ValueError('user_topology_nonroot_identity_required')
+    account=pwd.getpwuid(os.geteuid());uid=account.pw_uid
+    if account.pw_gid!=os.getegid():raise ValueError('user_topology_primary_group_required')
+    home=Path(account.pw_dir);authority=home/'.config/eimemory/control-plane'
+    state=home/'.local/state/eimemory/control-plane';code=home/'.local/lib/eimemory/control-plane'
+    registry_path=authority/'runtime-manager.v1.json'
+    raw=reviewed(registry_path,args.expected_registry_sha256,65536);declared=strict(raw)
+    helper_raw=reviewed(code/'user_control_plane.py',declared['compatibility_hashes']['eimemory/contracts/user_control_plane.py'])
+    helper=execute_reviewed_module('user_control_plane.py',code/'user_control_plane.py',helper_raw)
+    for path in (authority,state,code):helper.trusted_directory(path)
+    contract_raw=reviewed(code/'runtime_manager_contract.py',declared['compatibility_hashes']['eimemory/contracts/runtime_manager.py'])
+    contract=execute_reviewed_module('runtime_manager_contract.py',code/'runtime_manager_contract.py',contract_raw)
+    registry=contract.validate_registry(declared)
+    if (registry['runtime_uid']!=uid or registry['runtime_gid']!=account.pw_gid
+            or registry['runtime_user']!=account.pw_name):raise ValueError('user_topology_registry_identity_invalid')
+    bridge_raw=helper.read_file(code/'runtime_manager_bridge.py',maximum=1024*1024)
+    release=Path('/opt/eimemory/releases')/registry['controller_commit']
+    reviewed(release/'deploy/runtime_manager_bridge.py',sha256(bridge_raw).hexdigest(),1024*1024)
+    topology_raw=helper.read_file(code/'hermes_topology_contract.py',maximum=512*1024)
+    reviewed(release/'eimemory/contracts/hermes_topology.py',sha256(topology_raw).hexdigest(),512*1024)
+    module=execute_reviewed_module('runtime_manager_bridge.py',code/'runtime_manager_bridge.py',bridge_raw)
+    bridge=module.Bridge(contract,registry=registry_path,state=state)
+    environment={'PATH':'/usr/bin:/bin','LC_ALL':'C','EIMEMORY_CONTROL_PLANE':'user',
+        'XDG_RUNTIME_DIR':'/run/user/'+str(uid),'DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/'+str(uid)+'/bus'}
+    return account,authority,state,registry,raw,helper,contract,module,bridge,environment
+
+
+@scoped_user_operator
+def inspect_topology_native(args):
+    """Read the native owner/retirement facts; never mutate a native unit."""
+    account,authority,state,registry,raw,helper,contract,module,bridge,environment=topology_operator_context(args)
+    logical_raw=reviewed(args.logical_topology,args.expected_logical_topology_sha256,1024*1024)
+    logical=bridge.topology_contract().validate_topology(strict(logical_raw))
+    if logical['runtime_uid']!=account.pw_uid or logical['runtime_gid']!=account.pw_gid:
+        raise ValueError('user_topology_declaration_identity_invalid')
+    print(contract.canonical(bridge.native_topology_snapshot(registry,logical['owner_unit'],logical['retired_gateways'])).decode())
+
+
+@scoped_user_operator
+def register_topology(args):
+    """Commit one reviewed manual topology without changing native gateways."""
+    account,authority,state,registry,registry_raw,helper,contract,module,bridge,environment=topology_operator_context(args)
+    uid=account.pw_uid;topology=bridge.topology_contract()
+    logical_raw=reviewed(args.logical_topology,args.expected_logical_topology_sha256,1024*1024)
+    logical=topology.validate_topology(strict(logical_raw))
+    if any(profile.get('operator_scope',{}).get('user_id',registry['runtime_user'])!=registry['runtime_user']
+            for profile in logical['profiles']):
+        raise ValueError('user_topology_operator_identity_invalid')
+    intent_raw=reviewed(args.topology_intent,args.expected_topology_intent_sha256,65536);intent=contract.strict_json(intent_raw)
+    topology.validate_operator_topology_intent(intent,main=topology.MAIN_GATEWAY,
+        retired=logical['retired_gateways'],uid=uid,gid=account.pw_gid)
+    if (contract.canonical(intent)!=intent_raw or intent['topology_sha256']!=topology.topology_digest(logical)
+            or logical['runtime_uid']!=uid or logical['runtime_gid']!=account.pw_gid):
+        raise ValueError('user_topology_declaration_binding_invalid')
+    native_raw=reviewed(args.native_snapshot,intent['native_snapshot_sha256'],1024*1024)
+    source=intent['source'];source_key=contract.hex_value(source['job_key'],64,'user_topology_source_key_invalid')
+    source_paths={'registry.original':authority/'runtime-manager.v1.json',
+        'transition.original':state/'active-transition.json','job.original':state/'jobs'/(source_key+'.json'),
+        'capture.original':state/'manual-recovery-capture.json'}
+    pins={'registry.original':'registry_sha256','transition.original':'transition_sha256',
+        'job.original':'job_sha256','capture.original':'capture_sha256'}
+    originals={name:reviewed(path,source[pins[name]],65536) for name,path in source_paths.items()}
+    if originals['registry.original']!=registry_raw:raise ValueError('user_topology_registry_source_changed')
+    prior=contract.strict_json(originals['job.original']);capture=contract.strict_json(originals['capture.original'])
+    transition=contract.strict_json(originals['transition.original'])
+    contract.validate_manual_permit(prior.get('request'),source_key)
+    old=contract.validate_registry(prior.get('registry'))
+    native_failure=failed_attempt_native(contract,prior,environment)
+    if (prior.get('job_key')!=source_key or prior.get('original_invocation')!=source['invocation_id']
+            or capture.get('source_job_key')!=source_key or capture.get('source_job_sha256')!=source['job_sha256']
+            or capture.get('source_invocation_id')!=source['invocation_id'] or capture.get('source_native_exit')!=native_failure
+            or capture.get('active_before')!=prior.get('active_before') or capture.get('scope')!=prior['request']['scope']
+            or capture.get('base_commit')!=source['base_commit'] or registry['runtime_commit']!=source['base_commit']
+            or not set(intent['retired_gateways'])<=set(contract.compatibility_units(old['units']))
+            or transition.get('complete') is not True or transition.get('job_key')!=source_key
+            or transition.get('outcome')!='operator_abandoned_failed_manual_release'
+            or transition.get('failed_deployment_preserved') is not True
+            or transition.get('release_accepted') is not False or transition.get('autonomous_repair_credit') is not False):
+        raise ValueError('user_topology_source_binding_invalid')
+    for unit in capture['active_before']:
+        if unit not in old['units'] or old['units'][unit]['installed'] is not True:
+            raise ValueError('user_topology_historical_unit_unverified')
+    history=state/'managed-incident-receipts'/('topology-intent-'+intent['intent_id'])
+    destination=authority/'hermes-topology-intent.v1.json';declaration=authority/'hermes-topology.v1.json'
+    with operator_lock(helper,state/'bridge.lock'),operator_lock(helper,state/'lifecycle.lock'):
+        stopped_controller(environment)
+        if os.path.lexists(state/'controller-installation.json'):raise ValueError('user_topology_installation_incomplete')
+        current=Path('/opt/eimemory/current').resolve(strict=True)
+        if current!=Path('/opt/eimemory/releases')/source['base_commit']:raise ValueError('user_topology_current_changed')
+        for name,path in source_paths.items():
+            if helper.read_file(path)!=originals[name]:raise ValueError('user_topology_source_changed')
+        snapshot=bridge.native_topology_snapshot(registry,logical['owner_unit'],logical['retired_gateways'])
+        if snapshot!=contract.strict_json(native_raw,max_bytes=1024*1024):raise ValueError('user_topology_native_snapshot_changed')
+        if os.path.lexists(destination):
+            if helper.read_file(destination)!=intent_raw:raise ValueError('user_topology_existing_intent_preserved')
+            bridge.registered_topology(registry,{'basename':destination.name,'sha256':sha256(intent_raw).hexdigest()})
+            print(json.dumps({'ok':True,'topology_registered':True,'idempotent':True,'native_units_changed':False,
+                'autonomous_repair_credit':False}));return
+        if os.path.lexists(declaration) and helper.read_file(declaration,maximum=1024*1024)!=logical_raw:
+            raise ValueError('user_topology_existing_declaration_preserved')
+        directory(history,uid,0o700)
+        for name,data in {**originals,'intent.original':intent_raw,'topology.original':logical_raw,
+                'native-snapshot.original':native_raw}.items():archive_write(history/name,data,uid)
+        receipt={'schema':'eimemory.hermes_topology_registration.v1','intent_sha256':sha256(intent_raw).hexdigest(),
+            'source':source,'topology_sha256':intent['topology_sha256'],'native_snapshot_sha256':intent['native_snapshot_sha256'],
+            'registered_by_uid':uid,'registered_by_gid':account.pw_gid,
+            'authorization':'explicit_user_operator','autonomous_repair_credit':False}
+        archive_write(history/'complete.json',contract.canonical(receipt),uid)
+        write(declaration,logical_raw,uid)
+        stopped_controller(environment)
+        for name,path in source_paths.items():
+            if helper.read_file(path)!=originals[name]:raise ValueError('user_topology_source_changed')
+        if (Path('/opt/eimemory/current').resolve(strict=True)!=current
+                or bridge.native_topology_snapshot(registry,logical['owner_unit'],logical['retired_gateways'])!=snapshot):
+            raise ValueError('user_topology_native_snapshot_changed')
+        write(destination,intent_raw,uid)
+        bridge.registered_topology(registry,{'basename':destination.name,'sha256':sha256(intent_raw).hexdigest()})
+        print(json.dumps({'ok':True,'topology_registered':True,'intent_sha256':sha256(intent_raw).hexdigest(),
+            'native_units_changed':False,'autonomous_repair_credit':False}))
+
+
 @scoped_user_operator
 def stage_release(args):
     """Record one reviewed operator attempt and start its fixed user-owned job.
@@ -1069,6 +1194,15 @@ def stage_release(args):
             revalidation_parent(contract,registry,original,scope,environment)
             healthy_runtime(uid,registry['runtime_commit'])
         recovery=capture_reference(helper,state,contract,registry,scope)
+        topology_reference=None
+        topology_path=authority/'hermes-topology-intent.v1.json'
+        expected_topology=getattr(args,'expected_topology_intent_sha256','')
+        if os.path.lexists(topology_path):
+            topology_raw=reviewed(topology_path,expected_topology,65536)
+            context=topology_operator_context(args)
+            topology_reference={'basename':topology_path.name,'sha256':sha256(topology_raw).hexdigest()}
+            context[8].registered_topology(registry,topology_reference)
+        elif expected_topology:raise ValueError('user_stage_topology_intent_missing')
         request={'schema':'eimemory.manual_release_permit.v2','operation':'deploy',**pair,
             'target_commit':args.target_commit,'reviewed_attempt_id':args.attempt_id}
         key=contract.digest(request);contract.validate_manual_permit(request,key)
@@ -1076,6 +1210,7 @@ def stage_release(args):
             'phase':'submitted','unit':contract.job_unit(key),'active_before':None,
             'quiesced':False,'resumed':False,'approved_retry_of':approved_retry,
             **({'revalidation_of':revalidation} if revalidation else {}),
+            **({'topology_intent':topology_reference} if topology_reference else {}),
             **({'recovery_capture':recovery} if recovery else {})}
         jobs=state/'jobs';helper.trusted_directory(jobs)
         destination=jobs/(key+'.json')
@@ -1412,6 +1547,20 @@ def abandon_failed_manual(args):
 
 
 def main():
+    if sys.argv[1:2] in (['register-topology'],['inspect-topology-native']):
+        operation=sys.argv[1]
+        parser=argparse.ArgumentParser(description='Reviewed user topology declaration and native readback')
+        parser.add_argument('operation',choices=[operation])
+        parser.add_argument('--expected-registry-sha256',required=True)
+        parser.add_argument('--logical-topology',type=Path,required=True)
+        parser.add_argument('--expected-logical-topology-sha256',required=True)
+        if operation=='register-topology':
+            parser.add_argument('--topology-intent',type=Path,required=True)
+            parser.add_argument('--expected-topology-intent-sha256',required=True)
+            parser.add_argument('--native-snapshot',type=Path,required=True)
+            register_topology(parser.parse_args())
+        else:inspect_topology_native(parser.parse_args())
+        return
     if sys.argv[1:2]==['recover-completed-installation']:
         parser=argparse.ArgumentParser(description=recover_completed_installation.__doc__)
         parser.add_argument('operation',choices=['recover-completed-installation'])
@@ -1438,6 +1587,7 @@ def main():
         parser.add_argument('--expected-scope-sha256',required=True)
         parser.add_argument('--prior-job-key')
         parser.add_argument('--revalidate-current-after')
+        parser.add_argument('--expected-topology-intent-sha256',default='')
         stage_release(parser.parse_args())
         return
     parser=argparse.ArgumentParser(description=__doc__)

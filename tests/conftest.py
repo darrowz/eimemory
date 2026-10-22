@@ -14,6 +14,7 @@ import pytest
 def isolated_hermes_handoff_root(tmp_path, monkeypatch):
     """Outboxes and any child providers must never use the operator's state."""
     monkeypatch.setenv('EIMEMORY_HERMES_HANDOFF_ROOT', str(tmp_path/'eimemory-handoff'))
+    monkeypatch.setenv('EIMEMORY_RPC_ENV_FILE', str(tmp_path/'absent-shared-rpc.env'))
 
 
 @pytest.fixture

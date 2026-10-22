@@ -502,6 +502,11 @@ class EIBrainRPCBridge:
                     or type(acceptance_generated) is not bool
                 ):
                     return self._with_contract(self._invalid_request())
+                from eimemory.evaluation.hermes_profile_coverage import request_sampling_binding
+                binding = request_sampling_binding(channel=channel, scope=scope,
+                    source_ids=source_ids, claim=params.get('runtime_profile_binding'))
+                if binding is not None and binding['binding_kind'] == 'operator':
+                    acceptance_generated = True
                 result = self.runtime_adapter.proactive_prefetch(
                     channel=channel, scope=scope, source_ids=source_ids,
                     session_id=session_id, turn_id=turn_id, query=query, task_type=task_type,
@@ -529,12 +534,17 @@ class EIBrainRPCBridge:
                     return self._with_contract(self._invalid_request())
                 fields = {"channel", "scope", "source_ids", "session_id", "turn_id",
                           "decision_id", "phase", "event_id", "labels"}
-                if set(params) != fields or not self._valid_nonempty_strings(params["source_ids"]) or not all(
-                    isinstance(params[k], str) and params[k].strip()
+                signal_params = {key: value for key, value in params.items() if key != 'runtime_profile_binding'}
+                if set(signal_params) != fields or not self._valid_nonempty_strings(signal_params["source_ids"]) or not all(
+                    isinstance(signal_params[k], str) and signal_params[k].strip()
                     for k in ("session_id", "turn_id", "decision_id", "phase", "event_id")
                 ):
                     return self._with_contract(self._invalid_request())
-                result = self.runtime_adapter.proactive_signal(**params)
+                if 'runtime_profile_binding' in params:
+                    from eimemory.evaluation.hermes_profile_coverage import request_sampling_binding
+                    request_sampling_binding(channel=channel, scope=scope, source_ids=signal_params['source_ids'],
+                        claim=params['runtime_profile_binding'])
+                result = self.runtime_adapter.proactive_signal(**signal_params)
             elif method == "adapter.proactive_terminal":
                 source_ids = params.get("source_ids", [])
                 session_id = params.get("session_id", "")
@@ -598,6 +608,13 @@ class EIBrainRPCBridge:
                     or (explicit_request is not None and not isinstance(explicit_request, dict))
                 ):
                     return self._with_contract(self._invalid_request())
+                from eimemory.evaluation.hermes_profile_coverage import request_sampling_binding
+                binding = request_sampling_binding(channel=channel, scope=scope,
+                    source_ids=task_context.get('source_ids'), claim=params.get('runtime_profile_binding'))
+                if binding is not None and binding['binding_kind'] == 'operator':
+                    task_context = {**task_context, 'acceptance_generated': True}
+                    if explicit_request is not None:
+                        explicit_request = {**explicit_request, 'acceptance_generated': True}
                 result = self.runtime_adapter.prefetch(
                     channel=channel,
                     scope=scope,

@@ -52,7 +52,7 @@ MANUAL_FIELDS = frozenset({'schema','operation','controller_commit','validation_
  'base_commit','candidate_commit','target_commit','reviewed_attempt_id','scope'})
 MAX_REQUEST_BYTES = 65536
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
-READ_PROPERTIES = frozenset({'ActiveState','SubState','Result','InvocationID','MainPID','ExecMainStatus',
+READ_PROPERTIES = frozenset({'ActiveState','SubState','Result','InvocationID','MainPID','ControlPID','ExecMainStatus',
  'ExecMainStartTimestamp','ExecMainExitTimestamp','ExecMainStartTimestampMonotonic','ExecMainExitTimestampMonotonic',
  'ExecStart','LoadState','UnitFileState','FragmentPath','DropInPaths','Id','Type','NRestarts','ControlGroup',
  'User','Group','PrivateUsers','NoNewPrivileges','CapabilityBoundingSet','AmbientCapabilities','ReadOnlyPaths',

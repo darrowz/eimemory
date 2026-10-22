@@ -1,4 +1,42 @@
-# Agent discovery and per-agent recall gates (1.14.87)
+# Agent discovery and per-agent recall gates
+
+## Native multiplex gateways
+
+Hermes 0.22 defaults to one messaging gateway serving multiple profiles. The
+physical runtime inventory is the eiMemory RPC service and the native main
+gateway. Logical profiles, their homes, and their exact memory identities are
+declared separately in the user's protected `hermes-topology.v1.json`. The
+operator registration binds that declaration to a typed topology intent and
+preserves the original deployment capture in private history.
+
+The integration follows the native request's runtime profile and secret
+ContextVars. A process-level profile environment cannot override another
+profile's identity. Background callbacks retain their request's context; a
+session ID alone cannot select a provider belonging to another profile. Shared
+RPC credentials are used only for the shared RPC endpoint.
+
+Sampling coverage compares the complete tenant, agent, workspace, user, channel
+and source tuple. A configured profile with no natural traffic remains visible
+with zero counts. Explicit searches, controlled historical business evidence
+and natural observations retain their respective evidence classes. A served
+profile without a trusted user binding is reported as unbound, never counted
+as a qualified business sample.
+
+Operational stability v2 verifies the live gateway's process lifetime, native
+served-profile roster, each profile's memory configuration and plugin metadata,
+in addition to the existing storage, projection and runtime checks. Historical
+v1 receipts retain their original runtime and sampling contracts.
+
+An explicit operator topology migration can supersede the restoration of
+retired per-profile gateways. Recovery retains the original activity and
+enablement facts and executes a separately authenticated restoration plan. It
+checks that retired units remain absent or inactive; it never recreates,
+enables, starts, masks, or adds restrictions to them. Gateway integration
+publishes eiMemory environment metadata only. This migration is an operator
+action and grants no autonomous repair or L5 credit.
+
+Upstream references: [Hermes 0.22 release](https://github.com/NousResearch/hermes-agent/releases/tag/v0.22.0)
+and [multiplexing gateway design](https://hermes-agent.nousresearch.com/docs/developer-guide/multiplexing-gateway).
 
 The recall-quality gate evaluates every agent separately. Agent names are not
 hard-coded anywhere in the gate, nightly or release-closure logic.
@@ -12,10 +50,11 @@ in `proactive_decisions` during the last 14 days. These are excluded:
 - acceptance-generated decisions
 - scheduled sessions (`cron_*`)
 
-This discovers whatever names a given installation uses. Each Hermes profile
-writes its own agent id from its own `EIMEMORY_AGENT_ID`. Each discovered agent
-is evaluated in its own base scope: the installation's bound logical tenant,
-workspace and user, with that agent's id.
+For a registered native topology, the protected logical roster supplies the
+expected scopes, including profiles with zero traffic. Every exact user and
+workspace remains independent. For legacy installations without a registered
+topology, the historical discovery and environment-based identity rules below
+remain in effect; they cannot override a registered profile binding.
 
 To override discovery, set `EIMEMORY_RECALL_GATE_AGENTS=agent-a,agent-b` in the
 nightly and release-closure environment. That exact list is then evaluated.

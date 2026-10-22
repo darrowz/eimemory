@@ -977,6 +977,13 @@ def _run_recall_quality_per_agent(
     try:
         scopes = recall_agent_scopes(runtime, scope)
         result = run_per_agent(scopes, scope, primary_report, evaluate)
+        from eimemory.evaluation.hermes_profile_coverage import load_topology, profile_sampling_diagnostics
+        topology = load_topology()
+        if topology is not None:
+            if result.get('profile_inventory', {}).get('topology_digest') != topology['topology_digest']:
+                raise ValueError('recall_profile_topology_changed')
+            result['profile_sampling'] = profile_sampling_diagnostics(runtime, topology,
+                tenant_id=str(scope.get('tenant_id') or 'default'))
     except Exception as exc:
         return {"ok": False, "status": "blocked", "blocked_reason": f"per_agent_recall_failed:{type(exc).__name__}"}
     # Execution succeeded; the quality verdict is carried by the bounded gate.

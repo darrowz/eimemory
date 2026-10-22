@@ -61,6 +61,27 @@ def _unique(rows: list[dict], key: str) -> bool:
     return all(_name(value) for value in values) and len(set(values)) == len(values)
 
 
+def _controlled_row_key(row, schema):
+    if schema == 'controlled_production_acceptance.v1':
+        return row.get('agent_id')
+    scope, sources = row.get('scope_digest'), row.get('source_ids')
+    if (not isinstance(scope, str) or _SHA64.fullmatch(scope) is None
+            or not isinstance(sources, list) or not sources or not all(_name(value) for value in sources)
+            or len(set(sources)) != len(sources)):
+        return None
+    return scope, tuple(sorted(sources))
+
+
+def _controlled_rows_unique(rows, schema):
+    if schema == 'controlled_production_acceptance.v1':
+        return _unique(rows, 'agent_id') and _unique(rows, 'scope_digest')
+    keys = [_controlled_row_key(row, schema) for row in rows]
+    if None in keys or len(set(keys)) != len(keys):
+        return False
+    tuples = [(scope, source) for scope, sources in keys for source in sources]
+    return len(set(tuples)) == len(tuples)
+
+
 def acceptance_report_ok(
     report: Any, *, expected_count: int | None,
     expected_case_ids: Iterable[str] | None = None,
@@ -358,7 +379,7 @@ def historical_business_qualification_ok(controlled: Any) -> bool:
     if not (
         controlled.get("ok") is True and controlled.get("accepted") is True
         and controlled.get("persisted") is True and controlled.get("status") == "accepted"
-        and controlled.get("schema") == "controlled_production_acceptance.v1"
+        and controlled.get("schema") in {"controlled_production_acceptance.v1", "controlled_production_acceptance.v2"}
         and controlled.get("mode") == "controlled_existing_memory"
         and controlled.get("evidence_class") == "operator_controlled_existing_memory"
         and controlled.get("acceptance_purpose") == "historical_business_qualification"
@@ -378,7 +399,7 @@ def historical_business_qualification_ok(controlled: Any) -> bool:
         and set(identity) == {"release_commit", "release_version", "deployment_receipt_id", "release_session_id"}
         and isinstance(identity.get("release_commit"), str) and _SHA40.fullmatch(identity["release_commit"])
         and all(_name(identity.get(key)) for key in ("release_version", "deployment_receipt_id", "release_session_id"))
-        and _rows(agents) and _unique(agents, "agent_id") and _unique(agents, "scope_digest")
+        and _rows(agents) and _controlled_rows_unique(agents, controlled['schema'])
         and qualification.get("agents") == agents
     ):
         return False
@@ -470,7 +491,7 @@ def controlled_production_closure_report_ok(report: Any) -> bool:
         and _object(report.get("storage_migrations")).get("ok") is True
         and controlled.get("ok") is True and controlled.get("accepted") is True
         and controlled.get("status") == "accepted"
-        and controlled.get("schema") == "controlled_production_acceptance.v1"
+        and controlled.get("schema") in {"controlled_production_acceptance.v1", "controlled_production_acceptance.v2"}
         and controlled.get("persisted") is True
         and controlled.get("mode") == "controlled_existing_memory"
         and controlled.get("evidence_class") == "operator_controlled_existing_memory"
@@ -496,7 +517,7 @@ def controlled_production_closure_report_ok(report: Any) -> bool:
         and channel.get("promotion_request_id") == receipt.get("promotion_request_id")
         and channel.get("release_session_id") == receipt.get("release_session_id")
         and stability.get("ok") is True
-        and stability.get("schema") == "controlled_operational_stability.v1"
+        and stability.get("schema") in {"controlled_operational_stability.v1", "controlled_operational_stability.v2"}
         and stability.get("expected_commit") == commit
         and _integer(stability.get("sample_count"), minimum=2)
         and type(stability.get("interval_seconds")) in (int, float)
@@ -509,7 +530,7 @@ def controlled_production_closure_report_ok(report: Any) -> bool:
     ):
         return False
     agents = controlled["agents"]
-    if not _unique(agents, "agent_id") or not _unique(agents, "scope_digest"):
+    if not _controlled_rows_unique(agents, controlled['schema']):
         return False
     for agent in agents:
         sources = agent.get("source_ids")
@@ -528,7 +549,8 @@ def controlled_production_closure_report_ok(report: Any) -> bool:
     probes = transport.get("cases")
     endpoint = _object(transport.get("endpoint_identity_before"))
     if not (
-        transport.get("schema") == "controlled_production_rpc_probe.v1"
+        transport.get("schema") == ("controlled_production_rpc_probe.v2"
+            if controlled['schema'] == 'controlled_production_acceptance.v2' else "controlled_production_rpc_probe.v1")
         and transport.get("ok") is True and transport.get("expected_commit") == commit
         and transport.get("maintenance_only") is True
         and transport.get("certifies_natural_queries") is False
@@ -545,15 +567,16 @@ def controlled_production_closure_report_ok(report: Any) -> bool:
         and endpoint.get("retrieval_health_certified") is False
         and isinstance(endpoint.get("package_tree_digest"), str)
         and _SHA64.fullmatch(endpoint["package_tree_digest"])
-        and _rows(probes) and len(probes) == len(agents) and _unique(probes, "agent_id")
+        and _rows(probes) and len(probes) == len(agents) and _controlled_rows_unique(probes, controlled['schema'])
         and type(transport.get("sample_count")) is int and transport["sample_count"] == len(agents)
         and type(transport.get("pass_count")) is int and transport["pass_count"] == len(agents)
     ):
         return False
-    expected_agents = {row["agent_id"]: row for row in agents}
+    expected_agents = {_controlled_row_key(row, controlled['schema']): row for row in agents}
     for probe in probes:
-        expected = expected_agents.get(probe.get("agent_id"))
-        if (expected is None or probe.get("scope_digest") != expected["scope_digest"]
+        expected = expected_agents.get(_controlled_row_key(probe, controlled['schema']))
+        if (expected is None or probe.get('agent_id') != expected['agent_id']
+                or probe.get("scope_digest") != expected["scope_digest"]
                 or probe.get("source_ids") != expected["source_ids"]
                 or any(probe.get(key) is not True for key in (
                     "passed", "collection_complete", "no_fallback", "budgets_clear", "target_present",
@@ -569,10 +592,14 @@ def controlled_production_closure_report_ok(report: Any) -> bool:
         # Current health was checked by the native producer, not by summary.
         if not _name(stability.get("assessed_at")) or not isinstance(stability.get("runtime_units"), list):
             return False
+        if stability['schema'] == 'controlled_operational_stability.v2' and not isinstance(stability.get('topology'), dict):
+            return False
         assessed = assess_controlled_stability(
             stability.get("samples"), expected_commit=commit,
             expected_version=receipt.get("version"), minimum_interval_seconds=60, now=stability["assessed_at"],
             expected_runtime_units=stability["runtime_units"],
+            **({'expected_topology': stability.get('topology')}
+               if stability['schema'] == 'controlled_operational_stability.v2' else {}),
         )
         if assessed.get("ok") is not True or assessed != stability:
             return False

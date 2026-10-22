@@ -34,6 +34,8 @@ from eimemory.retrieval.postgres_vector import (PostgresVectorCandidateSource,
 
 SCHEMA = 'controlled_production_acceptance.v1'
 POLICY_SCHEMA = 'controlled_production_acceptance_policy.v1'
+EXACT_SCOPE_SCHEMA = 'controlled_production_acceptance.v2'
+EXACT_SCOPE_POLICY_SCHEMA = 'controlled_production_acceptance_policy.v2'
 MODE = 'controlled_existing_memory'
 SOURCE = 'eimemory.evaluation.controlled_production_acceptance'
 EVIDENCE_CLASS = 'operator_controlled_existing_memory'
@@ -51,6 +53,10 @@ class ControlledAcceptanceError(ValueError):
 
 def _error(code):
     raise ControlledAcceptanceError('controlled_acceptance_' + code)
+
+
+def _schema_for_policy(policy):
+    return EXACT_SCOPE_SCHEMA if policy['schema'] == EXACT_SCOPE_POLICY_SCHEMA else SCHEMA
 
 
 def _instant(value):
@@ -100,7 +106,7 @@ def _validate_policy(value, owner):
               'minimum_cases_per_scope', 'max_cases_per_scope', 'freshness_seconds', 'engine_contract_digest'}
     if (not isinstance(value, dict) or not fields.issubset(value)
             or set(value) - fields - {'additional_owner_scopes', 'purpose', 'business_sources'}
-            or value.get('schema') != POLICY_SCHEMA or value.get('mode') != MODE
+            or value.get('schema') not in {POLICY_SCHEMA, EXACT_SCOPE_POLICY_SCHEMA} or value.get('mode') != MODE
             or re.fullmatch('[0-9a-f]{64}', str(value.get('request_digest', ''))) is None
             or value.get('request_digest') == '0' * 64):
         _error('policy_invalid')
@@ -135,7 +141,8 @@ def _validate_policy(value, owner):
     if _instant(value['stable_before']) > datetime.now(timezone.utc):
         _error('policy_cutoff_in_future')
     entries = value['agents']
-    if not isinstance(entries, list) or not 1 <= len(entries) <= 16:
+    exact_scopes = value['schema'] == EXACT_SCOPE_POLICY_SCHEMA
+    if not isinstance(entries, list) or not 1 <= len(entries) <= (64 if exact_scopes else 16):
         _error('policy_agents_invalid')
     seen = set()
     for entry in entries:
@@ -143,13 +150,20 @@ def _validate_policy(value, owner):
             _error('policy_agents_invalid')
         exact = _scope(entry['scope'])
         sources = entry['source_ids']
-        if (exact.tenant_id != owner.tenant_id or exact.agent_id in seen
+        if (exact.tenant_id != owner.tenant_id or (not exact_scopes and exact.agent_id in seen)
                 or not exact.workspace_id.endswith('::channel::hermes')
                 or not isinstance(sources, list) or not sources or len(sources) > 16
                 or any(not isinstance(s, str) or not s or s.strip() != s or '*' in s for s in sources)
                 or len(set(sources)) != len(sources) or tuple(sorted(sources)) != normalize_source_ids(sources)):
             _error('policy_agents_invalid')
-        seen.add(exact.agent_id)
+        if exact_scopes:
+            coordinates = tuple(asdict(exact).values())
+            tuples = {(*coordinates, source) for source in sources}
+            if tuples.intersection(seen):
+                _error('policy_agents_invalid')
+            seen.update(tuples)
+        else:
+            seen.add(exact.agent_id)
     historical.validate_business_policy(value)
     normalized = deepcopy(value)
     for entry in normalized['agents']:
@@ -179,6 +193,13 @@ def load_controlled_policy(runtime, scope):
         return None
     owner = _scope(scope)
     value = _validate_policy(_read_policy(path), owner)
+    from eimemory.evaluation.hermes_profile_coverage import load_topology, policy_covers_topology
+    topology = load_topology()
+    if topology is not None:
+        try:
+            policy_covers_topology(value, topology)
+        except ValueError as exc:
+            _error(str(exc))
     _traffic_coverage(runtime, value)
     return value
 
@@ -562,7 +583,7 @@ def _public(body, *, persisted=False):
         qualification['record_id'] = ''
     return dict(ok=passed, accepted=accepted, status='accepted' if accepted else 'evaluated' if passed else 'failed',
         passed_threshold=passed,
-        schema=SCHEMA, mode=MODE, evidence_class=EVIDENCE_CLASS,
+        schema=body.get('schema', SCHEMA), mode=MODE, evidence_class=EVIDENCE_CLASS,
         acceptance_purpose=body.get('acceptance_purpose', 'operational'), business_qualification=qualification,
         policy_digest=body.get('policy_digest', ''), release_identity=body.get('release_identity', {}),
         record_id=body.get('record_id', '') if persisted else '', persisted=persisted,
@@ -637,7 +658,8 @@ def _run_controlled_production_acceptance_locked(runtime, *, owner, policy, pers
         if barrier_ok and _engine(runtime) != engine:
             _error('engine_changed_during_run')
         accepted = all(entry['accepted'] for entry in agents)
-        body = dict(schema=SCHEMA, mode=MODE, evidence_class=EVIDENCE_CLASS, source=SOURCE,
+        report_schema = _schema_for_policy(policy)
+        body = dict(schema=report_schema, mode=MODE, evidence_class=EVIDENCE_CLASS, source=SOURCE,
             record_id='cpa_' + uuid4().hex, scope=asdict(owner), policy_digest=digest(policy),
             request_digest=policy['request_digest'], release_identity=release, release_reference=receipt,
             engine_identity=engine, started_at=started, completed_at=now_iso(), stable_before=cutoff,
@@ -648,14 +670,14 @@ def _run_controlled_production_acceptance_locked(runtime, *, owner, policy, pers
                 if not barrier_ok else 'controlled_acceptance_case_failed'))
         body['acceptance_purpose'] = policy.get('purpose', 'operational')
         body['business_qualification'] = historical.business_qualification(body)
-        content = seal(body, SCHEMA)
+        content = seal(body, report_schema)
         if persist:
             record = RecordEnvelope.create(kind='evaluation_packet', title=('Verified historical business-memory qualification' if policy.get('purpose') == historical.PURPOSE
                        else 'Controlled existing-memory operational acceptance'),
                 summary=('Existing real business memories qualified by native controlled recall.' if policy.get('purpose') == historical.PURPOSE
                          else 'Operator-authorized known-item retrieval; natural evidence remains separate.'),
                 content=content, scope=owner, source=SOURCE, source_id='default',
-                meta={'report_type': SCHEMA, 'release_key': digest(release), 'policy_digest': digest(policy),
+                meta={'report_type': report_schema, 'release_key': digest(release), 'policy_digest': digest(policy),
                       'report_digest': digest(content)})
             record.record_id = body['record_id']
             def append(sqlite):
@@ -705,14 +727,15 @@ def verify_controlled_production_acceptance(runtime, *, scope, release=None, rec
         if record is None or (record_id and record.record_id != record_id):
             _error('current_report_missing')
         body = deepcopy(record.content)
+        report_schema = _schema_for_policy(policy)
         if (record.kind != 'evaluation_packet' or record.source != SOURCE or record.source_id != 'default'
-                or record.status != 'active' or record.scope != owner or not verify(body, SCHEMA)
+                or record.status != 'active' or record.scope != owner or not verify(body, report_schema)
                 or body.get('record_id') != record.record_id or body.get('source') != SOURCE
-                or body.get('scope') != asdict(owner) or body.get('schema') != SCHEMA
+                or body.get('scope') != asdict(owner) or body.get('schema') != report_schema
                 or body.get('mode') != MODE or body.get('evidence_class') != EVIDENCE_CLASS
                 or body.get('policy_digest') != digest(policy) or body.get('request_digest') != policy['request_digest']
                 or body.get('release_identity') != current or body.get('release_reference') != receipt
-                or record.meta.get('report_digest') != digest(body) or record.meta.get('report_type') != SCHEMA
+                or record.meta.get('report_digest') != digest(body) or record.meta.get('report_type') != report_schema
                 or record.meta.get('policy_digest') != digest(policy) or body.get('engine_identity') != _engine(runtime)
                 or record.meta.get('release_key') != digest(current)
                 or digest(body.get('engine_identity')) != policy['engine_contract_digest']
