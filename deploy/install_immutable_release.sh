@@ -1962,7 +1962,32 @@ if value.isdigit() and int(value) > 0:
   print(value)
 ' "$pid_file" 2>/dev/null || true)"
     fi
-    if [[ "$main_pid" =~ ^[1-9][0-9]*$ ]] && [ "$gateway_pid" = "$main_pid" ] && \
+    local pid_matches=0
+    if [ "$gateway_pid" = "$main_pid" ]; then
+      pid_matches=1
+    elif [ "${EIMEMORY_CONTROL_PLANE:-}" = "user" ] && \
+         [[ "$main_pid" =~ ^[1-9][0-9]*$ ]] && [[ "$gateway_pid" =~ ^[1-9][0-9]*$ ]]; then
+      # systemd reports a host PID; the gateway writes its private PID. Bind
+      # both to the same live, owned process instead of comparing namespaces.
+      if "$PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" -c '
+import os,sys,json,stat
+from pathlib import Path
+process=Path("/proc")/sys.argv[1]
+if process.stat().st_uid!=os.geteuid():raise SystemExit(1)
+fields=dict(line.split(":",1) for line in (process/"status").read_text().splitlines() if ":" in line)
+pids=fields.get("NSpid", "").split()
+descriptor=os.open(sys.argv[3],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+with os.fdopen(descriptor,"rb") as stream:
+    info=os.fstat(stream.fileno())
+    if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.geteuid() or info.st_size>65536:raise SystemExit(1)
+    record=json.load(stream)
+start=(process/"stat").read_text().rpartition(")")[2].split()[19]
+raise SystemExit(0 if len(pids)>1 and pids[0]==sys.argv[1] and pids[-1]==sys.argv[2]
+    and isinstance(record,dict) and str(record.get("pid"))==sys.argv[2]
+    and str(record.get("start_time"))==start else 1)
+' "$main_pid" "$gateway_pid" "$pid_file"; then pid_matches=1; fi
+    fi
+    if [[ "$main_pid" =~ ^[1-9][0-9]*$ ]] && [ "$pid_matches" = "1" ] && \
        _user_systemctl is-active --quiet "$unit"; then
       echo "hermes_gateway_restart=ready managed_singleton=1$suffix"
       return 0

@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.15.20] — 2026-10-22
+
+- Keep gateway unit metadata in the reviewed user controller while deployment jobs retain read-only native units and hidden manager sockets.
+- Validate unmapped system ancestors in private user namespaces, give Hermes its own writable state directory, and bind private gateway PIDs to the original native process start time.
+- Add operator recovery for a failed manual release only after native exit, clean storage rollback and healthy prior runtime are verified. Preserve the failed attempt and original automation capture without granting autonomous repair credit.
+
 ## [1.15.19] — 2026-10-21
 
 - Give native maintenance owners enough time to complete a protected verification phase; retain the complete test plan and observation duration. Repair source-domain coverage, keep inline source readers inside storage, and render fixed-UID service ownership from real account metadata and protected team inventories.

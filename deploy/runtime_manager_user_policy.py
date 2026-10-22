@@ -63,7 +63,7 @@ def apply(commit):
     raw=raw.replace(b'@COMMIT@',commit.encode()).replace(('User='+account.pw_name+'\n').encode(),b'').replace(('Group='+str(account.pw_gid)+'\n').encode(),b'').replace(b'PrivateUsers=self',b'PrivateUsers=yes')
     raw=raw.replace(('/opt/eimemory/releases/'+commit+' ').encode(),b'/opt/eimemory/releases ')
     if USER_MODE:
-        for name in ('.hermes','.cache','.codex','.openclaw'):
+        for name in ('.hermes','.cache','.codex','.openclaw','.local/state/hermes'):
             product_home=Path(account.pw_dir)/name
             st=product_home.lstat()
             if not stat.S_ISDIR(st.st_mode) or st.st_uid!=uid or st.st_mode&0o022:

@@ -562,3 +562,30 @@ def test_failed_manual_recovery_preserves_native_failure_requirement(damage):
         with pytest.raises(ValueError):module.validate_failed_manual_recovery(contract,registry,record,transition,native,current)
     else:module.validate_failed_manual_recovery(contract,registry,record,transition,native,current)
     assert (registry,record,transition,native)==original
+@POSIX
+@pytest.mark.parametrize('damage',[None,'stale_start','wrong_pid','single_namespace','wrong_host','symlink'])
+def test_gateway_private_pid_requires_same_native_process_start(tmp_path,damage):
+    import sys
+    module=(ROOT/'deploy/install_immutable_release.sh').read_text()
+    marker='import os,sys,json,stat\n'
+    script=marker+module.split(marker,1)[1].split("\n' \"$main_pid\" \"$gateway_pid\" \"$pid_file\"",1)[0]
+    script=script.replace('from pathlib import Path\n','')
+    process=tmp_path/'123';process.mkdir()
+    pids='123 1'
+    if damage=='single_namespace':pids='123'
+    if damage=='wrong_host':pids='124 1'
+    (process/'status').write_text('NSpid:\t'+pids+'\n')
+    (process/'stat').write_text('123 (hermes gateway) S '+'0 '*18+'12345 0\n')
+    record={'pid':2 if damage=='wrong_pid' else 1,'start_time':12344 if damage=='stale_start' else 12345}
+    pid=tmp_path/'gateway.pid';pid.write_text(json.dumps(record))
+    if damage=='symlink':
+        link=tmp_path/'linked.pid';link.symlink_to(pid);pid=link
+    fake_path=lambda value: tmp_path if str(value)=='/proc' else Path(value)
+    original=sys.argv
+    try:
+        sys.argv=['pid-check','123','1',str(pid)]
+        with pytest.raises((SystemExit,OSError)) as caught:
+            exec(compile(script,'reviewed-gateway-pid-check','exec'),{'Path':fake_path})
+    finally:sys.argv=original
+    if damage=='symlink':assert isinstance(caught.value,OSError)
+    else:assert caught.value.code==(0 if damage is None else 1)
