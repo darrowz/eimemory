@@ -472,3 +472,12 @@ def test_user_subject_projection_uses_separate_fixed_authority(tmp_path,monkeypa
     else:
         with pytest.raises(identity.IdentityAuthorityError,match='user_authority_path_fixed'):
             projection.projection_authority_directory(value)
+
+
+def test_user_subject_projection_ignores_legacy_environment_path(tmp_path,monkeypatch):
+    from eimemory import identity_authority as identity,subject_projection as projection
+    root=tmp_path/'control'
+    monkeypatch.setattr(identity,'user_mode',lambda:True)
+    monkeypatch.setattr(identity,'coordinates',lambda:{'authority':root})
+    monkeypatch.setenv('EIMEMORY_SUBJECT_PROJECTION_AUTHORITY_DIR','/etc/eimemory-subject-projection')
+    assert projection.projection_authority_directory()==root/'subject-projection'

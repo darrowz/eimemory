@@ -426,7 +426,7 @@ def projection_authority_directory(value=None):
     configured=value or os.environ.get("EIMEMORY_SUBJECT_PROJECTION_AUTHORITY_DIR")
     if authority_api.user_mode():
         fixed=authority_api.coordinates()['authority']/'subject-projection'
-        if configured is not None and Path(configured)!=fixed:
+        if value is not None and Path(value)!=fixed:
             _error('user_authority_path_fixed')
         return fixed
     return Path(configured or DEFAULT_AUTHORITY_DIRECTORY)
