@@ -15,6 +15,7 @@ AIGC:
 
 - Restore core serving processes before business acceptance, then restore captured background services and timers on both success and failure. Keep the original recovery capture, exact final readback and strict release gates across manual and autonomous deployments.
 - Validate the native user manager during autonomous business acceptance and retain separate evidence for serving readiness and complete background restoration.
+- Recover captured background activity after a verified worker failure or a boot interruption using the original native hold, serving health and sealed restoration plan. Preserve failed results and require a lease-owned rollback intent when a deploying or observing transaction loses its deployment worker.
 - Wait for the real deployment worker exit before nightly opens its database; recover failed observers only after successful native completion, and retain failed deployment status in nightly's overall result.
 - Preserve actual retrieval state, returned references and timings when controlled acceptance fails; distinguish incomplete collection from compact projection errors without changing recall budgets or acceptance thresholds.
 - Carry a failed release's original activity capture through subsequent recovery using its verified restoration history, including retired gateways, without restarting those gateways or re-enrolling an unchanged topology.

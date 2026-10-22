@@ -285,3 +285,74 @@ def native_terminal_readback(pinned: Any, state: Any, invocation: Any, unit: str
  if state['MainPID']!='0' or any(state[name]!=pinned[name] for name in stable):return False
  if state['ActiveState'] in {'inactive','failed'}:return True
  return native_terminal_exit(state,invocation,unit)
+
+
+def native_boot_interruption(record: Any, proof: Any, state: Any, *, current_boot: Any = None) -> bool:
+ """A durable native hold plus a real boot change; this is not an exit receipt."""
+ if not isinstance(record,dict) or not isinstance(proof,dict) or not isinstance(state,dict):return False
+ hold=record.get('native_hold');original=record.get('original_invocation')
+ fields={'schema','job_key','original_invocation','boot_id','registry_generation',
+     'restore_plan_sha256','native_owner','peer_pid'}
+ if (not isinstance(hold,dict) or set(hold)!=fields
+     or hold.get('schema')!='eimemory.native_deployment_hold.v1'
+     or hold.get('job_key')!=record.get('job_key') or hold.get('original_invocation')!=original
+     or not isinstance(original,str) or re.fullmatch('[0-9a-f]{32}',original) is None
+     or hold.get('registry_generation')!=record.get('registry',{}).get('generation')
+     or not isinstance(record.get('restore_plan'),dict)
+     or hold.get('restore_plan_sha256')!=digest(record['restore_plan'])
+     or type(hold.get('peer_pid')) is not int or hold['peer_pid']<=0):return False
+ owner=hold.get('native_owner')
+ if (not isinstance(owner,dict) or set(owner)!={'ActiveState','InvocationID','ControlGroup'}
+     or owner['ActiveState'] not in {'active','activating'} or owner['InvocationID']!=original
+     or not fixed_system_unit_cgroup(owner['ControlGroup'],record.get('unit'))):return False
+ if (set(proof)!={'schema','hold_sha256','previous_boot_id','current_boot_id','native_state'}
+     or proof['schema']!='eimemory.native_job_boot_interruption.v1'
+     or proof['hold_sha256']!=digest(hold) or proof['previous_boot_id']!=hold['boot_id']
+     or proof['native_state']!=state):return False
+ pattern='[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'
+ if (any(not isinstance(proof[key],str) or re.fullmatch(pattern,proof[key]) is None
+         for key in ('previous_boot_id','current_boot_id'))
+     or proof['previous_boot_id']==proof['current_boot_id']
+     or current_boot is not None and proof['current_boot_id']!=current_boot):return False
+ return (set(state)==set(NATIVE_EXIT_PROPERTIES)|{'ControlPID'}
+     and state['LoadState'] in {'loaded','not-found'} and state['ActiveState'] in {'inactive','failed'}
+     and state['InvocationID'] in {'',original} and state['MainPID'] in {'','0'}
+     and state['ControlPID']=='0' and state['ControlGroup']=='')
+
+
+def native_boot_interruption_readback(record: Any, proof: Any, state: Any, *, current_boot: Any = None) -> bool:
+ """Keep the original interruption proof across native unit GC, never a new run."""
+ if (not isinstance(record,dict) or not isinstance(proof,dict) or not isinstance(state,dict)
+     or not native_boot_interruption(record,proof,proof.get('native_state'))):
+  return False
+ if current_boot is not None:
+  if (not isinstance(current_boot,str)
+      or re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',current_boot) is None
+      or current_boot==record['native_hold']['boot_id']):return False
+ return (set(NATIVE_EXIT_PROPERTIES)<=set(state) and set(state)<=set(NATIVE_EXIT_PROPERTIES)|{'ControlPID'}
+     and state['LoadState'] in {'loaded','not-found'} and state['ActiveState'] in {'inactive','failed'}
+     and state['InvocationID'] in {'',record.get('original_invocation')}
+     and state['MainPID'] in {'','0'} and state.get('ControlPID','0')=='0' and state['ControlGroup']=='')
+
+
+def restored_boot_failure(record: Any, state: Any, *, current_boot: Any = None) -> bool:
+ """An already restored boot failure can be archived without inventing an exit."""
+ if not isinstance(record,dict) or not isinstance(state,dict):return False
+ value=record.get('terminal_recovery')
+ fields={'schema','job_key','original_invocation','original_phase','outcome','failure_reason','failure_kind',
+     'native_exit','boot_change','registry_generation','current_commit','controller_commit',
+     'restore_plan_sha256','phase','autonomous_repair_credit'}
+ if (not isinstance(value,dict) or set(value)!=fields
+     or value['schema']!='eimemory.native_failed_job_restore.v1' or value['job_key']!=record.get('job_key')
+     or value['original_invocation']!=record.get('original_invocation')
+     or value['outcome']!='failed' or value['failure_kind']!='boot_change'
+     or value['failure_reason']!='worker_interrupted_by_boot_change' or value['native_exit'] is not None
+     or value['phase']!='restored' or value['autonomous_repair_credit'] is not False
+     or record.get('resumed') is not True or record.get('finalized') is True
+     or value['restore_plan_sha256']!=digest(record.get('restore_plan'))
+     or value['current_commit'] not in {record.get('request',{}).get('base_commit'),record.get('request',{}).get('candidate_commit')}
+     or not isinstance(value['original_phase'],str) or not value['original_phase']):return False
+ for key,size in [('registry_generation',64),('controller_commit',40)]:
+  if not isinstance(value[key],str) or re.fullmatch('[0-9a-f]{'+str(size)+'}',value[key]) is None:return False
+ proof=value['boot_change']
+ return native_boot_interruption_readback(record,proof,state,current_boot=current_boot)

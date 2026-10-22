@@ -426,6 +426,24 @@ def _managed_business_admission(runtime, *, adapter, transaction, policy, key, i
     import sys
 
     transaction_id=transaction['transaction_id']
+    failure_archived=False
+    failure_reconciled=False
+    def reject_admission(exc):
+        nonlocal failure_archived,failure_reconciled
+        if not failure_archived:
+            try:
+                _exclusive(JOBS_ROOT/key/'admission-failure.json',{
+                    'schema':'eimemory.deployment_business_admission_failure.v1','request_key':key,
+                    'invocation':invocation,'error_type':type(exc).__name__,'ok':False})
+                failure_archived=True
+            except (OSError,ValueError) as diagnostic:
+                exc.add_note('admission failure archive also failed: '+type(diagnostic).__name__)
+        if on_failure is not None and not failure_reconciled:
+            try:
+                on_failure(exc)
+                failure_reconciled=True
+            except BaseException as reconcile:
+                exc.add_note('admission failure reconciliation also failed: '+type(reconcile).__name__)
     try:
         ready=_after_storage_call(lambda:prepare_deployment_business(key),
             manager=manager,transaction_id=transaction_id)
@@ -440,16 +458,7 @@ def _managed_business_admission(runtime, *, adapter, transaction, policy, key, i
         if on_business is not None:on_business(business)
         return business
     except BaseException as exc:
-        try:
-            _exclusive(JOBS_ROOT/key/'admission-failure.json',{
-                'schema':'eimemory.deployment_business_admission_failure.v1','request_key':key,
-                'invocation':invocation,'error_type':type(exc).__name__,'ok':False})
-        except (OSError,ValueError) as diagnostic:
-            exc.add_note('admission failure archive also failed: '+type(diagnostic).__name__)
-        if on_failure is not None:
-            try:on_failure(exc)
-            except BaseException as reconcile:
-                exc.add_note('admission failure reconciliation also failed: '+type(reconcile).__name__)
+        reject_admission(exc)
         raise
     finally:
         # A preparation timeout can follow the manager's durable hold. The
@@ -468,6 +477,10 @@ def _managed_business_admission(runtime, *, adapter, transaction, policy, key, i
             _exclusive(JOBS_ROOT/key/'finalized.json',
                 {'request_key':key,'invocation':invocation,'native':restored})
         except BaseException as exc:
+            # Business admission may already have durably entered OBSERVING.
+            # A lost/invalid restoration reply must use the same failure owner
+            # before propagating, retaining the original business artifact.
+            reject_admission(exc if primary is None else primary)
             if primary is None:raise
             primary.add_note('background restoration also failed: '+type(exc).__name__)
 

@@ -18,6 +18,7 @@ import socket
 import stat
 import struct
 import subprocess
+import sys
 import threading
 from contextlib import contextmanager
 import time
@@ -28,6 +29,9 @@ REGISTRY = Path('/etc/eimemory-code-automation-authority/runtime-manager.v1.json
 SOCKET = Path('/run/eimemory-manager/bridge.sock')
 CURRENT = Path('/opt/eimemory/current')
 RELEASES = Path('/opt/eimemory/releases')
+STORAGE_STATE = Path('/var/lib/eimemory/state')
+STORAGE_LOCKS = (Path('/opt/eimemory/.storage-release-install.lock'),
+    Path('/opt/eimemory/.candidate-validation.lock'))
 
 USER_MODE = os.environ.get('EIMEMORY_CONTROL_PLANE', '') == 'user'
 CONTROL_UID = os.geteuid() if USER_MODE else 0
@@ -429,7 +433,7 @@ class Bridge:
 
     def job_status(self,registry,key):
         record=self.record(key)
-        state=self.unit_state(record['registry'],record['unit'],['LoadState','ActiveState','SubState','Result','InvocationID','ExecMainStatus','MainPID','ControlGroup','ExecMainExitTimestampMonotonic'])
+        state=self.unit_state(record['registry'],record['unit'],[*self.c.NATIVE_EXIT_PROPERTIES,'ControlPID'])
         invocation=state.get('InvocationID')
         if invocation:
             self.c.hex_value(invocation,32,'manager_job_invocation_invalid')
@@ -445,7 +449,9 @@ class Bridge:
             'validation_controller_commit':record['request'].get('validation_controller_commit',record['request']['controller_commit']),
             'complete':record.get('finalized') is True,'held_background':record.get('held_background',[]),
             'core_serving_ready':record.get('core_serving_ready') is True,
-            'background_held':record.get('background_held') is True}
+            'background_held':record.get('background_held') is True,
+            'native_hold':record.get('native_hold'),'terminal_recovery':record.get('terminal_recovery'),
+            'restore_plan':record.get('restore_plan'),'launch_registry_generation':record['registry']['generation']}
 
     def pin_terminal(self,record,state,label):
         """An actual native exit is independent of a receipt or sealed bytes."""
@@ -458,7 +464,7 @@ class Bridge:
                 raise ValueError('manager_'+label+'_terminal_state_changed')
             return False
         if self.c.native_terminal_exit(state,record.get('original_invocation'),record['unit']):
-            record['terminal_state']=dict(state);return True
+            record['terminal_state']={key:state[key] for key in self.c.NATIVE_EXIT_PROPERTIES};return True
         return False
 
     def release_job(self,registry,key):
@@ -649,6 +655,16 @@ class Bridge:
         if state['ActiveState'] not in {'active','activating'}:raise ValueError('manager_peer_job_not_running')
         if record.get('original_invocation') is None:
             record['original_invocation']=state['InvocationID'];self.save(registry,record)
+        if USER_MODE:
+            boot=self.boot_id()
+            prior=record.get('native_peer')
+            if prior is not None and (prior.get('boot_id')!=boot
+                    or prior.get('original_invocation')!=state['InvocationID']):
+                raise ValueError('manager_job_native_peer_changed')
+            if prior is None:
+                record['native_peer']={'boot_id':boot,'original_invocation':state['InvocationID'],
+                    'native_owner':dict(state),'peer_pid':pid}
+                self.save(registry,record)
 
     def fused_peer(self,registry,pid,uid):
         unit=self.c.FUSED_UNIT
@@ -1091,7 +1107,7 @@ class Bridge:
         capture=self.c.strict_json(raw)
         fields={'schema','source_job_key','source_job_sha256','source_invocation_id','source_registry_generation',
             'base_commit','scope','active_before','enabled_before','source_native_exit','history_basename'}
-        if (not isinstance(capture,dict) or set(capture)!=fields
+        if (not isinstance(capture,dict) or set(capture) not in (fields,fields|{'source_boot_change'})
                 or capture['schema']!='eimemory.manual_release_recovery_capture.v1'
                 or self.c.canonical(capture)!=raw or sha256(raw).hexdigest()!=digest
                 or capture['base_commit']!=record['request']['base_commit']
@@ -1131,14 +1147,18 @@ class Bridge:
                 or capture['base_commit'] not in {prior['request']['base_commit'],prior['request']['candidate_commit']}):
             raise ValueError('manager_recovery_source_binding_invalid')
         native=self.c.strict_json(read_file(history/'native-exit.json',mode=0o600))
+        boot=(capture.get('source_boot_change')==prior.get('terminal_recovery',{}).get('boot_change')
+            and 'source_boot_change' in capture and self.c.restored_boot_failure(prior,native))
         if (native!=capture['source_native_exit'] or set(native)!=set(self.c.NATIVE_EXIT_PROPERTIES)
-                or native.get('Result') not in {'exit-code','signal','timeout','core-dump','watchdog'}
                 or native.get('ControlGroup')!=''
-                or not self.c.native_terminal_exit(native,invocation,prior['unit'])):
+                or not boot and (native.get('Result') not in {'exit-code','signal','timeout','core-dump','watchdog'}
+                    or not self.c.native_terminal_exit(native,invocation,prior['unit']))
+                or 'source_boot_change' in capture and not boot):
             raise ValueError('manager_recovery_source_failure_unproven')
-        observed=self.unit_state(old_registry,prior['unit'],list(self.c.NATIVE_EXIT_PROPERTIES))
+        observed=self.unit_state(old_registry,prior['unit'],[*self.c.NATIVE_EXIT_PROPERTIES,*(['ControlPID'] if boot else [])])
         if (observed.get('ControlGroup')!=''
-                or not self.c.native_terminal_readback(native,observed,invocation,prior['unit'])):
+                or not (self.c.restored_boot_failure(prior,observed) if boot
+                    else self.c.native_terminal_readback(native,observed,invocation,prior['unit']))):
             raise ValueError('manager_recovery_source_native_changed')
         complete=self.c.strict_json(read_file(history/'complete.json',mode=0o600))
         if (complete.get('complete') is not True or complete.get('job_key')!=source
@@ -1316,6 +1336,15 @@ class Bridge:
                     'recovery_capture_sha256':binding['sha256'],'history_basename':binding['history_basename']}
             plan=self.restore_plan(registry,record,create=True)
             self.consume_manual_recovery_capture(registry,record,recovery)
+            if USER_MODE and record.get('native_peer') is not None:
+                peer=record['native_peer']
+                hold={'schema':'eimemory.native_deployment_hold.v1','job_key':key,
+                    'original_invocation':record['original_invocation'],'boot_id':peer['boot_id'],
+                    'registry_generation':registry['generation'],'restore_plan_sha256':self.c.digest(plan),
+                    'native_owner':peer['native_owner'],'peer_pid':peer['peer_pid']}
+                if record.get('native_hold') not in (None,hold):
+                    raise ValueError('manager_job_native_hold_changed')
+                record['native_hold']=hold
             record['phase']='quiesce_intent';self.save(registry,record)
             # Timers first; RPC/gateways last. A partial failure preserves the
             # original set and never resets it from the now-stopped inventory.
@@ -1529,6 +1558,202 @@ class Bridge:
         self.save(registry,record)
         return {'job_key':key,'phase':record['phase'],'resumed':True,'background_held':False,
             'serving_commit':target.name,'controller_commit':registry['controller_commit']}
+
+    def boot_id(self):
+        value=(self.proc/'sys/kernel/random/boot_id').read_text().strip()
+        if re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',value) is None:
+            raise ValueError('manager_native_boot_identity_invalid')
+        return value
+
+    def failed_worker_proof(self,record,state):
+        """Native failure or a separately proven interruption, never unknown=failed."""
+        original=record.get('original_invocation')
+        self.c.hex_value(original,32,'manager_recovery_original_invocation_invalid')
+        if (state.get('ControlPID')!='0' or state.get('MainPID') not in {'0',''}
+                or state.get('ControlGroup')!='' or state.get('InvocationID') not in {'',original}):
+            raise ValueError('manager_recovery_worker_not_terminal')
+        native={key:state[key] for key in self.c.NATIVE_EXIT_PROPERTIES}
+        pinned=record.get('terminal_state')
+        if pinned is not None:
+            if not self.c.native_terminal_readback(pinned,native,original,record['unit']):
+                raise ValueError('manager_recovery_worker_terminal_changed')
+            native=pinned
+        if (self.c.native_terminal_exit(native,original,record['unit'])
+                and native['Result'] in {'exit-code','signal','timeout','core-dump','watchdog'}):
+            return {'failure_kind':'native_exit','failure_reason':'worker_abnormal_native_exit',
+                'native_exit':dict(native),'boot_change':None}
+        hold=record.get('native_hold');boot=self.boot_id()
+        prior=record.get('terminal_recovery')
+        if isinstance(prior,dict) and prior.get('failure_kind')=='boot_change':
+            if not self.c.native_boot_interruption_readback(record,prior.get('boot_change'),state,current_boot=boot):
+                raise ValueError('manager_recovery_worker_boot_readback_changed')
+            return {key:prior[key] for key in ('failure_kind','failure_reason','native_exit','boot_change')}
+        proof={'schema':'eimemory.native_job_boot_interruption.v1',
+            'hold_sha256':self.c.digest(hold),'previous_boot_id':(hold or {}).get('boot_id'),
+            'current_boot_id':boot,'native_state':dict(state)}
+        if not self.c.native_boot_interruption(record,proof,state,current_boot=boot):
+            raise ValueError('manager_recovery_worker_failure_unproven')
+        return {'failure_kind':'boot_change','failure_reason':'worker_interrupted_by_boot_change',
+            'native_exit':None,'boot_change':proof}
+
+    @contextmanager
+    def clean_recovery_storage(self,registry):
+        """Use the installer's existing kernel locks; never create a new claim."""
+        import fcntl
+        descriptors=[];pins=[]
+        markers=('storage-release-transaction.json','.storage-release-transaction.json.clearing',
+            '.storage-release-transaction.json.recovery','.storage-restore-journal.json')
+        def clean():
+            if any(os.path.lexists(STORAGE_STATE/name) for name in markers):
+                raise ValueError('manager_terminal_recovery_storage_busy')
+            for fd,path,pin in pins:
+                identity=lambda meta:(meta.st_dev,meta.st_ino,meta.st_uid,meta.st_gid,meta.st_mode,meta.st_nlink)
+                if identity(os.fstat(fd))!=pin or identity(path.lstat())!=pin:
+                    raise ValueError('manager_terminal_recovery_storage_lock_changed')
+        try:
+            for path in STORAGE_LOCKS:
+                trusted_directory(path.parent)
+                fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC);descriptors.append(fd)
+                meta=os.fstat(fd);named=path.lstat()
+                if (not stat.S_ISREG(meta.st_mode) or meta.st_uid!=registry['runtime_uid']
+                        or meta.st_nlink!=1 or meta.st_mode&0o022
+                        or (meta.st_dev,meta.st_ino)!=(named.st_dev,named.st_ino)):
+                    raise ValueError('manager_terminal_recovery_storage_lock_untrusted')
+                try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                except BlockingIOError:raise ValueError('manager_terminal_recovery_storage_busy') from None
+                pins.append((fd,path,(meta.st_dev,meta.st_ino,meta.st_uid,meta.st_gid,meta.st_mode,meta.st_nlink)))
+            clean()
+            yield
+            clean()
+        finally:
+            for fd in reversed(descriptors):os.close(fd)
+
+    def recovery_health(self,registry,commit):
+        # The controller deliberately retains AF_UNIX only. The native user
+        # manager creates this fixed, read-only probe outside that seccomp tree.
+        # No product Runtime, arbitrary URL, shell, or candidate code is loaded.
+        code='''import json,os,pathlib,shlex,stat,sys,urllib.request
+p=pathlib.Path('/etc/eimemory/rpc.env')
+fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+try:
+ a=os.fstat(fd)
+ assert stat.S_ISREG(a.st_mode) and a.st_uid==os.geteuid() and a.st_nlink==1 and not a.st_mode&0o022 and a.st_size<=65536
+ raw=os.read(fd,65537)
+ b=os.fstat(fd);n=p.lstat()
+ identity=lambda s:(s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns,s.st_mode,s.st_uid,s.st_nlink)
+ assert identity(a)==identity(b)==identity(n)
+finally:os.close(fd)
+entries=shlex.split(raw.decode())
+assert len(entries)==1 and entries[0].startswith('EIMEMORY_RPC_AUTH_TOKEN=')
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+ def redirect_request(self,*args,**kwargs):return None
+request=urllib.request.Request('http://127.0.0.1:8091/health',headers={'Authorization':'Bearer '+entries[0].partition('=')[2]})
+with urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect()).open(request,timeout=20) as response:
+ raw=response.read(1048577)
+assert len(raw)<=1048576
+health=json.loads(raw)
+assert health.get('ok') is True and health.get('commit')==sys.argv[1] and health.get('configured_runtime_commit')==sys.argv[1]
+assert all(health.get('checks',{}).get(key) is True for key in ('process','store','runtime_identity','ready'))
+print(json.dumps({'ok':True,'commit':sys.argv[1]}))
+'''
+        args=['/usr/bin/systemd-run',*(['--user'] if USER_MODE else []),'--quiet','--wait','--collect','--pipe',
+            '--unit=eimemory-controller-health-probe-'+str(os.getpid())+'-'+str(time.monotonic_ns()),
+            '--property=NoNewPrivileges=yes','--property=CapabilityBoundingSet=',
+            '--property=PrivateUsers='+('yes' if USER_MODE else 'self'),
+            '--property=ProtectSystem=strict','--property=ProtectHome=read-only','--property=PrivateTmp=yes',
+            '--property=RuntimeMaxSec=30','--property=TimeoutStartSec=35','--property=TimeoutStopSec=5',
+            '--property=RestrictAddressFamilies=AF_UNIX AF_INET',
+            *([] if USER_MODE else ['--property=User='+registry['runtime_user'],'--property=Group='+str(registry['runtime_gid'])]),
+            '/usr/bin/python3','-I','-B','-c',code,commit]
+        if self.c.strict_json(self.command(args))!={'ok':True,'commit':commit}:
+            raise ValueError('manager_terminal_recovery_health_unverified')
+
+    def recovery_context(self,registry,record,pointer):
+        if (pointer!={'job_key':record['job_key'],'complete':False} or record.get('superseded_by')
+                or record.get('finalized') is True or record['request']['operation'] not in {'deploy','rollback'}
+                or record.get('active_before') is None):
+            raise ValueError('manager_terminal_recovery_parent_unbound')
+        target=CURRENT.resolve(strict=True)
+        if (target.parent!=RELEASES or target.name not in {record['request']['base_commit'],record['request']['candidate_commit']}
+                or record['request']['operation']=='rollback' and target.name!=record['request']['base_commit']
+                or registry['runtime_commit']!=target.name or self.registry()!=registry
+                or not self.runtime_compatible(registry,target)):
+            raise ValueError('manager_terminal_recovery_current_unbound')
+        plan=self.restore_plan(registry,record)
+        if USER_MODE and record.get('restore_plan') is None:
+            raise ValueError('manager_terminal_recovery_plan_unsealed')
+        return target,plan
+
+    def recover_failed_worker(self):
+        """Controller-owned sweep. HTTP runs before taking either lifecycle lock."""
+        path=self.state/'active-transition.json'
+        if not os.path.lexists(path):return False
+        pointer_raw=read_file(path);pointer=self.c.strict_json(pointer_raw)
+        if not isinstance(pointer,dict) or pointer.get('complete') is not False or 'job_key' not in pointer:return False
+        registry=self.registry();record=self.record(pointer['job_key'])
+        if record.get('finalized') is True or record.get('superseded_by'):return False
+        target,plan=self.recovery_context(registry,record,pointer)
+        properties=[*self.c.NATIVE_EXIT_PROPERTIES,'ControlPID']
+        native=self.unit_state(record['registry'],record['unit'],properties)
+        failure=self.failed_worker_proof(record,native)
+        if record.get('terminal_recovery',{}).get('phase')=='restored':
+            prior=record['terminal_recovery']
+            if any(prior.get(key)!=value for key,value in failure.items()):
+                raise ValueError('manager_terminal_recovery_failure_changed')
+            self.verify_restoration(registry,record)
+            return False
+        # All native reads here are side-effect free. A /health callback can
+        # therefore acquire the regular dispatch mutex without waiting on us.
+        def owner():
+            value=self.runtime_process_environment(registry,'eimemory-rpc.service')
+            return {key:value[key] for key in ('unit','pid','start_ticks','invocation_id')}
+        rpc=owner();self.recovery_health(registry,target.name)
+        if owner()!=rpc:raise ValueError('manager_terminal_recovery_rpc_changed')
+        if not self.mutex.acquire(blocking=False):return False
+        try:
+            with self.lifecycle_lock(),self.clean_recovery_storage(registry):
+                fresh=self.record(record['job_key'])
+                if (fresh!=record or read_file(path)!=pointer_raw or self.registry()!=registry
+                        or CURRENT.resolve(strict=True)!=target or owner()!=rpc):
+                    raise ValueError('manager_terminal_recovery_context_changed')
+                self.recovery_context(registry,fresh,pointer)
+                now=self.unit_state(fresh['registry'],fresh['unit'],properties)
+                if self.failed_worker_proof(fresh,now)!=failure:
+                    raise ValueError('manager_terminal_recovery_failure_changed')
+                prior=fresh.get('terminal_recovery')
+                marker={'schema':'eimemory.native_failed_job_restore.v1','job_key':fresh['job_key'],
+                    'original_invocation':fresh['original_invocation'],
+                    'original_phase':prior['original_phase'] if prior else fresh['phase'],
+                    'outcome':'failed',**failure,'registry_generation':registry['generation'],
+                    'current_commit':target.name,'controller_commit':registry['controller_commit'],
+                    'restore_plan_sha256':self.c.digest(plan),'phase':'failure_verified','autonomous_repair_credit':False}
+                if prior is not None and {**prior,'phase':'failure_verified'}!=marker:
+                    raise ValueError('manager_terminal_recovery_marker_changed')
+                if failure['native_exit'] is not None:fresh['terminal_state']=failure['native_exit']
+                fresh['terminal_recovery']=marker;self.save(registry,fresh)
+                self.fence_job_processes(registry,fresh,include_parent=False)
+                marker['phase']='restoring';self.save(registry,fresh)
+                self.resume(registry,fresh)
+                proof=self.verify_restoration(registry,fresh)
+                fresh.update(resumed=True,background_held=False,phase='resumed_awaiting_business',
+                    restoration_verification=proof)
+                marker['phase']='restored';self.save(registry,fresh)
+                return True
+        finally:self.mutex.release()
+
+    def recovery_watch(self,stop):
+        # A restarted controller resumes this sweep from durable native facts.
+        # Failure is conservative and retried, never a worker replay or reset.
+        last=None
+        while not stop.is_set():
+            try:
+                self.recover_failed_worker();last=None
+            except Exception as exc:
+                code=(str(exc) if isinstance(exc,ValueError) and re.fullmatch('manager_[a-z0-9_]+',str(exc))
+                    else 'manager_terminal_recovery_deferred')
+                if code!=last:print(code,file=sys.stderr,flush=True)
+                last=code
+            stop.wait(5)
 
     def cleanup_validation_units(self,registry,key):
         for operation in self.c.VALIDATION_PREFIXES:
@@ -2021,27 +2246,31 @@ def serve(bridge):
     with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as listener:
         listener.bind(str(SOCKET));os.chown(SOCKET,CONTROL_UID,bridge.registry()['runtime_gid']);os.chmod(SOCKET,0o660)
         listener.listen(16)
-        while True:
-            stream,_=listener.accept()
-            def handle(stream):
-                with stream:
-                    stream.settimeout(610)
-                    value={}
-                    try:
-                        pid,uid,_gid=struct.unpack('3i',stream.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize('3i')))
-                        size=struct.unpack('>I',receive(stream,4))[0]
-                        if size>bridge.c.MAX_REQUEST_BYTES:raise ValueError('manager_request_too_large')
-                        value=bridge.c.strict_json(receive(stream,size))
-                        result=bridge.dispatch(value,pid=pid,uid=uid)
-                        response={'ok':True,**result}
-                    except Exception as exc:
-                        # Only fixed machine codes, never exception text or env.
-                        code=str(exc) if isinstance(exc,ValueError) and re.fullmatch('(?:manager|managed_authority)_[a-z0-9_]+',str(exc)) else 'manager_operation_failed'
-                        response={'ok':False,'reason':code}
-                    response.update(schema=bridge.c.RESPONSE_SCHEMA,operation=value.get('operation'),registry_generation=value.get('registry_generation'))
-                    raw=bridge.c.canonical(response)
-                    stream.sendall(struct.pack('>I',len(raw))+raw)
-            threading.Thread(target=handle,args=(stream,),daemon=True).start()
+        stop=threading.Event()
+        threading.Thread(target=bridge.recovery_watch,args=(stop,),daemon=True).start()
+        try:
+            while True:
+                stream,_=listener.accept()
+                def handle(stream):
+                    with stream:
+                        stream.settimeout(610)
+                        value={}
+                        try:
+                            pid,uid,_gid=struct.unpack('3i',stream.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,struct.calcsize('3i')))
+                            size=struct.unpack('>I',receive(stream,4))[0]
+                            if size>bridge.c.MAX_REQUEST_BYTES:raise ValueError('manager_request_too_large')
+                            value=bridge.c.strict_json(receive(stream,size))
+                            result=bridge.dispatch(value,pid=pid,uid=uid)
+                            response={'ok':True,**result}
+                        except Exception as exc:
+                            # Only fixed machine codes, never exception text or env.
+                            code=str(exc) if isinstance(exc,ValueError) and re.fullmatch('(?:manager|managed_authority)_[a-z0-9_]+',str(exc)) else 'manager_operation_failed'
+                            response={'ok':False,'reason':code}
+                        response.update(schema=bridge.c.RESPONSE_SCHEMA,operation=value.get('operation'),registry_generation=value.get('registry_generation'))
+                        raw=bridge.c.canonical(response)
+                        stream.sendall(struct.pack('>I',len(raw))+raw)
+                threading.Thread(target=handle,args=(stream,),daemon=True).start()
+        finally:stop.set()
 
 
 def main():

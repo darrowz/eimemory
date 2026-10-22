@@ -212,6 +212,8 @@ jobs:
           tests/test_nightly_deployment_admission.py
           tests/test_deployment_business_admission_order.py
           tests/test_runtime_manager_business_restore.py
+          tests/test_runtime_manager_terminal_recovery.py
+          tests/test_code_evolution_recovery.py
           tests/test_recovery_capture_rotation.py
           tests/test_release_impact.py
           tests/test_release_impact_surface_coverage.py

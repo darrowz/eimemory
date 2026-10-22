@@ -8,10 +8,52 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 
 from eimemory.contracts import runtime_manager as contract
 from eimemory.contracts import user_control_plane as user
 from eimemory.core import runtime_manager as manager
+
+CURRENT_LINK = Path("/opt/eimemory/current")
+RELEASES = Path("/opt/eimemory/releases")
+
+
+def _current_boot_id():
+    return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+
+
+def _restored_boot_failure(result, transition):
+    """Admit diagnostics after a proven interruption, never invent an exit."""
+    recovery = result.get("terminal_recovery")
+    if not isinstance(recovery, dict) or recovery.get("failure_kind") != "boot_change":
+        return False
+    if recovery.get("phase") in {"failure_verified", "restoring"}:
+        return False
+    key, invocation = result.get("job_key"), result.get("original_invocation")
+    registry = manager.read_registry()
+    request = result.get("request") or {}
+    target = CURRENT_LINK.resolve(strict=True)
+    boot = _current_boot_id()
+    record = {"job_key": key, "unit": result["unit"], "original_invocation": invocation,
+        "native_hold": result.get("native_hold"), "restore_plan": result.get("restore_plan"),
+        "registry": {"generation": result.get("launch_registry_generation")}, "request": request,
+        "resumed": result.get("resumed"), "finalized": result.get("complete"), "terminal_recovery": recovery}
+    if (result.get("terminal_state") is not None or result.get("complete") is not False
+            or result.get("background_held") is not False or result.get("held_background")
+            or result.get("phase") != "resumed_awaiting_business"
+            or transition != {"job_key": key, "complete": False}
+            or request.get("operation") not in {"deploy", "rollback"} or target.parent != RELEASES
+            or (request.get("operation") == "deploy"
+                and target.name not in {request.get("base_commit"), request.get("candidate_commit")})
+            or (request.get("operation") == "rollback" and target.name != request.get("base_commit"))
+            or target.name != recovery.get("current_commit") or target.name != registry.get("runtime_commit")
+            or recovery.get("controller_commit") != registry.get("controller_commit")
+            or recovery.get("registry_generation") != registry.get("generation")
+            or not contract.restored_boot_failure(record, result.get("state"), current_boot=boot)):
+        raise ValueError("nightly_deployment_boot_failure_unverified")
+    if manager.read_registry() != registry or CURRENT_LINK.resolve(strict=True) != target or _current_boot_id() != boot:
+        raise ValueError("nightly_deployment_boot_failure_changed")
+    return True
 
 
 def wait_for_deployment_terminal(*, timeout_seconds: float = 610) -> dict:
@@ -35,6 +77,12 @@ def wait_for_deployment_terminal(*, timeout_seconds: float = 610) -> dict:
                 or result.get("unit") != contract.job_unit(key)):
             raise ValueError("nightly_deployment_observation_unbound")
         terminal = result.get("terminal_state")
+        if terminal is None and _restored_boot_failure(result, transition):
+            if user.read_file(path) != raw:
+                raise ValueError("nightly_deployment_transition_changed")
+            return {"status": "terminal", "job_key": key, "worker_succeeded": False, "release_complete": False,
+                "worker_terminal_kind": "boot_interruption", "native_exit_observed": False,
+                "autonomous_repair_credit": False}
         if terminal is not None:
             if (not contract.native_terminal_exit(terminal, result.get("original_invocation"), result["unit"])
                     or not contract.native_terminal_readback(terminal, result.get("state", {}),

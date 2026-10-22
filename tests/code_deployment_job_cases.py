@@ -222,7 +222,10 @@ def test_fixed_job_launcher_argv_matches_entry_without_request_selected_paths(mo
 
 @pytest.mark.parametrize("business_passed,completion_lost,admission_fault", [
     (True,False,''),(False,False,''),(True,True,''),
-    (False,False,'business_exception'),(False,False,'prepare_lost')])
+    (False,False,'business_exception'),(False,False,'prepare_lost'),
+    (True,False,'restore_lost'),(True,False,'restore_invalid'),
+    (True,False,'observation_callback_failed'),
+    (True,False,'observation_callback_failed_restore_lost')])
 def test_worker_durable_outcome_waits_for_restoration_business_and_native_complete(
     durable_job_fixture, monkeypatch, business_passed, completion_lost, admission_fault,
 ):
@@ -243,6 +246,21 @@ def test_worker_durable_outcome_waits_for_restoration_business_and_native_comple
         lambda *a,**kw:{"ok":True},raising=False)
     monkeypatch.setattr(jobs,"post_resume_business_error",lambda *a:"")
     sequence=[]
+    if admission_fault.startswith('observation_callback_failed'):
+        start_observing=effects.CodeEvolutionEffectOwner._start_observing
+        def observation_callback_failure(*args,**kwargs):
+            start_observing(*args,**kwargs)
+            raise LookupError('isolated_observation_callback_failure_after_durable_state')
+        monkeypatch.setattr(effects.CodeEvolutionEffectOwner,'_start_observing',observation_callback_failure)
+    rollback_attempts=[]
+    if admission_fault=='observation_callback_failed_restore_lost':
+        begin_intent=CodeEvolutionTransactionManager.begin_intent
+        def transient_rollback_failure(self,*args,**kwargs):
+            if kwargs.get('intent_state')=='ROLLBACK_INTENT':
+                rollback_attempts.append('rollback')
+                if len(rollback_attempts)==1:raise OSError('isolated_first_rollback_write_unavailable')
+            return begin_intent(self,*args,**kwargs)
+        monkeypatch.setattr(CodeEvolutionTransactionManager,'begin_intent',transient_rollback_failure)
     def ledger_state():
         probe=Runtime.create(root=f.runtime.store.root)
         try:return CodeEvolutionTransactionManager(probe).store.get_transaction(f.txid)["current_state"]
@@ -269,10 +287,16 @@ def test_worker_durable_outcome_waits_for_restoration_business_and_native_comple
         return {"ok":business_passed,"business_qualified":business_passed}
     def restore(value):
         assert value==key and sequence==(["install","core"] if admission_fault=='prepare_lost' else ["install","core","business"])
-        assert ledger_state()==("OBSERVING" if business_passed else "ROLLBACK_INTENT")
+        rollback_before_restore=not business_passed or admission_fault=='observation_callback_failed'
+        assert ledger_state()==("ROLLBACK_INTENT" if rollback_before_restore else "OBSERVING")
         assert not (f.root/key/"result.json").exists()
-        if not admission_fault:assert jobs._read(f.root/key/"post-resume-business.json")["ok"] is business_passed
+        if admission_fault not in {'prepare_lost','business_exception'}:
+            assert jobs._read(f.root/key/"post-resume-business.json")["ok"] is business_passed
         sequence.append("background")
+        if admission_fault in {'restore_lost','observation_callback_failed_restore_lost'}:
+            raise TimeoutError('isolated_restore_reply_lost')
+        if admission_fault=='restore_invalid':
+            return {"job_key":key,"resumed":False,"phase":"serving_awaiting_business","background_held":True}
         return {"job_key":key,"resumed":True,"phase":"resumed_awaiting_business","background_held":False}
     def complete(value):
         assert value==key and ledger_state()=="OBSERVING"
@@ -286,12 +310,22 @@ def test_worker_durable_outcome_waits_for_restoration_business_and_native_comple
     f.core.complete_deployment_job=complete
     monkeypatch.setattr(effects.ProductionEffectAdapter,"run_post_resume_business",business)
     if admission_fault:
-        with pytest.raises(TimeoutError if admission_fault=='prepare_lost' else LookupError):
+        expected=(TimeoutError if admission_fault in {'prepare_lost','restore_lost'} else
+            ValueError if admission_fault=='restore_invalid' else LookupError)
+        with pytest.raises(expected) as captured:
             jobs.run_job(f.runtime,key,wait_seconds=0)
         assert ledger_state()=='ROLLBACK_INTENT'
         assert sequence[-1]=='background' and 'complete' not in sequence
-        assert jobs._read(f.root/key/'admission-failure.json')['ok'] is False
+        failure=jobs._read(f.root/key/'admission-failure.json')
+        assert failure['ok'] is False and failure['error_type']==expected.__name__
         assert jobs._read(f.root/key/'result.json')['result']['ok'] is False
+        if business_passed:
+            assert jobs._read(f.root/key/'post-resume-business.json')=={'ok':True,'business_qualified':True}
+            assert jobs._read(f.root/key/'technical-install.json')['result']['ok'] is True
+        if admission_fault=='observation_callback_failed_restore_lost':
+            assert rollback_attempts==['rollback','rollback']
+            assert any('OSError' in note for note in captured.value.__notes__)
+            assert any('TimeoutError' in note for note in captured.value.__notes__)
         return
     result=jobs.run_job(f.runtime,key,wait_seconds=0)
     assert jobs._read(f.root/key/"result.json")["result"]==result
