@@ -433,8 +433,8 @@ class ProactiveRecallService:
         if cached is None:
             recall_started = monotonic()
             try:
-                bundle = recall_bundle or self._recall_with_timeout(
-                    query=recall_query, scope=exact_scope,
+                bundle = recall_bundle or self._recall_with_literal_fallback(
+                    query=normalized_query, recall_query=recall_query, scope=exact_scope,
                     source_ids=sources, task_type=normalized_task_type,
                     channel=channel_id,
                 )
@@ -1646,13 +1646,11 @@ class ProactiveRecallService:
     def _recall_with_timeout(
         self, *, query: str, scope: Mapping[str, Any], source_ids: tuple[str, ...], task_type: str,
         channel: str = "",
+        host_deadline: float | None = None,
     ) -> RecallBundle:
         from time import perf_counter
-        from eimemory.core.budgets import proactive_host_margin_seconds, proactive_host_window_seconds
-        host_window = proactive_host_window_seconds(channel)
-        # perf_counter clock, as used by recall deadlines. 0 = no host bound.
-        host_deadline = (perf_counter() + max(1.0, host_window - proactive_host_margin_seconds())
-                         if host_window else 0.0)
+        if host_deadline is None:
+            host_deadline = self._host_deadline(channel)
         with self._lock:
             if self._closing:
                 raise RuntimeError("proactive recall is closing")
@@ -1885,6 +1883,40 @@ class ProactiveRecallService:
     def _redact_sensitive_summary(text: str) -> str:
         return bounded_redacted_text(text, max_chars=_MAX_TURN_SUMMARY_CHARS)
 
+    @staticmethod
+    def _host_deadline(channel: str) -> float:
+        from time import perf_counter
+        from eimemory.core.budgets import proactive_host_margin_seconds, proactive_host_window_seconds
+        host_window = proactive_host_window_seconds(channel)
+        # perf_counter clock, as used by recall deadlines. 0 = no host bound.
+        return (perf_counter() + max(1.0, host_window - proactive_host_margin_seconds())
+                if host_window else 0.0)
+
+    def _recall_with_literal_fallback(self, *, query: str, recall_query: str, **kwargs):
+        """Context-expanded retrieval, then the host's literal words if empty.
+
+        Appended context entities resolve elliptical follow-ups, but they also
+        dominate candidate terms and the query-normalized grounding scale, so
+        they can starve evidence for the literal request. Retry the literal
+        request only when the expanded pass found nothing.
+        """
+        from time import perf_counter
+        # Both passes share one host window; the fallback never extends it.
+        deadline = self._host_deadline(str(kwargs.get('channel') or ''))
+        bundle = self._recall_with_timeout(query=recall_query, host_deadline=deadline, **kwargs)
+        if recall_query == query or bundle.items:
+            return bundle
+        if (bundle.explanation.get('proactive_bypassed') is True
+                or bundle.explanation.get('retrieval_status') == 'unavailable'):
+            return bundle
+        if deadline and deadline - perf_counter() < 0.5:
+            return bundle
+        literal = self._recall_with_timeout(query=query, host_deadline=deadline, **kwargs)
+        if not literal.items:
+            return bundle
+        literal.explanation['proactive_query_pass'] = 'literal_fallback'
+        return literal
+
     @classmethod
     def _recall_query(cls, query: str, turns: list[str]) -> str:
         entities = cls._entities(" ".join(turns))
@@ -1895,6 +1927,11 @@ class ProactiveRecallService:
         # Historical titles and statements cannot turn this request into a
         # task-status/history request (or erase an explicit task request).
         if task_recall_mode(expanded) != task_recall_mode(query):
+            return query
+        from eimemory.retrieval.answer_requirements import requested_attribute
+        # Context text must not impose an answer shape (release status, money,
+        # constraints) that the literal request never asked for.
+        if requested_attribute(expanded) != requested_attribute(query):
             return query
         return expanded
 
