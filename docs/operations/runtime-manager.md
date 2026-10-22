@@ -14,7 +14,8 @@ the real account database, ignoring caller HOME/XDG overrides:
 profile. `install_user_runtime_manager.py` runs as the actual non-root account,
 authenticates reviewed inputs by digest, requires the original signing keys and
 complete knowledge ledger, and preserves the original identity authorization
-journal. New requests use the account UID; original requester identities and
+journal, including the separate `subject-projection` authority under the user
+control-plane directory. New requests use the account UID; original requester identities and
 hashes remain unchanged. The controller must be stopped for installation.
 Installation backs up prior user authority/code/unit definitions inside the
 product-inaccessible knowledge directory. It does not switch the serving link,

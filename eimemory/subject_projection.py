@@ -300,7 +300,7 @@ def authorize_subject_projection(store, manifest, *, host_database, directory, r
     if dry_run:
         return plan_subject_projection(store, proposal, host_database=host_database)
     authority_api._require_root()
-    with authority_api.snapshot(directory, exclusive=True) as (authority, fd):
+    with authority_api.snapshot(projection_authority_directory(directory), exclusive=True) as (authority, fd):
         if (proposal["owner_scope"] != authority.policy["owner_scope"]
                 or proposal["source_id"] not in authority.policy["source_ids"]):
             _error("owner_source_not_authorized")
@@ -390,7 +390,7 @@ def apply_subject_projection(runtime, *, grant_id, host_database, directory, dry
     if type(dry_run) is not bool:
         _error("dry_run_invalid")
     _require_reader_owner(Path(runtime.store.sqlite.path))
-    with authority_api.snapshot(directory) as (authority, _):
+    with authority_api.snapshot(projection_authority_directory(directory)) as (authority, _):
         grant, manifest = _active_grant(authority, grant_id)
         with _host_snapshot(manifest, host_database) as host:
             def action(sqlite):
@@ -423,8 +423,13 @@ def preview_subject_projection_apply(database, *, grant_id, host_database, direc
 
 def projection_authority_directory(value=None):
     """Server configuration only; a record can never select an authority path."""
-    return Path(value or os.environ.get("EIMEMORY_SUBJECT_PROJECTION_AUTHORITY_DIR")
-                or DEFAULT_AUTHORITY_DIRECTORY)
+    configured=value or os.environ.get("EIMEMORY_SUBJECT_PROJECTION_AUTHORITY_DIR")
+    if authority_api.user_mode():
+        fixed=authority_api.coordinates()['authority']/'subject-projection'
+        if configured is not None and Path(configured)!=fixed:
+            _error('user_authority_path_fixed')
+        return fixed
+    return Path(configured or DEFAULT_AUTHORITY_DIRECTORY)
 
 
 def is_subject_projection(record):

@@ -156,11 +156,12 @@ def test_unmapped_system_ancestors_need_exact_native_user_mapping(monkeypatch,ma
 
 @POSIX
 @pytest.mark.parametrize('damage',['none','archive_scope','archive_digest','journal_requester'])
-def test_user_identity_migration_preserves_original_grants_and_rejects_tampering(tmp_path,monkeypatch,damage):
+@pytest.mark.parametrize('kind',['identity','subject-projection'])
+def test_user_identity_migration_preserves_original_grants_and_rejects_tampering(tmp_path,monkeypatch,damage,kind):
     if os.geteuid()==0:pytest.skip('requires unprivileged operator')
     from eimemory import identity_authority as identity
     control=tmp_path/'control';control.mkdir(mode=0o750)
-    directory=control/'identity';directory.mkdir(mode=0o750)
+    directory=control/kind;directory.mkdir(mode=0o750)
     monkeypatch.setattr(identity,'user_mode',lambda:True)
     monkeypatch.setattr(identity,'coordinates',lambda:{'authority':control})
     scope=dict(tenant_id='t',agent_id='a',workspace_id='w',user_id='u')
@@ -174,7 +175,7 @@ def test_user_identity_migration_preserves_original_grants_and_rejects_tampering
     policy=directory/'policy.json';policy.write_text(identity.canonical(legacy));policy.chmod(0o640)
     journal=directory/'requests.jsonl';journal.write_text(identity.canonical(event)+'\n');journal.chmod(0o640)
     original=journal.read_bytes()
-    result=identity.migrate_user_policy()
+    result=identity.migrate_user_policy(directory)
     assert result['historical_requester_ids_rewritten'] is False
     assert journal.read_bytes()==original
     archive=directory/'retained-policies'/(identity.digest(legacy)+'.json')
@@ -188,13 +189,13 @@ def test_user_identity_migration_preserves_original_grants_and_rejects_tampering
         journal.write_text(identity.canonical(changed)+'\n')
     if damage!='none':
         with pytest.raises(identity.IdentityAuthorityError):
-            with identity.snapshot():pass
+            with identity.snapshot(directory):pass
         return
-    with identity.snapshot() as (snapshot,_):
+    with identity.snapshot(directory) as (snapshot,_):
         assert snapshot.active(event['event_id'])==event
         assert snapshot.policy['requester_uid']==os.geteuid()
-    revoked=identity.revoke(None,grant_id=event['event_id'],reason='Explicit user operator test revocation')
-    with identity.snapshot() as (snapshot,_):
+    revoked=identity.revoke(directory,grant_id=event['event_id'],reason='Explicit user operator test revocation')
+    with identity.snapshot(directory) as (snapshot,_):
         assert snapshot.active(event['event_id']) is None
         assert snapshot.events[-1]['requester_uid']==os.geteuid()
         assert snapshot.events[-1]['event_id']==revoked['revocation_id']
@@ -453,3 +454,21 @@ def test_prepared_release_directory_mode_survives_service_umask(tmp_path, monkey
     finally:
         os.umask(previous)
         cache.chmod(0o750)
+
+
+@pytest.mark.parametrize('configured',[None,'fixed','identity','legacy','outside'])
+def test_user_subject_projection_uses_separate_fixed_authority(tmp_path,monkeypatch,configured):
+    from eimemory import identity_authority as identity,subject_projection as projection
+    root=tmp_path/'control'
+    monkeypatch.setattr(identity,'user_mode',lambda:True)
+    monkeypatch.setattr(identity,'coordinates',lambda:{'authority':root})
+    monkeypatch.delenv('EIMEMORY_SUBJECT_PROJECTION_AUTHORITY_DIR',raising=False)
+    fixed=root/'subject-projection'
+    value={'fixed':fixed,'identity':root/'identity','legacy':Path('/etc/eimemory-subject-projection'),'outside':tmp_path/'other'}.get(configured)
+    if configured in {None,'fixed'}:
+        assert projection.projection_authority_directory(value)==fixed
+        assert identity.authority_directory(fixed)==fixed
+        assert identity.authority_directory()==root/'identity'
+    else:
+        with pytest.raises(identity.IdentityAuthorityError,match='user_authority_path_fixed'):
+            projection.projection_authority_directory(value)

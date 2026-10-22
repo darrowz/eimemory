@@ -256,7 +256,8 @@ def install(args):
     if any(cache.iterdir()):raise ValueError('user_install_pycache_not_empty')
     write(code/'runtime-settings.v1.json',settings,uid)
     write(authority/'user-runtime.env',
-        ('EIMEMORY_CONTROL_PLANE=user\nEIMEMORY_IDENTITY_AUTHORITY_DIR='+str(authority/'identity')+'\n').encode(),uid)
+        ('EIMEMORY_CONTROL_PLANE=user\nEIMEMORY_IDENTITY_AUTHORITY_DIR='+str(authority/'identity')+'\n'
+         'EIMEMORY_SUBJECT_PROJECTION_AUTHORITY_DIR='+str(authority/'subject-projection')+'\n').encode(),uid)
     write(authority/'managed-code-incident-manifest.v1.json',managed_raw,uid)
     write(registry_path,contract.canonical(registry),uid)
     write(authority/'installation.v1.json',canonical({'schema':'eimemory.user_control_plane_installation.v1',
@@ -270,7 +271,10 @@ def install(args):
     # Only future operator requests move to the user identity.
     release=Path('/opt/eimemory/releases')/commit
     migration=subprocess.run([str(release/'.venv/bin/python'),'-I','-B','-X','pycache_prefix='+str(cache),
-        '-c','import sys;sys.path.insert(0,sys.argv[1]);from eimemory.identity_authority import migrate_user_policy;print(migrate_user_policy())',str(release)],
+        '-c',('import sys;sys.path.insert(0,sys.argv[1]);from pathlib import Path;'
+              'from eimemory.identity_authority import migrate_user_policy,coordinates;'
+              'print(migrate_user_policy());p=coordinates()["authority"]/"subject-projection";'
+              'print(migrate_user_policy(p)) if (p/"policy.json").exists() else None'),str(release)],
         env={**os.environ,'XDG_RUNTIME_DIR':'/run/user/'+str(uid),
              'DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/'+str(uid)+'/bus'},timeout=60,check=False)
     if migration.returncode:raise ValueError('user_install_identity_history_migration_failed')

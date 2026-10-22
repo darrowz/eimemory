@@ -40,9 +40,10 @@ def digest(value):
 def authority_directory(value=None):
     if user_mode():
         fixed=coordinates()['authority']/'identity'
-        if value is not None and Path(value)!=fixed:
+        permitted={fixed,coordinates()['authority']/'subject-projection'}
+        if value is not None and Path(value) not in permitted:
             raise IdentityAuthorityError('identity_user_authority_path_fixed')
-        return fixed
+        return Path(value) if value is not None else fixed
     return Path(value or os.environ.get("EIMEMORY_IDENTITY_AUTHORITY_DIR") or DEFAULT_DIRECTORY)
 
 
@@ -343,12 +344,12 @@ def _append(authority, fd, payload):
     return event
 
 
-def migrate_user_policy():
+def migrate_user_policy(directory=None):
     """Retain every original grant/hash while changing only future operator identity."""
     if not user_mode():raise IdentityAuthorityError('identity_user_control_plane_required')
     _require_root()
-    path=authority_directory()
-    with snapshot(exclusive=True) as (authority,_fd):
+    path=authority_directory(directory)
+    with snapshot(path,exclusive=True) as (authority,_fd):
         if authority.policy['schema']=='identity_operator_policy.v2':
             return {'ok':True,'status':'existing','policy_digest':authority.policy_digest}
         legacy=authority.policy
