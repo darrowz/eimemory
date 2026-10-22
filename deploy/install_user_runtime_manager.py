@@ -1663,12 +1663,17 @@ def validate_failed_manual_recovery(contract, registry, record, transition, nati
     request=record['request'];old=record['registry']
     base=(current==request['base_commit'] and old==registry
         and record.get('resumed') is not True and record.get('finalized') is not True)
+    published={k:v for k,v in old.items() if k not in {'generation','runtime_commit','controller_commit'}}
+    live={k:v for k,v in registry.items() if k not in {'generation','runtime_commit','controller_commit'}}
     candidate=(current==request['candidate_commit'] and record.get('resumed') is True
         and record.get('phase') in {'resumed_awaiting_business','completed'}
         and registry.get('controller_commit')==request['validation_controller_commit']
-        and {k:v for k,v in old.items() if k not in {'generation','runtime_commit','controller_commit'}}
-            =={k:v for k,v in registry.items() if k not in {'generation','runtime_commit','controller_commit'}})
-    if current!=registry['runtime_commit'] or not (base or candidate):
+        and published==live)
+    switched_before_resume=(current==request['candidate_commit']
+        and record.get('resumed') is not True and record.get('finalized') is not True
+        and record.get('phase')=='resume_deferred_until_terminal'
+        and registry.get('runtime_commit')==current and published==live)
+    if current!=registry['runtime_commit'] or not (base or candidate or switched_before_resume):
         raise ValueError('user_recovery_prior_runtime_changed')
     active=record.get('active_before')
     if (not isinstance(active,list) or len(active)!=len(set(active))

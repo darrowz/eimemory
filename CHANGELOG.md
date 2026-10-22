@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.26] — 2026-10-22
+
+- Allow reviewed abandonment of a failed manual deploy that already switched to the candidate but has not resumed. Inconsistent resumed flags and unrelated registry changes still fail closed.
+
 ## [1.15.25] — 2026-10-22
 
 - Treat timer and path units as quiet when inactive, without requiring process IDs that systemd does not return. Service units still require zero main and control PIDs.
