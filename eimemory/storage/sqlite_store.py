@@ -5759,6 +5759,15 @@ class SqliteRecordStore:
             terms.append(normalized)
             if re.fullmatch(r"[\u4e00-\u9fff]{3,}", normalized):
                 terms.extend(normalized[index : index + 2] for index in range(len(normalized) - 1))
+            elif re.search(r"[\u4e00-\u9fff]", normalized) and re.search(r"[a-z0-9]", normalized):
+                # Mixed-script runs ("清理下honrui") are one FTS term otherwise
+                # and match nothing; also offer each script run separately.
+                for run in re.findall(r"[\u4e00-\u9fff]+|[a-z0-9_]+", normalized):
+                    if len(run) < 2:
+                        continue
+                    terms.append(run)
+                    if re.fullmatch(r"[\u4e00-\u9fff]{3,}", run):
+                        terms.extend(run[index : index + 2] for index in range(len(run) - 1))
         seen: set[str] = set()
         result: list[str] = []
         for term in terms:
