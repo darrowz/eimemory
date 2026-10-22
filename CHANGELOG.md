@@ -18,6 +18,7 @@ AIGC:
 - Carry the original activity and enablement capture across failed manual attempts; restore and verify the original user services, timers and paths before completing a release.
 - Complete manual deployment only after the worker's binding refresh, settings, bytecode cleanup and independent native finalization have passed. Preserve failed attempts and require genuine receipt and business evidence.
 - Serialize controlled acceptance through final readback so a concurrent nightly cannot replace the evidence high-water during the release's observation window.
+- Restore the caller's environment after every user-operator entry, including failure paths, so later operations retain their own profile.
 - Add explicit user-operator retirement of an obsolete, unused manual code permit, retaining the original policy and ledger facts without creating autonomous repair credit.
 
 ## [1.15.21] — 2026-10-22

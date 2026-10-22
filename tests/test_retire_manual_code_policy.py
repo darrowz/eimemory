@@ -8,18 +8,44 @@ import os
 from pathlib import Path
 import sqlite3
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 pytestmark = pytest.mark.skipif(os.name != 'posix', reason='native user-operator policy retirement')
 
 
-@pytest.fixture
-def retirement(tmp_path, monkeypatch):
+def load_retirement_module():
     spec = importlib.util.spec_from_file_location('manual_policy_retirement_test',
         Path(__file__).parents[1] / 'deploy/retire_manual_code_policy.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def retirement(tmp_path, monkeypatch):
+    module = load_retirement_module()
+    # These functional tests model the permitted *host operator*. The actual
+    # regression runner can itself be in bwrap, where host-root ancestors are
+    # shown as overflowuid. Model only that OS view for fixed system ancestors;
+    # keep real permissions, symlinks, file identity and every user leaf owner.
+    # Genuine private-namespace rejection is tested separately below, without
+    # replacing _operator or weakening any product path validation.
+    system_ancestors = {Path('/'), Path('/tmp'), Path('/var'), Path('/var/tmp')}
+    overflow = int(Path('/proc/sys/kernel/overflowuid').read_text().strip())
+    private_mapping = Path('/proc/self/uid_map').read_text().split() != ['0', '0', '4294967295']
+
+    class HostPath(type(tmp_path)):
+        def lstat(self):
+            info = super().lstat()
+            if private_mapping and Path(self) in system_ancestors and info.st_uid == overflow:
+                values = {name: getattr(info, name) for name in dir(info) if name.startswith('st_')}
+                values['st_uid'] = 0
+                return SimpleNamespace(**values)
+            return info
+
+    monkeypatch.setattr(module, 'Path', HostPath)
     root = tmp_path / 'repo'
     root.mkdir()
     env = {**os.environ, 'GIT_AUTHOR_NAME': 'test', 'GIT_AUTHOR_EMAIL': 'test@example.invalid',
@@ -56,12 +82,12 @@ def retirement(tmp_path, monkeypatch):
         ('real-aborted-transaction', digest, 'ABORTED_CANDIDATE_RESTORED', 1, 'f' * 64))
     conn.commit()
     conn.close()
-    monkeypatch.setattr(module, 'POLICY', policy)
-    monkeypatch.setattr(module, 'DATABASE', database)
-    monkeypatch.setattr(module, 'OWNER', tmp_path / 'owner')
-    monkeypatch.setattr(module, 'CURRENT', current)
-    monkeypatch.setattr(module, 'RELEASES', releases)
-    monkeypatch.setattr(module, '_operator', lambda: tmp_path)
+    monkeypatch.setattr(module, 'POLICY', HostPath(policy))
+    monkeypatch.setattr(module, 'DATABASE', HostPath(database))
+    monkeypatch.setattr(module, 'OWNER', HostPath(tmp_path / 'owner'))
+    monkeypatch.setattr(module, 'CURRENT', HostPath(current))
+    monkeypatch.setattr(module, 'RELEASES', HostPath(releases))
+    monkeypatch.setattr(module, '_operator', lambda: HostPath(tmp_path))
     args = dict(expected_sha256=sha256(policy.read_bytes()).hexdigest(),
         expected_policy_id=data['policy_id'], expected_current_commit=current_commit)
     return module, args, policy, database, data
@@ -134,3 +160,28 @@ def test_retirement_rechecks_policy_after_durable_archive_before_unlink(retireme
     with pytest.raises(ValueError, match='changed_before_retirement'):
         module.retire(**args)
     assert policy.exists()
+
+
+@pytest.mark.parametrize('uid,uid_map,no_new_privs,reason', [
+    (0, '0 0 4294967295\n', '0', 'nonroot_operator_required'),
+    (0, '0 1001 1\n', '1', 'nonroot_operator_required'),
+    (1001, '1001 1001 1\n', '0', 'host_operator_context_required'),
+    (1001, '1001 0 1\n', '0', 'host_operator_context_required'),
+    (1001, '0 0 4294967295\n', '1', 'host_operator_context_required'),
+])
+def test_genuine_operator_rejects_root_private_namespace_and_nnp(monkeypatch, uid, uid_map, no_new_privs, reason):
+    module = load_retirement_module()
+    # Execute the real product admission function against precise kernel-view
+    # facts. In particular, partial maps fail even with NoNewPrivs=0: the host
+    # functional fixture above cannot grant namespace access to this entry.
+    class ProcPath(type(Path('/'))):
+        def read_text(self, *args, **kwargs):
+            if str(self) == '/proc/self/uid_map':
+                return uid_map
+            if str(self) == '/proc/self/status':
+                return 'NoNewPrivs:\t' + no_new_privs + '\n'
+            return super().read_text(*args, **kwargs)
+    monkeypatch.setattr(module, 'Path', ProcPath)
+    monkeypatch.setattr(module, 'os', SimpleNamespace(name='posix', getuid=lambda: uid, geteuid=lambda: uid))
+    with pytest.raises(ValueError, match=reason):
+        module._operator()

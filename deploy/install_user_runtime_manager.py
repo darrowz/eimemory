@@ -20,6 +20,25 @@ import sys
 import tempfile
 import zipfile
 from contextlib import contextmanager
+from functools import wraps
+
+
+@contextmanager
+def user_operator_profile():
+    """Select this operation's profile without changing a caller's environment."""
+    name='EIMEMORY_CONTROL_PLANE';original=os.environ.get(name)
+    os.environ[name]='user'
+    try:yield
+    finally:
+        if original is None:os.environ.pop(name,None)
+        else:os.environ[name]=original
+
+
+def scoped_user_operator(function):
+    @wraps(function)
+    def operation(*args,**kwargs):
+        with user_operator_profile():return function(*args,**kwargs)
+    return operation
 
 
 @contextmanager
@@ -276,6 +295,7 @@ def retain_manifest_history(state, raw, generation, uid):
     return history
 
 
+@scoped_user_operator
 def install(args):
     if os.name!='posix' or os.geteuid()<=0 or os.getuid()!=os.geteuid():
         raise ValueError('user_install_nonroot_identity_required')
@@ -366,7 +386,6 @@ def install(args):
         if connection.execute('SELECT COUNT(*) FROM managed_knowledge').fetchone()[0]<=0:
             raise ValueError('user_install_original_knowledge_empty')
     finally:connection.close()
-    os.environ['EIMEMORY_CONTROL_PLANE']='user'
     with tempfile.TemporaryDirectory(prefix='.user-controller-review-',dir=code.parent) as staging:
         staged=Path(staging)
         for name,raw in files.items():write(staged/name,raw,uid)
@@ -538,6 +557,7 @@ def _publish_installation(args,account,files,manifest,seed,settings,managed_raw,
         'serving_link_changed':False,'services_started':False,'release_accepted':False}))
 
 
+@scoped_user_operator
 def recover_completed_installation(args):
     """Complete only an already sealed installation; partial installs stay fenced."""
     import pwd
@@ -556,7 +576,6 @@ def recover_completed_installation(args):
             or intent.get('autonomous_repair_credit') is not False
             or intent.get('registry_after_sha256')!=sha256(registry_raw).hexdigest()):
         raise ValueError('user_install_recovery_intent_unverified')
-    os.environ['EIMEMORY_CONTROL_PLANE']='user'
     def load(name,source):
         raw=reviewed(code/name,declared['compatibility_hashes'][source],1024*1024)
         return execute_reviewed_module(name,code/name,raw)
@@ -702,6 +721,7 @@ def capture_reference(helper,state,contract,registry,scope):
     return {'basename':path.name,'sha256':sha256(raw).hexdigest()}
 
 
+@scoped_user_operator
 def stage_release(args):
     """Record one reviewed operator attempt and start its fixed user-owned job.
 
@@ -724,7 +744,6 @@ def stage_release(args):
     registry_path=authority/'runtime-manager.v1.json'
     raw=reviewed(registry_path,args.expected_registry_sha256,65536)
     declared=strict(raw)
-    os.environ['EIMEMORY_CONTROL_PLANE']='user'
     def load(name,source):
         expected=declared['compatibility_hashes'][source]
         data=reviewed(code/name,expected,1024*1024)
@@ -1050,6 +1069,7 @@ def pin_failed_terminal(helper,contract,state,record,job_raw,native,history,uid,
     return pinned,pinned_raw
 
 
+@scoped_user_operator
 def abandon_failed_manual(args):
     """Operator recovery after verified storage rollback; preserves failed proof."""
     import fcntl
@@ -1064,7 +1084,6 @@ def abandon_failed_manual(args):
     code=home/'.local/lib/eimemory/control-plane'
     raw=reviewed(authority/'runtime-manager.v1.json',args.expected_registry_sha256,65536)
     registry=strict(raw)
-    os.environ['EIMEMORY_CONTROL_PLANE']='user'
     def load(name,source):
         data=reviewed(code/name,registry['compatibility_hashes'][source],1024*1024)
         return execute_reviewed_module(name,code/name,data)

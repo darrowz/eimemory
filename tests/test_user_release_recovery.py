@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
+import subprocess
+import sys
 
 import pytest
 
@@ -17,6 +19,44 @@ def installer():
     spec=importlib.util.spec_from_file_location('reviewed_user_recovery_tests',source)
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize('entry',['install','recover_completed_installation','stage_release','abandon_failed_manual'])
+@pytest.mark.parametrize('original',[None,'','user','inherited-legacy-value'])
+def test_public_operator_identity_failure_restores_exact_caller_profile(monkeypatch,entry,original):
+    module=installer();name='EIMEMORY_CONTROL_PLANE'
+    if original is None:monkeypatch.delenv(name,raising=False)
+    else:monkeypatch.setenv(name,original)
+    monkeypatch.setattr(module.os,'geteuid',lambda:0,raising=False)
+    monkeypatch.setattr(module.os,'getuid',lambda:0,raising=False)
+    # Unsupported native imports on Windows are also exceptions which must
+    # restore the selection before another caller/legacy fixture executes.
+    with pytest.raises((ValueError,ModuleNotFoundError)):
+        getattr(module,entry)(SimpleNamespace())
+    assert (name in os.environ)==(original is not None)
+    assert os.environ.get(name)==original
+
+
+@pytest.mark.parametrize('original',[None,'','user','inherited-legacy-value'])
+@pytest.mark.parametrize('fails',[False,True])
+def test_operator_scope_inherits_user_in_child_and_restores_on_success_or_error(monkeypatch,original,fails):
+    module=installer();name='EIMEMORY_CONTROL_PLANE'
+    if original is None:monkeypatch.delenv(name,raising=False)
+    else:monkeypatch.setenv(name,original)
+    @module.scoped_user_operator
+    def operation():
+        assert os.environ[name]=='user'
+        child=subprocess.run([sys.executable,'-c',
+            'import os;print(os.environ.get("EIMEMORY_CONTROL_PLANE"))'],
+            text=True,capture_output=True,check=True)
+        assert child.stdout.strip()=='user'
+        if fails:raise RuntimeError('operator failed after starting child')
+        return 'completed'
+    if fails:
+        with pytest.raises(RuntimeError,match='after starting child'):operation()
+    else:assert operation()=='completed'
+    assert (name in os.environ)==(original is not None)
+    assert os.environ.get(name)==original
 
 
 def attempt():

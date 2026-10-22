@@ -268,7 +268,8 @@ def test_user_install_preserves_missing_or_unverified_original_authority(tmp_pat
     if damage=='pending_wal':database.with_name('knowledge.sqlite-wal').write_bytes(b'uncheckpointed-test-data')
     account=SimpleNamespace(pw_uid=native.pw_uid,pw_gid=native.pw_gid,pw_name=native.pw_name,pw_dir=str(home))
     monkeypatch.setattr(pwd,'getpwuid',lambda _:account)
-    monkeypatch.setattr(module.subprocess,'run',lambda *a,**kw:SimpleNamespace(returncode=0,stdout='inactive'))
+    monkeypatch.setattr(module.subprocess,'run',lambda *a,**kw:SimpleNamespace(returncode=0,
+        stdout='ActiveState=inactive\nMainPID=0\nControlPID=0\nControlGroup=\n'))
     # Replace only native directory placement/current serving-link observations;
     # original-key and ledger authentication and all publication code stay real.
     monkeypatch.setattr(module,'directory',lambda *a,**kw:None)
