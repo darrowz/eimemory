@@ -38,7 +38,13 @@ def private_directory(path,mode=0o750):
     missing=[];parent=path
     while not parent.exists():
         missing.append(parent);parent=parent.parent
-    for item in reversed(missing):item.mkdir(mode=mode if item==path else 0o750)
+    for item in reversed(missing):
+        item.mkdir(mode=mode if item==path else 0o750)
+        if item==path:
+            # mkdir respects the service umask; establish the exact new leaf mode.
+            fd=os.open(item,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            try:os.fchmod(fd,mode)
+            finally:os.close(fd)
     for parent in (path,*path.parents):
         info=parent.lstat()
         if not __import__('stat').S_ISDIR(info.st_mode) or info.st_uid not in {0,os.geteuid()} or info.st_mode&0o022:

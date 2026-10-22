@@ -426,3 +426,20 @@ def test_user_first_job_mount_uses_controller_release_before_first_transition(mo
     assert written[home/'eimemory-code-validation-receipt@.service.d/90-eimemory-runtime.conf']==b'ReadOnlyPaths=/opt/eimemory/releases'
     assert written[home/'eimemory-rpc.service.d/90-eimemory-runtime.conf']==b'Environment=EIMEMORY_RUNTIME_COMMIT='+b'b'*40
     assert all(b'@COMMIT@' not in raw for raw in written.values())
+
+
+@POSIX
+def test_prepared_release_directory_mode_survives_service_umask(tmp_path):
+    module=standalone('prepare_user_release')
+    cache=tmp_path/'operator'/'empty-pycache'
+    previous=os.umask(0o027)
+    try:
+        module.private_directory(cache,0o555)
+        assert cache.stat().st_mode&0o777==0o555
+        assert not any(cache.iterdir())
+        cache.chmod(0o550)
+        module.private_directory(cache,0o555)
+        assert cache.stat().st_mode&0o777==0o550
+    finally:
+        os.umask(previous)
+        cache.chmod(0o750)
