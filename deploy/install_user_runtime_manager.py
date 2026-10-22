@@ -177,6 +177,7 @@ def install(args):
         product_home=home/name
         mode=stat.S_IMODE(product_home.lstat().st_mode) if product_home.exists() else 0o750
         directory(product_home,uid,mode)
+    directory(home/'.local/state/hermes',uid,0o700)
     directory(socket,uid,0o700)
     # Reinstallation needs an exact current-generation CAS and no live effect.
     registry_path=authority/'runtime-manager.v1.json'
@@ -465,7 +466,142 @@ def stage_release(args):
         'release_accepted':False,'autonomous_repair_credit':False}))
 
 
+def validate_failed_manual_recovery(contract, registry, record, transition, native, current):
+    """A failed manual attempt can be abandoned, never relabeled successful."""
+    key=record.get('job_key')
+    contract.hex_value(key,64,'user_recovery_job_key_invalid')
+    if (transition!={'complete':False,'job_key':key}
+            or record.get('manual_release') is not True
+            or record.get('finalized') is True or record.get('resumed') is True
+            or record.get('quiesced') is not True
+            or record.get('phase') not in {'publish','activate','rollback'}
+            or record.get('unit')!=contract.job_unit(key)):
+        raise ValueError('user_recovery_failed_manual_binding_invalid')
+    contract.validate_manual_permit(record['request'],key)
+    if (current!=registry['runtime_commit'] or current!=record['request']['base_commit']
+            or record['registry']!=registry):
+        raise ValueError('user_recovery_prior_runtime_changed')
+    active=record.get('active_before')
+    if (not isinstance(active,list) or len(active)!=len(set(active))
+            or not set(active)<=set(registry['units'])):
+        raise ValueError('user_recovery_original_capture_invalid')
+    if (not contract.native_terminal_exit(native,record.get('original_invocation'),record['unit'])
+            or native['Result'] not in {'exit-code','signal','timeout','core-dump','watchdog'}
+            or native['ControlGroup']!=''):
+        raise ValueError('user_recovery_native_failure_unproven')
+
+
+def abandon_failed_manual(args):
+    """Operator recovery after verified storage rollback; preserves failed proof."""
+    import fcntl
+    import pwd
+    import urllib.request
+    import shlex
+    import time
+    if os.getuid()!=os.geteuid() or os.geteuid()<=0:
+        raise ValueError('user_recovery_nonroot_identity_required')
+    uid=os.geteuid();home=Path(pwd.getpwuid(uid).pw_dir)
+    authority=home/'.config/eimemory/control-plane';state=home/'.local/state/eimemory/control-plane'
+    code=home/'.local/lib/eimemory/control-plane'
+    raw=reviewed(authority/'runtime-manager.v1.json',args.expected_registry_sha256,65536)
+    registry=strict(raw)
+    os.environ['EIMEMORY_CONTROL_PLANE']='user'
+    def load(name,source):
+        data=reviewed(code/name,registry['compatibility_hashes'][source],1024*1024)
+        spec=importlib.util.spec_from_file_location('user_recovery_'+name,code/name)
+        module=importlib.util.module_from_spec(spec)
+        exec(compile(data,str(code/name),'exec'),module.__dict__)
+        return module
+    helper=load('user_control_plane.py','eimemory/contracts/user_control_plane.py')
+    contract=load('runtime_manager_contract.py','eimemory/contracts/runtime_manager.py')
+    registry=contract.validate_registry(registry)
+    for directory_path in (authority,state,code):helper.trusted_directory(directory_path)
+    environment={'PATH':'/usr/bin:/bin','LC_ALL':'C','XDG_RUNTIME_DIR':'/run/user/'+str(uid),
+        'DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/'+str(uid)+'/bus'}
+    def show(unit,properties):
+        observed=subprocess.run(['/usr/bin/systemctl','--user','show',unit,
+            '--property='+','.join(properties)],env=environment,text=True,capture_output=True,timeout=30)
+        if observed.returncode not in {0,4}:raise ValueError('user_recovery_native_read_failed')
+        output=observed.stdout
+        fields=strict(canonical(dict(line.split('=',1) for line in output.splitlines() if '=' in line)))
+        if set(fields)!=set(properties):raise ValueError('user_recovery_native_state_incomplete')
+        return fields
+    if show('eimemory-runtime-manager.service',['ActiveState','MainPID']) not in (
+            {'ActiveState':'inactive','MainPID':'0'},{'ActiveState':'failed','MainPID':'0'}):
+        raise ValueError('user_recovery_controller_must_be_stopped')
+    lock=os.open(state/'lifecycle.lock',os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC)
+    try:
+        info=os.fstat(lock)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=uid or info.st_nlink!=1 or stat.S_IMODE(info.st_mode)!=0o600:
+            raise ValueError('user_recovery_lock_untrusted')
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        transition_raw=reviewed(state/'active-transition.json',args.expected_transition_sha256,65536)
+        transition=strict(transition_raw)
+        contract.hex_value(args.job_key,64,'user_recovery_job_key_invalid')
+        job_raw=helper.read_file(state/'jobs'/(args.job_key+'.json'))
+        record=contract.strict_json(job_raw)
+        native=show(contract.job_unit(args.job_key),contract.NATIVE_EXIT_PROPERTIES)
+        current=Path('/opt/eimemory/current').resolve(strict=True)
+        if current.parent!=Path('/opt/eimemory/releases'):
+            raise ValueError('user_recovery_current_path_invalid')
+        validate_failed_manual_recovery(contract,registry,record,transition,native,current.name)
+        storage=Path('/var/lib/eimemory/state')
+        for name in ('storage-release-transaction.json','.storage-release-transaction.json.clearing',
+                     '.storage-release-transaction.json.recovery','.storage-restore-journal.json'):
+            if os.path.lexists(storage/name):raise ValueError('user_recovery_storage_not_clean')
+        # No dynamic child may survive its failed parent, including validation
+        # processes which still have a write-capable SQLite connection.
+        for operation in contract.VALIDATION_PREFIXES:
+            instance=contract.validation_unit(args.job_key,operation)
+            child=show(instance,['MainPID','ControlPID','ActiveState','ControlGroup'])
+            if (child['MainPID']!='0' or child['ControlPID']!='0'
+                    or child['ActiveState'] not in {'inactive','failed'} or child['ControlGroup']!=''):
+                raise ValueError('user_recovery_child_still_present')
+        rpc=show('eimemory-rpc.service',['ActiveState','MainPID'])
+        if rpc['ActiveState']!='active' or not rpc['MainPID'].isdigit() or int(rpc['MainPID'])<=0:
+            raise ValueError('user_recovery_rpc_not_active')
+        token_path=Path('/etc/eimemory/rpc.env');token_meta=token_path.lstat()
+        if (not stat.S_ISREG(token_meta.st_mode) or token_meta.st_uid!=uid
+                or token_meta.st_mode&0o022 or token_meta.st_nlink!=1):
+            raise ValueError('user_recovery_rpc_config_untrusted')
+        assignments=shlex.split(token_path.read_text())
+        if len(assignments)!=1 or not assignments[0].startswith('EIMEMORY_RPC_AUTH_TOKEN='):
+            raise ValueError('user_recovery_rpc_config_invalid')
+        request=urllib.request.Request('http://127.0.0.1:8091/health',
+            headers={'Authorization':'Bearer '+assignments[0].partition('=')[2]})
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request,timeout=20) as response:
+            health=json.load(response)
+        if (health.get('ok') is not True or health.get('commit')!=current.name
+                or health.get('configured_runtime_commit')!=current.name
+                or any(health.get('checks',{}).get(name) is not True
+                       for name in ('process','store','runtime_identity','ready'))):
+            raise ValueError('user_recovery_prior_health_unverified')
+        if (reviewed(authority/'runtime-manager.v1.json',args.expected_registry_sha256,65536)!=raw
+                or reviewed(state/'active-transition.json',args.expected_transition_sha256,65536)!=transition_raw
+                or helper.read_file(state/'jobs'/(args.job_key+'.json'))!=job_raw):
+            raise ValueError('user_recovery_authority_changed')
+        history=state/'managed-incident-receipts'/('manual-abandon-'+str(time.time_ns()))
+        directory(history,uid,0o700)
+        for name,data in (('registry.original',raw),('job.original',job_raw),('transition.original',transition_raw),
+                          ('native-exit.json',canonical(native))):write(history/name,data,uid,0o600)
+        result={'complete':True,'job_key':args.job_key,'outcome':'operator_abandoned_failed_manual_release',
+            'recovery_history':history.name,'failed_deployment_preserved':True,'release_accepted':False,
+            'autonomous_repair_credit':False,'runtime_commit':current.name}
+        write(history/'complete.json',canonical(result),uid,0o600)
+        write(state/'active-transition.json',canonical(result),uid)
+        print(json.dumps(result))
+    finally:os.close(lock)
+
+
 def main():
+    if sys.argv[1:2]==['abandon-failed-manual']:
+        parser=argparse.ArgumentParser(description=abandon_failed_manual.__doc__)
+        parser.add_argument('operation',choices=['abandon-failed-manual'])
+        parser.add_argument('--job-key',required=True)
+        parser.add_argument('--expected-registry-sha256',required=True)
+        parser.add_argument('--expected-transition-sha256',required=True)
+        abandon_failed_manual(parser.parse_args())
+        return
     if sys.argv[1:2]==['stage-release']:
         parser=argparse.ArgumentParser(description=stage_release.__doc__)
         parser.add_argument('operation',choices=['stage-release'])

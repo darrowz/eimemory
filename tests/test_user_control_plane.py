@@ -530,3 +530,35 @@ def test_user_release_stage_matches_existing_contract_and_preserves_collision(tm
     sentinel=stage/'retained';sentinel.write_bytes(b'original attempt')
     with pytest.raises(FileExistsError):module.allocate_stage(tmp_path,commit)
     assert sentinel.read_bytes()==b'original attempt'
+
+@pytest.mark.parametrize('damage',[None,'automatic','resumed','wrong_current','missing_exit','live','wrong_invocation','success','changed_transition'])
+def test_failed_manual_recovery_preserves_native_failure_requirement(damage):
+    from eimemory.contracts import runtime_manager as contract
+    module=standalone('install_user_runtime_manager')
+    current='b'*40
+    registry={'runtime_commit':current,'units':{'eimemory-rpc.service':{}}}
+    request={'schema':'eimemory.manual_release_permit.v2','operation':'deploy',
+        'base_commit':current,'candidate_commit':'a'*40,'target_commit':'a'*40,
+        'controller_commit':'a'*40,'validation_controller_commit':'a'*40,
+        'reviewed_attempt_id':'c'*32,'scope':dict(tenant_id='fixture',agent_id='fixture',workspace_id='fixture',user_id='fixture')}
+    key=contract.digest(request)
+    record={'job_key':key,'request':request,'registry':registry,'manual_release':True,
+        'quiesced':True,'resumed':False,'phase':'publish','unit':contract.job_unit(key),
+        'active_before':['eimemory-rpc.service'],'original_invocation':'d'*32}
+    transition={'complete':False,'job_key':key}
+    native=dict(LoadState='loaded',ActiveState='failed',SubState='failed',Result='exit-code',
+        InvocationID='d'*32,MainPID='0',ExecMainStatus='1',ExecMainExitTimestampMonotonic='123',ControlGroup='')
+    if damage=='automatic':record['manual_release']=False
+    if damage=='resumed':record['resumed']=True
+    if damage=='wrong_current':current='a'*40
+    if damage=='missing_exit':native['ExecMainExitTimestampMonotonic']='0'
+    if damage=='live':native['MainPID']='123'
+    if damage=='wrong_invocation':native['InvocationID']='e'*32
+    if damage=='success':native.update(ActiveState='active',SubState='exited',Result='success',ExecMainStatus='0')
+    if damage=='changed_transition':transition['job_key']='e'*64
+    import copy
+    original=copy.deepcopy((registry,record,transition,native))
+    if damage:
+        with pytest.raises(ValueError):module.validate_failed_manual_recovery(contract,registry,record,transition,native,current)
+    else:module.validate_failed_manual_recovery(contract,registry,record,transition,native,current)
+    assert (registry,record,transition,native)==original

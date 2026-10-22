@@ -221,7 +221,7 @@ def build_user(root, commit, *, account=None):
         'PrivateUsers=yes\nPrivatePIDs=yes\nNoNewPrivileges=yes\nUMask=0027\n'
         'CapabilityBoundingSet=\nAmbientCapabilities=\n'
         f'ReadOnlyPaths={home_seal} {code} {authority} {state} {home}/.config/systemd {home}/.local/share/systemd {runtime}/systemd {runtime}/eimemory-manager\n'
-        f'ReadWritePaths=-{home}/.hermes -{home}/.cache -{home}/.codex -{home}/.openclaw\n'
+        f'ReadWritePaths=-{home}/.hermes -{home}/.cache -{home}/.codex -{home}/.openclaw -{home}/.local/state/hermes\n'
         f'InaccessiblePaths={authority}/managed-incident-proof.key {state}/activation-signing.key {state}/managed-incident-receipts {runtime}/bus {runtime}/systemd/private\n')
     for name in tuple(files):
         if not name.endswith(('.service','.conf','.timer','.path')):

@@ -37,6 +37,8 @@ BASE_UNITS=(
 declare -A SEEN=()
 emit_once() {
   local unit="$1"
+  # Templates define jobs; they are never a running service identity.
+  [[ "$unit" == *@.service ]] && return 0
   if [[ ! "$unit" =~ ^[A-Za-z0-9_.@-]+\.service$ ]] || [ -n "${SEEN[$unit]:-}" ]; then
     return
   fi
@@ -84,6 +86,7 @@ if [ -n "$_dropin_dirs" ]; then
   while IFS= read -r dropin_dir; do
     [ -n "$dropin_dir" ] || continue
     unit="$(basename "$dropin_dir" .d)"
+    [[ "$unit" == *@.service ]] && continue
     if [[ ! "$unit" =~ ^[A-Za-z0-9_.@-]+\.service$ ]]; then
       continue
     fi

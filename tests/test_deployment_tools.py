@@ -4024,3 +4024,17 @@ def test_source_validation_refusal_names_runtime_bytecode(tmp_path) -> None:
     with pytest.raises(module["CleanupError"], match="changed=1.*runtime_bytecode_only=false"):
         module["validate_release_source"](release_dir=release, releases_root=releases,
                                           repo_root=repo, commit=commit)
+
+def test_unbound_discovery_never_queries_or_emits_job_templates(tmp_path):
+    directory=tmp_path/'units';directory.mkdir()
+    template='eimemory-code-deployment-job@.service'
+    (directory/template).write_text('[Service]\nExecStart=/opt/eimemory/current/job\n')
+    dropin=directory/(template+'.d');dropin.mkdir()
+    (dropin/'90-eimemory-runtime.conf').write_text('[Service]\nEnvironment=EIMEMORY_RUNTIME_COMMIT=fixture\n')
+    environment=dict(os.environ)
+    environment.pop('EIMEMORY_RUNTIME_TRANSITION_JOB',None)
+    result=subprocess.run([_bash_binary(),'deploy/discover_python_runtime_units.sh',_bash_path(directory)],
+        cwd=Path.cwd(),env=environment,text=True,capture_output=True,timeout=30)
+    assert result.returncode==0,result.stderr
+    assert template not in result.stdout.splitlines()
+    assert not result.stderr
