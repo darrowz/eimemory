@@ -429,8 +429,18 @@ def test_user_first_job_mount_uses_controller_release_before_first_transition(mo
 
 
 @POSIX
-def test_prepared_release_directory_mode_survives_service_umask(tmp_path):
+def test_prepared_release_directory_mode_survives_service_umask(tmp_path, monkeypatch):
     module=standalone('prepare_user_release')
+    # The harness uses a shared /tmp; model protected host ancestors while
+    # retaining actual directory creation, descriptor chmod and leaf checks.
+    ancestors=set(tmp_path.parents)
+    original_lstat=Path.lstat
+    def trusted_harness_ancestor(path):
+        info=original_lstat(path)
+        if path in ancestors:
+            return SimpleNamespace(st_mode=info.st_mode&~0o022,st_uid=0)
+        return info
+    monkeypatch.setattr(Path,'lstat',trusted_harness_ancestor)
     cache=tmp_path/'operator'/'empty-pycache'
     previous=os.umask(0o027)
     try:
