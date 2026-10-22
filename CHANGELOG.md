@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.23] — 2026-10-22
+
+- Check existing eiMemory control files before publishing a user controller, so invalid legacy metadata is reported before installation changes begin.
+- Complete an already published controller installation only after reconstructing and verifying the original reviewed inputs, preserved files and native state. Keep the failed attempt and original backup; do not replay installation or storage operations.
+
 ## [1.15.22] — 2026-10-22
 
 - Follow Hermes' single native gateway and multiple logical profiles across request identity, credentials, callbacks, sampling, acceptance and recovery. Preserve retired gateway history without recreating old services or constraining the native gateway.

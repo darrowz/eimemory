@@ -306,7 +306,7 @@ def gateway_integration_bytes(path,uid,commit):
     return raw
 
 
-def installation_inventory(home,registry,uid,helper=None):
+def installation_inventory(home,registry,uid,helper=None,*,include_gateways=True):
     """Seal published control bytes, including the generated effective policy."""
     home=Path(home);code=home/'.local/lib/eimemory/control-plane'
     authority=home/'.config/eimemory/control-plane';units=home/'.config/systemd/user'
@@ -324,7 +324,7 @@ def installation_inventory(home,registry,uid,helper=None):
         if is_gateway_unit(unit):
             # Vendor fragments, native profile launchers and local policies are
             # outside controller publication custody, including mode 0664 files.
-            if registry['units'].get(unit,{}).get('installed'):
+            if include_gateways and registry['units'].get(unit,{}).get('installed'):
                 metadata=units/(unit+'.d')/'zzzzzz-eimemory-user-control-plane.conf'
                 gateway_integration_bytes(metadata,uid,registry['runtime_commit'])
                 gateway_paths.add(metadata)
@@ -489,6 +489,167 @@ def retain_manifest_history(state, raw, generation, uid):
     return history
 
 
+def published_registry(seed,files,manifest,managed_raw,home,uid,gid,contract):
+    authority=Path(home)/'.config/eimemory/control-plane';state=Path(home)/'.local/state/eimemory/control-plane'
+    entry=strict(files['controller-entry.json'])
+    registry={**seed,'controller_commit':manifest['controller_commit'],'runtime_commit':seed['runtime_commit'],
+        'units':{name:{**value,'manager':'user'} for name,value in seed['units'].items()},
+        'template_hashes':{name.removeprefix('templates/'):sha256(raw).hexdigest()
+            for name,raw in files.items() if name.startswith('templates/')},
+        'compatibility_hashes':strict(files['compatibility.json']),
+        'controller_entry_digest':entry['sha256'],'validation_entry_digest':entry['validation_sha256'],
+        'managed_incident_authority':{'enabled':True,'database_path':'/var/lib/eimemory/state/eimemory.sqlite',
+            'manifest_path':str(authority/'managed-code-incident-manifest.v1.json'),
+            'manifest_sha256':sha256(managed_raw).hexdigest(),
+            'receipt_directory':str(state/'managed-incident-receipts'),'key_path':str(authority/'managed-incident-proof.key')}}
+    registry['generation']=contract.digest({k:v for k,v in registry.items() if k!='generation'})
+    return contract.validate_registry(registry)
+
+
+def publication_scope(path,home,registry):
+    """The installer's custody excludes all native gateway business files."""
+    path=Path(path);home=Path(home)
+    if any(path.is_relative_to(home/relative) for relative in
+           ('.config/eimemory/control-plane','.local/lib/eimemory/control-plane')):
+        return True
+    units=home/'.config/systemd/user'
+    if not path.is_relative_to(units):return False
+    relative=path.relative_to(units);head=relative.parts[0]
+    unit=head.removesuffix('.d') if head.endswith('.d') else head
+    if is_gateway_unit(unit):
+        return (registry['units'].get(unit,{}).get('installed') is True
+            and relative.as_posix()==unit+'.d/zzzzzz-eimemory-user-control-plane.conf')
+    return unit in set(registry['template_hashes'])|{
+        name for name,item in registry['units'].items() if item['installed']}|{'eimemory-runtime-manager.service'}
+
+
+def publication_backup_files(raw,home,registry,uid):
+    import tarfile
+    roots={'authority':Path(home)/'.config/eimemory/control-plane',
+        'code':Path(home)/'.local/lib/eimemory/control-plane','user-units':Path(home)/'.config/systemd/user'}
+    result={};seen=set();size=0
+    with tarfile.open(fileobj=io.BytesIO(raw),mode='r:') as archive:
+        for number,member in enumerate(archive):
+            parts=PurePosixPath(member.name).parts
+            if (number>=8192 or not parts or str(PurePosixPath(member.name))!=member.name
+                    or parts[0] not in roots or '..' in parts
+                    or member.name.startswith('/') or member.name in seen):
+                raise ValueError('user_install_finish_backup_unsafe')
+            seen.add(member.name)
+            path=roots[parts[0]].joinpath(*parts[1:])
+            if member.isdir() or not publication_scope(path,home,registry):continue
+            if not member.isfile() or member.uid!=uid or member.size>16*1024*1024:
+                raise ValueError('user_install_finish_backup_unsafe')
+            size+=member.size
+            if size>128*1024*1024:raise ValueError('user_install_finish_backup_limit')
+            data=archive.extractfile(member).read()
+            if len(data)!=member.size:raise ValueError('user_install_finish_backup_changed')
+            result[str(path)]={'raw':data,'mode':member.mode&0o777,'uid':member.uid}
+    return result
+
+
+def published_installation_expectations(backup_raw,home,uid,files,registry,settings,managed_raw,
+                                       contract,policy_module,*,metadata_repairs=()):
+    """Reconstruct publication from original bytes; never bless a current scan."""
+    home=Path(home);authority=home/'.config/eimemory/control-plane'
+    code=home/'.local/lib/eimemory/control-plane';units=home/'.config/systemd/user'
+    before=publication_backup_files(backup_raw,home,registry,uid)
+    expected={name:dict(item) for name,item in before.items()}
+    def put(path,raw,mode=0o640):expected[str(path)]={'raw':raw,'mode':mode,'uid':uid}
+    repair_names=set()
+    for item in metadata_repairs:
+        if not isinstance(item,dict) or set(item)!={'path','sha256','before_mode','after_mode','uid'}:
+            raise ValueError('user_install_finish_metadata_repair_invalid')
+        path=Path(item['path']);old=before.get(str(path));relative=path.relative_to(units) if path.is_relative_to(units) else None
+        if (relative is None or len(relative.parts)!=2 or not relative.parts[0].endswith('.service.d')
+                or relative.parts[0][:-2] not in registry['units'] or is_gateway_unit(relative.parts[0][:-2])
+                or not relative.name.endswith('.conf') or old is None
+                or item['uid']!=uid or item['before_mode']!=0o664 or item['after_mode']!=0o644
+                or old['mode']!=0o664 or sha256(old['raw']).hexdigest()!=item['sha256'] or str(path) in repair_names):
+            raise ValueError('user_install_finish_metadata_repair_invalid')
+        repair_names.add(str(path))
+        expected[str(path)]['mode']=0o644
+    for name,raw in files.items():
+        if name!='eimemory-runtime-manager.service':put(code/name,raw)
+    put(code/'runtime-settings.v1.json',settings)
+    put(authority/'runtime-manager.v1.json',contract.canonical(registry))
+    put(authority/'managed-code-incident-manifest.v1.json',managed_raw)
+    put(authority/'installation.v1.json',canonical(dict(schema='eimemory.user_control_plane_installation.v1',
+        runtime_uid=uid,runtime_gid=registry['runtime_gid'],control_plane='user')))
+    put(authority/'user-runtime.env',('EIMEMORY_CONTROL_PLANE=user\nEIMEMORY_IDENTITY_AUTHORITY_DIR='+str(authority/'identity')+
+        '\nEIMEMORY_SUBJECT_PROJECTION_AUTHORITY_DIR='+str(authority/'subject-projection')+'\n').encode())
+    for leaf in ('identity','subject-projection'):
+        policy=authority/leaf/'policy.json';old=before.get(str(policy))
+        if old is None:
+            if leaf=='identity':raise ValueError('user_install_finish_identity_history_missing')
+            continue
+        legacy=strict(old['raw'])
+        if legacy.get('schema')=='identity_operator_policy.v2':continue
+        digest=sha256(canonical(legacy)).hexdigest()
+        put(policy.parent/'retained-policies'/(digest+'.json'),canonical(legacy)+b'\n')
+        put(policy,canonical({**legacy,'schema':'identity_operator_policy.v2','requester_uid':uid,
+            'retained_policy_digests':[digest]})+b'\n')
+    runtime=registry['runtime_commit'];commit=registry['controller_commit']
+    for name,raw in files.items():
+        if name=='eimemory-runtime-manager.service':put(units/name,raw,0o644)
+        elif name.startswith('templates/'):
+            unit=name.removeprefix('templates/')
+            if is_gateway_unit(unit):raise ValueError('user_install_native_gateway_template_forbidden')
+            put(units/unit,raw,0o644)
+            if unit.endswith('.service'):
+                policy_name=('job-runtime-policy.conf' if unit=='eimemory-code-deployment-job@.service' else
+                    'validation-runtime-policy.conf' if unit.startswith('eimemory-code-validation-') else 'runtime-policy.conf')
+                target=commit if policy_name!='runtime-policy.conf' else runtime
+                put(units/(unit+'.d')/'90-eimemory-runtime.conf',files[policy_name].replace(b'@COMMIT@',target.encode()))
+    guarded=set(registry['template_hashes'])|{name for name,item in registry['units'].items() if item['installed']}
+    guarded.add('eimemory-runtime-manager.service')
+    marker=home/'.local/state/eimemory/control-plane/controller-installation.json'
+    guard=('[Unit]\nConditionPathExists=!'+str(marker)+'\n').encode()
+    for unit in guarded:
+        if not is_gateway_unit(unit):put(units/(unit+'.d')/'05-eimemory-installation-guard.conf',guard,0o644)
+    raw=files['runtime-policy.conf'].replace(b'@COMMIT@',runtime.encode())
+    raw=raw.replace(('User='+registry['runtime_user']+'\n').encode(),b'')
+    raw=raw.replace(('Group='+str(registry['runtime_gid'])+'\n').encode(),b'').replace(b'PrivateUsers=self',b'PrivateUsers=yes')
+    raw=raw.replace(('/opt/eimemory/releases/'+runtime+' ').encode(),b'/opt/eimemory/releases ')
+    for unit,item in registry['units'].items():
+        if not item['installed'] or not unit.endswith('.service'):continue
+        if is_gateway_unit(unit):
+            content=policy_module.render_gateway_integration(unit,runtime,authority=authority)
+        else:
+            content=raw;template=files.get('templates/'+unit)
+            if template is not None:
+                resets='\n[Service]\n'+''.join(name+'=\n' for name in
+                    ('ExecStart','ExecStartPre','ExecStartPost','ExecStop','ExecStopPost','ExecCondition'))
+                commands='\n'.join(line for line in template.decode().replace('\\\n',' ').splitlines()
+                    if line.startswith(('ExecStart=','ExecStartPre=','ExecStartPost=','ExecStop=','ExecStopPost=','ExecCondition=')))
+                content=resets.encode()+commands.encode()+b'\n'+raw
+            content+=('EnvironmentFile='+str(authority/'user-runtime.env')+'\n').encode()
+        put(units/(unit+'.d')/'zzzzzz-eimemory-user-control-plane.conf',content,0o600)
+    return {name:{'sha256':sha256(item['raw']).hexdigest(),'mode':item['mode'],'uid':item['uid']}
+        for name,item in expected.items() if publication_scope(Path(name),home,registry)}
+
+
+def protected_materials(home,uid,expected=None):
+    home=Path(home);authority=home/'.config/eimemory/control-plane';state=home/'.local/state/eimemory/control-plane'
+    paths=(authority/'managed-incident-proof.key',state/'activation-signing.key',
+        state/'managed-incident-receipts/knowledge.sqlite')
+    if expected is not None and (not isinstance(expected,dict) or set(expected)!={str(path) for path in paths}):
+        raise ValueError('user_install_protected_materials_invalid')
+    result={}
+    for path in paths:
+        raw=owned_bytes(path,uid,256*1024*1024);info=path.lstat()
+        if path.name.endswith('.key') and (stat.S_IMODE(info.st_mode)!=0o600 or not 32<=len(raw)<=4096
+                or path.name=='activation-signing.key' and len(raw)!=32):
+            raise ValueError('user_install_original_signing_material_required')
+        result[str(path)]={'sha256':sha256(raw).hexdigest(),'mode':stat.S_IMODE(info.st_mode),'uid':info.st_uid}
+    for suffix in ('-wal','-journal'):
+        sidecar=paths[-1].with_name(paths[-1].name+suffix)
+        if sidecar.is_symlink() or sidecar.exists() and sidecar.stat().st_size:
+            raise ValueError('user_install_original_knowledge_not_checkpointed')
+    if expected is not None and result!=expected:raise ValueError('user_install_protected_materials_changed')
+    return result
+
+
 @scoped_user_operator
 def install(args):
     if os.name!='posix' or os.geteuid()<=0 or os.getuid()!=os.geteuid():
@@ -591,20 +752,7 @@ def install(args):
         settings_module=importlib.util.module_from_spec(settings_spec)
         exec(compile(files['runtime_manager_settings.py'],str(staged/'runtime_manager_settings.py'),'exec'),settings_module.__dict__)
         settings_module.validate(strict(settings))
-    entry=strict(files['controller-entry.json'])
-    registry={**seed,'controller_commit':commit,'runtime_commit':runtime,
-        'units':{name:{**value,'manager':'user'} for name,value in seed['units'].items()},
-        'template_hashes':{name.removeprefix('templates/'):sha256(raw).hexdigest()
-            for name,raw in files.items() if name.startswith('templates/')},
-        'compatibility_hashes':strict(files['compatibility.json']),
-        'controller_entry_digest':entry['sha256'],'validation_entry_digest':entry['validation_sha256'],
-        'managed_incident_authority':{'enabled':True,'database_path':'/var/lib/eimemory/state/eimemory.sqlite',
-            'manifest_path':str(authority/'managed-code-incident-manifest.v1.json'),
-            'manifest_sha256':sha256(managed_raw).hexdigest(),
-            'receipt_directory':str(state/'managed-incident-receipts'),
-            'key_path':str(authority/'managed-incident-proof.key')}}
-    registry['generation']=contract.digest({k:v for k,v in registry.items() if k!='generation'})
-    contract.validate_registry(registry)
+    registry=published_registry(seed,files,manifest,managed_raw,home,uid,account.pw_gid,contract)
     gateway_manifest,gateway_plan=gateway_retirement_plan(args,uid,home/'.config/systemd/user')
     for name,expected in registry['compatibility_hashes'].items():
         source=Path('/opt/eimemory/releases')/commit/name
@@ -622,6 +770,11 @@ def install(args):
             if os.path.lexists(registry_path):raise ValueError('user_install_registry_changed')
         elif reviewed(registry_path,args.expected_existing_registry_sha256)!=original_registry:
             raise ValueError('user_install_registry_changed')
+        if original_registry is not None:
+            # Detect historical EI custom-file metadata before publication.
+            # Gateway policy is separately authenticated for retirement.
+            installation_inventory(home,contract.validate_registry(strict(original_registry)),
+                uid,helper,include_gateways=False)
         actual_transition=transition.read_bytes() if os.path.lexists(transition) else None
         if actual_transition!=original_transition:raise ValueError('user_install_transition_changed')
         marker=state/'controller-installation.json'
@@ -750,10 +903,11 @@ def _publish_installation(args,account,files,manifest,seed,settings,managed_raw,
             if os.path.lexists(state/'active-transition.json') else None)!=original_transition:
         raise ValueError('user_install_transition_changed')
     reviewed(marker,sha256(intent_raw).hexdigest(),65536)
-    seal={'schema':'eimemory.user_controller_installation_completion.v1',
+    seal={'schema':'eimemory.user_controller_installation_completion.v2',
         'installation_sha256':sha256(intent_raw).hexdigest(),'registry_sha256':sha256(contract.canonical(registry)).hexdigest(),
         'controller_commit':commit,'runtime_commit':runtime,'release_accepted':False,'autonomous_repair_credit':False,
-        'published_files':installation_inventory(home,registry,uid,helper)}
+        'published_files':installation_inventory(home,registry,uid,helper),
+        'protected_materials':protected_materials(home,uid)}
     if gateway_manifest is not None:
         seal['gateway_retirement']=gateway_retirement_evidence(backup.with_suffix('.gateway-retirements'),
             uid,intent['gateway_retirement_manifest_sha256'],unit_home,registry)
@@ -798,8 +952,9 @@ def recover_completed_installation(args):
         'DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/'+str(uid)+'/bus'}
     with operator_lock(helper,state/'bridge.lock'),operator_lock(helper,state/'lifecycle.lock'):
         stopped_controller(environment)
+        current=Path('/opt/eimemory/current').resolve(strict=True)
         if (owned_bytes(marker,uid,65536)!=marker_raw or owned_bytes(registry_path,uid,65536)!=registry_raw
-                or Path('/opt/eimemory/current').resolve(strict=True)!=Path('/opt/eimemory/releases')/registry['runtime_commit']):
+                or current!=Path('/opt/eimemory/releases')/registry['runtime_commit']):
             raise ValueError('user_install_recovery_authority_changed')
         basename=intent.get('backup_basename','')
         if re.fullmatch(re.escape(registry['controller_commit'])+r'-[0-9]+\.tar',basename) is None:
@@ -809,10 +964,21 @@ def recover_completed_installation(args):
             raise ValueError('user_install_recovery_backup_changed')
         seal_path=backup.with_suffix('.complete.json')
         seal_raw=reviewed(seal_path,args.expected_completion_sha256,4*1024*1024);seal=strict(seal_raw)
-        expected={'schema':'eimemory.user_controller_installation_completion.v1',
+        schema=seal.get('schema') if isinstance(seal,dict) else None
+        if schema=='eimemory.user_controller_installation_completion.v1':
+            if getattr(args,'allow_legacy_completion',False) is not True:
+                raise ValueError('user_install_legacy_completion_explicit_review_required')
+        elif schema!='eimemory.user_controller_installation_completion.v2':
+            raise ValueError('user_install_recovery_completion_unverified')
+        expected={'schema':schema,
             'installation_sha256':sha256(marker_raw).hexdigest(),'registry_sha256':sha256(registry_raw).hexdigest(),
             'controller_commit':registry['controller_commit'],'runtime_commit':registry['runtime_commit'],
             'release_accepted':False,'autonomous_repair_credit':False}
+        if schema=='eimemory.user_controller_installation_completion.v2':
+            if not isinstance(seal.get('protected_materials'),dict):
+                raise ValueError('user_install_protected_materials_invalid')
+            protected_materials(home,uid,seal.get('protected_materials'))
+            expected['protected_materials']=seal['protected_materials']
         if intent.get('gateway_retirement_manifest_sha256') is not None:
             expected['gateway_retirement']=gateway_retirement_evidence(backup.with_suffix('.gateway-retirements'),
                 uid,intent['gateway_retirement_manifest_sha256'],home/'.config/systemd/user',registry)
@@ -836,6 +1002,12 @@ def recover_completed_installation(args):
             'marker_hex':marker_raw.hex(),'completion_sha256':sha256(seal_raw).hexdigest(),
             'release_accepted':False,'autonomous_repair_credit':False}),uid,0o600)
         stopped_controller(environment)
+        if 'protected_materials' in expected:protected_materials(home,uid,expected['protected_materials'])
+        verify_controller_sources(registry,registry['controller_commit'])
+        final_transition=sha256(owned_bytes(transition,uid,65536)).hexdigest() if os.path.lexists(transition) else None
+        if (Path('/opt/eimemory/current').resolve(strict=True)!=current
+                or final_transition!=intent['transition_before_sha256']):
+            raise ValueError('user_install_recovery_authority_changed')
         if (owned_bytes(marker,uid,65536)!=marker_raw or owned_bytes(registry_path,uid,65536)!=registry_raw
                 or installation_inventory(home,registry,uid,helper)!=seal['published_files']
                 or ('gateway_retirement' in expected and gateway_retirement_evidence(
@@ -845,6 +1017,167 @@ def recover_completed_installation(args):
         marker.unlink();sync_parent(marker)
         print(json.dumps({'ok':True,'installation_recovered':True,'controller_commit':registry['controller_commit'],
             'services_started':False,'release_accepted':False,'autonomous_repair_credit':False}))
+
+
+def reviewed_metadata_repairs(args,intent,registry,home,uid):
+    manifest_path=getattr(args,'metadata_repair_manifest',None)
+    receipt_path=getattr(args,'metadata_repair_receipt',None)
+    if manifest_path is None and receipt_path is None:return [],{}
+    if manifest_path is None or receipt_path is None:raise ValueError('user_install_finish_metadata_review_required')
+    manifest_raw=reviewed(manifest_path,args.expected_metadata_repair_manifest_sha256,1024*1024)
+    receipt_raw=reviewed(receipt_path,args.expected_metadata_repair_receipt_sha256,1024*1024)
+    manifest=strict(manifest_raw);receipt=strict(receipt_raw)
+    if (manifest.get('schema')!='eimemory.operator_ei_dropin_mode_repair.v1'
+            or manifest.get('authorization')!='explicit_user_operator' or manifest.get('autonomous_repair_credit') is not False
+            or manifest.get('controller_commit')!=registry['controller_commit']
+            or manifest.get('current_commit')!=registry['runtime_commit']
+            or manifest.get('source_backup_sha256')!=intent['backup_sha256']
+            or receipt.get('schema')!='eimemory.operator_ei_dropin_mode_repair_receipt.v1'
+            or receipt.get('manifest_sha256')!=sha256(manifest_raw).hexdigest()
+            or receipt.get('authorization')!='explicit_user_operator' or receipt.get('content_bytes_preserved') is not True
+            or any(receipt.get(key) is not False for key in ('marker_removed','registry_changed','services_operated',
+                'native_gateway_files_changed','release_accepted','autonomous_repair_credit'))):
+        raise ValueError('user_install_finish_metadata_receipt_invalid')
+    entries=manifest.get('entries');repairs=receipt.get('files')
+    if (not isinstance(entries,list) or not 1<=len(entries)<=32 or not isinstance(repairs,list)
+            or len(entries)!=len(repairs) or any(not isinstance(item,dict) for item in [*entries,*repairs])):
+        raise ValueError('user_install_finish_metadata_receipt_invalid')
+    by_path={item['path']:item for item in repairs}
+    if len(by_path)!=len(repairs):raise ValueError('user_install_finish_metadata_receipt_invalid')
+    result=[];units=Path(home)/'.config/systemd/user'
+    seen=set()
+    for item in entries:
+        relative=PurePosixPath(item['relative_path']);path=units/str(relative)
+        if (relative.is_absolute() or '..' in relative.parts or str(relative)!=item['relative_path'] or str(path) in seen
+                or item.get('source_backup_member')!='user-units/'+str(relative)
+                or item.get('uid')!=uid or item.get('nlink')!=1
+                or item.get('from_mode')!=0o664 or item.get('to_mode')!=0o644):
+            raise ValueError('user_install_finish_metadata_receipt_invalid')
+        seen.add(str(path))
+        repair=by_path.get(str(path),{})
+        before=repair.get('before',{});after=repair.get('after',{})
+        if (repair.get('sha256')!=item['sha256'] or before.get('mode')!=0o664 or after.get('mode')!=0o644
+                or before.get('uid')!=uid or after.get('uid')!=uid or before.get('nlink')!=1 or after.get('nlink')!=1
+                or repair.get('action') not in {'descriptor_fchmod_0664_to_0644','observed_already_tightened_in_reviewed_resume'}):
+            raise ValueError('user_install_finish_metadata_receipt_invalid')
+        info=path.lstat()
+        actual=dict(device=info.st_dev,inode=info.st_ino,uid=info.st_uid,gid=info.st_gid,nlink=info.st_nlink,
+            size=info.st_size,mode=stat.S_IMODE(info.st_mode),mtime_ns=info.st_mtime_ns,ctime_ns=info.st_ctime_ns)
+        if after!=actual:raise ValueError('user_install_finish_metadata_repair_changed')
+        result.append(dict(path=str(path),sha256=item['sha256'],before_mode=0o664,after_mode=0o644,uid=uid))
+    if set(by_path)!=seen:raise ValueError('user_install_finish_metadata_receipt_invalid')
+    return result,{'manifest_sha256':sha256(manifest_raw).hexdigest(),'receipt_sha256':sha256(receipt_raw).hexdigest()}
+
+
+@scoped_user_operator
+def finish_published_installation(args):
+    """Seal only an exact, already published generation; never replay installation."""
+    import pwd
+    import time
+    if os.name!='posix' or os.geteuid()<=0 or os.getuid()!=os.geteuid():
+        raise ValueError('user_install_finish_nonroot_identity_required')
+    account=pwd.getpwuid(os.geteuid());uid=account.pw_uid;home=Path(account.pw_dir)
+    if account.pw_gid!=os.getegid():raise ValueError('user_install_finish_primary_group_required')
+    authority=home/'.config/eimemory/control-plane';state=home/'.local/state/eimemory/control-plane'
+    code=home/'.local/lib/eimemory/control-plane';marker=state/'controller-installation.json'
+    registry_path=authority/'runtime-manager.v1.json'
+    marker_raw=reviewed(marker,args.expected_marker_sha256,65536);intent=strict(marker_raw)
+    registry_raw=reviewed(registry_path,args.expected_registry_sha256,65536);declared=strict(registry_raw)
+    files,manifest=bundle_files(args.bundle,args.expected_bundle_sha256,uid,account.pw_gid)
+    def load(name):return execute_reviewed_module(name,code/name,files[name])
+    # Authenticate code before importing the pending generation's helper.
+    for name in ('user_control_plane.py','runtime_manager_contract.py','runtime_manager_user_policy.py'):
+        reviewed(code/name,sha256(files[name]).hexdigest(),1024*1024)
+    helper=load('user_control_plane.py');contract=load('runtime_manager_contract.py');policy_module=load('runtime_manager_user_policy.py')
+    registry=contract.validate_registry(declared)
+    seed=contract.validate_registry(strict(reviewed(args.registry_seed,args.expected_registry_seed_sha256,65536)))
+    settings=reviewed(args.runtime_settings,args.expected_runtime_settings_sha256,65536)
+    managed_raw=reviewed(args.managed_manifest,args.expected_managed_manifest_sha256,1048576)
+    settings_module=load('runtime_manager_settings.py');settings_module.validate(strict(settings))
+    expected_registry=published_registry(seed,files,manifest,managed_raw,home,uid,account.pw_gid,contract)
+    if (intent.get('schema')!='eimemory.user_controller_installation.v1' or intent.get('phase')!='publication_pending'
+            or intent.get('release_accepted') is not False or intent.get('autonomous_repair_credit') is not False
+            or intent.get('bundle_sha256')!=args.expected_bundle_sha256
+            or intent.get('registry_after_sha256')!=sha256(registry_raw).hexdigest()
+            or registry_raw!=contract.canonical(expected_registry)
+            or registry['controller_commit']!=intent.get('controller_commit')
+            or registry['runtime_commit']!=intent.get('runtime_commit')
+            or registry['runtime_uid']!=uid or registry['runtime_gid']!=account.pw_gid
+            or registry['runtime_user']!=account.pw_name):
+        raise ValueError('user_install_finish_intent_unverified')
+    basename=intent.get('backup_basename','')
+    if re.fullmatch(re.escape(registry['controller_commit'])+r'-[0-9]+\.tar',basename) is None:
+        raise ValueError('user_install_finish_backup_name_invalid')
+    backup=state/'managed-incident-receipts/migration-backups'/basename
+    backup_raw=reviewed(backup,intent['backup_sha256'],256*1024*1024)
+    before=publication_backup_files(backup_raw,home,registry,uid)
+    before_registry=before.get(str(registry_path),{}).get('raw')
+    prior_manifest=before.get(str(authority/'managed-code-incident-manifest.v1.json'),{}).get('raw')
+    managed=strict(managed_raw)
+    if (before_registry is None or sha256(before_registry).hexdigest()!=intent['registry_before_sha256']
+            or intent['registry_before_sha256']!=args.expected_existing_registry_sha256 or prior_manifest is None
+            or sha256(prior_manifest).hexdigest()!=seed['managed_incident_authority']['manifest_sha256']
+            or managed.get('previous_manifest_digest')!=sha256(canonical(strict(prior_manifest))).hexdigest()
+            or managed.get('release_commit')!=registry['controller_commit']
+            or managed.get('scopes')!=strict(prior_manifest).get('scopes')):
+        raise ValueError('user_install_finish_original_binding_invalid')
+    environment={'PATH':'/usr/bin:/bin','LC_ALL':'C','XDG_RUNTIME_DIR':'/run/user/'+str(uid),
+        'DBUS_SESSION_BUS_ADDRESS':'unix:path=/run/user/'+str(uid)+'/bus'}
+    with operator_lock(helper,state/'bridge.lock'),operator_lock(helper,state/'lifecycle.lock'):
+        stopped_controller(environment)
+        seal_path=backup.with_suffix('.complete.json')
+        if os.path.lexists(seal_path):raise ValueError('user_install_finish_existing_seal_use_recovery')
+        repairs,repair_evidence=reviewed_metadata_repairs(args,intent,registry,home,uid)
+        expected=published_installation_expectations(backup_raw,home,uid,files,registry,settings,managed_raw,
+            contract,policy_module,metadata_repairs=repairs)
+        retirement=None
+        if intent.get('gateway_retirement_manifest_sha256') is not None:
+            retirement=gateway_retirement_evidence(backup.with_suffix('.gateway-retirements'),uid,
+                intent['gateway_retirement_manifest_sha256'],home/'.config/systemd/user',registry)
+        def verify():
+            stopped_controller(environment)
+            if (helper.read_file(marker,modes=(0o600,))!=marker_raw or helper.read_file(registry_path)!=registry_raw
+                    or Path('/opt/eimemory/current').resolve(strict=True)!=Path('/opt/eimemory/releases')/registry['runtime_commit']):
+                raise ValueError('user_install_finish_authority_changed')
+            verify_controller_sources(registry,registry['controller_commit'])
+            if installation_inventory(home,registry,uid,helper)!=expected:
+                raise ValueError('user_install_finish_publication_mismatch')
+            for path,pin in ((authority/'managed-incident-proof.key',args.expected_managed_key_sha256),
+                    (state/'activation-signing.key',args.expected_activation_key_sha256),
+                    (state/'managed-incident-receipts/knowledge.sqlite',args.expected_knowledge_sha256)):
+                reviewed(path,pin,256*1024*1024)
+            transition=state/'active-transition.json'
+            transition_hash=sha256(owned_bytes(transition,uid,65536)).hexdigest() if os.path.lexists(transition) else None
+            if transition_hash!=intent['transition_before_sha256']:raise ValueError('user_install_finish_transition_changed')
+            cache=code/'empty-pycache';helper.trusted_directory(cache)
+            if stat.S_IMODE(cache.stat().st_mode)!=0o555 or any(cache.iterdir()):raise ValueError('user_install_finish_pycache_untrusted')
+            if retirement is not None and gateway_retirement_evidence(backup.with_suffix('.gateway-retirements'),uid,
+                    intent['gateway_retirement_manifest_sha256'],home/'.config/systemd/user',registry)!=retirement:
+                raise ValueError('user_install_finish_retirement_changed')
+            if repairs and reviewed_metadata_repairs(args,intent,registry,home,uid)[1]!=repair_evidence:
+                raise ValueError('user_install_finish_metadata_repair_changed')
+        verify()
+        materials=protected_materials(home,uid)
+        seal={'schema':'eimemory.user_controller_installation_completion.v2',
+            'installation_sha256':sha256(marker_raw).hexdigest(),'registry_sha256':sha256(registry_raw).hexdigest(),
+            'controller_commit':registry['controller_commit'],'runtime_commit':registry['runtime_commit'],
+            'release_accepted':False,'autonomous_repair_credit':False,'published_files':expected,
+            'protected_materials':materials}
+        if retirement is not None:seal['gateway_retirement']=retirement
+        provenance=backup.with_suffix('.published-finish-'+str(time.time_ns())+'.json')
+        archive_write(provenance,canonical(dict(schema='eimemory.user_published_installation_finish.v1',
+            installation_sha256=sha256(marker_raw).hexdigest(),registry_sha256=sha256(registry_raw).hexdigest(),
+            published_inventory_sha256=sha256(canonical(expected)).hexdigest(),metadata_repairs=repair_evidence,
+            authorization='explicit_user_operator',services_started=False,release_accepted=False,autonomous_repair_credit=False)),uid)
+        verify()
+        protected_materials(home,uid,materials)
+        archive_write(seal_path,canonical(seal),uid)
+        verify()
+        protected_materials(home,uid,materials)
+        marker.unlink();sync_parent(marker)
+        print(json.dumps(dict(ok=True,publication_finished=True,controller_commit=registry['controller_commit'],
+            completion_sha256=sha256(canonical(seal)).hexdigest(),services_started=False,
+            release_accepted=False,autonomous_repair_credit=False)))
 
 
 
@@ -1561,12 +1894,27 @@ def main():
             register_topology(parser.parse_args())
         else:inspect_topology_native(parser.parse_args())
         return
+    if sys.argv[1:2]==['finish-published-installation']:
+        parser=argparse.ArgumentParser(description=finish_published_installation.__doc__)
+        parser.add_argument('operation',choices=['finish-published-installation'])
+        for name in ('bundle','registry-seed','runtime-settings','managed-manifest'):
+            parser.add_argument('--'+name,type=Path,required=True)
+            parser.add_argument('--expected-'+name+'-sha256',required=True)
+        for name in ('marker','registry','existing-registry','knowledge','managed-key','activation-key'):
+            parser.add_argument('--expected-'+name+'-sha256',required=True)
+        for name in ('metadata-repair-manifest','metadata-repair-receipt'):
+            parser.add_argument('--'+name,type=Path)
+            parser.add_argument('--expected-'+name+'-sha256',default='')
+        finish_published_installation(parser.parse_args())
+        return
     if sys.argv[1:2]==['recover-completed-installation']:
         parser=argparse.ArgumentParser(description=recover_completed_installation.__doc__)
         parser.add_argument('operation',choices=['recover-completed-installation'])
         parser.add_argument('--expected-marker-sha256',required=True)
         parser.add_argument('--expected-completion-sha256',required=True)
         parser.add_argument('--expected-registry-sha256',required=True)
+        parser.add_argument('--allow-legacy-completion',action='store_true',
+            help='Explicitly review an original v1 seal without v2 protected-material custody')
         recover_completed_installation(parser.parse_args())
         return
     if sys.argv[1:2]==['abandon-failed-manual']:

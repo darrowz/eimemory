@@ -21,7 +21,7 @@ def installer():
     return module
 
 
-@pytest.mark.parametrize('entry',['install','recover_completed_installation','stage_release','abandon_failed_manual','register_topology','inspect_topology_native'])
+@pytest.mark.parametrize('entry',['install','recover_completed_installation','finish_published_installation','stage_release','abandon_failed_manual','register_topology','inspect_topology_native'])
 @pytest.mark.parametrize('original',[None,'','user','inherited-legacy-value'])
 def test_public_operator_identity_failure_restores_exact_caller_profile(monkeypatch,entry,original):
     module=installer();name='EIMEMORY_CONTROL_PLANE'
@@ -281,7 +281,10 @@ def test_real_failed_terminal_pin_keeps_pre_pin_bytes_and_status_cannot_change_c
 
 
 @pytest.mark.skipif(os.name!='posix',reason='native descriptor and durable installation protocol')
-@pytest.mark.parametrize('fault',['none','reload','code','identity','policy','readback','sealed_crash','sealed_tamper'])
+@pytest.mark.parametrize('fault',['none','reload','code','identity','policy','readback','sealed_crash','sealed_tamper',
+    'sealed_key_tamper','sealed_ledger_tamper','sealed_key_mode','sealed_wal_tamper',
+    'sealed_downgrade','sealed_missing_materials','sealed_null_materials','sealed_material_race',
+    'sealed_transition_race','sealed_current_race','sealed_source_race'])
 @pytest.mark.parametrize('gateway',[False,True])
 def test_installation_failure_retains_fence_and_originals_until_full_readback(tmp_path,monkeypatch,fault,gateway):
     module=installer();uid=os.geteuid()
@@ -293,7 +296,9 @@ def test_installation_failure_retains_fence_and_originals_until_full_readback(tm
     originals={authority/'managed-incident-proof.key':b'm'*32,state/'activation-signing.key':b'a'*32,
         knowledge/'knowledge.sqlite':b'original-ledger',authority/'runtime-manager.v1.json':b'original-registry',
         code/'helper.py':b'original-helper'}
-    for path,raw in originals.items():path.write_bytes(raw)
+    for path,raw in originals.items():
+        path.write_bytes(raw)
+        if path.name.endswith('.key'):path.chmod(0o600)
     current=tmp_path/'releases'/('b'*40);current.mkdir(parents=True)
     real_path=Path
     paths={'/opt/eimemory/current':current,'/opt/eimemory/releases':current.parent}
@@ -366,7 +371,7 @@ def test_installation_failure_retains_fence_and_originals_until_full_readback(tm
     recovering={'active':False}
     real_unlink=real_path.unlink
     def unlink(path,*args,**kwargs):
-        if (fault in {'sealed_crash','sealed_tamper'} and path==state/'controller-installation.json'
+        if (fault.startswith('sealed_') and path==state/'controller-installation.json'
                 and not recovering['active']):raise OSError('injected crash after durable seal')
         return real_unlink(path,*args,**kwargs)
     monkeypatch.setattr(real_path,'unlink',unlink)
@@ -401,8 +406,8 @@ def test_installation_failure_retains_fence_and_originals_until_full_readback(tm
             assert len(seal['gateway_retirement']['originals'])==3
     else:
         assert marker.exists() and json.loads(marker.read_bytes())['phase']=='publication_pending'
-        assert backups[0].with_suffix('.complete.json').exists()==(fault in {'sealed_crash','sealed_tamper'})
-    if fault in {'identity','policy','sealed_crash','sealed_tamper'}:
+        assert backups[0].with_suffix('.complete.json').exists()==fault.startswith('sealed_')
+    if fault in {'identity','policy'} or fault.startswith('sealed_'):
         recovering['active']=True
         monkeypatch.setattr(pwd,'getpwuid',lambda _:SimpleNamespace(pw_uid=uid,pw_gid=os.getegid(),
             pw_name=native_account.pw_name,pw_dir=str(home)))
@@ -417,13 +422,42 @@ def test_installation_failure_retains_fence_and_originals_until_full_readback(tm
             expected_completion_sha256=sha256(seal.read_bytes()).hexdigest() if seal.exists() else '0'*64)
         if fault=='sealed_tamper':
             (units/'eimemory-rpc.service.d/zzzzzz-eimemory-user-control-plane.conf').write_bytes(b'tampered policy')
+        if fault=='sealed_key_tamper':(state/'activation-signing.key').write_bytes(b'x'*32)
+        if fault=='sealed_ledger_tamper':(knowledge/'knowledge.sqlite').write_bytes(b'changed-ledger')
+        if fault=='sealed_key_mode':(state/'activation-signing.key').chmod(0o640)
+        if fault=='sealed_wal_tamper':(knowledge/'knowledge.sqlite-wal').write_bytes(b'pending')
+        if fault in {'sealed_downgrade','sealed_missing_materials','sealed_null_materials'}:
+            value=json.loads(seal.read_bytes())
+            if fault=='sealed_downgrade':
+                value['schema']='eimemory.user_controller_installation_completion.v1'
+                value.pop('protected_materials')
+            elif fault=='sealed_missing_materials':value.pop('protected_materials')
+            else:value['protected_materials']=None
+            seal.write_bytes(module.canonical(value));recovery.expected_completion_sha256=sha256(seal.read_bytes()).hexdigest()
+        if fault in {'sealed_material_race','sealed_transition_race','sealed_current_race','sealed_source_race'}:
+            real_archive=module.write
+            changed={'value':False}
+            def archive_then_race(path,raw,owner,mode=0o600):
+                result=real_archive(path,raw,owner,mode)
+                if '.recovered-' in str(path):
+                    changed['value']=True
+                    if fault=='sealed_material_race':(state/'activation-signing.key').write_bytes(b'x'*32)
+                    elif fault=='sealed_transition_race':(state/'active-transition.json').write_bytes(b'changed-transition')
+                    elif fault=='sealed_current_race':
+                        other=current.parent/('c'*40);other.mkdir();paths['/opt/eimemory/current']=other
+                return result
+            monkeypatch.setattr(module,'write',archive_then_race)
+            if fault=='sealed_source_race':
+                def changed_source(*args):
+                    if changed['value']:raise ValueError('source changed')
+                monkeypatch.setattr(module,'verify_controller_sources',changed_source)
         if fault=='sealed_crash':
             module.recover_completed_installation(recovery)
             assert not marker.exists() and list(backups[0].parent.glob('*.recovered-*.json'))
         else:
             with pytest.raises((OSError,ValueError)):module.recover_completed_installation(recovery)
             assert marker.exists()
-    assert (knowledge/'knowledge.sqlite').read_bytes()==b'original-ledger'
+    assert (knowledge/'knowledge.sqlite').read_bytes()==(b'changed-ledger' if fault=='sealed_ledger_tamper' else b'original-ledger')
 
 
 def gateway_entry(relative,raw,uid,mode=0o664):

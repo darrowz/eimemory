@@ -133,6 +133,7 @@ jobs:
           tests/test_user_control_plane.py
           tests/test_gateway_native_boundary.py
           tests/test_user_release_recovery.py
+          tests/test_user_installation_finish.py
           tests/test_manual_recovery_capture.py
           tests/test_user_topology_restore.py
           tests/test_hermes_topology_contract.py
