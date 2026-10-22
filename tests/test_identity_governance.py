@@ -373,6 +373,10 @@ print('protected read-only service access verified')
         # Hosted CI checkouts may have non-traversable account-home parents.
         # Copy the real package, without altering its authority implementation.
         shutil.copytree(Path(__file__).resolve().parents[1] / "eimemory", source / "eimemory")
+        # Service umask may create root-group-only directories. The source
+        # fixture is public code; preserve the separate protected authority.
+        for path in (source, *source.rglob("*")):
+            if path.is_dir():path.chmod(0o755)
         env = {**os.environ, "PYTHONPATH": str(source),
                "EIMEMORY_IDENTITY_AUTHORITY_DIR": str(directory), "PYTHONDONTWRITEBYTECODE": "1"}
         result = subprocess.run(["runuser", "-u", account.pw_name, "--", "/usr/bin/python3", "-B", "-c", script],

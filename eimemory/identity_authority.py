@@ -47,6 +47,8 @@ def authority_directory(value=None):
 
 
 def _require_root():
+    if os.name == "posix" and os.getuid() != os.geteuid():
+        raise IdentityAuthorityError("identity_authenticated_root_operator_required")
     if user_mode():
         account()
         return
