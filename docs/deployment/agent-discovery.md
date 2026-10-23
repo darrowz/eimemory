@@ -23,10 +23,11 @@ standalone Hermes integration installer requires the same extra in its caller.
 
 Sampling coverage compares the complete tenant, agent, workspace, user, channel
 and source tuple. A configured profile with no natural traffic remains visible
-with zero counts. Explicit searches, controlled historical business evidence
-and natural observations retain their respective evidence classes. A served
-profile without a trusted user binding is reported as unbound, never counted
-as a qualified business sample.
+in diagnostics with zero counts (G2c), but is not forced through the
+per-agent recall gate until it produces natural traffic. Explicit searches,
+controlled historical business evidence and natural observations retain their
+respective evidence classes. A served profile without a trusted user binding is
+reported as unbound, never counted as a qualified business sample.
 
 Operational stability v2 verifies the live gateway's process lifetime, native
 served-profile roster, each profile's memory configuration and plugin metadata,
@@ -56,26 +57,30 @@ in `proactive_decisions` during the last 14 days. These are excluded:
 - acceptance-generated decisions
 - scheduled sessions (`cron_*`)
 
-For a registered native topology, the protected logical roster supplies the
-expected scopes, including profiles with zero traffic. Every exact user and
-workspace remains independent. For legacy installations without a registered
-topology, the historical discovery and environment-based identity rules below
-remain in effect; they cannot override a registered profile binding.
+For a registered native topology, the protected logical roster supplies
+identity and diagnostics for every bound profile. **G2c** forces the recall
+gate only for profiles that already have natural traffic in the discovery
+window; zero-traffic profiles stay on the roster but do not make the combined
+verdict an evidence wait by themselves. Every exact user and workspace remains
+independent. For legacy installations without a registered topology, the
+historical discovery and environment-based identity rules below remain in
+effect; they cannot override a registered profile binding.
 
 To override discovery, set `EIMEMORY_RECALL_GATE_AGENTS=agent-a,agent-b` in the
 nightly and release-closure environment. That exact list is then evaluated.
 
-## Rule (unchanged thresholds, no pooling)
+## Rule (G2c traffic force list, no pooling)
 
-- Each agent gets its own production-recall collection, auto-review and gate,
-  using the same thresholds as before.
-- The combined verdict passes only if every evaluated agent passes.
-- If any agent fails on a metric, the combined verdict fails, with that agent
-  and reason named.
-- If an agent's only blocker is incomplete evidence, the combined verdict is an
-  evidence wait. It never passes.
-- With zero agents (no natural traffic yet), the verdict is an evidence wait.
-  With one agent, that agent alone decides.
+- Each **forced** agent (natural traffic only) gets its own production-recall
+  collection, auto-review and gate, using the shared absolute thresholds.
+- The combined verdict passes only if every forced agent passes.
+- If any forced agent fails on a metric, the combined verdict fails, with that
+  agent and reason named.
+- If a forced agent's only blocker is incomplete evidence, the combined verdict
+  is an evidence wait. It never passes.
+- With zero forced agents (no natural traffic yet), the verdict is an evidence
+  wait. With one forced agent, that agent alone decides. Declared profiles
+  without traffic remain visible in `profile_inventory` / diagnostics.
 - The nightly `recall_quality_gate` equals the primary gate when every agent
   passes. Otherwise it is forced to `ok=false`. The per-agent layer can only
   make the gate stricter, never weaker.

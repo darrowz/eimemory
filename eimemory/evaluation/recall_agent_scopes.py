@@ -1,10 +1,12 @@
 """Per-agent recall-quality scopes.
 
-Every agent with natural proactive traffic is evaluated separately in its own
-base scope (same tenant/workspace/user as the primary scope, its own agent id)
-with the unchanged thresholds. Results are never pooled. The combined verdict
-passes only when every evaluated agent passes; an agent whose only blocker is
-incomplete evidence makes the combined verdict an evidence wait, never a pass.
+G2c: only agents (or topology-bound profiles) with natural proactive traffic
+are forced through the gate. Each is evaluated separately in its own base
+scope with the shared absolute thresholds. Results are never pooled. Declared
+profiles without traffic remain in roster/diagnostics but do not block the
+combined verdict. The combined verdict passes only when every forced agent
+passes; an agent whose only blocker is incomplete evidence makes the combined
+verdict an evidence wait, never a pass.
 """
 from __future__ import annotations
 
@@ -31,9 +33,10 @@ def recall_agent_scopes(runtime: Any, scope: dict, *, window_days: int = DISCOVE
 
     topology = load_topology()
     if topology is not None:
-        # A declared colleague never disappears from acceptance merely because
-        # capture is broken or that colleague has no recent proactive traffic.
-        # Neither an environment override nor stored rows can shrink this list.
+        # G2c: the protected roster still defines identity, but only profiles
+        # with natural traffic are forced. Zero-traffic colleagues stay in
+        # diagnostics; they no longer make the gate an evidence wait by
+        # themselves. Overrides and discovery cannot invent undeclared agents.
         return natural_profile_scopes(runtime, topology,
             tenant_id=str(scope.get("tenant_id") or "default"), window_days=window_days)
 
@@ -205,7 +208,8 @@ def run_per_agent(scopes: list[dict], primary_scope: dict, primary_report: dict[
                 for item in scopes if item.get("source") == "trusted_hermes_topology"):
             raise ValueError("recall_profile_topology_disappeared")
         roster = roster_summary(topology)
-        result.update(rule="all_bound_business_profile_scopes_must_pass_separately",
+        result.update(rule="g2c_traffic_agents_must_pass_separately",
+            per_agent_force_policy="g2c_traffic_agents_only.v1",
             profile_inventory=roster, scope_verdicts=scope_verdicts)
         result["discovery"]["source"] = "trusted_hermes_topology"
         result['unbound_profiles'] = [dict(profile_name=row['profile_name'], agent_id=row['agent_id'],

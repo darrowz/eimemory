@@ -2096,6 +2096,7 @@ def _real_query_threshold_gate(
     if policy_schema not in {
         PRODUCTION_REAL_QUERY_POLICY,
         _PRIOR_PRODUCTION_REAL_QUERY_POLICY,
+        "production_recall_gate_policy.v4",
         "production_recall_gate_policy.v3",
         "production_recall_gate_policy.v2",
     }:
@@ -2606,6 +2607,7 @@ def _known_baseline_policy_schemas() -> set[str]:
     return {
         PRODUCTION_REAL_QUERY_POLICY,
         _PRIOR_PRODUCTION_REAL_QUERY_POLICY,
+        "production_recall_gate_policy.v4",
         "production_recall_gate_policy.v3",
         "production_recall_gate_policy.v2",
     }

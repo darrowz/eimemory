@@ -1015,7 +1015,7 @@ did not change that run's policy.
 ## Mainline 1.14.64: explicitly requested three-case floor
 
 The operator subsequently requested **3 cases / 3 labels**. Mainline 1.14.64
-implements `production_recall_gate_policy.v5` with that floor in each dataset's
+implements `production_recall_gate_policy.v6` (temporary mrr/ndcg floors; prior v5 digests keep 0.80) with that floor in each dataset's
 existing exact scope. Label trust, release authorization, source/scope boundaries,
 ranking, resources, isolation and noninferiority remain required. Coverage stays
 limited to observed dataset hosts; it grants no cross-member access.

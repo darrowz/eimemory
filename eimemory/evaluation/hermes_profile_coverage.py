@@ -153,7 +153,12 @@ def policy_covers_topology(policy, topology):
 
 
 def natural_profile_scopes(runtime, topology, *, tenant_id, window_days=14):
-    """Keep every authorized scope, including a declared profile with no traffic."""
+    """G2c: return only authorized scopes that already have natural traffic.
+
+    Declared profiles with zero natural decisions stay visible in sampling
+    diagnostics and roster inventory, but are not forced through the recall
+    gate until they produce traffic.
+    """
     from eimemory.adapters.runtime.channel import base_scope_from_channel
     since = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
     bindings = [row for row in profile_bindings(topology) if row["scope"]["tenant_id"] == tenant_id]
@@ -176,7 +181,8 @@ def natural_profile_scopes(runtime, topology, *, tenant_id, window_days=14):
                 "channel": binding["channel"], "source_ids": binding["source_ids"],
                 "scope_digest": _digest(scope), "discovered_decisions": int(count),
                 "source": "trusted_hermes_topology", "topology_digest": topology["topology_digest"]})
-        return results
+        # Force list = traffic only (G2c). Zero-traffic profiles remain in diagnostics.
+        return [row for row in results if int(row.get("discovered_decisions") or 0) > 0]
     return runtime.store.run_locked(read)
 
 

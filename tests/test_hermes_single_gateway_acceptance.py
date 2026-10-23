@@ -125,7 +125,7 @@ def test_concurrent_five_profiles_keep_exact_scopes_and_exclude_synthetic_or_for
         assert counts['formal_acceptance'] is False and counts['l5_credit'] is False
 
 
-def test_no_traffic_profile_remains_required_and_explicit_capture_is_not_natural(tmp_path, monkeypatch):
+def test_no_traffic_profile_is_not_forced_g2c_and_explicit_capture_is_not_natural(tmp_path, monkeypatch):
     value = topology(); declared(monkeypatch, value)
     exact = coverage.profile_bindings(value)[-1]['scope']
     with Runtime.create(root=tmp_path) as runtime:
@@ -133,10 +133,16 @@ def test_no_traffic_profile_remains_required_and_explicit_capture_is_not_natural
             source='eimemory.production_recall.explicit_capture',
             content={'request': {'source_ids': ['hermes']}}))
         scopes = agents.recall_agent_scopes(runtime, {'tenant_id': 'audit-tenant'})
-        assert len(scopes) == 5 and all(row['discovered_decisions'] == 0 for row in scopes)
+        # G2c: zero-traffic declared profiles are not forced through the gate.
+        assert scopes == []
         report = agents.run_per_agent(scopes, {}, {}, lambda scope: {
             'sample_count': 0, 'quality_gate': {'ok': False, 'blocked_reason': 'recall_quality_evidence_incomplete'}})
-        assert not report['combined']['ok'] and len(report['scope_verdicts']) == 5
+        assert not report['combined']['ok']
+        assert report['combined']['detail'] == 'no_agent_with_natural_traffic'
+        assert report['rule'] == 'g2c_traffic_agents_must_pass_separately'
+        assert report['per_agent_force_policy'] == 'g2c_traffic_agents_only.v1'
+        assert report['scope_verdicts'] == {}
+        assert report['profile_inventory']['logical_profile_count'] == 5
         counts = coverage.profile_sampling_diagnostics(runtime, value, tenant_id='audit-tenant')
         assert counts['scopes'][-1]['explicit_capture_count'] == 1
         assert counts['scopes'][-1]['natural_decision_count'] == 0
@@ -145,12 +151,17 @@ def test_no_traffic_profile_remains_required_and_explicit_capture_is_not_natural
 def test_unbound_served_profile_is_reported_without_guessed_scope_or_passing_credit(tmp_path, monkeypatch):
     value = topology(unbound=True); declared(monkeypatch, value)
     with Runtime.create(root=tmp_path) as runtime:
+        bindings = coverage.profile_bindings(value)
+        assert len(bindings) == 4
+        for index, binding in enumerate(bindings):
+            runtime.store.run_locked(lambda db, b=binding, i=index: decision(db, b['scope'], key='bound-' + str(i)))
         scopes = agents.recall_agent_scopes(runtime, {'tenant_id': 'audit-tenant'})
-        assert len(scopes) == 4
+        assert len(scopes) == 4 and all(row['discovered_decisions'] == 1 for row in scopes)
         result = agents.run_per_agent(scopes, {}, {}, lambda scope: {
             'sample_count': 3, 'quality_gate': {'ok': True}})
         assert result['profile_inventory']['logical_profile_count'] == 5
         assert result['combined']['ok'] is True
+        assert result['rule'] == 'g2c_traffic_agents_must_pass_separately'
         assert len(result['agents']) == 4
         assert result['unbound_profiles'] == [{'profile_name': 'audit-d', 'agent_id': 'audit-d',
             'status': 'business_identity_unbound', 'business_qualified': False, 'natural_samples_created': 0}]

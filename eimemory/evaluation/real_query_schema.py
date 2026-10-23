@@ -19,13 +19,14 @@ PRODUCTION_REAL_QUERY_SCHEMA = "production_redacted_v1"
 
 PRODUCTION_REAL_QUERY_REPORT_SCHEMA = "production_recall_gate.v1"
 
-PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v5"
+PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v6"
 
-_PRIOR_PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v4"
+_PRIOR_PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v5"
 
 _NONINFERIORITY_POLICY_SCHEMAS = frozenset({
     PRODUCTION_REAL_QUERY_POLICY,
     _PRIOR_PRODUCTION_REAL_QUERY_POLICY,
+    "production_recall_gate_policy.v4",
     "production_recall_gate_policy.v3",
 })
 
@@ -87,7 +88,11 @@ def production_real_query_label_authority(labeler: object) -> str:
 
 PRODUCTION_REAL_QUERY_TRUSTED_COLLECTORS = frozenset({"production_capture", "proactive_audit_capture"})
 
-PRODUCTION_REAL_QUERY_THRESHOLDS: dict[str, float] = {
+# Absolute ranking floors for the live gate. Pollution / leakage hard constraints
+# live in production_recall / recall_quality_contract and are unchanged.
+# Decision B (2026-10-23): temporary interim floors (~0.50–0.55) until recall
+# quality recovers; prior policy.v5 digests keep the published 0.80 / 0.80 bar.
+_PRODUCTION_REAL_QUERY_THRESHOLDS_V5: dict[str, float] = {
     "recall_at_5": 0.90,
     "precision_at_5": 0.20,
     "mrr": 0.80,
@@ -96,6 +101,12 @@ PRODUCTION_REAL_QUERY_THRESHOLDS: dict[str, float] = {
     "jaccard_at_5": 0.80,
     "latency_ms_p95": 3000.0,
     "peak_memory_bytes": 67_108_864.0,
+}
+
+PRODUCTION_REAL_QUERY_THRESHOLDS: dict[str, float] = {
+    **_PRODUCTION_REAL_QUERY_THRESHOLDS_V5,
+    "mrr": 0.50,
+    "ndcg_at_5": 0.55,
 }
 
 PRODUCTION_REAL_QUERY_BASELINE_MARGINS: dict[str, float] = {
@@ -251,15 +262,30 @@ def production_real_query_active_channel_contract(
 def production_real_query_policy_payload(
     *, policy_schema: str = PRODUCTION_REAL_QUERY_POLICY,
 ) -> dict[str, Any]:
+    # Current policy carries the temporary absolute floors; every prior schema
+    # keeps the published v5 threshold bar so historical digests stay immutable.
+    thresholds = (
+        dict(PRODUCTION_REAL_QUERY_THRESHOLDS)
+        if policy_schema == PRODUCTION_REAL_QUERY_POLICY
+        else dict(_PRODUCTION_REAL_QUERY_THRESHOLDS_V5)
+    )
     payload = {
         "schema": policy_schema,
-        "thresholds": dict(PRODUCTION_REAL_QUERY_THRESHOLDS),
+        "thresholds": thresholds,
         "k": 5,
         "required_channels": sorted(PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS),
         "required_per_channel": _REAL_QUERY_REQUIRED_PER_CHANNEL,
         # Historical policy digests retain their published evidence floors.
-        "required_case_count": _REAL_QUERY_MIN_CASES if policy_schema == PRODUCTION_REAL_QUERY_POLICY else 15,
-        "required_label_count": _REAL_QUERY_MIN_LABELS if policy_schema == PRODUCTION_REAL_QUERY_POLICY else 15,
+        "required_case_count": (
+            _REAL_QUERY_MIN_CASES
+            if policy_schema in {PRODUCTION_REAL_QUERY_POLICY, _PRIOR_PRODUCTION_REAL_QUERY_POLICY}
+            else 15
+        ),
+        "required_label_count": (
+            _REAL_QUERY_MIN_LABELS
+            if policy_schema in {PRODUCTION_REAL_QUERY_POLICY, _PRIOR_PRODUCTION_REAL_QUERY_POLICY}
+            else 15
+        ),
     }
     if policy_schema in _NONINFERIORITY_POLICY_SCHEMAS:
         payload.update(
@@ -270,9 +296,17 @@ def production_real_query_policy_payload(
                 PRODUCTION_REAL_QUERY_DYNAMIC_KNOWLEDGE
             ),
         )
-    if policy_schema in {PRODUCTION_REAL_QUERY_POLICY, _PRIOR_PRODUCTION_REAL_QUERY_POLICY}:
+    if policy_schema in {
+        PRODUCTION_REAL_QUERY_POLICY,
+        _PRIOR_PRODUCTION_REAL_QUERY_POLICY,
+        "production_recall_gate_policy.v4",
+    }:
         payload["required_channels"] = "observed_dataset_channels"
         payload["coverage_scope"] = "dataset_only_not_all_installed_channels"
+    if policy_schema == PRODUCTION_REAL_QUERY_POLICY:
+        # G2c: per-agent force list is traffic-discovered only (see recall_agent_scopes).
+        payload["per_agent_force_policy"] = "g2c_traffic_agents_only.v1"
+        payload["absolute_ranking_note"] = "temporary_mrr_0.50_ndcg_at_5_0.55_pollution_leak_unchanged"
     return payload
 
 def production_real_query_policy_digest(

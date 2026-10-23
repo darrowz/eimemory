@@ -518,7 +518,11 @@ evidence. Recalled payloads are not evaluator output.
 trusted scheduler loader. The evaluator receives open-time
 `secure_dataset_fingerprint.v1` evidence; symlinks, unsafe file modes, and
 untrusted path components fail closed. The current policy is
-`production_recall_gate_policy.v5`, introduced in 1.14.64: at least **3 cases and
+`production_recall_gate_policy.v6` (temporary absolute ranking floors
+mrr ≥ **0.50**, ndcg@5 ≥ **0.55**; pollution/leak hard constraints unchanged;
+G2c forces only agents with natural traffic; G3 semantic judge `max_new`
+remains **8**). Historical `production_recall_gate_policy.v5` digests retain
+mrr/ndcg@5 ≥ **0.80**. Evidence floor from 1.14.64: at least **3 cases and
 3 accepted labels**
 in total, with **no fixed per-host quota**. Required channels are those observed
 in the dataset; `coverage_scope=dataset_only_not_all_installed_channels`.

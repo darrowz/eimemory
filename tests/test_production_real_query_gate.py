@@ -2071,7 +2071,7 @@ def test_three_case_hermes_gate_persists_and_reopens_with_verified_authority(tmp
         report = run_production_recall_eval(runtime, dataset, seed=False, persist_report=True)
         assert report["accepted"] is True, report
         assert report["sample_count"] == 3
-        assert report["policy_schema"] == "production_recall_gate_policy.v5"
+        assert report["policy_schema"] == "production_recall_gate_policy.v6"
         assert report["eligibility"]["required_case_count"] == report["eligibility"]["required_label_count"] == 3
         assert report["eligibility"]["required_channels"] == ["hermes"]
         assert verify_current_production_recall_gate(runtime, scope=BASE_SCOPE)["ok"] is True

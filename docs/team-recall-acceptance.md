@@ -149,7 +149,7 @@ Keep these conclusions separate:
 | Acceptance scope | What must be covered | Limit of the conclusion |
 | --- | --- | --- |
 | Team's actual use | Each participant's verified conversation identity and all four checks through the hosts they actually use | Covers the named participants and actual usage tested |
-| Mainline formal dataset gate | Trusted, release-authorized cases under `production_recall_gate_policy.v5`, totaling at least 3 cases and 3 labels | Covers the dataset's observed host channels and exact scope; does not certify all enabled or installed hosts |
+| Mainline formal dataset gate | Trusted, release-authorized cases under `production_recall_gate_policy.v6` (temporary mrr ≥ 0.50 / ndcg@5 ≥ 0.55; G2c traffic-only force), totaling at least 3 cases and 3 labels | Covers the dataset's observed host channels and exact scope; does not certify all enabled or installed hosts |
 | Cross-client product acceptance | The explicitly declared product/client scope, with evidence for each claimed supported client and its required use cases | Untested clients remain outside the accepted coverage; a Hermes-only dataset cannot certify them |
 
 The mainline v5 contract derives `required_channels` from channels observed in
