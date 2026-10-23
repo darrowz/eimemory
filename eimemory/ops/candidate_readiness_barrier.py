@@ -15,10 +15,14 @@ from eimemory.retrieval.readiness_contract import MAX_AGE_SECONDS, readiness_ok,
 from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
 
 SCHEMA = 'candidate_readiness_barrier.v1'
-MAX_WAIT_SECONDS = 120.0
+# Align with default EIMEMORY_POSTGRES_MAX_INDEX_LAG_SECONDS (300). Post-deploy
+# vector-sync is often paused by storage-release guards; 120s ends before the
+# first catch-up and CPA reports authority_revision_stale as a hard failure.
+MAX_WAIT_SECONDS = 300.0
+DEFAULT_WAIT_SECONDS = 300.0
 PROBE_TIMEOUT_SECONDS = .2
 POLL_SECONDS = .5
-MAX_ATTEMPTS = 512
+MAX_ATTEMPTS = 1024
 _BARRIER_CODES = frozenset({'readiness_probe_unavailable', 'readiness_contract_invalid',
     'readiness_probe_deadline_exceeded', 'candidate_readiness_deadline_exhausted',
     'candidate_source_unavailable', 'candidate_source_unsupported', 'candidate_source_changed',
@@ -118,7 +122,7 @@ requires its signed native body, protected engine contract and exact sources.
         return False
 
 
-def wait_for_candidate_readiness(runtime, timeout_seconds=120):
+def wait_for_candidate_readiness(runtime, timeout_seconds=DEFAULT_WAIT_SECONDS):
     """Boundedly observe the same trusted source; never start repair or recall."""
     started = monotonic()
     result = dict(schema=SCHEMA, ok=False, applicable=True, ready=False, status='failed',

@@ -56,7 +56,7 @@ _CANDIDATE_ERROR_CODES = frozenset({
     "index_lag_exceeded", "index_not_ready", "index_watermark_changed",
     "embedding_fingerprint_mismatch", "embedding_fingerprint_unavailable",
     "projection_fingerprint_mismatch", "authority_cursor_unavailable",
-    "authority_revision_changed", "authority_revision_unavailable",
+    "authority_revision_changed", "authority_revision_stale", "authority_revision_unavailable",
     "postgres_dependency_unavailable", "request_too_large", "response_too_large",
     "postgres_timeout", "postgres_transport_error", "postgres_response_invalid", "postgres_unavailable",
 })
@@ -1594,7 +1594,7 @@ class PostgresVectorCandidateSource:
             self._last_state = replace(index_state, lag_seconds=authority_lag)
             if authority_lag > self.config.max_index_lag_seconds:
                 raise RuntimeError(
-                    "authority_revision_changed"
+                    "authority_revision_stale"
                     if authority_revision is not None and authority_revision != index_state.authority_revision
                     else "index_lag_exceeded"
                 )
@@ -1751,7 +1751,8 @@ class PostgresVectorCandidateSource:
         if code.startswith("postgres_") or code in {
             "index_lag_exceeded", "index_not_ready", "index_watermark_changed",
             "embedding_fingerprint_mismatch", "projection_fingerprint_mismatch",
-            "authority_cursor_unavailable", "authority_revision_changed", "authority_revision_unavailable",
+            "authority_cursor_unavailable", "authority_revision_changed", "authority_revision_stale",
+            "authority_revision_unavailable",
         }:
             self._index_verified = False
         # Origin is captured before sanitization. An exception type or public
@@ -1768,7 +1769,7 @@ class PostgresVectorCandidateSource:
             "postgres_row_invalid", "authority_cursor_unavailable", "authority_revision_unavailable",
             # A legitimate sync boundary revokes this query's authority proof;
             # it does not establish a PostgreSQL transport/backend failure.
-            "authority_revision_changed", "index_watermark_changed",
+            "authority_revision_changed", "authority_revision_stale", "index_watermark_changed",
         }:
             self._backend_query_identity = None
             self._circuit.cancel()
@@ -1876,7 +1877,7 @@ class PostgresVectorCandidateSource:
                 )
                 if lag > self.config.max_index_lag_seconds:
                     raise RuntimeError(
-                        "authority_revision_changed"
+                        "authority_revision_stale"
                         if authority_revision is not None and state.authority_revision != authority_revision
                         else "index_lag_exceeded"
                     )
@@ -2076,7 +2077,9 @@ class PostgresVectorCandidateSource:
                 or state.projection_fingerprint != projection_fingerprint(self.config)):
             raise _CandidateFailure('projection_fingerprint_mismatch', origin=_FailureOrigin.LOCAL)
         if state.authority_revision != authority[1]:
-            raise _CandidateFailure('authority_revision_changed', origin=_FailureOrigin.LOCAL)
+            # PG still points at an older/newer sqlite revision than this probe's
+            # fence. Distinct from mid-probe sqlite churn (authority_revision_changed).
+            raise _CandidateFailure('authority_revision_stale', origin=_FailureOrigin.LOCAL)
         lag = candidate_index_lag_seconds(state, authority_cursor=authority[0], authority_revision=authority[1])
         if not isfinite(lag) or lag > self.config.max_index_lag_seconds:
             raise _CandidateFailure('index_lag_exceeded', origin=_FailureOrigin.LOCAL)
@@ -2924,6 +2927,7 @@ def _error_code(exc: Exception, *, prefix: str) -> str:
         "projection_fingerprint_mismatch",
         "authority_cursor_unavailable",
         "authority_revision_changed",
+        "authority_revision_stale",
         "authority_revision_unavailable",
         "postgres_dependency_unavailable",
         "request_too_large",

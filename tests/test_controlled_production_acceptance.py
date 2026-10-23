@@ -369,7 +369,7 @@ def test_persistent_projection_lag_records_signed_infrastructure_failure_without
     result = run(setup)
     assert not result['accepted'] and result['persisted'] and result['record_id']
     assert result['blocked_reason'] == 'controlled_acceptance_candidate_readiness_unverified'
-    assert result['candidate_readiness_barrier']['elapsed_seconds'] == 120
+    assert result['candidate_readiness_barrier']['elapsed_seconds'] == 300
     assert not setup.calls and all(a['sample_count'] == a['pass_count'] == 0 for a in result['agents'])
     packet = setup.runtime.store.get_by_exact_ref(result['record_id'], scope=OWNER, source_id='default')
     assert cpa.verify(packet.content, cpa.SCHEMA) and not packet.content['accepted']
@@ -465,7 +465,7 @@ def test_new_pg_signed_certificate_cannot_remove_or_downgrade_the_barrier(setup,
     if damage == 'missing': packet.content.pop('candidate_readiness_barrier')
     if damage == 'inapplicable': packet.content['candidate_readiness_barrier']['applicable'] = False
     if damage == 'metadata': packet.content['candidate_readiness_barrier']['final_measurement']['measurement_origin'] = 'metadata'
-    if damage == 'late': packet.content['candidate_readiness_barrier']['elapsed_seconds'] = 121
+    if damage == 'late': packet.content['candidate_readiness_barrier']['elapsed_seconds'] = 301
     if damage == 'boolean_attempts': packet.content['candidate_readiness_barrier']['attempt_count'] = True
     packet.content = cpa.seal({k:v for k,v in packet.content.items() if k not in {'key_id','signature'}}, cpa.SCHEMA)
     packet.meta['report_digest'] = cpa.digest(packet.content)
@@ -502,7 +502,7 @@ def test_older_version_cannot_downgrade_an_explicit_signed_pg_barrier(setup, ver
     if damage == 'empty': packet.content['candidate_readiness_barrier'] = {}
     if damage == 'inapplicable': packet.content['candidate_readiness_barrier']['applicable'] = False
     if damage == 'metadata': packet.content['candidate_readiness_barrier']['final_measurement']['measurement_origin'] = 'metadata'
-    if damage == 'late': packet.content['candidate_readiness_barrier']['elapsed_seconds'] = 121
+    if damage == 'late': packet.content['candidate_readiness_barrier']['elapsed_seconds'] = 301
     if damage == 'boolean_attempts': packet.content['candidate_readiness_barrier']['attempt_count'] = True
     packet.content = cpa.seal({k:v for k,v in packet.content.items() if k not in {'key_id','signature'}}, cpa.SCHEMA)
     packet.meta['report_digest'] = cpa.digest(packet.content)

@@ -735,11 +735,12 @@ def _run_controlled_operational_closure_locked(
 
 
 def _wait_for_controlled_projection(runtime: Any, *, expected_commit: str,
-                                    timeout_seconds: float = 120.0) -> dict[str, Any]:
+                                    timeout_seconds: float = 300.0) -> dict[str, Any]:
     """Wait for actual projection and listener proof after memory-writing gates.
 
     This is a separate maintenance phase. It never extends a recall deadline,
     writes the index, embeds, or treats a cached pre-write health proof as ready.
+    Budget aligns with candidate readiness / max_index_lag (300s).
     """
     from datetime import datetime, timezone
     import math
@@ -749,7 +750,7 @@ def _wait_for_controlled_projection(runtime: Any, *, expected_commit: str,
     from eimemory.retrieval.readiness_contract import readiness_ok
 
     if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
-            or not 0 < timeout_seconds <= 120):
+            or not 0 < timeout_seconds <= 300):
         raise ValueError("invalid_projection_wait_budget")
     started = time.monotonic(); deadline = started + timeout_seconds
     source = getattr(getattr(getattr(runtime, "memory", None), "recall_engine", None), "candidate_source", None)
@@ -768,7 +769,7 @@ def _wait_for_controlled_projection(runtime: Any, *, expected_commit: str,
         if remaining <= 0:
             break
         result["attempt_count"] += 1
-        barrier = wait_for_candidate_readiness(runtime, timeout_seconds=min(120.0, remaining))
+        barrier = wait_for_candidate_readiness(runtime, timeout_seconds=min(300.0, remaining))
         result["candidate_readiness_barrier"] = barrier
         if (source is not getattr(getattr(getattr(runtime, "memory", None), "recall_engine", None), "candidate_source", None)):
             return finish(False, "candidate_source_changed")

@@ -86,7 +86,7 @@ def fragment_source(store, *, before_state_read=lambda request: None,
     ('全局最近已授权任务、进展、待验收', '最近已授权任务进展：召回修改已完成，目前待验收。', 'conversation'),
 ], ids=['project_fact', 'task_status'])
 @pytest.mark.parametrize('late_scope_failure', ['', 'recall_budget_exhausted', 'index_watermark_changed',
-                                             'authority_revision_changed', 'hydration_budget'])
+                                             'authority_revision_changed', 'authority_revision_stale', 'hydration_budget'])
 @pytest.mark.parametrize('mandatory_verification', [False, True], ids=['local_admission', 'required_verifier'])
 def test_verified_fragments_survive_later_scope_budget(tmp_path, monkeypatch, query, text, memory_type,
                                                       late_scope_failure, mandatory_verification):
@@ -123,7 +123,7 @@ def test_verified_fragments_survive_later_scope_budget(tmp_path, monkeypatch, qu
         # Local admission preserves an authoritative earlier batch when only a
         # later scope exhausts collection time. An explicitly REQUIRED verifier
         # still refuses delivery when its startup reserve is exhausted.
-        expected = [] if late_scope_failure in {'index_watermark_changed', 'authority_revision_changed',
+        expected = [] if late_scope_failure in {'index_watermark_changed', 'authority_revision_changed', 'authority_revision_stale',
                                                'hydration_budget'} or (
                     mandatory_verification and late_scope_failure == 'recall_budget_exhausted') else [item.record_id]
         assert [result.record_id for result in bundle.items] == expected, str(bundle.explanation['relevance_selector'])

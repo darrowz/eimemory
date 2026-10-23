@@ -30,7 +30,7 @@ def phase(monkeypatch):
     calls = []
 
     def ready(actual, *, timeout_seconds):
-        assert actual is runtime and 0 < timeout_seconds <= 120
+        assert actual is runtime and 0 < timeout_seconds <= 300
         calls.append(timeout_seconds)
         return {"ok": True, "applicable": True, "final_measurement": measurement()}
 
@@ -112,7 +112,7 @@ def test_missing_or_changed_native_projection_contract_fails_closed(phase, bad):
     assert result["ok"] is False
 
 
-@pytest.mark.parametrize("value", [0, -1, 121, True, float("inf"), float("nan")])
+@pytest.mark.parametrize("value", [0, -1, 301, True, float("inf"), float("nan")])
 def test_phase_wait_budget_is_finite_and_bounded(phase, value):
     with pytest.raises(ValueError, match="invalid_projection_wait_budget"):
         closure._wait_for_controlled_projection(phase.runtime, expected_commit="a"*40, timeout_seconds=value)

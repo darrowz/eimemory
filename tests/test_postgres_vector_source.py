@@ -292,7 +292,7 @@ def test_source_reports_request_local_phase_times_even_on_timeout(monkeypatch, f
         assert second['elapsed_ms'] == pytest.approx(500)
 
 
-@pytest.mark.parametrize('failure', ['postgres_timeout', 'authority_revision_changed'])
+@pytest.mark.parametrize('failure', ['postgres_timeout', 'authority_revision_changed', 'authority_revision_stale'])
 def test_real_failure_revokes_backend_proof_even_after_budget_cancellation(failure):
     from dataclasses import replace
 

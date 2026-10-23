@@ -355,14 +355,16 @@ def _health(expected_commit: str, *, timeout_seconds: float | None = None) -> di
             "package_tree_digest": identity["package_tree_digest"], "postgres_fresh": pg_ok,
             "postgres_lag_seconds": lag if type(lag) in (int, float) and math.isfinite(lag) else None,
             "postgres_error": current.get("last_error") if current.get("last_error") in
-                {"", "authority_revision_changed", "index_lag_exceeded", "index_not_ready",
-                 "candidate_health_unavailable", "postgres_unavailable", "circuit_open"} else "unavailable",
+                {"", "authority_revision_changed", "authority_revision_stale", "index_lag_exceeded",
+                 "index_not_ready", "candidate_health_unavailable", "postgres_unavailable",
+                 "circuit_open"} else "unavailable",
             "migration_complete": store.get("migration_complete") is True,
             "postgres_health_model": "native_readonly_vector_query.v1", "postgres_readiness": current,
             "last_query_valid": candidate.get("query_valid") is True,
             "last_query_error": candidate.get("last_error") if candidate.get("last_error") in
-                {"", "authority_revision_changed", "index_lag_exceeded", "index_not_ready",
-                 "candidate_health_unavailable", "postgres_unavailable", "circuit_open"} else "unavailable"}
+                {"", "authority_revision_changed", "authority_revision_stale", "index_lag_exceeded",
+                 "index_not_ready", "candidate_health_unavailable", "postgres_unavailable",
+                 "circuit_open"} else "unavailable"}
 
 
 def _current_pg_agrees(health, snapshot, *, at=None):

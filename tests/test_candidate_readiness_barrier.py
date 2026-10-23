@@ -94,6 +94,12 @@ def probe_source(monkeypatch, fn):
     return source
 
 
+def test_default_wait_aligns_with_max_index_lag_budget():
+    assert barrier.DEFAULT_WAIT_SECONDS == 300.0
+    assert barrier.MAX_WAIT_SECONDS == 300.0
+    assert barrier.DEFAULT_WAIT_SECONDS <= barrier.MAX_WAIT_SECONDS
+
+
 def test_native_lag_waits_then_runs_real_private_vector_select_without_embedding_or_query_proof(clock, monkeypatch):
     source, repository, provider = native_source()
     calls = []
@@ -107,7 +113,7 @@ def test_native_lag_waits_then_runs_real_private_vector_select_without_embedding
     clock.after_sleep = lambda: setattr(repository, 'state', replace(repository.state, authority_revision='7'))
     result = barrier.wait_for_candidate_readiness(runtime_for(source), timeout_seconds=1)
     assert result['ok'] and result['applicable'] and result['ready']
-    assert result['attempt_count'] == 2 and result['error_code_counts'] == {'authority_revision_changed': 1}
+    assert result['attempt_count'] == 2 and result['error_code_counts'] == {'authority_revision_stale': 1}
     assert calls == [dict(force=True, timeout_seconds=.2)] * 2
     assert repository.searches == 1 and provider.calls == 0
     assert old_query == (source._last_query_valid, source._last_query_index_identity,
@@ -120,7 +126,7 @@ def test_persistent_native_lag_times_out_without_private_select_or_embedding(clo
     result = barrier.wait_for_candidate_readiness(runtime_for(source), timeout_seconds=1)
     assert not result['ok'] and result['status'] == 'timeout' and not result['ready']
     assert result['elapsed_seconds'] == 1 and result['attempt_count'] == 2
-    assert result['error_code_counts'] == {'authority_revision_changed': 2}
+    assert result['error_code_counts'] == {'authority_revision_stale': 2}
     assert repository.searches == provider.calls == 0
     assert not barrier.candidate_readiness_barrier_ok(result, postgres=True)
 

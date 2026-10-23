@@ -654,7 +654,7 @@ def _run_controlled_production_acceptance_locked(runtime, *, owner, policy, pers
         if stable_before and _instant(stable_before) < _instant(cutoff):
             cutoff = stable_before
         started = now_iso()
-        barrier = wait_for_candidate_readiness(runtime, timeout_seconds=120)
+        barrier = wait_for_candidate_readiness(runtime, timeout_seconds=300)
         barrier_ok = candidate_readiness_barrier_ok(barrier,
             postgres=isinstance(runtime.memory.recall_engine.candidate_source, PostgresVectorCandidateSource),
             source=runtime.memory.recall_engine.candidate_source)

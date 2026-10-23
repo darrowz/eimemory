@@ -70,7 +70,7 @@ def test_authority_sync_recovers_with_real_vector_select_without_resurrecting_ol
     source, authority, provider, repository = setup_source()
     repository.state = replace(repository.state, authority_revision='6')
     source.search(CandidateRequest(query='actual authorized retrieval', scope=ExactScope('t', 'a', 'w', 'u')))
-    assert source.health()['last_error'] == 'authority_revision_changed'
+    assert source.health()['last_error'] == 'authority_revision_stale'
     assert source._circuit.failures == 0
     invalid = (source._last_query_valid, source._last_query_index_identity, source._backend_query_identity,
                source._last_query_status, source._last_error)
@@ -96,7 +96,7 @@ def test_authority_sync_recovers_with_real_vector_select_without_resurrecting_ol
 
 @pytest.mark.parametrize('change,code', [
     ({'ready': False}, 'index_not_ready'), ({'watermark': ''}, 'index_not_ready'),
-    ({'authority_revision': '8'}, 'authority_revision_changed'),
+    ({'authority_revision': '8'}, 'authority_revision_stale'),
     ({'embedding_fingerprint': 'e' * 64}, 'embedding_fingerprint_mismatch'),
     ({'projection_fingerprint': 'e' * 64}, 'projection_fingerprint_mismatch'),
     ({'projection_digest_schema': 'unrecognized'}, 'projection_fingerprint_mismatch'),
