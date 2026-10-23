@@ -98,3 +98,21 @@ def test_classify_recall_intent_report_query() -> None:
     assert intent.memory_cube == "governance"
     assert intent.preferred_kinds == ("reflection",)
     assert intent.suppressed_kinds == ()
+
+def test_classify_recall_intent_acceptance_deploy_gate_queries() -> None:
+    receipt = classify_recall_intent("先做收据验收再跑一次nightly")
+    deploy = classify_recall_intent("拉起最新eimemory源码，部署切换，跑一遍nightly并验收")
+    fixed = classify_recall_intent("已修复，拉起最新eimemory源码，部署切换，跑一遍nightly并验收")
+
+    assert receipt.name == "project_delivery"
+    assert deploy.name == "project_delivery"
+    assert fixed.name == "project_delivery"
+    assert receipt.confidence >= 0.28
+    assert any("acceptance_or_deploy_gate" in reason for reason in receipt.reasons)
+
+
+def test_classify_recall_intent_keeps_operational_issue_above_acceptance_cues() -> None:
+    intent = classify_recall_intent("部署失败后的根因")
+
+    assert intent.name == "operational_issue"
+    assert intent.confidence >= 0.9

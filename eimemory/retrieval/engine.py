@@ -1692,6 +1692,20 @@ class GovernedRecallEngine:
         normalized_query = normalize_identity_text(query)
         keyword_required_terms = self._keyword_required_terms(query)
         by_token = {self._fusion_record_token(item): item for item in pre_pool_items}
+        # Procedure/acceptance queries should not let episodic dense neighbors
+        # outrank durable delivery guidance via RRF vector ranks.
+        if self._is_procedure_query_without_episodic_cues(query):
+            demoted: dict[tuple[str, ExactScope, str], dict[str, Any]] = {}
+            for item in pre_pool_items:
+                if self._record_memory_type(item) != "episodic":
+                    continue
+                ref = self._record_key(item)
+                hints = dict(component_hints_by_ref.get(ref) or {})
+                hints["vector_score"] = 0.0
+                hints.pop("dense_vector_score", None)
+                demoted[ref] = hints
+            if demoted:
+                component_hints_by_ref = {**component_hints_by_ref, **demoted}
         evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]] = {}
         strong_evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]] = {}
         group_items: dict[int, list[RecordEnvelope]] = {}
@@ -2276,6 +2290,22 @@ class GovernedRecallEngine:
                 selected[-1] = reserved
                 anchor_reserve_swap = True
 
+        delivery_priority_applied = False
+        if selected and self._is_procedure_query_without_episodic_cues(query):
+            gate_query = self._procedure_gate_query(query)
+            prioritized = sorted(
+                selected,
+                key=lambda item: not self._is_project_delivery_durable_evidence(
+                    gate_query,
+                    item,
+                    self._record_evidence_text(item),
+                ),
+            )
+            delivery_priority_applied = [self._record_key(item) for item in prioritized] != [
+                self._record_key(item) for item in selected
+            ]
+            selected = prioritized
+
         dropped_count = max(0, len(items) - len(selected))
         return selected, {
             "policy_version": self._relevance_selector_policy_version,
@@ -2290,10 +2320,11 @@ class GovernedRecallEngine:
             "early_stop": False,
             "research_multi_hit": research_multi_hit,
             "top_score": round(top_score, 12),
-            "preserved_fused_order": not identity_priority_applied,
+            "preserved_fused_order": not identity_priority_applied and not delivery_priority_applied,
             "padding": False,
             "anchor_reserve_swap": anchor_reserve_swap,
             "identity_priority_applied": identity_priority_applied,
+            "delivery_priority_applied": delivery_priority_applied,
         }
 
     @staticmethod
@@ -2405,9 +2436,58 @@ class GovernedRecallEngine:
         # Semantic evidence already has its paired vector check above.
         return lexical_score, "grounding"
 
+    _PROCEDURE_QUERY_RE = re.compile(
+        r"验收|交付|收据|部署|切换|放行|闭环|nightly|acceptance|receipt|deploy|"
+        r"stage-release|delivery",
+        re.I,
+    )
+    _EPISODIC_QUERY_RE = re.compile(
+        r"刚才|刚刚|昨晚|今天|昨天|上次|那次|just now|yesterday|last night|"
+        r"上次说|那轮|当时说|对话里|这轮对话|session history|what did we say|last turn",
+        re.I,
+    )
+    _PROJECT_DELIVERY_ITEM_EVIDENCE_RE = re.compile(
+        r"(?<!未)(?:提交|分层|业务|交付|部署).{0,8}验收(?!草稿)|"
+        r"(?<!未)验收(?!草稿).{0,12}(?:收据|部署|nightly|放行|闭环)|"
+        r"交付.{0,4}(?:要求|品质)|"
+        r"acceptance|delivery\s*quality|外部订单|需求清单",
+        re.I,
+    )
+
+    @classmethod
+    def _procedure_gate_query(cls, query: str) -> str:
+        from .answer_requirements import admission_query
+
+        return admission_query(query) or str(query or "")
+
+    @classmethod
+    def _is_procedure_query_without_episodic_cues(cls, query: str) -> bool:
+        gate = cls._procedure_gate_query(query)
+        if not gate or not cls._PROCEDURE_QUERY_RE.search(gate):
+            return False
+        return not bool(cls._EPISODIC_QUERY_RE.search(gate))
 
     @staticmethod
-    def _is_project_delivery_durable_evidence(query: str, item: RecordEnvelope, text: str) -> bool:
+    def _record_memory_type(item: RecordEnvelope) -> str:
+        meta = business_metadata(item.meta) if isinstance(item.meta, dict) else {}
+        content = item.content if isinstance(item.content, dict) else {}
+        return str(meta.get("memory_type") or content.get("memory_type") or "").strip().lower()
+
+    @staticmethod
+    def _record_evidence_text(item: RecordEnvelope) -> str:
+        content = item.content if isinstance(item.content, dict) else {}
+        return " ".join(
+            str(value or "")[:4096]
+            for value in (
+                item.title,
+                item.summary,
+                item.detail,
+                content.get("text"),
+                content.get("excerpt"),
+            )
+        )
+
+    def _is_project_delivery_durable_evidence(self, query: str, item: RecordEnvelope, text: str) -> bool:
         """Admit delivery preferences/rules after operational digests are filtered.
 
         Dense cosine must not admit these (dense-admission contract). Lexical
@@ -2417,7 +2497,8 @@ class GovernedRecallEngine:
         """
         query_text = str(query or "")
         if not re.search(
-            r"交付|delivery|品质|外部订单|海报|验收|\bacceptance\b",
+            r"交付|delivery|品质|外部订单|海报|验收|收据|部署|nightly|闭环|放行|"
+            r"\bacceptance\b|\breceipt\b|\bdeploy\b|stage-release",
             query_text,
             re.I,
         ):
@@ -2448,13 +2529,10 @@ class GovernedRecallEngine:
             }
         if not durable:
             return False
-        return bool(
-            re.search(
-                r"交付|验收|delivery|acceptance|外部订单|需求清单",
-                text,
-                re.I,
-            )
-        )
+        # Require procedure/acceptance phrasing. Bare「验收」matches drafts such as
+        # 「未验收」and soft notes like「以实际状态验收」that should not outrank
+        # explicit 提交部署验收 / 分层业务验收 guidance.
+        return bool(self._PROJECT_DELIVERY_ITEM_EVIDENCE_RE.search(text))
 
     @staticmethod
     def _is_explicit_operational_evidence(item: RecordEnvelope) -> bool:

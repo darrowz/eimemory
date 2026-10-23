@@ -204,9 +204,39 @@ def _apply_project_delivery_cues(
     if re.search(r"\buumit\b", normalized_lower):
         scores["project_delivery"] += 0.6
         reasons["project_delivery"].append("pattern: project_code")
-    if any(marker in normalized_lower for marker in ("交付", "delivery", "delivery quality", "品质", "外部订单", "交付要求")):
+    if any(
+        marker in normalized_lower
+        for marker in (
+            "交付",
+            "delivery",
+            "delivery quality",
+            "品质",
+            "外部订单",
+            "交付要求",
+        )
+    ):
         scores["project_delivery"] += 0.25
         reasons["project_delivery"].append("keyword: delivery")
+    # Production host queries often ask for acceptance/receipt/nightly/deploy
+    # gates without the UUMit delivery vocabulary. Keep this below the 0.9
+    # operational_issue failure cues so "部署失败" still wins that intent.
+    if any(
+        marker in normalized_lower
+        for marker in (
+            "验收",
+            "acceptance",
+            "收据",
+            "receipt",
+            "nightly",
+            "部署切换",
+            "stage-release",
+            "提交部署",
+            "分层业务",
+            "交付验收",
+        )
+    ):
+        scores["project_delivery"] += 0.28
+        reasons["project_delivery"].append("keyword: acceptance_or_deploy_gate")
     if "uu" in query_terms and any(term in {"mit", "project", "v2"} for term in query_terms):
         scores["project_delivery"] += 0.1
         reasons["project_delivery"].append("token: uu + mit/project/v2")

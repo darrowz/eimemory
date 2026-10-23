@@ -205,3 +205,43 @@ def test_project_delivery_filters_operational_digest_projections_before_ranking(
     assert bundle.items[0].record_id == project_memory.record_id
     assert all("Operational page: Research digest" not in item.title for item in bundle.items)
     assert "operational_knowledge" in bundle.explanation["recall_filters"]["blocked_projection_types"]
+
+
+def test_procedure_query_prefers_durable_delivery_over_episodic(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongrui", "workspace_id": "embodied", "user_id": "darrow"}
+    preference = runtime.memory.ingest(
+        text="提交部署验收；分层业务验收；真实读回版本、收据、健康与召回。",
+        memory_type="preference",
+        title="提交部署验收偏好",
+        scope=scope,
+        source="operator.correction",
+        force_capture=True,
+    )
+    runtime.memory.ingest(
+        text="昨晚部署切换时日志里出现过 transient vector sync lag，稍后恢复。",
+        memory_type="episodic",
+        title="昨晚部署切换日志",
+        scope=scope,
+        source="agent.session",
+        force_capture=True,
+    )
+    soft = runtime.memory.ingest(
+        text="明确要求暂停时，停止无关修复、部署和评估，集中完成当前索引构建并以实际状态验收。",
+        memory_type="preference",
+        title="暂停时以实际状态验收",
+        scope=scope,
+        source="operator.correction",
+        force_capture=True,
+    )
+
+    bundle = runtime.memory.recall(
+        query="拉起最新eimemory源码，部署切换，跑一遍nightly并验收",
+        scope=scope,
+        task_context={"task_type": "cli.recall", "recall_profile": "precision"},
+        limit=5,
+    )
+
+    assert bundle.items
+    assert bundle.items[0].record_id == preference.record_id
+    assert soft.record_id not in {item.record_id for item in bundle.items[:1]}
