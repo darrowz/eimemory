@@ -28,6 +28,7 @@ from eimemory.models.source_partitions import normalize_source_ids
 from eimemory.ops.candidate_readiness_barrier import (
     _explicit_pg_bypass, candidate_readiness_barrier_ok, wait_for_candidate_readiness,
 )
+from eimemory.ops.projection_acceptance_restore import ensure_candidate_projection_restored
 from eimemory.retrieval.diagnostics import STAGES
 from eimemory.retrieval.postgres_vector import (PostgresVectorCandidateSource,
     _CANDIDATE_ERROR_CODES, postgres_config_fingerprint)
@@ -621,6 +622,7 @@ def _public(body, *, persisted=False):
         certifies_natural_queries=False, certifies_no_answer=False, host_delivery_certified=False,
         memory_contribution_certified=False, natural_samples_created=0, agents=agents,
         candidate_readiness_barrier=deepcopy(body.get('candidate_readiness_barrier', {})),
+        projection_acceptance_restore=deepcopy(body.get('projection_acceptance_restore', {})),
         blocked_reason=body.get('blocked_reason', ''))
 
 
@@ -654,7 +656,23 @@ def _run_controlled_production_acceptance_locked(runtime, *, owner, policy, pers
         if stable_before and _instant(stable_before) < _instant(cutoff):
             cutoff = stable_before
         started = now_iso()
-        barrier = wait_for_candidate_readiness(runtime, timeout_seconds=300)
+        # Accept budget must not start while deploy/storage guard still pauses
+        # vector-sync; catch up in-process first (barrier stays read-only).
+        projection_restore = ensure_candidate_projection_restored(runtime)
+        if (projection_restore.get('applicable') is True
+                and projection_restore.get('ok') is not True):
+            barrier = dict(
+                schema='candidate_readiness_barrier.v1', ok=False, applicable=True,
+                ready=False, status='failed',
+                blocked_reason='projection_acceptance_restore_failed',
+                source_type='postgres_vector', started_at=started, completed_at=now_iso(),
+                elapsed_seconds=0.0, timeout_seconds=300.0, probe_timeout_seconds=0.2,
+                attempt_count=0,
+                error_code_counts={'projection_acceptance_restore_failed': 1},
+                final_measurement={},
+            )
+        else:
+            barrier = wait_for_candidate_readiness(runtime, timeout_seconds=300)
         barrier_ok = candidate_readiness_barrier_ok(barrier,
             postgres=isinstance(runtime.memory.recall_engine.candidate_source, PostgresVectorCandidateSource),
             source=runtime.memory.recall_engine.candidate_source)
@@ -695,6 +713,7 @@ def _run_controlled_production_acceptance_locked(runtime, *, owner, policy, pers
             request_digest=policy['request_digest'], release_identity=release, release_reference=receipt,
             engine_identity=engine, started_at=started, completed_at=now_iso(), stable_before=cutoff,
             candidate_readiness_barrier=barrier,
+            projection_acceptance_restore=projection_restore,
             accepted=accepted, agents=agents, certifies_natural_queries=False, certifies_no_answer=False,
             host_delivery_certified=False, memory_contribution_certified=False, natural_samples_created=0,
             blocked_reason='' if accepted else ('controlled_acceptance_candidate_readiness_unverified'

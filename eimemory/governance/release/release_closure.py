@@ -747,6 +747,7 @@ def _wait_for_controlled_projection(runtime: Any, *, expected_commit: str,
     import time
     from eimemory.ops.candidate_readiness_barrier import wait_for_candidate_readiness
     from eimemory.ops.controlled_stability import _health
+    from eimemory.ops.projection_acceptance_restore import ensure_candidate_projection_restored
     from eimemory.retrieval.readiness_contract import readiness_ok
 
     if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
@@ -763,6 +764,18 @@ def _wait_for_controlled_projection(runtime: Any, *, expected_commit: str,
         result.update(ok=ok, blocked_reason=reason, elapsed_seconds=round(time.monotonic()-started, 6),
                       completed_at=datetime.now(timezone.utc).isoformat())
         return result
+
+    # CPA / memory-writing gates may bump authority while vector-sync is still
+    # held; restore before the read-only accept budget starts.
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return finish(False, "projection_wait_exhausted")
+    projection_restore = ensure_candidate_projection_restored(
+        runtime, timeout_seconds=min(120.0, remaining))
+    result["projection_acceptance_restore"] = projection_restore
+    if (projection_restore.get("applicable") is True
+            and projection_restore.get("ok") is not True):
+        return finish(False, "projection_acceptance_restore_failed")
 
     while time.monotonic() < deadline:
         remaining = deadline - time.monotonic()
