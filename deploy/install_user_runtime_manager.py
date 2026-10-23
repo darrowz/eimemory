@@ -1656,7 +1656,7 @@ def validate_failed_manual_recovery(contract, registry, record, transition, nati
             or record.get('manual_release') is not True
             or record.get('quiesced') is not True
             or record.get('phase') not in {'publish','activate','rollback','resume_deferred_until_terminal',
-                                         'resumed_awaiting_business','completed'}
+                                         'background_restore_intent','resumed_awaiting_business','completed'}
             or record.get('unit')!=contract.job_unit(key)):
         raise ValueError('user_recovery_failed_manual_binding_invalid')
     contract.validate_manual_permit(record['request'],key)
@@ -1673,7 +1673,17 @@ def validate_failed_manual_recovery(contract, registry, record, transition, nati
         and record.get('resumed') is not True and record.get('finalized') is not True
         and record.get('phase')=='resume_deferred_until_terminal'
         and registry.get('runtime_commit')==current and published==live)
-    if current!=registry['runtime_commit'] or not (base or candidate or switched_before_resume):
+    # Business gate held core serving, then background restore failed mid-verify.
+    # Current already points at the candidate; background_restore_intent is not
+    # success and must stay abandonable with the failed native proof.
+    switched_background_restore_stuck=(current==request['candidate_commit']
+        and record.get('resumed') is not True and record.get('finalized') is not True
+        and record.get('phase')=='background_restore_intent'
+        and record.get('background_restore_requested') is True
+        and record.get('core_serving_ready') is True
+        and registry.get('runtime_commit')==current and published==live)
+    if current!=registry['runtime_commit'] or not (base or candidate or switched_before_resume
+            or switched_background_restore_stuck):
         raise ValueError('user_recovery_prior_runtime_changed')
     active=record.get('active_before')
     if (not isinstance(active,list) or len(active)!=len(set(active))
