@@ -640,24 +640,33 @@ def _journal() -> dict[str, Any]:
             'native_database_counters_available': False, 'observed_error_counts': counts}
 
 
-def collect_controlled_stability_sample(*, expected_commit: str, database_path: str | Path) -> dict[str, Any]:
-    """Freeze the registered identity inventory for this complete measurement."""
+def collect_controlled_stability_sample(*, expected_commit: str, database_path: str | Path,
+                                        background_held: bool = False) -> dict[str, Any]:
+    """Freeze the registered identity inventory for this complete measurement.
+
+    When ``background_held`` is True, timer/job units are scored against the
+    admission hold contract (enabled timers inactive; writer jobs quiet), not
+    the restored active-timer inventory. Core runtime units stay required.
+    """
     topology = _topology()
     token = _OBSERVATION_TOPOLOGY.set(topology)
     try:
         return _collect_controlled_stability_sample(expected_commit=expected_commit,
-                                                     database_path=database_path)
+                                                     database_path=database_path,
+                                                     background_held=background_held is True)
     finally:
         _OBSERVATION_TOPOLOGY.reset(token)
 
 
-def _collect_controlled_stability_sample(*, expected_commit: str, database_path: str | Path) -> dict[str, Any]:
+def _collect_controlled_stability_sample(*, expected_commit: str, database_path: str | Path,
+                                         background_held: bool = False) -> dict[str, Any]:
     """Collect once as the database owner; no recall, Runtime, DB writes or actions."""
     commit = _commit(expected_commit)
     result: dict[str, Any] = {"schema": SAMPLE_SCHEMA, "expected_commit": commit,
         "observed_at": datetime.now(timezone.utc).isoformat(), "monotonic_seconds": time.monotonic(),
         "boot_id": "", "collector_origin": "native_readonly_host_probe", "read_only": True,
-        "natural_certified": False, "blocked_reasons": []}
+        "natural_certified": False, "blocked_reasons": [],
+        "background_held_observation": background_held is True}
     topology = _topology()
     if topology is not None:
         result.update(schema=TOPOLOGY_SAMPLE_SCHEMA, topology=topology)
@@ -704,13 +713,30 @@ def _collect_controlled_stability_sample(*, expected_commit: str, database_path:
             units = []
             for state in states:
                 unit = state["Id"]
-                ok = state["LoadState"] == "loaded" and state["Result"] in ("", "success")
                 if unit in _runtime_units():
-                    ok = ok and state["ActiveState"] == "active" and state["ExecMainStatus"] == "0"
+                    ok = (state["LoadState"] == "loaded" and state["Result"] in ("", "success")
+                          and state["ActiveState"] == "active" and state["ExecMainStatus"] == "0")
                 elif unit in TIMER_UNITS:
-                    ok = ok and state["ActiveState"] == "active" and state["UnitFileState"] in ("enabled", "enabled-runtime")
+                    enabled = state["UnitFileState"] in ("enabled", "enabled-runtime")
+                    if background_held:
+                        # Admission holds writers: enabled timers must stay inactive.
+                        ok = (state["LoadState"] == "loaded" and enabled
+                              and state["ActiveState"] == "inactive"
+                              and state["Result"] in ("", "success"))
+                    else:
+                        ok = (state["LoadState"] == "loaded" and enabled
+                              and state["ActiveState"] == "active"
+                              and state["Result"] in ("", "success"))
                 else:
-                    ok = ok and state["ActiveState"] in ("active", "inactive", "activating") and state["ExecMainStatus"] == "0"
+                    if background_held:
+                        # verify_background_quiet allows inactive or failed oneshots.
+                        ok = state["LoadState"] == "loaded" and state["ActiveState"] in ("inactive", "failed")
+                        if state["ActiveState"] != "failed":
+                            ok = ok and state["Result"] in ("", "success") and state["ExecMainStatus"] == "0"
+                    else:
+                        ok = (state["LoadState"] == "loaded" and state["Result"] in ("", "success")
+                              and state["ActiveState"] in ("active", "inactive", "activating")
+                              and state["ExecMainStatus"] == "0")
                 counter = state.get("NRestarts", "")
                 restarts = int(counter) if counter.isdigit() else None
                 units.append({"unit": unit, "ok": bool(ok), "active_state": state["ActiveState"],

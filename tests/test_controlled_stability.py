@@ -699,3 +699,70 @@ def test_archived_inventory_cannot_shrink_team_or_add_system_units(units):
     with pytest.raises(ValueError,match='runtime_inventory_invalid'):
         probe.assess_controlled_stability(samples(), expected_commit=COMMIT,
                                          expected_runtime_units=units)
+
+
+def _timer_state(unit, *, active, result="success", unit_file="enabled"):
+    return {"Id": unit, "LoadState": "loaded", "ActiveState": active, "Result": result,
+            "UnitFileState": unit_file, "ExecMainStatus": "0", "NRestarts": "0",
+            "MainPID": "0", "ControlPID": "0"}
+
+
+def _job_state(unit, *, active, result="success", exec_status="0"):
+    return {"Id": unit, "LoadState": "loaded", "ActiveState": active, "Result": result,
+            "UnitFileState": "static", "ExecMainStatus": exec_status, "NRestarts": "0",
+            "MainPID": "0", "ControlPID": "0"}
+
+
+def _runtime_state(unit):
+    return {"Id": unit, "LoadState": "loaded", "ActiveState": "active", "Result": "success",
+            "UnitFileState": "enabled", "ExecMainStatus": "0", "NRestarts": "0",
+            "MainPID": "1", "ControlPID": "0", "FragmentPath": "/lib/systemd/system/" + unit,
+            "DropInPaths": "", "InvocationID": "a" * 32}
+
+
+def test_background_held_observation_accepts_quiet_timers_and_failed_jobs(monkeypatch, tmp_path):
+    """During admission hold, enabled timers stay inactive and oneshots may be failed."""
+    path = tmp_path / "eimemory.sqlite"
+    path.write_bytes(b"")
+    states = [_runtime_state(unit) for unit in FIXTURE_RUNTIME_UNITS]
+    states.extend(_timer_state(unit, active="inactive") for unit in probe.TIMER_UNITS)
+    states.extend(_job_state(unit, active="failed", result="exit-code", exec_status="1")
+                  for unit in probe.JOB_UNITS)
+    monkeypatch.setattr(probe, "_unit_states", lambda: states)
+    monkeypatch.setattr(probe, "_health", lambda commit, timeout_seconds=8.0: {
+        "ok": True, "identity_ok": True, "postgres_fresh": True, "migration_complete": True,
+        "package_tree_digest": "f" * 64, "version": __version__,
+        "postgres_health_model": "native_readonly_vector_query.v1",
+        "postgres_readiness": readiness()})
+    monkeypatch.setattr(probe, "_database", lambda database_path: {
+        "ok": True, "read_smoke_ok": True, "owner_read_write_access": True,
+        "same_database_inode": True, "write_probe_performed": False,
+        "integrity_basis": "verified_backup_snapshot",
+        "current_full_integrity_scan_performed": False,
+        "backup_integrity": {"ok": True, "schema_matches_current_database": True,
+            "native_sqlite_integrity_check_ok": True, "native_logical_export_verified": True,
+            "published_set": True},
+        "ownership": [{"ok": True}], "database_identity": "db-id"})
+    monkeypatch.setattr(probe, "_journal", lambda: {
+        "ok": True, "observation_scope": "allowlisted_user_unit_journal", "window_seconds": 600,
+        "observed_error_counts": {"crash": 0, "oom": 0, "database_read_write_failure": 0}})
+    monkeypatch.setattr(probe, "_postgres_snapshot", lambda states, database_path, commit: {
+        "ok": True, "measurement_origin": "native_readonly_repository_snapshot",
+        "ready": True, "authority_unchanged": True, "fingerprints_match": True,
+        "revision_matches": True, "watermark": "watermark-current", "authority_revision": "123"})
+    monkeypatch.setattr(probe, "_process_status", lambda state, commit: {
+        "ok": True, "unit": state["Id"], "capture_enabled": True, "capture_policy_valid": True,
+        "capture_scope_count": 6, "recall_budget_seconds": 8, "hermes_attestation_ready": True,
+        "runtime_commit_matches": True, "capture_policy_digest": "c" * 64, "pid": 1,
+        "start_ticks": 1, "invocation_id": "a" * 32})
+    monkeypatch.setattr(probe, "_credential_binding", lambda states: True)
+    monkeypatch.setattr(probe, "_topology", lambda: None)
+    held = probe.collect_controlled_stability_sample(
+        expected_commit=COMMIT, database_path=path, background_held=True)
+    assert held["ok"] is True
+    assert held["background_held_observation"] is True
+    assert all(row["ok"] for row in held["units"])
+    restored = probe.collect_controlled_stability_sample(
+        expected_commit=COMMIT, database_path=path, background_held=False)
+    assert restored["ok"] is False
+    assert "allowlisted_unit_not_ready" in restored["blocked_reasons"]

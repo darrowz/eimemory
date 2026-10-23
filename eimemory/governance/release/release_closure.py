@@ -494,7 +494,8 @@ def run_managed_post_resume_closure(runtime: Any, *, job_key: str, validation_co
     if authority is not None:
         identity_kwargs["provider_authority_snapshot"] = authority
     report = _run_controlled_operational_closure(runtime, report=report, scope=scope,
-        identity_kwargs=identity_kwargs, release=release, policy=controlled_policy)
+        identity_kwargs=identity_kwargs, release=release, policy=controlled_policy,
+        background_held_observation=True)
     report["business_qualified"] = controlled_production_closure_report_ok(report)
     report["observation_started"] = False
     return report
@@ -559,7 +560,8 @@ def run_manual_post_resume_closure(runtime: Any, *, job_key: str, validation_con
         current_link="/opt/eimemory/current", health_url="http://127.0.0.1:8091/health",
         prior_commit=body.get("rollback_commit", body["base_commit"]), deployed_commit=body["target_commit"], deployment_receipt=receipt)
     report = _run_controlled_operational_closure(runtime, report=report, scope=scope,
-        identity_kwargs=identity_kwargs, release=actual, policy=policy)
+        identity_kwargs=identity_kwargs, release=actual, policy=policy,
+        background_held_observation=True)
     report["business_qualified"] = controlled_production_closure_report_ok(report)
     report.update(manual_release=True, observation_started=False, l5_certification="not_certified")
     return report
@@ -568,6 +570,7 @@ def run_manual_post_resume_closure(runtime: Any, *, job_key: str, validation_con
 def _run_controlled_operational_closure(
     runtime: Any, *, report: dict[str, Any], scope: dict[str, Any],
     identity_kwargs: dict[str, Any], release: ReleaseIdentity, policy: dict[str, Any],
+    background_held_observation: bool = False,
 ) -> dict[str, Any]:
     """Keep the signed current attempt stable through final closure readback."""
     from eimemory.evaluation.controlled_acceptance_window import (
@@ -576,7 +579,8 @@ def _run_controlled_operational_closure(
     try:
         with controlled_acceptance_window(runtime):
             return _run_controlled_operational_closure_locked(runtime, report=report,
-                scope=scope, identity_kwargs=identity_kwargs, release=release, policy=policy)
+                scope=scope, identity_kwargs=identity_kwargs, release=release, policy=policy,
+                background_held_observation=background_held_observation is True)
     except ControlledAcceptanceWindowError as exc:
         return _blocked(report, 'controlled_acceptance_window', str(exc))
 
@@ -584,6 +588,7 @@ def _run_controlled_operational_closure(
 def _run_controlled_operational_closure_locked(
     runtime: Any, *, report: dict[str, Any], scope: dict[str, Any],
     identity_kwargs: dict[str, Any], release: ReleaseIdentity, policy: dict[str, Any],
+    background_held_observation: bool = False,
 ) -> dict[str, Any]:
     """Exercise the release under explicit operator authority, without L5 claims."""
     from eimemory.evaluation.controlled_production_acceptance import (
@@ -641,8 +646,19 @@ def _run_controlled_operational_closure_locked(
     # RPC identity checks can predate the successful retrieval and leave a
     # cached retrieval-health fragment. Observe only after its native TTL.
     _wait_for_controlled_health_refresh()
+    # Stability must not race projection restore: finish caught_up/clean first.
+    from eimemory.ops.projection_acceptance_restore import ensure_candidate_projection_restored
+    projection_before_stability = ensure_candidate_projection_restored(
+        runtime, timeout_seconds=120.0)
+    report["projection_acceptance_restore_before_stability"] = projection_before_stability
+    if (projection_before_stability.get("applicable") is True
+            and projection_before_stability.get("ok") is not True):
+        return _blocked(report, "projection_acceptance_restore",
+                        _failure_reason(projection_before_stability,
+                                        "projection_acceptance_restore_failed"))
     first_sample = collect_controlled_stability_sample(
         expected_commit=release.commit, database_path=database_path,
+        background_held=background_held_observation,
     )
     if first_sample.get("ok") is not True:
         report["stability"] = first_sample
@@ -707,6 +723,7 @@ def _run_controlled_operational_closure_locked(
             return _blocked(report, "projection_readiness", "post_acceptance_projection_not_ready")
     last_sample = collect_controlled_stability_sample(
         expected_commit=release.commit, database_path=database_path,
+        background_held=background_held_observation,
     )
     stability = assess_controlled_stability(
         [first_sample, last_sample], expected_commit=release.commit, expected_version=release.version,

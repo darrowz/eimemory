@@ -191,3 +191,41 @@ def test_an_actual_failed_first_sample_is_never_hidden_by_later_waits(pipeline, 
     result = pipeline.run()
     assert result["ok"] is False and result["blocked_stage"] == "stability"
     assert result["stability"] is bad
+
+
+def test_projection_restore_finishes_before_first_stability_sample(pipeline, monkeypatch):
+    """Stability must not sample while projection restore is still catching up."""
+    events = []
+    samples = iter(stability()["samples"])
+
+    def restore(runtime, timeout_seconds=120.0):
+        events.append(("restore", timeout_seconds))
+        return {"schema": "projection_acceptance_restore.v1", "ok": True, "applicable": True,
+                "skipped": "", "blocked_reason": ""}
+
+    def collect(**kwargs):
+        events.append(("sample", kwargs.get("background_held")))
+        return next(samples)
+
+    monkeypatch.setattr("eimemory.ops.projection_acceptance_restore.ensure_candidate_projection_restored", restore)
+    monkeypatch.setattr(pipeline.monitor, "collect_controlled_stability_sample", collect)
+    monkeypatch.setattr(closure, "_wait_for_controlled_window", lambda started: None)
+    result = pipeline.run()
+    assert result["ok"] is True
+    assert result["projection_acceptance_restore_before_stability"]["ok"] is True
+    assert events[0][0] == "restore"
+    assert events[1] == ("sample", False)
+    assert any(item[0] == "sample" for item in events[2:])
+
+
+def test_failed_projection_restore_blocks_before_stability_sample(pipeline, monkeypatch):
+    def restore(runtime, timeout_seconds=120.0):
+        return {"schema": "projection_acceptance_restore.v1", "ok": False, "applicable": True,
+                "skipped": "", "blocked_reason": "storage_release_guard_not_clear"}
+
+    monkeypatch.setattr("eimemory.ops.projection_acceptance_restore.ensure_candidate_projection_restored", restore)
+    monkeypatch.setattr(pipeline.monitor, "collect_controlled_stability_sample",
+                        lambda **kwargs: pytest.fail("stability sampled before projection restore finished"))
+    result = pipeline.run()
+    assert result["ok"] is False
+    assert result["blocked_stage"] == "projection_acceptance_restore"
