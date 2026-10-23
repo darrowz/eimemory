@@ -2672,8 +2672,10 @@ class GovernedRecallEngine:
             return True
         if bool(hints.get("identity_indexed")):
             return False
-        if bool(hints.get("_fts_arm_present")) or bool(hints.get("_lexical_arm_present")):
-            return True
+        # FTS/lexical arm presence alone is not keyword evidence when lexical_score
+        # is 0. SQLite FTS can return prefix/substring noise (e.g. cat→catastrophe);
+        # those hits may stay in the pool for grounding, but must not receive a
+        # keyword RRF vote that can displace exact token matches.
         if bool(hints.get("_provider_rank_is_hybrid")):
             return False
         # Provider FTS/lexical rank is own evidence even when a vector_score key is also present.

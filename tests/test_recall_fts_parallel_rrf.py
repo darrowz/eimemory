@@ -45,6 +45,23 @@ def _memory(
     return store.append(record)
 
 
+def test_fts_prefix_noise_without_lexical_score_is_not_keyword_eligible(tmp_path):
+    """FTS can match cat→catastrophe; lexical_score 0 must not buy a keyword RRF vote."""
+    with closing(RuntimeStore(tmp_path)) as store:
+        source = SQLiteCandidateSource(store)
+        engine = GovernedRecallEngine(store=store, candidate_source=source)
+        hints = {
+            "_fts_arm_present": True,
+            "_provider_rank_is_hybrid": True,
+            "_provider_rank": 1,
+            "lexical_score": 0.0,
+            "candidate_sources": ["fts", "vector"],
+            "vector_score": 0.5,
+        }
+        assert engine._keyword_component_eligible(hints) is False
+        assert engine._keyword_component_score(hints) == 0.0
+
+
 def test_fts_arm_marked_and_keyword_eligible_for_hybrid_hits(tmp_path):
     with closing(RuntimeStore(tmp_path)) as store:
         _memory(store, record_id="mem_orchid_unique", text="orchid42 deployment marker unique phrase")
