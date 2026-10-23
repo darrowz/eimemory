@@ -2742,11 +2742,30 @@ def _merge_hits(
     # Fragment retrieval already fuses dense and lexical arms. Do not discard
     # its evidence-bearing tail for SQLite candidates lacking fragment proof.
     # Exact identity remains first; normal hydration still uses SQLite authority.
-    vector_quota = min(len(vector_ordered), remaining_slots if postgres_primary
-                       else max(1, bounded_limit // 4), remaining_slots)
+    # When postgres is primary, still reserve a bounded FTS/lexical quota from
+    # SQLite so keyword-only memories are not starved by dense leaders.
+    def _fts_arm(hit: CandidateHit) -> bool:
+        return any(
+            key == "_fts_arm_present" and bool(value)
+            for key, value in hit.component_hints
+        )
+
+    sqlite_fts = [hit for hit in sqlite_remaining if _fts_arm(hit)]
+    sqlite_non_fts = [hit for hit in sqlite_remaining if not _fts_arm(hit)]
+    lexical_reserve = (
+        min(len(sqlite_fts), max(1, remaining_slots // 4), remaining_slots)
+        if postgres_primary and sqlite_fts
+        else 0
+    )
+    vector_quota = min(
+        len(vector_ordered),
+        (remaining_slots - lexical_reserve) if postgres_primary else max(1, bounded_limit // 4),
+        remaining_slots,
+    )
     selected.extend(vector_ordered[:vector_quota])
     selected_keys = {(hit.ref.record_id, hit.ref.scope, hit.ref.source_id) for hit in selected}
-    for hit in (*sqlite_remaining, *vector_ordered[vector_quota:], *sqlite_ordered):
+    # Prefer FTS-marked SQLite hits when filling the lexical reserve / tail.
+    for hit in (*sqlite_fts, *sqlite_non_fts, *vector_ordered[vector_quota:], *sqlite_ordered):
         key = (hit.ref.record_id, hit.ref.scope, hit.ref.source_id)
         if len(selected) >= bounded_limit:
             break

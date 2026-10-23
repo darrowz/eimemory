@@ -2355,10 +2355,20 @@ class GovernedRecallEngine:
         # Source lexical scores may be raw overlap counts (one generic token
         # can score 1.0). Admission must use query-normalized text evidence,
         # not compare those incomparable source scores to this threshold.
+        # FTS-marked hybrid hits still carry a normalized lexical_signal from
+        # scoring; trust that same 0–1 scale when the FTS arm is present.
+        def _hint_normalized_lexical(hint: dict[str, Any]) -> float:
+            if hint.get("_fts_arm_present") or hint.get("_lexical_arm_present"):
+                signal = hint.get("lexical_signal")
+                if isinstance(signal, Mapping):
+                    return self._safe_float(signal.get("score"))
+            if not hint.get("_provider_rank_is_hybrid"):
+                return self._safe_float(hint.get("lexical_score"))
+            return 0.0
+
         lexical_score = max(
             lexical.score,
-            *(self._safe_float(hint.get("lexical_score"))
-              if not hint.get("_provider_rank_is_hybrid") else 0.0 for hint in hints),
+            *(_hint_normalized_lexical(hint) for hint in hints),
         )
         semantic_score = max(
             [self._safe_float(hint.get("semantic_score")) for hint in hints],

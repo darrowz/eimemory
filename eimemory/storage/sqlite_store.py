@@ -5016,14 +5016,25 @@ class SqliteRecordStore:
                           truncated=len(scored) > 5000)
             for rank, entry in enumerate(scored[:5000], 1):
                 trace.score("scored", entry[2], value=entry[0], rank=rank)
-        selected_rows = scored[:limit]
+        # Keep hybrid leaders, but reserve a lexical FTS quota so bm25 hits
+        # that hybrid/local-hash re-rank buried still enter the candidate
+        # pool for engine keyword RRF + grounding.
+        selected_rows = self._select_hybrid_with_fts_quota(scored, limit=limit)
         if limit > 1 and selected_rows and not any(
             self._is_high_quality_anchor_only(entry[3]) for entry in selected_rows
         ):
             reserved = next(
-                (entry for entry in scored[limit:] if self._is_high_quality_anchor_only(entry[3])),
+                (entry for entry in scored[len(selected_rows):]
+                 if self._is_high_quality_anchor_only(entry[3])
+                 and exact_ref(entry[2]) not in {exact_ref(row[2]) for row in selected_rows}),
                 None,
             )
+            if reserved is None:
+                reserved = next(
+                    (entry for entry in scored if self._is_high_quality_anchor_only(entry[3])
+                     and exact_ref(entry[2]) not in {exact_ref(row[2]) for row in selected_rows}),
+                    None,
+                )
             if reserved is not None:
                 if trace is not None:
                     trace.drop("ranked_selected", selected_rows[-1][2], "anchor_reserve_swap")
@@ -5728,6 +5739,74 @@ class SqliteRecordStore:
         if source not in sources:
             sources.append(source)
         entry["sources"] = sources
+
+    @staticmethod
+    def _fts_sources(score_report: dict[str, Any]) -> set[str]:
+        return {str(item) for item in score_report.get("candidate_sources") or ()}
+
+    @classmethod
+    def _select_hybrid_with_fts_quota(
+        cls,
+        scored: list[tuple[float, float, Any, dict[str, Any]]],
+        *,
+        limit: int,
+    ) -> list[tuple[float, float, Any, dict[str, Any]]]:
+        """Merge hybrid top-N with a reserved FTS lexical quota.
+
+        Hybrid re-rank (local hash embedding + quality) can bury bm25 leaders
+        below ``limit``. Those FTS hits are still the keyword arm for engine
+        RRF; keep a bounded quota of positive-lexical FTS rows in the returned
+        pool without replacing the hybrid head entirely.
+        """
+        bounded = max(0, int(limit or 0))
+        if bounded <= 0 or not scored:
+            return []
+        selected = list(scored[:bounded])
+        if bounded == 1:
+            return selected
+        fts_quota = max(1, bounded // 4)
+
+        def is_fts_lexical(entry: tuple[float, float, Any, dict[str, Any]]) -> bool:
+            report = entry[3]
+            if "fts" not in cls._fts_sources(report):
+                return False
+            lexical = float(report.get("raw_lexical_score") or report.get("lexical_score") or 0.0)
+            return lexical > 0.0
+
+        fts_in_selected = sum(1 for entry in selected if is_fts_lexical(entry))
+        need = max(0, fts_quota - fts_in_selected)
+        if need <= 0:
+            return selected
+        selected_refs = {exact_ref(entry[2]) for entry in selected}
+        fts_outside = [
+            entry
+            for entry in scored[bounded:]
+            if is_fts_lexical(entry) and exact_ref(entry[2]) not in selected_refs
+        ]
+        # Prefer stronger lexical overlap among buried FTS leaders.
+        fts_outside.sort(
+            key=lambda entry: (
+                -float(entry[3].get("raw_lexical_score") or entry[3].get("lexical_score") or 0.0),
+                -float(entry[0]),
+                str(getattr(entry[2], "record_id", "") or ""),
+            )
+        )
+        for reserved in fts_outside[:need]:
+            swap_idx = next(
+                (
+                    index
+                    for index in range(len(selected) - 1, -1, -1)
+                    if not is_fts_lexical(selected[index])
+                ),
+                None,
+            )
+            if swap_idx is None:
+                break
+            reserved[3]["selection_reserve"] = "fts_arm_quota"
+            selected_refs.discard(exact_ref(selected[swap_idx][2]))
+            selected[swap_idx] = reserved
+            selected_refs.add(exact_ref(reserved[2]))
+        return selected
 
     @staticmethod
     def _is_high_quality_anchor_only(score_report: dict[str, Any]) -> bool:

@@ -366,10 +366,39 @@ class SQLiteCandidateSource:
             score_entry.pop("title", None)
             score_entry.pop("scope", None)
             score_entry.pop("source_id", None)
-            # This rank orders hybrid candidates, not a standalone FTS arm.
+            # Hybrid order is not a standalone FTS arm, but FTS-sourced
+            # candidates still carry their own lexical evidence for RRF.
             score_entry["_provider_rank_is_hybrid"] = True
+            sources = {
+                str(source)
+                for source in score_entry.get("candidate_sources") or ()
+            }
+            if "fts" in sources:
+                score_entry["_fts_arm_present"] = True
             if "vector_score" in score_entry:
                 score_entry["local_hash_score"] = score_entry["vector_score"]
+            # CandidateHit keeps only 32 hint keys; put arm markers and
+            # ranking signals first so the 32-cap never drops them.
+            prioritized: dict[str, object] = {}
+            for key in (
+                "_fts_arm_present",
+                "_lexical_arm_present",
+                "_provider_rank_is_hybrid",
+                "lexical_score",
+                "raw_lexical_score",
+                "semantic_score",
+                "vector_score",
+                "local_hash_score",
+                "final_score",
+                "quality_score",
+                "candidate_sources",
+                "lexical_signal",
+            ):
+                if key in score_entry:
+                    prioritized[key] = score_entry[key]
+            for key, value in score_entry.items():
+                if key not in prioritized:
+                    prioritized[key] = value
             hits.append(
                 CandidateHit(
                     ref=CandidateRef(
@@ -378,10 +407,10 @@ class SQLiteCandidateSource:
                         source_id=record.source_id,
                     ),
                     source_rank=rank,
-                    source_score=_float_score(score_entry.get("final_score")),
+                    source_score=_float_score(prioritized.get("final_score")),
                     # CandidateHit already freezes and bounds this JSON-shaped
                     # score report. An eager full freeze duplicates that work.
-                    component_hints=score_entry,
+                    component_hints=prioritized,
                     evidence_hints=identity_by_ref.get(
                         (record.record_id, ExactScope.from_scope(record.scope), record.source_id),
                         (),
