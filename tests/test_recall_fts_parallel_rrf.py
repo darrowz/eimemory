@@ -137,6 +137,72 @@ def test_merge_hits_reserves_fts_quota_when_postgres_primary():
     assert any(record_id.startswith("pg") for record_id in ids), ids
 
 
+
+
+def test_merge_hits_reserves_fts_quota_when_fragments_off_postgres_primary():
+    """Production path: evidence_fragments=False but postgres remains primary.
+
+    Call sites now pass postgres_primary=True independently of fragments so the
+    lexical reserve still fires and keyword-only memories are not starved.
+    """
+    scope = ExactScope.from_scope(SCOPE_A)
+    sqlite_fts = [
+        CandidateHit(
+            CandidateRef(f"fts{i}", scope, "default"),
+            i + 1,
+            0.5,
+            component_hints={"_fts_arm_present": True, "lexical_score": 2.0, "final_score": 0.5},
+        )
+        for i in range(4)
+    ]
+    postgres = [
+        CandidateHit(
+            CandidateRef(f"pg{i}", scope, "default"),
+            i + 1,
+            0.9,
+            component_hints={"dense_vector_score": 0.9, "vector_score": 0.9},
+        )
+        for i in range(8)
+    ]
+    stats: dict[str, int] = {}
+    # fragments-off production wiring: still postgres_primary=True
+    merged = _merge_hits(sqlite_fts, postgres, limit=4, postgres_primary=True, stats=stats)
+    ids = [hit.ref.record_id for hit in merged]
+    assert len(merged) == 4
+    assert any(record_id.startswith("fts") for record_id in ids), ids
+    assert any(record_id.startswith("pg") for record_id in ids), ids
+    assert stats.get("postgres_primary") == 1
+    assert stats.get("lexical_reserve", 0) >= 1
+    assert stats.get("fts_in_merged", 0) >= 1
+
+
+def test_merge_hits_no_lexical_reserve_when_not_postgres_primary():
+    scope = ExactScope.from_scope(SCOPE_A)
+    sqlite_fts = [
+        CandidateHit(
+            CandidateRef(f"fts{i}", scope, "default"),
+            i + 1,
+            0.5,
+            component_hints={"_fts_arm_present": True, "lexical_score": 2.0, "final_score": 0.5},
+        )
+        for i in range(4)
+    ]
+    postgres = [
+        CandidateHit(
+            CandidateRef(f"pg{i}", scope, "default"),
+            i + 1,
+            0.9,
+            component_hints={"dense_vector_score": 0.9, "vector_score": 0.9},
+        )
+        for i in range(8)
+    ]
+    stats: dict[str, int] = {}
+    merged = _merge_hits(sqlite_fts, postgres, limit=4, postgres_primary=False, stats=stats)
+    assert len(merged) == 4
+    assert stats.get("postgres_primary") == 0
+    assert stats.get("lexical_reserve") == 0
+
+
 def test_fts_scope_isolation(tmp_path):
     with closing(RuntimeStore(tmp_path)) as store:
         _memory(
