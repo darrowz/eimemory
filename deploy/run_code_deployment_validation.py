@@ -16,6 +16,7 @@ import importlib.util
 _WORKER_RELEASES_ROOT = Path('/opt/eimemory/releases')
 _WORKER_CURRENT_LINK = Path('/opt/eimemory/current')
 _WORKER_CONFIG_DIR = Path('/etc/eimemory')
+_WORKER_STATE_DIR = Path('/var/lib/eimemory/state')
 
 USER_MODE = os.environ.get('EIMEMORY_CONTROL_PLANE', '') == 'user'
 CONTROL_UID = os.geteuid() if USER_MODE else 0
@@ -242,7 +243,9 @@ def verify_worker_finalization(runtime, *, body, report):
     if not isinstance(binding_value, str) or not binding_value:
         raise ValueError('worker_finalization_scope_bindings_required')
     binding = Path(binding_value)
-    if binding.parent != config_dir:
+    # Pins are refreshed in place; production keeps them under storage state
+    # while settings stay under config. Either reviewed parent is accepted.
+    if binding.parent not in {config_dir, _WORKER_STATE_DIR}:
         raise ValueError('worker_finalization_binding_path_unexpected')
     # The normal worker refresh precedes this child. Business validation can
     # advance metadata on the same physical receipt, so refresh idempotently

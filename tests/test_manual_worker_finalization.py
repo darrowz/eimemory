@@ -106,6 +106,32 @@ def test_native_finalization_rejects_unverified_worker_claims(finalization, monk
         run(value)
 
 
+def test_native_finalization_accepts_storage_state_bindings(finalization, tmp_path, monkeypatch):
+    """Production wires pins under /var/lib/eimemory/state, not config."""
+    state = tmp_path / 'state'
+    state.mkdir()
+    binding = state / 'release-scope-7bedaa9.json'
+    binding.write_text(finalization.binding.read_text())
+    binding.chmod(0o600)
+    finalization.env['EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE'] = str(binding)
+    monkeypatch.setattr(finalization.module, '_WORKER_STATE_DIR', state)
+    finalization.binding = binding
+    result = run(finalization)
+    assert result['ok'] is True
+    assert result['binding_digest'] == sha256(binding.read_bytes()).hexdigest()
+
+
+def test_native_finalization_rejects_binding_outside_config_or_state(finalization, tmp_path):
+    other = tmp_path / 'other'
+    other.mkdir()
+    binding = other / 'bindings.json'
+    binding.write_text(finalization.binding.read_text())
+    binding.chmod(0o600)
+    finalization.env['EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE'] = str(binding)
+    with pytest.raises(ValueError, match='binding_path_unexpected'):
+        run(finalization)
+
+
 def test_native_finalization_detects_process_configuration_change(finalization, monkeypatch):
     calls = 0
     def observed(_):
