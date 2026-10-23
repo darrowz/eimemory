@@ -139,7 +139,7 @@ def analyze_lexical_signal(
     # Natural how-to paraphrases dilute the denominator with interrogative
     # fillers ("应该/怎么/什么"). Rescore on content terms only; never lower
     # the raw score, and never invent hits that were not content anchors.
-    content_terms = _content_query_terms(query_terms)
+    content_terms = _content_query_terms(query_terms, query_text=query_text)
     if content_terms and content_terms != query_terms:
         content_hits = _dedupe([term for term in content_terms if _term_hit(term)])
         content_score = _compute_score(
@@ -204,7 +204,40 @@ def _synonym_neighbors(term: str) -> frozenset[str]:
     return frozenset()
 
 
-def _content_query_terms(query_terms: list[str]) -> list[str]:
+def _nonoverlapping_chinese_content(query_text: str) -> list[str]:
+    """Prefer non-overlapping CJK segments for content-term rescoring.
+
+    Overlapping compound bigrams explode the denominator for short Chinese
+    requests (``提交推送部署切换`` → seven bigrams). Non-overlapping pieces
+    keep the same anchors while restoring realistic hit rates.
+    """
+    text = _clean_text(query_text)
+    out: list[str] = []
+    particles = frozenset("的了吗呢吧啊嘛呀和与及")
+    for match in re.finditer(r"[\u4e00-\u9fff]+", text):
+        run = match.group(0)
+        while run and run[0] in particles:
+            run = run[1:]
+        if not run:
+            continue
+        if len(run) <= 2:
+            if run not in _FILLER_TERMS:
+                out.append(run)
+            continue
+        i = 0
+        while i + 2 <= len(run):
+            piece = run[i : i + 2]
+            if piece not in _FILLER_TERMS:
+                out.append(piece)
+            i += 2
+        if len(run) % 2 == 1 and len(run) >= 3:
+            piece = run[-2:]
+            if piece not in _FILLER_TERMS:
+                out.append(piece)
+    return _dedupe(out)
+
+
+def _content_query_terms(query_terms: list[str], query_text: str = "") -> list[str]:
     """Drop interrogative fillers and whole-question mega-tokens for rescoring."""
     content: list[str] = []
     for term in query_terms:
@@ -214,7 +247,18 @@ def _content_query_terms(query_terms: list[str]) -> list[str]:
         if len(term) > 8 and _is_chinese(term):
             continue
         content.append(term)
-    return _dedupe(content)
+    content = _dedupe(content)
+    # When overlapping compound bigrams dominate, rebuild content terms from
+    # non-overlapping CJK segments so short deploy/status requests can clear
+    # the non-exact grounding floor without lowering the threshold.
+    bigrams = sum(1 for term in content if _is_chinese(term) and len(term) == 2)
+    if query_text and bigrams >= 3 and bigrams * 2 >= len(content):
+        rebuilt = _nonoverlapping_chinese_content(query_text)
+        other = [term for term in content if not _is_chinese(term)]
+        merged = _dedupe([*other, *rebuilt])
+        if merged:
+            return merged
+    return content
 
 
 _CLEAN_TEXT_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)

@@ -1692,8 +1692,17 @@ class PostgresVectorCandidateSource:
             self._index_verified = True
             self._identity_refreshed_at = self._clock()
             hits, drops = trace.call('row_validation', self._validated_hits, request, cached, watermark=index_state.watermark)
-            merged = _merge_hits(sqlite_batch.hits, hits, limit=request.limit,
-                                 postgres_primary=self.config.evidence_fragments)
+            # Postgres vector source is the primary candidate arm on this path.
+            # Lexical/FTS merge quota must not depend on evidence_fragments
+            # (fragment extraction/indexing stays gated by that flag elsewhere).
+            merge_stats: dict[str, int] = {}
+            merged = _merge_hits(
+                sqlite_batch.hits,
+                hits,
+                limit=request.limit,
+                postgres_primary=True,
+                stats=merge_stats,
+            )
             self._last_error = ""
             self._last_query_valid = True
             self._last_query_index_identity = (
@@ -1711,6 +1720,7 @@ class PostgresVectorCandidateSource:
                 pg_count=len(hits),
                 drops=drops,
                 valid_empty=not cached,
+                merge_stats=merge_stats,
             )
         except Exception as exc:
             if sqlite_error is not None:
@@ -2238,6 +2248,7 @@ class PostgresVectorCandidateSource:
         pg_count: int = 0,
         drops: Mapping[str, int] | None = None,
         valid_empty: bool = False,
+        merge_stats: Mapping[str, int] | None = None,
     ) -> CandidateBatch:
         final_hits = tuple(sqlite_batch.hits if hits is None else hits)
         local_diagnostics = sqlite_batch.diagnostic_dict()
@@ -2288,6 +2299,11 @@ class PostgresVectorCandidateSource:
                     "watermark": self._last_state.watermark,
                     "authority_revision": self._last_state.authority_revision,
                     "lag_seconds": _public_lag_seconds(self._last_state.lag_seconds),
+                    **(
+                        {"merge": dict(merge_stats)}
+                        if merge_stats
+                        else {}
+                    ),
                 },
                 **incomplete_diagnostics,
             },
@@ -2683,6 +2699,7 @@ def _merge_hits(
     *,
     limit: int,
     postgres_primary: bool = False,
+    stats: dict[str, int] | None = None,
 ) -> tuple[CandidateHit, ...]:
     bounded_limit = max(0, int(limit))
     sqlite_ordered = list(sqlite_hits)
@@ -2739,14 +2756,33 @@ def _merge_hits(
         if key not in vector_seen:
             vector_seen.add(key)
             vector_ordered.append(combined_by_key[key])
-    # Fragment retrieval already fuses dense and lexical arms. Do not discard
-    # its evidence-bearing tail for SQLite candidates lacking fragment proof.
-    # Exact identity remains first; normal hydration still uses SQLite authority.
-    vector_quota = min(len(vector_ordered), remaining_slots if postgres_primary
-                       else max(1, bounded_limit // 4), remaining_slots)
+    # When postgres is the primary candidate arm, dense leaders would otherwise
+    # fill the pool. Reserve a bounded FTS/lexical quota from SQLite so
+    # keyword-only memories are not starved. Callers pass postgres_primary
+    # independently of evidence_fragments (fragment extract/index stays gated
+    # by that flag). Exact identity remains first; hydration uses SQLite authority.
+    def _fts_arm(hit: CandidateHit) -> bool:
+        return any(
+            key == "_fts_arm_present" and bool(value)
+            for key, value in hit.component_hints
+        )
+
+    sqlite_fts = [hit for hit in sqlite_remaining if _fts_arm(hit)]
+    sqlite_non_fts = [hit for hit in sqlite_remaining if not _fts_arm(hit)]
+    lexical_reserve = (
+        min(len(sqlite_fts), max(1, remaining_slots // 4), remaining_slots)
+        if postgres_primary and sqlite_fts
+        else 0
+    )
+    vector_quota = min(
+        len(vector_ordered),
+        (remaining_slots - lexical_reserve) if postgres_primary else max(1, bounded_limit // 4),
+        remaining_slots,
+    )
     selected.extend(vector_ordered[:vector_quota])
     selected_keys = {(hit.ref.record_id, hit.ref.scope, hit.ref.source_id) for hit in selected}
-    for hit in (*sqlite_remaining, *vector_ordered[vector_quota:], *sqlite_ordered):
+    # Prefer FTS-marked SQLite hits when filling the lexical reserve / tail.
+    for hit in (*sqlite_fts, *sqlite_non_fts, *vector_ordered[vector_quota:], *sqlite_ordered):
         key = (hit.ref.record_id, hit.ref.scope, hit.ref.source_id)
         if len(selected) >= bounded_limit:
             break
@@ -2754,7 +2790,7 @@ def _merge_hits(
             continue
         selected_keys.add(key)
         selected.append(hit)
-    return tuple(
+    result = tuple(
         CandidateHit(
             ref=hit.ref,
             source_rank=rank,
@@ -2764,6 +2800,20 @@ def _merge_hits(
         )
         for rank, hit in enumerate(selected, start=1)
     )
+    if stats is not None:
+        fts_in_result = sum(1 for hit in result if _fts_arm(hit))
+        stats.clear()
+        stats.update(
+            {
+                "postgres_primary": 1 if postgres_primary else 0,
+                "lexical_reserve": int(lexical_reserve),
+                "vector_quota": int(vector_quota),
+                "sqlite_fts_candidates": len(sqlite_fts),
+                "fts_in_merged": int(fts_in_result),
+                "merged_count": len(result),
+            }
+        )
+    return result
 
 
 def _combine_candidate_hits(existing: CandidateHit, incoming: CandidateHit) -> CandidateHit:

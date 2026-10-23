@@ -2334,8 +2334,16 @@ class GovernedRecallEngine:
                 item.content.get("excerpt") if isinstance(item.content, dict) else "",
             )
         )
-        from .answer_requirements import requested_attribute, supports_answer_requirements
-        if not supports_answer_requirements(query, text, item.aliases):
+        from .answer_requirements import (
+            admission_query,
+            requested_attribute,
+            supports_answer_requirements,
+        )
+        # Retrieval may use a context-expanded query; admission must score the
+        # host request only (Context entities are not answer constraints).
+        gate_query = admission_query(query) or str(query or "")
+        retrieval_query_expanded = gate_query.strip() != str(query or "").strip()
+        if not supports_answer_requirements(gate_query, text, item.aliases):
             return 0.0, "requested_attribute_missing"
         if "keyword_exact" in evidence:
             return 1.0, "keyword_exact"
@@ -2344,21 +2352,37 @@ class GovernedRecallEngine:
         # history/status (and money/secret/model) already proved the record
         # answers the query; do not also demand high query-token overlap that
         # interference filters just removed from competing digest/persona hits.
-        attribute = requested_attribute(query)
+        attribute = requested_attribute(gate_query)
         if attribute:
             return min_grounding, "requested_attribute"
         if supports_preference_request(preference_request, item):
             return min_grounding, "preference_" + preference_request.mode
-        if self._is_project_delivery_durable_evidence(query, item, text):
+        if self._is_project_delivery_durable_evidence(gate_query, item, text):
             return min_grounding, "project_delivery_preference"
-        lexical = analyze_lexical_signal(query, text, record_kind=item.kind, record_source=item.source)
+        lexical = analyze_lexical_signal(
+            gate_query, text, record_kind=item.kind, record_source=item.source
+        )
         # Source lexical scores may be raw overlap counts (one generic token
         # can score 1.0). Admission must use query-normalized text evidence,
         # not compare those incomparable source scores to this threshold.
+        # FTS-marked hybrid hits still carry a normalized lexical_signal from
+        # scoring; trust that same 0–1 scale when the FTS arm is present —
+        # but only when that signal was computed on the same admission query.
+        # Context-expanded retrieval contaminates or dilutes hint scores.
+        def _hint_normalized_lexical(hint: dict[str, Any]) -> float:
+            if retrieval_query_expanded:
+                return 0.0
+            if hint.get("_fts_arm_present") or hint.get("_lexical_arm_present"):
+                signal = hint.get("lexical_signal")
+                if isinstance(signal, Mapping):
+                    return self._safe_float(signal.get("score"))
+            if not hint.get("_provider_rank_is_hybrid"):
+                return self._safe_float(hint.get("lexical_score"))
+            return 0.0
+
         lexical_score = max(
             lexical.score,
-            *(self._safe_float(hint.get("lexical_score"))
-              if not hint.get("_provider_rank_is_hybrid") else 0.0 for hint in hints),
+            *(_hint_normalized_lexical(hint) for hint in hints),
         )
         semantic_score = max(
             [self._safe_float(hint.get("semantic_score")) for hint in hints],
@@ -2648,8 +2672,10 @@ class GovernedRecallEngine:
             return True
         if bool(hints.get("identity_indexed")):
             return False
-        if bool(hints.get("_fts_arm_present")) or bool(hints.get("_lexical_arm_present")):
-            return True
+        # FTS/lexical arm presence alone is not keyword evidence when lexical_score
+        # is 0. SQLite FTS can return prefix/substring noise (e.g. cat→catastrophe);
+        # those hits may stay in the pool for grounding, but must not receive a
+        # keyword RRF vote that can displace exact token matches.
         if bool(hints.get("_provider_rank_is_hybrid")):
             return False
         # Provider FTS/lexical rank is own evidence even when a vector_score key is also present.
