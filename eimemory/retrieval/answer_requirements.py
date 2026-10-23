@@ -58,6 +58,26 @@ _CONSTRAINT_REQUEST = re.compile(
     r'\b(?:requirements?|rules?|constraints?|criteria|conditions?)\s*\??$', re.I)
 
 
+_CONTEXT_ENTITIES_SUFFIX = re.compile(
+    r"(?:\r?\n|\s+)Context entities:\s*.*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def admission_query(query: str) -> str:
+    """Host wording used for attribute / identity / lexical admission.
+
+    Proactive retrieval may append ``Context entities: …`` so elliptical
+    follow-ups resolve. That suffix is retrieval context only: scoring it
+    as part of the admission query dilutes lexical rates and can impose
+    version identity constraints the user never asked.
+    """
+    text = str(query or "").strip()
+    if not text:
+        return ""
+    return _CONTEXT_ENTITIES_SUFFIX.sub("", text).strip()
+
+
 def requested_attribute(query: str) -> str:
     query = str(query or '')[:16000]
     if _MONEY_QUESTION.search(query):

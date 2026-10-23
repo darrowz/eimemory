@@ -10,6 +10,7 @@ import unittest
 SOURCE = Path(__file__).resolve().parents[1] / 'eimemory/recall/lexical.py'
 FUNCTIONS = {
     'analyze_lexical_signal', '_synonym_neighbors', '_content_query_terms',
+    '_nonoverlapping_chinese_content',
     '_clean_text', '_extract_terms', '_matching_record_terms',
     '_split_chinese_compound', '_extract_phrase_terms', '_phrase_matches_record',
     '_term_matches_record', '_dedupe', '_is_entity_term', '_is_chinese',
