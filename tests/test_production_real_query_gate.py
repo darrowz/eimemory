@@ -1188,6 +1188,271 @@ def test_real_query_gate_is_bound_sanitized_and_deterministic(tmp_path, monkeypa
     runtime.close()
 
 
+
+def _structural_persisted_report(*, policy_schema: str | None = None) -> dict:
+    """Minimal report that satisfies _validate_persisted_real_query_report shape."""
+    schema = policy_schema or real_query_gate.PRODUCTION_REAL_QUERY_POLICY
+    engine_identity = {
+        "retrieval_mode": "hybrid",
+        "recall_profile": "balanced",
+        "fusion": {"policy_version": "rrf-page-pool.v1"},
+    }
+    engine_digest = real_query_gate._engine_identity_digest(engine_identity)
+    results = {"real-openclaw-0": ["record-openclaw"]}
+    thresholds = dict(real_query_gate.PRODUCTION_REAL_QUERY_THRESHOLDS)
+    report = {
+        "schema": PRODUCTION_REAL_QUERY_REPORT_SCHEMA,
+        "report_type": "production_recall_gate",
+        "dataset_kind": "production",
+        "release_identity": {
+            "release_commit": RELEASE.commit,
+            "release_version": RELEASE.version,
+            "deployment_receipt_id": RELEASE.receipt_id,
+            "release_session_id": RELEASE.session_id,
+        },
+        "deployment_receipt_id": RELEASE.receipt_id,
+        "evaluator_commit": RELEASE.commit,
+        "dataset_digest": "a" * 64,
+        "secure_dataset_evidence": {
+            "schema": "secure_dataset_fingerprint.v1",
+            "digest": "b" * 64,
+            "size": 128,
+            "device": 1,
+            "inode": 2,
+            "canonical_digest": "a" * 64,
+            "source_canonical_digest": "e" * 64,
+        },
+        "engine_identity": engine_identity,
+        "engine_identity_valid": True,
+        "engine_digest": engine_digest,
+        "fusion_digest": "c" * 64,
+        "policy_schema": schema,
+        "policy_digest": real_query_gate.production_real_query_policy_digest(
+            policy_schema=schema
+        ),
+        "result_digest": _digest(results),
+        "result_refs": results,
+        "memory_measurement": {
+            "schema": "production_recall_memory_measurement.v1",
+            "ok": True,
+            "skipped": False,
+            "mode": "isolated_tracemalloc",
+            "sample_count": 0,
+            "captures_released_peak": True,
+        },
+        "metrics": {"peak_memory_bytes": 0},
+        "samples": [],
+        "threshold_gate": {
+            "ok": True,
+            "schema": schema,
+            "blocked_reason": "",
+            "thresholds": thresholds,
+            "blocking_metrics": {},
+        },
+        "cross_channel_leakage_count": 0,
+        "source_filter_leakage_count": 0,
+        "ranking_identity_schema": real_query_gate.GROUND_TRUTH_RANKING_IDENTITY_SCHEMA,
+        "ranking_result_refs": results,
+        "ranking_result_digest": _digest(results),
+    }
+    # Own-schema digest must include the thresholds embedded in the gate.
+    report["policy_digest"] = real_query_gate._policy_digest_for_persisted_report(report)
+    return report
+
+
+def test_baseline_validation_uses_report_own_schema_not_current_only() -> None:
+    """G1: trusted baseline load accepts prior structural/policy contract."""
+    current = _structural_persisted_report()
+    assert real_query_gate._validate_persisted_real_query_report(
+        current, expected_release=RELEASE
+    )
+    assert real_query_gate._validate_persisted_real_query_report(
+        current, expected_release=RELEASE, allow_legacy_exact_ranking=True
+    )
+
+    # Prior policy schema with matching own digest — allowed only on baseline path.
+    prior_schema = "production_recall_gate_policy.v3"
+    prior = _structural_persisted_report(policy_schema=prior_schema)
+    assert not real_query_gate._validate_persisted_real_query_report(
+        prior, expected_release=RELEASE
+    )
+    assert real_query_gate._validate_persisted_real_query_report(
+        prior, expected_release=RELEASE, allow_legacy_exact_ranking=True
+    )
+
+    # Threshold drift vs current bar: still valid when digest matches report's own gate.
+    drifted = deepcopy(prior)
+    own_thresholds = dict(drifted["threshold_gate"]["thresholds"])
+    own_thresholds["recall_at_5"] = max(0.0, float(own_thresholds["recall_at_5"]) - 0.05)
+    drifted["threshold_gate"] = {
+        **drifted["threshold_gate"],
+        "thresholds": own_thresholds,
+    }
+    drifted["policy_digest"] = real_query_gate._policy_digest_for_persisted_report(drifted)
+    assert not real_query_gate._validate_persisted_real_query_report(
+        drifted, expected_release=RELEASE
+    )
+    assert real_query_gate._validate_persisted_real_query_report(
+        drifted, expected_release=RELEASE, allow_legacy_exact_ranking=True
+    )
+
+    # Structural fields added by newer releases may be absent on baseline path.
+    legacy = deepcopy(prior)
+    for key in ("engine_identity", "engine_identity_valid", "engine_digest", "memory_measurement"):
+        legacy.pop(key, None)
+    evidence = dict(legacy["secure_dataset_evidence"])
+    evidence.pop("source_canonical_digest", None)
+    legacy["secure_dataset_evidence"] = evidence
+    legacy["policy_digest"] = real_query_gate._policy_digest_for_persisted_report(legacy)
+    assert not real_query_gate._validate_persisted_real_query_report(
+        legacy, expected_release=RELEASE
+    )
+    assert real_query_gate._validate_persisted_real_query_report(
+        legacy, expected_release=RELEASE, allow_legacy_exact_ranking=True
+    )
+
+    # Half-present / malformed optional fields still fail under legacy.
+    half_engine = deepcopy(legacy)
+    half_engine["engine_identity_valid"] = True
+    assert not real_query_gate._validate_persisted_real_query_report(
+        half_engine, expected_release=RELEASE, allow_legacy_exact_ranking=True
+    )
+    bad_memory = deepcopy(legacy)
+    bad_memory["memory_measurement"] = {"schema": "production_recall_memory_measurement.v1", "ok": False}
+    assert not real_query_gate._validate_persisted_real_query_report(
+        bad_memory, expected_release=RELEASE, allow_legacy_exact_ranking=True
+    )
+    bad_source = deepcopy(legacy)
+    bad_source["secure_dataset_evidence"] = {
+        **bad_source["secure_dataset_evidence"],
+        "source_canonical_digest": "not-a-digest",
+    }
+    assert not real_query_gate._validate_persisted_real_query_report(
+        bad_source, expected_release=RELEASE, allow_legacy_exact_ranking=True
+    )
+
+    # Unknown / too-old policy schemas stay rejected even on the baseline path.
+    unknown = _structural_persisted_report(policy_schema="production_recall_gate_policy.v1")
+    # Force digest to look self-consistent under the helper so failure is schema-set based.
+    unknown["policy_digest"] = real_query_gate._policy_digest_for_persisted_report(unknown)
+    assert not real_query_gate._validate_persisted_real_query_report(
+        unknown, expected_release=RELEASE, allow_legacy_exact_ranking=True
+    )
+
+    # Metrics path: legacy allow must not hard-require the current policy schema.
+    assert not real_query_gate._independent_real_query_metrics_valid(
+        prior, baseline=None, allow_legacy_exact_ranking=False
+    )
+    # prior has empty samples → metrics path fails later, but must not fail solely on schema.
+    # Use unknown schema to prove early reject still works under allow_legacy.
+    assert not real_query_gate._independent_real_query_metrics_valid(
+        unknown, baseline=None, allow_legacy_exact_ranking=True
+    )
+
+
+
+def test_baseline_metrics_accept_prior_policy_schema_with_own_digest(tmp_path, monkeypatch) -> None:
+    """G1: lineage metrics re-check uses the report's policy_schema, not only current."""
+    runtime = Runtime.create(root=tmp_path)
+    records = {
+        channel: _record(f"record-{channel}", channel, f"source-{channel}")
+        for channel in ("openclaw", "codex", "hermes")
+    }
+    dataset = _dataset({channel: record.record_id for channel, record in records.items()})
+    _append_records_and_label_evidence(runtime, records)
+
+    def recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
+        channel = "openclaw"
+        if str(scope["workspace_id"]).endswith("::channel::codex"):
+            channel = "codex"
+        elif str(scope["workspace_id"]).endswith("::channel::hermes"):
+            channel = "hermes"
+        return RecallBundle(
+            items=[records[channel]],
+            rules=[],
+            reflections=[],
+            confidence=1.0,
+            next_action_hint="",
+            explanation={
+                "retrieval_mode": "hybrid",
+                "recall_profile": "balanced",
+                "fusion": {"policy_version": "rrf-page-pool.v1"},
+            },
+        )
+
+    monkeypatch.setattr(runtime.memory, "recall", recall)
+    monkeypatch.setattr(real_query_gate, "current_release_identity", lambda *_a, **_k: RELEASE)
+    monkeypatch.setattr(
+        real_query_gate,
+        "_resolve_trusted_baseline",
+        lambda *_a, **_k: (_trusted_baseline(dataset), ""),
+    )
+    report = run_production_recall_eval(runtime, dataset, seed=False, persist_report=False)
+    assert report["accepted"] is True, report
+    baseline = _trusted_baseline(dataset)
+
+    # Full current report still validates under both paths.
+    assert real_query_gate._independent_real_query_metrics_valid(
+        report, baseline=baseline, runtime=runtime, scope=BASE_SCOPE
+    )
+
+    prior = deepcopy(report)
+    prior_schema = "production_recall_gate_policy.v3"
+    prior["policy_schema"] = prior_schema
+    prior["threshold_gate"] = {
+        **prior["threshold_gate"],
+        "schema": prior_schema,
+    }
+    prior["policy_digest"] = real_query_gate._policy_digest_for_persisted_report(prior)
+    # Strict path rejects prior policy; baseline path accepts.
+    assert not real_query_gate._independent_real_query_metrics_valid(
+        prior, baseline=baseline, runtime=runtime, scope=BASE_SCOPE
+    )
+    assert real_query_gate._independent_real_query_metrics_valid(
+        prior,
+        baseline=baseline,
+        runtime=runtime,
+        scope=BASE_SCOPE,
+        allow_legacy_exact_ranking=True,
+    )
+
+    # Strip newer structural fields; metrics path under legacy must still pass.
+    stripped = deepcopy(prior)
+    for key in ("engine_identity", "engine_identity_valid", "engine_digest", "memory_measurement"):
+        stripped.pop(key, None)
+    evidence = dict(stripped["secure_dataset_evidence"])
+    evidence.pop("source_canonical_digest", None)
+    stripped["secure_dataset_evidence"] = evidence
+    # Recompute gate without engine/memory blocks so equality holds.
+    stripped["threshold_gate"] = real_query_gate._real_query_threshold_gate(
+        stripped["metrics"],
+        baseline_metrics=dict(baseline["metrics"]),
+        cross_channel_leakage=int(stripped["cross_channel_leakage_count"]),
+        source_filter_leakage=int(stripped["source_filter_leakage_count"]),
+        has_baseline=True,
+        engine_identity_valid=True,
+        memory_measurement_ok=True,
+        policy_schema=prior_schema,
+        thresholds=_persisted_report_thresholds_via_gate(stripped),
+    )
+    stripped["policy_digest"] = real_query_gate._policy_digest_for_persisted_report(stripped)
+    assert real_query_gate._validate_persisted_real_query_report(
+        stripped, expected_release=RELEASE, allow_legacy_exact_ranking=True
+    )
+    assert real_query_gate._independent_real_query_metrics_valid(
+        stripped,
+        baseline=baseline,
+        runtime=runtime,
+        scope=BASE_SCOPE,
+        allow_legacy_exact_ranking=True,
+    )
+    runtime.close()
+
+
+def _persisted_report_thresholds_via_gate(report: dict) -> dict:
+    return real_query_gate._persisted_report_thresholds(report)
+
+
 def test_real_query_gate_scores_rule_labels_against_policy_rule_lane(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     rules = {

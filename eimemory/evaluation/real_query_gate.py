@@ -2091,6 +2091,7 @@ def _real_query_threshold_gate(
     engine_identity_valid: bool = True,
     memory_measurement_ok: bool = True,
     policy_schema: str = PRODUCTION_REAL_QUERY_POLICY,
+    thresholds: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     if policy_schema not in {
         PRODUCTION_REAL_QUERY_POLICY,
@@ -2099,8 +2100,9 @@ def _real_query_threshold_gate(
         "production_recall_gate_policy.v2",
     }:
         raise ValueError("unsupported production recall policy schema")
+    effective_thresholds = dict(thresholds or PRODUCTION_REAL_QUERY_THRESHOLDS)
     blocking: dict[str, dict[str, Any]] = {}
-    for name, threshold in PRODUCTION_REAL_QUERY_THRESHOLDS.items():
+    for name, threshold in effective_thresholds.items():
         if not has_baseline and name in {"top1_stability", "jaccard_at_5"}:
             continue
         actual = float(metrics.get(name) or 0.0)
@@ -2166,7 +2168,7 @@ def _real_query_threshold_gate(
         "ok": not blocking,
         "schema": policy_schema,
         "blocked_reason": "" if not blocking else "production_recall_gate_failed",
-        "thresholds": dict(PRODUCTION_REAL_QUERY_THRESHOLDS),
+        "thresholds": dict(effective_thresholds),
         "blocking_metrics": blocking,
     }
     if policy_schema in _NONINFERIORITY_POLICY_SCHEMAS:
@@ -2600,6 +2602,93 @@ def _verify_current_production_recall_gate_once(
     }
 
 
+def _known_baseline_policy_schemas() -> set[str]:
+    return {
+        PRODUCTION_REAL_QUERY_POLICY,
+        _PRIOR_PRODUCTION_REAL_QUERY_POLICY,
+        "production_recall_gate_policy.v3",
+        "production_recall_gate_policy.v2",
+    }
+
+
+def _persisted_report_thresholds(report: dict[str, Any]) -> dict[str, float]:
+    """Thresholds the report was judged under; fall back to the current bar."""
+    gate = report.get("threshold_gate")
+    if isinstance(gate, dict):
+        raw = gate.get("thresholds")
+        if isinstance(raw, dict) and raw:
+            out: dict[str, float] = {}
+            for key, value in raw.items():
+                name = str(key or "").strip()
+                if not name:
+                    continue
+                try:
+                    out[name] = float(value)
+                except (TypeError, ValueError):
+                    return dict(PRODUCTION_REAL_QUERY_THRESHOLDS)
+            if out:
+                return out
+    return dict(PRODUCTION_REAL_QUERY_THRESHOLDS)
+
+
+def _policy_digest_for_persisted_report(report: dict[str, Any]) -> str:
+    """Digest for the report's own policy_schema and recorded thresholds."""
+    policy_schema = str(report.get("policy_schema") or "").strip()
+    payload = production_real_query_policy_payload(policy_schema=policy_schema)
+    payload = {**payload, "thresholds": _persisted_report_thresholds(report)}
+    return _stable_digest(payload)
+
+
+def _persisted_engine_fields_state(report: dict[str, Any]) -> str:
+    """present | absent | invalid for engine identity fields on a baseline."""
+    has_flag = "engine_identity_valid" in report
+    has_identity = isinstance(report.get("engine_identity"), dict) and bool(report.get("engine_identity"))
+    digest = str(report.get("engine_digest") or "").strip().lower()
+    has_digest = bool(digest)
+    if not has_flag and not has_identity and not has_digest:
+        return "absent"
+    if report.get("engine_identity_valid") is not True:
+        return "invalid"
+    if not isinstance(report.get("engine_identity"), dict):
+        return "invalid"
+    if not (len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest)):
+        return "invalid"
+    if digest != _engine_identity_digest(report.get("engine_identity")):
+        return "invalid"
+    return "present"
+
+
+def _persisted_memory_fields_state(report: dict[str, Any], *, samples: list[Any]) -> str:
+    """present | absent | invalid for memory_measurement on a baseline."""
+    if "memory_measurement" not in report:
+        return "absent"
+    measurement = report.get("memory_measurement")
+    if measurement is None:
+        return "absent"
+    if measurement == {}:
+        return "absent"
+    if not isinstance(measurement, dict):
+        return "invalid"
+    if _memory_measurement_valid(report, samples=samples):
+        return "present"
+    return "invalid"
+
+
+def _persisted_source_canonical_state(report: dict[str, Any]) -> str:
+    """present | absent | invalid for source_canonical_digest in evidence."""
+    evidence = report.get("secure_dataset_evidence")
+    if not isinstance(evidence, dict):
+        return "invalid"
+    if "source_canonical_digest" not in evidence:
+        return "absent"
+    digest = str(evidence.get("source_canonical_digest") or "").strip().lower()
+    if not digest:
+        return "absent"
+    if not (len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest)):
+        return "invalid"
+    return "present"
+
+
 def _independent_real_query_metrics_valid(
     report: dict[str, Any],
     *,
@@ -2608,14 +2697,28 @@ def _independent_real_query_metrics_valid(
     scope: ScopeRef | dict[str, Any] | None = None,
     allow_legacy_exact_ranking: bool = False,
 ) -> bool:
-    if str(report.get("policy_schema") or "") != PRODUCTION_REAL_QUERY_POLICY:
-        return False
-    if str(report.get("policy_digest") or "") != production_real_query_policy_digest():
-        return False
+    policy_schema = str(report.get("policy_schema") or "").strip()
+    if allow_legacy_exact_ranking:
+        if policy_schema not in _known_baseline_policy_schemas():
+            return False
+        if str(report.get("policy_digest") or "") != _policy_digest_for_persisted_report(report):
+            return False
+    else:
+        if policy_schema != PRODUCTION_REAL_QUERY_POLICY:
+            return False
+        if str(report.get("policy_digest") or "") != production_real_query_policy_digest():
+            return False
     samples = report.get("samples") if isinstance(report.get("samples"), list) else []
-    memory_measurement_ok = _memory_measurement_valid(report, samples=samples)
-    if not memory_measurement_ok:
-        return False
+    memory_state = _persisted_memory_fields_state(report, samples=samples)
+    if allow_legacy_exact_ranking:
+        if memory_state == "invalid":
+            return False
+        # Absent fields predate the memory contract; present+valid also pass.
+        memory_measurement_ok = True
+    else:
+        if memory_state != "present":
+            return False
+        memory_measurement_ok = True
     channels: set[str] = set()
     channel_counts = {channel: 0 for channel in SUPPORTED_RUNTIME_CHANNELS}
     recalculated: list[dict[str, float]] = []
@@ -2798,23 +2901,32 @@ def _independent_real_query_metrics_valid(
     actual_metrics = report.get("metrics") if isinstance(report.get("metrics"), dict) else {}
     if any(abs(float(actual_metrics.get(key) or 0.0) - float(value)) > 1e-6 for key, value in expected_metrics.items()):
         return False
-    policy_schema = str(report.get("policy_schema") or "")
-    if policy_schema not in {
-        PRODUCTION_REAL_QUERY_POLICY,
-        _PRIOR_PRODUCTION_REAL_QUERY_POLICY,
-        "production_recall_gate_policy.v3",
-        "production_recall_gate_policy.v2",
-    }:
+    if policy_schema not in _known_baseline_policy_schemas():
         return False
+    engine_state = _persisted_engine_fields_state(report)
+    if allow_legacy_exact_ranking:
+        if engine_state == "invalid":
+            return False
+        # Absent or present-valid: original gate had no engine failure block.
+        engine_identity_valid = True
+    else:
+        if engine_state != "present":
+            return False
+        engine_identity_valid = True
     gate = _real_query_threshold_gate(
         expected_metrics,
         baseline_metrics=dict((baseline or {}).get("metrics") or {}),
         cross_channel_leakage=cross_leakage,
         source_filter_leakage=source_leakage,
         has_baseline=baseline is not None,
-        engine_identity_valid=report.get("engine_identity_valid") is True,
+        engine_identity_valid=engine_identity_valid,
         memory_measurement_ok=memory_measurement_ok,
         policy_schema=policy_schema,
+        thresholds=(
+            _persisted_report_thresholds(report)
+            if allow_legacy_exact_ranking
+            else None
+        ),
     )
     common_valid = bool(
         cross_leakage == int(report.get("cross_channel_leakage_count") or 0) == 0
@@ -2847,12 +2959,20 @@ def _validate_persisted_real_query_report(
     expected_release: ReleaseIdentity,
     allow_legacy_exact_ranking: bool = False,
 ) -> bool:
+    """Validate a persisted real-query gate report.
+
+    When ``allow_legacy_exact_ranking`` is True (trusted baseline load), accept
+    the report's own recorded ``policy_schema`` / thresholds and treat engine
+    identity, memory measurement, and ``source_canonical_digest`` as optional
+    when entirely absent. Half-present or malformed optional fields still fail.
+    Strict validation (default) always requires the current release contract.
+    """
     gate = report.get("threshold_gate") if isinstance(report.get("threshold_gate"), dict) else {}
     thresholds = gate.get("thresholds") if isinstance(gate.get("thresholds"), dict) else {}
-    policy_schema = str(report.get("policy_schema") or "")
+    policy_schema = str(report.get("policy_schema") or "").strip()
     accepted_policy_schemas = {PRODUCTION_REAL_QUERY_POLICY}
     if allow_legacy_exact_ranking:
-        accepted_policy_schemas.update({_PRIOR_PRODUCTION_REAL_QUERY_POLICY, "production_recall_gate_policy.v3"})
+        accepted_policy_schemas = _known_baseline_policy_schemas()
     results = report.get("result_refs") if isinstance(report.get("result_refs"), dict) else {}
     ranking_results = (
         report.get("ranking_result_refs")
@@ -2887,7 +3007,7 @@ def _validate_persisted_real_query_report(
             for sample in samples
         )
     )
-    return bool(
+    if not (
         report.get("schema") == PRODUCTION_REAL_QUERY_REPORT_SCHEMA
         and report.get("report_type") == "production_recall_gate"
         and report.get("dataset_kind") == "production"
@@ -2900,25 +3020,52 @@ def _validate_persisted_real_query_report(
         and _secure_dataset_evidence(report.get("secure_dataset_evidence"))[1] == ""
         and str((report.get("secure_dataset_evidence") or {}).get("canonical_digest") or "")
         == str(report.get("dataset_digest") or "")
-        and len(str((report.get("secure_dataset_evidence") or {}).get("source_canonical_digest") or "")) == 64
-        and all(len(str(report.get(key) or "")) == 64 for key in _DIGEST_KEYS)
-        and report.get("engine_identity_valid") is True
-        and isinstance(report.get("engine_identity"), dict)
-        and str(report.get("engine_digest") or "") == _engine_identity_digest(report.get("engine_identity"))
-        and _memory_measurement_valid(
-            report,
-            samples=report.get("samples") if isinstance(report.get("samples"), list) else [],
-        )
         and str(report.get("result_digest") or "") == _stable_digest(results)
         and (semantic_ranking_identity_valid or legacy_exact_ranking_valid)
         and policy_schema in accepted_policy_schemas
         and gate.get("schema") == policy_schema
-        and thresholds == PRODUCTION_REAL_QUERY_THRESHOLDS
-        and str(report.get("policy_digest") or "")
-        == production_real_query_policy_digest(policy_schema=policy_schema)
         and int(report.get("cross_channel_leakage_count") or 0) == 0
         and int(report.get("source_filter_leakage_count") or 0) == 0
-    )
+    ):
+        return False
+
+    if allow_legacy_exact_ranking:
+        expected_digest = _policy_digest_for_persisted_report(report)
+        if str(report.get("policy_digest") or "") != expected_digest:
+            return False
+        # Own-schema thresholds: must be a non-empty float map matching the gate.
+        if not thresholds:
+            return False
+        try:
+            own = {str(k): float(v) for k, v in thresholds.items()}
+        except (TypeError, ValueError):
+            return False
+        if own != _persisted_report_thresholds(report):
+            return False
+    else:
+        if thresholds != PRODUCTION_REAL_QUERY_THRESHOLDS:
+            return False
+        if str(report.get("policy_digest") or "") != production_real_query_policy_digest(
+            policy_schema=policy_schema
+        ):
+            return False
+
+    engine_state = _persisted_engine_fields_state(report)
+    memory_state = _persisted_memory_fields_state(report, samples=samples)
+    source_state = _persisted_source_canonical_state(report)
+    if allow_legacy_exact_ranking:
+        if engine_state == "invalid" or memory_state == "invalid" or source_state == "invalid":
+            return False
+    else:
+        if engine_state != "present" or memory_state != "present" or source_state != "present":
+            return False
+
+    digest_keys = set(_DIGEST_KEYS)
+    if allow_legacy_exact_ranking and engine_state == "absent":
+        digest_keys.discard("engine_digest")
+    if not all(len(str(report.get(key) or "")) == 64 for key in digest_keys):
+        return False
+    return True
 
 
 def _validate_dataset_not_run_report(report: dict[str, Any], *, expected_release: ReleaseIdentity) -> bool:
