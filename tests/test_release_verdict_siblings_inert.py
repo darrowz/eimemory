@@ -272,6 +272,18 @@ def main():
         require(verdict.summarize_release_closure(report)['disposition'] == 'evidence_waiting', 'placeholder semantics changed')
         report['live_acceptance']['error'] = 'storage_integrity_failed'
         require(verdict.summarize_release_closure(report)['disposition'] == 'failure_detected', 'placeholder hid actual error')
+        for reason in (
+                'controlled_path_skips_production_recall',
+                'controlled_path_skips_l5_gates',
+        ):
+            report = blocked()
+            report['production_recall_gate'] = {
+                'ok': False, 'status': 'not_run', 'reason': reason,
+            }
+            require(
+                verdict.summarize_release_closure(report)['disposition'] == 'evidence_waiting',
+                'controlled skip reason treated as hard: ' + reason,
+            )
     case('placeholder_reason_only_exception', placeholders)
 
     def redaction():

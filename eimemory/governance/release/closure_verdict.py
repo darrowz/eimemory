@@ -382,7 +382,11 @@ def failure_signals(report: Any) -> dict:
                 add(path+'.recording_ok', 'incident_recording_failed', force=True)
             if 'ok' in node and type(node['ok']) is not bool:
                 hard.append(_signal(path+'.ok', 'non_boolean_ok'))
-            if node.get('status') == 'not_run' and node.get('reason') == 'upstream_gate_not_run':
+            if node.get('status') == 'not_run' and node.get('reason') in {
+                    'upstream_gate_not_run',
+                    'controlled_path_skips_production_recall',
+                    'controlled_path_skips_l5_gates',
+            }:
                 # Actual error fields still win; only the placeholder reason is ignored.
                 placeholder = True
             else:

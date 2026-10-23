@@ -78,7 +78,14 @@ def rpc_probe():
 
 def complete_report():
     deployed = receipt()
-    placeholder = {"ok": False, "status": "not_run", "reason": "upstream_gate_not_run"}
+    recall_skip = {
+        "ok": False, "status": "not_run",
+        "reason": "controlled_path_skips_production_recall",
+    }
+    l5_skip = {
+        "ok": False, "status": "not_run",
+        "reason": "controlled_path_skips_l5_gates",
+    }
     return {
         "report_type": "controlled_production_release_closure", "ok": True,
         "closure_complete": True, "data_accumulating": False, "scope": dict(SCOPE),
@@ -91,8 +98,8 @@ def complete_report():
         "controlled_production_acceptance": controlled_acceptance(),
         "rpc_controlled_probe": rpc_probe(),
         "record_ids": {"controlled_production_acceptance": "controlled-current"},
-        "production_recall_gate": deepcopy(placeholder), "production_recall_strict_state": deepcopy(placeholder),
-        "readiness": deepcopy(placeholder), "closure_rehearsal": deepcopy(placeholder),
+        "production_recall_gate": deepcopy(recall_skip), "production_recall_strict_state": deepcopy(recall_skip),
+        "readiness": deepcopy(l5_skip), "closure_rehearsal": deepcopy(l5_skip),
         "replay_bootstrap": replay(), "live_acceptance": live(),
         "channel_acceptance": {"ok": True, "record_id": "channel-current",
                                "evidence_class": "external_channel_receipt", "deployment_commit": deployed["commit"],
@@ -547,6 +554,12 @@ def test_managed_controlled_entry_emits_complete_report_without_overwriting_fail
             expected_commit=deployed['commit'],attempt_id='managed-fixture',closure_exit_status=0,inspect_only=True)
         assert captured['exit_code']==0 and captured['capture_saved'] is True and captured['recording_ok'] is True
         assert all(result[key]['status']=='not_run' for key in (
+            'production_recall_gate','production_recall_strict_state','closure_rehearsal','readiness'))
+        assert all(result[key]['reason']=='controlled_path_skips_production_recall' for key in (
+            'production_recall_gate','production_recall_strict_state'))
+        assert all(result[key]['reason']=='controlled_path_skips_l5_gates' for key in (
+            'closure_rehearsal','readiness'))
+        assert all(result[key]['reason']!='upstream_gate_not_run' for key in (
             'production_recall_gate','production_recall_strict_state','closure_rehearsal','readiness'))
 @pytest.mark.parametrize('user',[False,True])
 @pytest.mark.parametrize('fault',['','phase','resumed','core','background','manager','invocation','runtime'])

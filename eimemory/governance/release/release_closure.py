@@ -605,9 +605,18 @@ def _run_controlled_operational_closure_locked(
     # Managed entry points do not pass through run_release_closure's report
     # initializer. These gates are not executed by this controlled workflow.
     # Preserve any existing verdict so a prior failure cannot be overwritten.
-    for key in ('production_recall_gate', 'production_recall_strict_state', 'closure_rehearsal', 'readiness'):
-        report.setdefault(key, {'ok':False, 'status':'not_run',
-            'reason':'upstream_gate_not_run'})
+    # Do not stamp production_recall* as upstream_gate_not_run: that reason
+    # implies an L5 upstream miss, but this path intentionally skips them.
+    for key in ('production_recall_gate', 'production_recall_strict_state'):
+        report.setdefault(key, {
+            'ok': False, 'status': 'not_run',
+            'reason': 'controlled_path_skips_production_recall',
+        })
+    for key in ('closure_rehearsal', 'readiness'):
+        report.setdefault(key, {
+            'ok': False, 'status': 'not_run',
+            'reason': 'controlled_path_skips_l5_gates',
+        })
     report.update(
         report_type="controlled_production_release_closure", legacy_compatibility=False,
         acceptance_basis="controlled_existing_memory", evidence_class="operator_controlled_existing_memory",
