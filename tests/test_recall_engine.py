@@ -1386,8 +1386,10 @@ def test_hybrid_rank_is_not_independent_keyword_evidence():
     assert not engine._keyword_component_eligible(hints)
     assert engine._keyword_component_score(hints) == 0
     assert engine._keyword_component_eligible({**hints, 'lexical_score': 0.1})
-    assert engine._keyword_component_eligible({**hints, '_fts_arm_present': True})
-    assert engine._keyword_component_eligible({**hints, '_lexical_arm_present': True})
+    # FTS/lexical arm markers alone are not keyword evidence when lexical_score is 0
+    # (prefix noise must not buy an RRF keyword vote).
+    assert not engine._keyword_component_eligible({**hints, '_fts_arm_present': True})
+    assert not engine._keyword_component_eligible({**hints, '_lexical_arm_present': True})
     assert engine._keyword_component_eligible({'_provider_rank': 1, 'lexical_score': 0})
 
 
