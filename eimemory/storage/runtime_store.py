@@ -1216,6 +1216,7 @@ class RuntimeStore:
                 else (None if previous_scope is None else ScopeRef.from_dict(previous_scope))
             )
             try:
+                self.sqlite.execute('BEGIN IMMEDIATE')
                 self.sqlite.rewrite(
                     record,
                     previous_scope=previous_scope_ref,
@@ -1223,11 +1224,10 @@ class RuntimeStore:
                 )
                 exports = self._enqueue_record_exports(record)
                 self.sqlite.commit()
-            except Exception:
+            except BaseException:
                 self.sqlite.rollback()
                 raise
-            self._flush_committed_exports(*(item["operation_id"] for item in exports))
-            export_record_markdown(self.root, record)
+            self._safe_post_commit_projection(exports, [record])
             return record
 
     def repair_status_projection_mismatches(
@@ -1837,6 +1837,7 @@ class RuntimeStore:
         limit: int = 501,
         offset: int = 0,
         record_ids: list[str] | tuple[str, ...] | None = None,
+        meta_filters: dict[str, str] | None = None,
     ) -> list[RecordEnvelope]:
         """Bounded typed evidence read with no shared-owner fallback."""
         if not isinstance(scope, (ScopeRef, dict)):
@@ -1848,9 +1849,11 @@ class RuntimeStore:
         if isinstance(scope, dict) and any(scope[key] != getattr(scope_ref, key)
                 for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
             raise ValueError("typed_record_page_owner_must_not_be_normalized")
+        options = {} if meta_filters is None else {"meta_filters": meta_filters}
         with self.borrow_reader() as slot:
             return slot.store.list_records_by_sources_exact_scope(
-                scope=scope_ref, sources=sources, kinds=kinds, limit=limit, offset=offset, record_ids=record_ids)
+                scope=scope_ref, sources=sources, kinds=kinds, limit=limit, offset=offset,
+                record_ids=record_ids, **options)
 
     def record_payload_fingerprint(
         self,
@@ -2278,6 +2281,23 @@ class RuntimeStore:
             for scan_index, scanned in enumerate(self.log.scan_strict()):
                 if not _accept_rebuild_operation(target, scanned):
                     continue
+                from .record_replay import retired_record_ref
+                retired = retired_record_ref(scanned.payload)
+                if retired is not None:
+                    previous = ScopeRef.from_dict(retired['scope'])
+                    rows = target.execute(
+                        'SELECT storage_key, source_id FROM records WHERE record_id=? AND tenant_id=? AND agent_id=? '
+                        'AND workspace_id=? AND user_id=?',
+                        (retired['record_id'], previous.tenant_id, previous.agent_id,
+                         previous.workspace_id, previous.user_id),
+                    ).fetchall()
+                    if any(str(row['source_id']) != retired['source_id'] for row in rows):
+                        raise ValueError('record_scope_move_retired_source_mismatch')
+                    for row in rows:
+                        key = str(row['storage_key'])
+                        target.execute('DELETE FROM records WHERE storage_key=?', (key,))
+                        target._delete_recall_index(key)
+                        target.execute("DELETE FROM temp.rebuild_expected WHERE table_name='records' AND item_key=?", (key,))
                 record = RecordEnvelope.from_dict(scanned.payload)
                 target.upsert(record, commit=False)
                 target.execute(
@@ -2389,6 +2409,10 @@ class RuntimeStore:
             # without per-row commit, then one fsync + one commit (STO-03).
             logs_touched: dict[str, object] = {}
             try:
+                if pending:
+                    # Serialize retirement cleanup with other SQLite writers,
+                    # including the first export before mark_exported writes.
+                    self.sqlite.execute('BEGIN IMMEDIATE')
                 for item in pending:
                     stream = str(item["stream"])
                     log = self.log if stream == "records" else self._auxiliary_log(stream)
@@ -2399,6 +2423,17 @@ class RuntimeStore:
                         expected_digest=item["payload_digest"],
                         fsync=False,
                     )
+                    if stream == 'records':
+                        from .record_replay import retired_record_ref
+                        retired = retired_record_ref(item['payload'])
+                        if retired is not None:
+                            previous_scope = ScopeRef.from_dict(retired['scope'])
+                            # A delayed export must not delete a newer record's
+                            # projection after a move back to the original scope.
+                            if self.sqlite.get_by_id(retired['record_id'], scope=previous_scope, exact_scope=True) is None:
+                                obsolete = RecordEnvelope.from_dict(item['payload'])
+                                obsolete.scope, obsolete.status = previous_scope, 'rejected'
+                                export_record_markdown(self.root, obsolete)
                     self.sqlite.mark_exported(item["operation_id"], commit=False)
                     exported += 1
                 for log in logs_touched.values():

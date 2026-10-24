@@ -234,6 +234,8 @@ def run_autonomous_learning_cycle(
             capability_scope=capability_scope,
             at_time=at_time,
         )
+        if self_model.get("status") == "blocked":
+            return _finish_blocked_self_model(runtime, loop, self_model)
         mark_step(runtime, loop, step_name="self_model", status="completed", metrics=self_model.get("metrics") or {})
         # GOV-07 deferred persist: materialize self_model only after selection resolves.
         _gov07_self_model_pending = True
@@ -291,6 +293,8 @@ def run_autonomous_learning_cycle(
             capability_scope=capability_scope,
             at_time=at_time,
         )
+        if self_model.get("status") == "blocked":
+            return _finish_blocked_self_model(runtime, loop, self_model)
         self_model_persistence = dict(self_model.get("persistence") or {})
         # Legacy replay still needs the seeded cohort overlay after persist rebuild;
         # otherwise allowed_capability_ids is empty and goal generation yields zero.
@@ -1016,6 +1020,21 @@ def run_autonomous_learning_cycle(
             except Exception:
                 pass
         raise
+
+
+def _finish_blocked_self_model(runtime: Any, loop: RecordEnvelope, model: dict[str, Any]) -> dict[str, Any]:
+    reason = str(model.get("reason") or "self_model_blocked")
+    mark_step(runtime, loop, step_name="self_model", status="blocked", error=reason)
+    complete_learning_loop(runtime, loop, status="blocked", summary=reason)
+    result = {
+        "ok": False, "status": "blocked", "reason": reason, "error": reason,
+        "loop_id": str(loop.meta.get("loop_id") or loop.record_id), "loop_record_id": loop.record_id,
+        "self_model": model, "self_model_persistence": dict(model.get("persistence") or {}),
+        "quality_closure": dict(model.get("quality_closure") or {}),
+        "goals": [], "goal_ids": [], "candidate_ids": [], "promotions": [],
+    }
+    result.update(classify_autonomous_learning_activity(result))
+    return result
 
 
 def _recover_code_apply_before_cycle(

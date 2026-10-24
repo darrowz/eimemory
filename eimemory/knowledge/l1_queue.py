@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import errno
-import json
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from eimemory.core.strict_json import StrictJSONError, loads as strict_json_loads
 from eimemory.models.records import ScopeRef
-from eimemory.storage.atomic_file import atomic_write_json, interprocess_lock
+from eimemory.storage.atomic_file import DEFAULT_MAX_JSON_STATE_BYTES, atomic_write_json, interprocess_lock
 
 
 MAX_ATTEMPTS = 5
@@ -38,6 +38,27 @@ class L1QueueStateError(RuntimeError):
         self.context: dict[str, Any] = {}
 
 
+def _validate_job_identity(job: dict[str, Any]) -> None:
+    # Legacy jobs may omit channel/scope and optional turn text. Explicitly
+    # malformed values must not be coerced into that default parent partition.
+    if not isinstance(job.get("episode_id"), str) or not job["episode_id"].strip():
+        raise L1QueueStateError("queue_schema_invalid")
+    for key in ("channel_id", "session_id", "turn_id", "user_text", "assistant_text",
+                "turn_text", "claim_token"):
+        if key in job and not isinstance(job[key], str):
+            raise L1QueueStateError("queue_schema_invalid")
+    if "channel_scope" in job:
+        scope = job["channel_scope"]
+        if (not isinstance(scope, dict)
+                or set(scope) - {"tenant_id", "agent_id", "workspace_id", "user_id"}
+                or any(not isinstance(value, str) for value in scope.values())):
+            raise L1QueueStateError("queue_schema_invalid")
+        try:
+            ScopeRef.from_dict(scope)
+        except (TypeError, ValueError) as exc:
+            raise L1QueueStateError("queue_schema_invalid") from exc
+
+
 class L1ExtractQueue:
     """Durable JSON queue. L0 write must not wait on LLM extract."""
 
@@ -58,8 +79,8 @@ class L1ExtractQueue:
         except UnicodeError as exc:
             raise L1QueueStateError("queue_corrupt") from exc
         try:
-            payload = json.loads(text)
-        except json.JSONDecodeError as exc:
+            payload = strict_json_loads(text, max_bytes=DEFAULT_MAX_JSON_STATE_BYTES)
+        except StrictJSONError as exc:
             raise L1QueueStateError("queue_corrupt") from exc
         if not isinstance(payload, dict):
             raise L1QueueStateError("queue_schema_invalid")
@@ -77,6 +98,7 @@ class L1ExtractQueue:
                         or type(item.get("attempts", 0)) is not int
                         or item.get("attempts", 0) < 0):
                     raise L1QueueStateError("queue_schema_invalid")
+                _validate_job_identity(item)
         return payload
 
     def _save(self, payload: dict[str, Any]) -> None:
@@ -89,6 +111,12 @@ class L1ExtractQueue:
             raise L1QueueStateError("queue_unwritable", retryable=True) from exc
 
     def enqueue(self, job: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(job, dict):
+            raise ValueError("queue_job_invalid")
+        try:
+            _validate_job_identity(job)
+        except L1QueueStateError as exc:
+            raise ValueError("queue_job_invalid") from exc
         episode_id = str(job.get("episode_id") or "").strip()
         with interprocess_lock(self.lock_path):
             payload = self._load()

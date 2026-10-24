@@ -262,15 +262,48 @@ def test_gap_append_failure_is_posthoc_and_retryable(runtime, monkeypatch):
     delivery(runtime)
     before = runtime.store.load_proactive_decision('delivery')
     monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: answer(['unrelated'], unanswered=True))
-    append = runtime.store.append
-    def fail_gap(record):
-        if record.source == 'eimemory.l5.quality_gap_intake':
-            raise RuntimeError('private append error')
-        return append(record)
-    monkeypatch.setattr(runtime.store, 'append', fail_gap)
-    result = _run_semantic_relevance_monitor(runtime, scope=OPERATOR)
-    assert result['ok'] is False and 'private append error' not in json.dumps(result)
+    enqueue = runtime.store.sqlite.enqueue_export
+    attempted = []
+
+    def fail_gap(**kwargs):
+        export = enqueue(**kwargs)
+        payload = kwargs['payload']
+        if kwargs['stream'] == 'records' and payload.get('source') == 'eimemory.l5.quality_gap_intake':
+            # Fail after both authoritative writes exist, before their shared
+            # commit. The new transaction path must roll back the gap and its
+            # outbox together, not merely contain an error before any write.
+            assert kwargs['commit'] is False and runtime.store.sqlite.in_transaction
+            record_id, operation_id = payload['record_id'], export['operation_id']
+            assert runtime.store.sqlite.get_by_id(record_id, scope=ScopeRef.from_dict(SCOPE), exact_scope=True)
+            assert export['state'] == 'pending'
+            attempted.append((record_id, operation_id))
+            raise RuntimeError('private transactional gap error')
+        return export
+
+    with monkeypatch.context() as fault:
+        fault.setattr(runtime.store.sqlite, 'enqueue_export', fail_gap)
+        result = _run_semantic_relevance_monitor(runtime, scope=OPERATOR)
+    assert result['ok'] is False and result['status'] == 'blocked'
+    assert result['blocked_reason'] == 'semantic_monitor_failed:RuntimeError'
+    assert 'private transactional gap error' not in json.dumps(result)
+    assert len(attempted) == 1
+    failed_record_id, failed_operation_id = attempted[0]
+    assert not quality_gaps(runtime, SCOPE) and not quality_gaps(runtime, OPERATOR)
+    with runtime.store.locked() as sqlite:
+        assert not sqlite.in_transaction
+        assert sqlite.execute('SELECT COUNT(*) FROM export_outbox WHERE operation_id=?',
+                              (failed_operation_id,)).fetchone()[0] == 0
+    assert not any(entry.payload.get('record_id') == failed_record_id for entry in runtime.store.log.scan_strict())
+    assert len(saved_reports(runtime)) == 1  # The completed observation remains reusable.
     assert runtime.store.load_proactive_decision('delivery') == before
-    monkeypatch.setattr(runtime.store, 'append', append)
     monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: pytest.fail('cached'))
-    assert _run_semantic_relevance_monitor(runtime, scope=OPERATOR)['quality_gap_created_count'] == 1
+    retried = _run_semantic_relevance_monitor(runtime, scope=OPERATOR)
+    assert retried['ok'] and retried['quality_gap_created_count'] == 1
+    gaps = quality_gaps(runtime, SCOPE)
+    assert len(gaps) == 1 and gaps[0].record_id != failed_record_id
+    assert gaps[0].source_id == GRANT['source_id'] and asdict(gaps[0].scope) == SCOPE
+    repeated = _run_semantic_relevance_monitor(runtime, scope=OPERATOR)
+    assert repeated['ok'] and repeated['quality_gap_created_count'] == 0
+    assert repeated['quality_gap_deduplicated_count'] == 1
+    assert len(quality_gaps(runtime, SCOPE)) == 1 and not quality_gaps(runtime, OPERATOR)
+    assert runtime.store.load_proactive_decision('delivery') == before

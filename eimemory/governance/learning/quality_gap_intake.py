@@ -139,39 +139,46 @@ def _ingest_verified_findings(runtime: Any, *, findings: list[dict[str, Any]], s
         # JSON is normalized by _quality_finding and cannot set this scope.
         owner = finding.get("observation", {}).get("scope")
         scope_ref = ScopeRef.from_dict(owner) if owner is not None else scope
-        existing = _latest_gap(runtime, scope=scope_ref, semantic_key=finding["semantic_key"])
 
-        if finding["gate_ok"]:
-            if existing is not None and existing.status not in {"resolved", "closed"}:
-                resolution = _resolution_record(
-                    finding,
-                    scope=scope_ref,
-                    resolves=existing,
+        def mutation(sqlite):
+            # Parent selection, dedupe and append share the write transaction.
+            # Otherwise a newer failure can interleave with an old resolution,
+            # or equal observations can create two roots that never close.
+            existing = _latest_gap(runtime, scope=scope_ref, semantic_key=finding["semantic_key"])
+            if finding["gate_ok"]:
+                if existing is None or existing.status in {"resolved", "closed"}:
+                    return ("ignored", str(report_name)), [], []
+                record = _resolution_record(
+                    finding, scope=scope_ref, resolves=existing,
                     release=_current_release_stamp(runtime, scope_ref),
                 )
-                runtime.store.append(resolution)
-                resolved.append(resolution.record_id)
+                action = "resolved"
             else:
-                ignored.append(str(report_name))
-            continue
+                if (existing is not None and existing.status not in {"resolved", "closed"}
+                        and str(existing.meta.get("report_digest") or "") == finding["report_digest"]):
+                    observation = finding.get("observation") or {}
+                    confirmed_partial = (observation.get("severity") == "moderate"
+                        and observation.get("evidence_kind") in {"semantic_mixed", "semantic_redundancy"}
+                        and observation.get("confirmation_ref"))
+                    previous = ((existing.content.get("source_report") or {}).get("observation") or {}
+                                if confirmed_partial else {})
+                    # A fresh confirmation after revocation owns a new current
+                    # gap. Reusing the old parent would retain the revoked ref.
+                    if not confirmed_partial or previous.get("confirmation_ref") == observation["confirmation_ref"]:
+                        return ("deduplicated", existing.record_id), [], []
+                record = _gap_record(finding, scope=scope_ref, supersedes=existing)
+                action = "created"
+            from eimemory.storage.runtime_store import _stamp_canonical_hongtu_identity
 
-        if existing is not None and existing.status not in {"resolved", "closed"}:
-            if str(existing.meta.get("report_digest") or "") == finding["report_digest"]:
-                observation = finding.get("observation") or {}
-                confirmed_partial = (observation.get("severity") == "moderate"
-                    and observation.get("evidence_kind") in {"semantic_mixed", "semantic_redundancy"}
-                    and observation.get("confirmation_ref"))
-                previous = ((existing.content.get("source_report") or {}).get("observation") or {}
-                            if confirmed_partial else {})
-                # A fresh confirmation after revocation owns a new current
-                # gap. Reusing the old parent would retain the revoked ref.
-                if not confirmed_partial or previous.get("confirmation_ref") == observation["confirmation_ref"]:
-                    deduplicated.append(existing.record_id)
-                    continue
+            # Preserve append's metadata-only identity stamp while the native
+            # transaction owns the chain and durable export publication.
+            _stamp_canonical_hongtu_identity(record)
+            sqlite.upsert(record, commit=False)
+            return (action, record.record_id), [record], []
 
-        record = _gap_record(finding, scope=scope_ref, supersedes=existing)
-        runtime.store.append(record)
-        created.append(record.record_id)
+        action, record_id = runtime.store.mutate_records_atomically(mutation)
+        {"created": created, "deduplicated": deduplicated,
+         "resolved": resolved, "ignored": ignored}[action].append(record_id)
 
     return dict(created_record_ids=created, deduplicated_record_ids=deduplicated,
                 resolved_record_ids=resolved, ignored_reports=ignored)

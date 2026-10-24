@@ -942,6 +942,12 @@ def _quality_observation_time(value: Any) -> datetime | None:
 
 
 def _current_quality_resolution(records: list[Any], *, scope: ScopeRef, source: str) -> Any | None:
+    return _current_quality_tip(records, scope=scope, source=source, resolution_only=True)
+
+
+def _current_quality_tip(
+    records: list[Any], *, scope: ScopeRef, source: str, resolution_only: bool = False,
+) -> Any | None:
     """Qualify current machine-produced chains, not shared-read visibility.
 
     Supersedes/resolves edges establish versions; list order and record IDs do
@@ -1041,7 +1047,7 @@ def _current_quality_resolution(records: list[Any], *, scope: ScopeRef, source: 
         if not valid or len(tips) != 1:
             continue
         tip = rows[next(iter(tips))]
-        if tip[0].meta.get("report_type") == "quality_gap_resolution":
+        if not resolution_only or tip[0].meta.get("report_type") == "quality_gap_resolution":
             candidates.append((tip[2], tip[0].record_id, tip[0]))
     return max(candidates, key=lambda item: item[:2])[2] if candidates else None
 

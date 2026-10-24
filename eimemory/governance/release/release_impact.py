@@ -685,6 +685,11 @@ for _domain in DOMAINS:
     DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain],
         "eimemory/adapters/hermes/profile_context.py", "eimemory/ops/hermes_native_topology.py")
 
+# Paper preparation gates reviewed candidate publication, the visibility of
+# claim/page recall evidence, and atomic record/outbox persistence together.
+for _domain in ("memory.recall", "memory.governance", "storage.integrity"):
+    DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], "eimemory/intake/promotion_batch.py")
+
 IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
 IGNORED_PATHS = {
     ".gitignore",

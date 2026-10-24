@@ -75,6 +75,40 @@ The fused closure captures prior service/timer states, refuses to evaluate if
 pausing fails, and restores only resources paused by that invocation. A failed
 restore keeps the invocation failed.
 
+### Logical exports and backup replacement
+
+`eimemory export PATH` prepares and syncs a complete private JSONL file before
+replacing `PATH`. A source-read or serialization failure preserves the previous
+export. Native logical snapshots drain committed journal exports and hold a
+SQLite write reservation while combining authority rows with journal recovery
+entries. A pending or unreadable journal fails the snapshot; retry after the
+underlying export problem is repaired. This reservation ends before the completed
+snapshot is streamed to its output file.
+
+`eimemory backup create PREFIX` keeps the v1 manifest format. The first generation
+uses `PREFIX.jsonl`; replacing an existing backup writes a new
+`PREFIX.<generation>.jsonl` and atomically switches `PREFIX.manifest.json` only
+after the data is durable. Readers must resolve the manifest's relative
+`data_file`, or use `eimemory backup verify PREFIX`, instead of assuming that the
+first JSONL filename always contains the latest backup. Existing absolute-path
+manifests remain readable. Directory targets use the same rules with the
+`backup` prefix, and the whole directory remains relocatable.
+
+Earlier data generations remain available to in-flight readers. Retain or remove
+them with the enclosing backup directory's retention policy; repeated writes to
+one prefix intentionally do not delete earlier generations. A publication error
+can leave an unreferenced complete data generation. If a final directory sync
+fails after the manifest switch, verification may already select the complete
+new generation, so inspect `backup verify` before retrying. Existing file owners
+are preserved and newly published data is private. Scheduled timestamped backup
+sets continue to apply their existing directory-level retention.
+
+Scope moves now carry a validated retirement marker in the record journal.
+Rebuild and logical-backup recovery must use this revision's recovery readers
+or newer ones to retire the previous exact identity. Older snapshot-only journal
+readers cannot enforce that retirement. Ordinary legacy journal rows remain
+supported by the updated readers.
+
 Persona evolution stores correction consumption with the resulting traits and
 retains an interrupted transaction until native audit receipts are recovered.
 Do not delete its consumption ledger or pending intent to clear an error; doing

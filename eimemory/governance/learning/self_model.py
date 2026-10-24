@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from hashlib import sha256
 import json
+import sqlite3
 from typing import Any
 
 from eimemory.capabilities.consumer_views import dynamic_capability_views, dynamic_evaluation_view
@@ -16,6 +17,8 @@ from eimemory.models.source_partitions import DEFAULT_SOURCE_ID
 
 SELF_MODEL_SNAPSHOT_SCHEMA = "self_model.snapshot.v1"
 SELF_MODEL_SOURCE = "eimemory.autonomous_learning"
+QUALITY_CHAIN_EVIDENCE_LIMIT = 10_000
+_QUALITY_CHAIN_PAGE_SIZE = 500
 # Only top-level report fields are volatile. Nested evidence times remain
 # semantic input (for example, evaluation validity or a source's latest event).
 _SELF_MODEL_REPORT_FIELDS = frozenset({
@@ -106,11 +109,22 @@ def build_self_model(
     legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    reflections = _list_all(runtime, kinds=["reflection"], scope=scope_ref, limit=limit)
-    incidents = _list_all(runtime, kinds=["incident", "unknown"], scope=scope_ref, limit=limit)
+    reflections, incidents, weakness_records, quality_closure = _read_weakness_inputs(
+        runtime, scope=scope_ref, limit=limit,
+    )
     rules = _list_all(runtime, kinds=["rule"], scope=scope_ref, limit=limit)
     replays = _list_all(runtime, kinds=["replay_result"], scope=scope_ref, limit=limit)
-    weaknesses = _weaknesses_from_records(reflections + incidents)
+    weaknesses = _weaknesses_from_records(weakness_records)
+    if quality_closure["status"] == "blocked":
+        reason = quality_closure["reason"]
+        return {
+            "ok": False, "status": "blocked", "reason": reason, "errors": [reason],
+            "scope": asdict(scope_ref), "capability_scope": capability_scope,
+            "capabilities": [], "weaknesses": weaknesses, "quality_closure": quality_closure,
+            "persistence": _unpersisted_self_model(),
+            "metrics": _metrics(reflections=reflections, incidents=incidents,
+                                rules=rules, replays=replays, weaknesses=weaknesses),
+        }
     bounded_limit = max(1, min(499, int(limit or 1)))
     evaluation_view: dict[str, Any] = {}
     if catalog is not None:
@@ -135,6 +149,7 @@ def build_self_model(
                 "persistence": _unpersisted_self_model(),
                 "capabilities": [],
                 "weaknesses": weaknesses,
+                "quality_closure": quality_closure,
                 "metrics": _metrics(
                     reflections=reflections,
                     incidents=incidents,
@@ -197,6 +212,7 @@ def build_self_model(
         "legacy_compatibility": bool(legacy_compatibility),
         "capabilities": capabilities,
         "weaknesses": weaknesses,
+        "quality_closure": quality_closure,
         "metrics": metrics,
     }
     model["persistence"] = (
@@ -299,8 +315,8 @@ def persist_self_model(
 
 def _weaknesses_from_records(records: list[RecordEnvelope]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for record in records:
+    seen: dict[str, dict[str, Any]] = {}
+    for record in _current_weakness_records(records):
         meta = business_metadata(record.meta)
         content = record.content if isinstance(record.content, dict) else {}
         payload = content.get("payload") if isinstance(content.get("payload"), dict) else content
@@ -323,8 +339,11 @@ def _weaknesses_from_records(records: list[RecordEnvelope]) -> list[dict[str, An
         capability = _explicit_capability(record, meta=meta, payload=payload)
         key = stable_semantic_key(capability, tag, lesson)
         if key in seen:
+            if (record.source == "eimemory.l5.quality_gap_intake"
+                    and meta.get("report_type") == "quality_gap"
+                    and record.record_id not in seen[key]["source_record_ids"]):
+                seen[key]["source_record_ids"].append(record.record_id)
             continue
-        seen.add(key)
         items.append(
             {
                 "semantic_key": key,
@@ -337,7 +356,169 @@ def _weaknesses_from_records(records: list[RecordEnvelope]) -> list[dict[str, An
                 "source_record_ids": [record.record_id],
             }
         )
+        seen[key] = items[-1]
     return sorted(items, key=lambda item: (-float(item.get("severity") or 0), str(item.get("capability") or "")))
+
+
+def _current_weakness_records(records: list[RecordEnvelope]) -> list[RecordEnvelope]:
+    """A verified closed quality chain is history, not a new learning target."""
+    from eimemory.governance.l5.l5_reader import _current_quality_tip
+    from eimemory.governance.learning.quality_gap_intake import QUALITY_GAP_SOURCE
+
+    groups: dict[tuple[str, ...], list[RecordEnvelope]] = {}
+    keys: dict[int, tuple[str, ...]] = {}
+    for record in records:
+        if record.kind != "reflection" or record.source != QUALITY_GAP_SOURCE:
+            continue
+        scope = record.scope
+        key = (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id,
+               str(business_metadata(record.meta).get("semantic_key") or ""))
+        keys[id(record)] = key
+        groups.setdefault(key, []).append(record)
+    tips = {
+        key: _current_quality_tip(members, scope=members[0].scope, source=QUALITY_GAP_SOURCE)
+        for key, members in groups.items()
+    }
+    # Missing parents, revoked receipts and forks supply no closure proof.
+    # The original active failure stays visible; resolution observations are
+    # never interpreted as failures themselves. Other reflection contracts
+    # keep their existing behavior.
+    return [record for record in records if id(record) not in keys or (
+        record.status == "active"
+        and business_metadata(record.meta).get("report_type") == "quality_gap"
+        and (tips[keys[id(record)]] is None or tips[keys[id(record)]].record_id == record.record_id)
+    )]
+
+
+def _read_weakness_inputs(runtime: Any, *, scope: ScopeRef, limit: int):
+    """Keep candidate selection and its quality-chain proof on one snapshot."""
+    consistent = getattr(runtime.store, "read_consistent", None)
+
+    def select(reader):
+        reflections = _list_all(runtime, kinds=["reflection"], scope=scope, limit=limit, reader=reader)
+        incidents = _list_all(runtime, kinds=["incident", "unknown"], scope=scope, limit=limit, reader=reader)
+        selected = reflections + incidents
+        if callable(consistent):
+            try:
+                selected = selected + _strict_quality_candidates(reader, scope=scope, limit=limit)
+            except (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error) as exc:
+                reason = (str(exc) if str(exc) == "quality_chain_evidence_budget_exceeded"
+                          else "quality_chain_evidence_unavailable")
+                return reflections, incidents, selected, {
+                    "ok": False, "status": "blocked", "reason": reason,
+                    "group_count": 0, "record_count": 0, "max_records": QUALITY_CHAIN_EVIDENCE_LIMIT,
+                }
+        records, closure = _complete_quality_weakness_records(
+            reader, selected, consistent=callable(consistent),
+        )
+        return reflections, incidents, records, closure
+
+    return consistent(select) if callable(consistent) else select(runtime.store)
+
+
+def _strict_quality_candidates(reader: Any, *, scope: ScopeRef, limit: int) -> list[RecordEnvelope]:
+    from eimemory.identity import hongtu_query_scopes
+    from eimemory.governance.learning.quality_gap_intake import QUALITY_GAP_SOURCE
+
+    # The ordinary history reader can skip damaged envelopes. Select the
+    # quality producer strictly over the same authorized owner scopes, so a
+    # damaged current observation cannot become "no quality history".
+    owners: dict[tuple[str, ...], ScopeRef] = {}
+    for owner in hongtu_query_scopes(scope):
+        for candidate in (owner, replace(owner, user_id="")) if owner.user_id else (owner,):
+            owners[(candidate.tenant_id, candidate.agent_id, candidate.workspace_id, candidate.user_id)] = candidate
+    records: list[RecordEnvelope] = []
+    for owner in owners.values():
+        offset = 0
+        while offset < limit:
+            size = min(_QUALITY_CHAIN_PAGE_SIZE, limit - offset, QUALITY_CHAIN_EVIDENCE_LIMIT - len(records) + 1)
+            page = reader.list_records_by_sources_exact_scope(
+                kinds=["reflection"], sources=[QUALITY_GAP_SOURCE], scope=owner, limit=size, offset=offset,
+            )
+            records.extend(page)
+            if len(records) > QUALITY_CHAIN_EVIDENCE_LIMIT:
+                raise RuntimeError("quality_chain_evidence_budget_exceeded")
+            if len(page) < size:
+                break
+            offset += len(page)
+    return records
+
+
+def _complete_quality_weakness_records(reader: Any, selected: list[RecordEnvelope], *, consistent: bool):
+    from eimemory.governance.l5.l5_reader import _current_quality_resolution
+    from eimemory.governance.learning.quality_gap_intake import QUALITY_GAP_SOURCE
+
+    groups: dict[tuple[str, ...], tuple[ScopeRef, str]] = {}
+    selected_quality: set[int] = set()
+    invalid_key = False
+    for record in selected:
+        if record.kind != "reflection" or record.source != QUALITY_GAP_SOURCE:
+            continue
+        semantic_key = business_metadata(record.meta).get("semantic_key")
+        if not isinstance(semantic_key, str) or not semantic_key:
+            invalid_key = True
+            continue
+        owner = record.scope
+        key = (owner.tenant_id, owner.agent_id, owner.workspace_id, owner.user_id, semantic_key)
+        groups[key] = (owner, semantic_key)
+        selected_quality.add(id(record))
+    report = {"ok": True, "status": "complete" if groups else "not_required",
+              "group_count": len(groups), "record_count": 0, "max_records": QUALITY_CHAIN_EVIDENCE_LIMIT}
+
+    def blocked(reason):
+        return selected, {**report, "ok": False, "status": "blocked", "reason": reason}
+
+    if invalid_key:
+        return blocked("quality_chain_evidence_invalid")
+    if not groups:
+        return selected, report
+    read = getattr(reader, "list_records_by_sources_exact_scope", None)
+    if not consistent or not callable(read):
+        return blocked("quality_chain_snapshot_unavailable")
+    evidence: list[RecordEnvelope] = []
+    try:
+        for owner, semantic_key in groups.values():
+            members: list[RecordEnvelope] = []
+            offset = 0
+            while True:
+                remaining = QUALITY_CHAIN_EVIDENCE_LIMIT - report["record_count"]
+                page_size = min(_QUALITY_CHAIN_PAGE_SIZE, remaining + 1)
+                page = read(kinds=["reflection"], sources=[QUALITY_GAP_SOURCE], scope=owner,
+                            meta_filters={"semantic_key": semantic_key}, limit=page_size, offset=offset)
+                if not isinstance(page, list):
+                    return blocked("quality_chain_evidence_unavailable")
+                if len(page) > remaining:
+                    return blocked("quality_chain_evidence_budget_exceeded")
+                if any(record.scope != owner or record.source != QUALITY_GAP_SOURCE
+                       or record.kind != "reflection"
+                       or business_metadata(record.meta).get("semantic_key") != semantic_key for record in page):
+                    return blocked("quality_chain_evidence_mismatched")
+                members.extend(page)
+                report["record_count"] += len(page)
+                if len(page) < page_size:
+                    break
+                offset += len(page)
+            # A dangling resolution is incomplete evidence, not an empty set
+            # of weaknesses. Active failures remain visible for invalid/forked
+            # chains; only the existing complete-chain verifier can close one.
+            observed = {record.record_id: record.to_dict() for record in members}
+            selected_members = [record for record in selected if record.scope == owner
+                                and record.kind == "reflection" and record.source == QUALITY_GAP_SOURCE
+                                and business_metadata(record.meta).get("semantic_key") == semantic_key]
+            if any(observed.get(record.record_id) != record.to_dict() for record in selected_members):
+                return blocked("quality_chain_evidence_mismatched")
+            if not members or (
+                    _current_quality_resolution(members, scope=owner, source=QUALITY_GAP_SOURCE) is None
+                    and not any(record.status == "active"
+                                and business_metadata(record.meta).get("report_type") == "quality_gap"
+                                for record in members)):
+                return blocked("quality_chain_evidence_invalid")
+            evidence.extend(members)
+    except (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error):
+        return blocked("quality_chain_evidence_unavailable")
+    # The user's ordinary history window remains bounded. Only selected
+    # quality groups are replaced with their exact complete evidence.
+    return [record for record in selected if id(record) not in selected_quality] + evidence, report
 
 
 def _capabilities_from_dynamic_view(
@@ -506,11 +687,14 @@ def _list_all(
     scope: ScopeRef,
     limit: int,
     page_size: int = 500,
+    reader: Any | None = None,
 ) -> list[RecordEnvelope]:
     records: list[RecordEnvelope] = []
     offset = 0
     while len(records) < limit:
-        page = runtime.store.list_records(kinds=kinds, scope=scope, limit=min(page_size, limit - len(records)), offset=offset)
+        page = (reader if reader is not None else runtime.store).list_records(
+            kinds=kinds, scope=scope, limit=min(page_size, limit - len(records)), offset=offset,
+        )
         if not page:
             break
         records.extend(page)

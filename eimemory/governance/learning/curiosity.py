@@ -17,6 +17,8 @@ def generate_learning_goals(
     daily_cap: int = 10,
     max_goals: int | None = None,
 ) -> list[dict[str, Any]]:
+    if self_model.get("status") == "blocked":
+        return []
     limit = max_goals if max_goals is not None else daily_cap
     goals: list[dict[str, Any]] = []
     seen: set[str] = set()

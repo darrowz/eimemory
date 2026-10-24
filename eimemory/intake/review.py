@@ -104,6 +104,20 @@ def review_candidate(
     normalized = str(decision or "").strip().lower()
     if normalized not in _REVIEW_DECISIONS:
         raise ValueError(f"unsupported review decision: {decision}")
+    store = _store(runtime)
+    mutate = getattr(store, "mutate_records_atomically", None)
+    if callable(mutate):
+        def mutation(sqlite):
+            record = _candidate_by_id(sqlite, record_id, scope=_scope_ref(scope))
+            _require_scope(record, scope)
+            if record.status in _TERMINAL_STATUSES:
+                raise ValueError(f"cannot review terminal candidate status: {record.status}")
+            record.status = _REVIEW_DECISIONS[normalized]
+            _append_review_history(record, decision=normalized, actor=reviewer, note=note)
+            record.touch()
+            sqlite.upsert(record, commit=False)
+            return record, [record], []
+        return mutate(mutation)
     record = _candidate_by_id(runtime, record_id, scope=scope)
     _require_scope(record, scope)
     if record.status in _TERMINAL_STATUSES:
@@ -312,16 +326,35 @@ def mark_candidate_paper_promoted(
     record: RecordEnvelope,
     report: dict[str, Any],
 ) -> RecordEnvelope:
-    _set_terminal_status(record, "promoted")
-    record.meta = {
-        **dict(record.meta or {}),
-        "promoted_to_paper_source_id": str(report.get("paper_source_id") or ""),
-        "promotion_record_ids": list(report.get("record_ids") or []),
-        "closure_review_record_id": str(report.get("closure_review_record_id") or ""),
-        "closure_decision": str(report.get("closure_decision") or ""),
-    }
-    _append_review_history(record, decision="paper_promote", actor="pipeline", note=str(report.get("paper_source_id") or ""))
-    return _save(runtime, record)
+    snapshot = record.to_dict()
+
+    def prepare(current):
+        if current is None or current.to_dict() != snapshot:
+            raise ValueError("paper_promotion_candidate_changed_retry_required")
+        if current.kind != KNOWLEDGE_CANDIDATE_KIND or current.status not in {"candidate", "reviewed"}:
+            raise ValueError("paper_promotion_candidate_not_promotable")
+        _set_terminal_status(current, "promoted")
+        current.meta = {
+            **dict(current.meta or {}),
+            "promoted_to_paper_source_id": str(report.get("paper_source_id") or ""),
+            "promotion_record_ids": list(report.get("record_ids") or []),
+            "closure_review_record_id": str(report.get("closure_review_record_id") or ""),
+            "closure_decision": str(report.get("closure_decision") or ""),
+        }
+        _append_review_history(current, decision="paper_promote", actor="pipeline", note=str(report.get("paper_source_id") or ""))
+        current.touch()
+        return current
+
+    store = _store(runtime)
+    mutate = getattr(store, "mutate_records_atomically", None)
+    if callable(mutate):
+        def mutation(sqlite):
+            current = prepare(sqlite.get_by_exact_ref(record.record_id, scope=record.scope, source_id=record.source_id))
+            sqlite.upsert(current, commit=False)
+            return current, [current], []
+        return mutate(mutation)
+    current = prepare(store.get_by_exact_ref(record.record_id, scope=record.scope, source_id=record.source_id))
+    return _save(runtime, current)
 
 
 def merge_candidates(

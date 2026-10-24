@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -7,6 +8,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Iterable
+from uuid import uuid4
 
 from eimemory.core.clock import now_iso
 from eimemory.api.runtime import Runtime
@@ -17,7 +19,10 @@ from eimemory.security_screening import (
     screen_record_payload,
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef, evaluate_memory_quality
+from eimemory.storage.atomic_file import _existing_stat, _fsync_directory, atomic_write_json, interprocess_lock
 from eimemory.storage.jsonl import JsonlLog, scan_jsonl_strict
+from eimemory.storage.private_file import private_temporary_file
+from eimemory.storage.record_replay import retired_record_ref
 
 
 SUPPORTED_IMPORT_KINDS = {"memory", "multimodal_memory"}
@@ -27,12 +32,43 @@ BACKUP_FORMAT_VERSION = 1
 def export_records(runtime: Runtime, path: str | Path) -> int:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    total = 0
-    with target.open("w", encoding="utf-8") as handle:
-        for record in _iter_runtime_records(runtime, scratch_directory=target.parent):
-            handle.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
-            total += 1
+    existing = _existing_stat(target)
+    with _staged_record_export(runtime, target.parent, owner=existing) as (temporary, total, _digest):
+        _existing_stat(target)
+        os.replace(temporary, target)
+        _fsync_directory(target.parent)
     return total
+
+
+@contextmanager
+def _staged_record_export(runtime: Runtime, directory: Path, *, owner: os.stat_result | None = None):
+    """Stream and sync a private complete snapshot before publishing its name."""
+    descriptor, name = private_temporary_file(prefix=".eimemory-export-", directory=directory)
+    temporary = Path(name)
+    count = 0
+    digest = hashlib.sha256()
+    try:
+        try:
+            handle = os.fdopen(descriptor, "wb")
+            descriptor = -1
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        with handle:
+            if os.name == "posix" and owner is not None:
+                opened = os.fstat(handle.fileno())
+                if (opened.st_uid, opened.st_gid) != (owner.st_uid, owner.st_gid):
+                    os.fchown(handle.fileno(), owner.st_uid, owner.st_gid)
+            for record in _iter_runtime_records(runtime, scratch_directory=directory):
+                line = json.dumps(record.to_dict(), ensure_ascii=False).encode("utf-8") + b"\n"
+                handle.write(line)
+                digest.update(line)
+                count += 1
+            handle.flush()
+            os.fsync(handle.fileno())
+        yield temporary, count, digest.hexdigest()
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def import_records(runtime: Runtime, path: str | Path) -> int:
@@ -60,24 +96,30 @@ def backup_create(runtime: Runtime, path: str | Path) -> dict:
         target.mkdir(parents=True, exist_ok=True)
     else:
         data_path.parent.mkdir(parents=True, exist_ok=True)
-    record_count = 0
-    sha256 = hashlib.sha256()
-    with data_path.open("wb") as handle:
-        for record in _iter_runtime_records(runtime, scratch_directory=data_path.parent):
-            line = json.dumps(record.to_dict(), ensure_ascii=False).encode("utf-8") + b"\n"
-            handle.write(line)
-            sha256.update(line)
-            record_count += 1
-    manifest = {
-        "format_version": BACKUP_FORMAT_VERSION,
-        "created_at": now_iso(),
-        "record_count": record_count,
-        "sha256": sha256.hexdigest(),
-        "data_file": _manifest_data_file(data_path, manifest_path),
-    }
-    with manifest_path.open("w", encoding="utf-8") as handle:
-        json.dump(manifest, handle, ensure_ascii=False, indent=2)
-        handle.write("\n")
+    lock_path = manifest_path.with_name(f".{manifest_path.name}.lock")
+    with interprocess_lock(lock_path):
+        previous_data = _existing_stat(data_path)
+        previous_manifest = _existing_stat(manifest_path)
+        # The manifest is the commit point. Never replace the data file that a
+        # previous manifest (or an in-flight reader) still references. The first
+        # generation retains the historical name; replacements use unique names
+        # already supported by the v1 relative data_file contract. Retain older
+        # generations for readers and let backup-directory retention own cleanup.
+        if data_path.exists() or manifest_path.exists():
+            data_path = data_path.with_name(f"{data_path.stem}.{uuid4().hex}.jsonl")
+        with _staged_record_export(runtime, data_path.parent, owner=previous_manifest or previous_data) as (temporary, record_count, digest):
+            manifest = {
+                "format_version": BACKUP_FORMAT_VERSION,
+                "created_at": now_iso(),
+                "record_count": record_count,
+                "sha256": digest,
+                "data_file": _manifest_data_file(data_path, manifest_path),
+            }
+            os.replace(temporary, data_path)
+            _fsync_directory(data_path.parent)
+            # A directory-fsync failure can follow the atomic manifest replace.
+            # Keep the complete new data generation even on that exception.
+            atomic_write_json(manifest_path, manifest)
     return {
         "ok": True,
         "path": str(target),
@@ -488,18 +530,57 @@ def _iter_runtime_records(runtime: Runtime, *, scratch_directory: Path | None = 
             connection.executescript('''PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
                 PRAGMA cache_size=-4096; PRAGMA temp_store=FILE;
                 CREATE TABLE export_records(position INTEGER PRIMARY KEY,key TEXT UNIQUE,payload TEXT NOT NULL);''')
-            for record in _records_from_sqlite(runtime):
-                connection.execute('''INSERT INTO export_records(key,payload) VALUES(?,?)
-                    ON CONFLICT(key) DO UPDATE SET payload=excluded.payload''',
-                    (_record_storage_key(record),json.dumps(record.to_dict(),ensure_ascii=False)))
-            for record in _records_from_jsonl_log(log_path):
-                connection.execute('INSERT OR IGNORE INTO export_records(key,payload) VALUES(?,?)',
-                    (_record_storage_key(record),json.dumps(record.to_dict(),ensure_ascii=False)))
+            with _export_store_snapshot(runtime.store):
+                for record in _records_from_sqlite(runtime):
+                    connection.execute('''INSERT INTO export_records(key,payload) VALUES(?,?)
+                        ON CONFLICT(key) DO UPDATE SET payload=excluded.payload''',
+                        (_record_storage_key(record),json.dumps(record.to_dict(),ensure_ascii=False)))
+                for record in _records_from_jsonl_log(log_path):
+                    connection.execute('INSERT OR IGNORE INTO export_records(key,payload) VALUES(?,?)',
+                        (_record_storage_key(record),json.dumps(record.to_dict(),ensure_ascii=False)))
             connection.commit()
             for row in connection.execute('SELECT payload FROM export_records ORDER BY position'):
                 yield RecordEnvelope.from_dict(json.loads(row[0]))
         finally:
             connection.close()
+
+
+@contextmanager
+def _export_store_snapshot(store):
+    """Pin SQL and its drained journal until the private export index is ready.
+
+    Native writers enqueue their journal in the same SQL transaction. A write
+    reservation closes the race between draining that outbox and reading both
+    authorities; it is released before streaming the completed export to disk.
+    Minimal legacy readers without this native facade retain their read API.
+    """
+    locked = getattr(store, "locked", None)
+    flush = getattr(store, "flush_exports", None)
+    if not callable(locked) or not callable(flush):
+        yield
+        return
+    with locked() as sqlite:
+        if sqlite.in_transaction:
+            raise RuntimeError("backup_requires_own_transaction")
+        report = flush(limit=1000)
+        # Bound work by the backlog observed at entry; a continuously growing
+        # outbox must return a retryable failure instead of hanging a backup.
+        batches = (int(report["remaining"]) + 999) // 1000
+        for _ in range(batches):
+            if not report["remaining"]:
+                break
+            if not report["exported"]:
+                raise RuntimeError("backup_journal_exports_pending")
+            report = flush(limit=1000)
+        if report["remaining"]:
+            raise RuntimeError("backup_journal_exports_pending")
+        sqlite.execute("BEGIN IMMEDIATE")
+        try:
+            if sqlite.pending_exports(limit=1):
+                raise RuntimeError("backup_journal_exports_pending")
+            yield
+        finally:
+            sqlite.rollback()
 
 
 def _records_from_sqlite(runtime: Runtime) -> Iterable[RecordEnvelope]:
@@ -518,14 +599,33 @@ def _records_from_jsonl_log(path: Path | None) -> Iterable[RecordEnvelope]:
     if path is None:
         return
     latest_by_key = {}
+    operations = {}
+    first_pass = hashlib.sha256()
     log = JsonlLog(path, create_parent=False)
     for entry in log.scan_strict():
+        first_pass.update(_journal_entry_fingerprint(entry))
+        if entry.operation_id:
+            previous_digest = operations.get(entry.operation_id)
+            if previous_digest is not None:
+                if previous_digest != entry.payload_digest:
+                    raise ValueError("backup_journal_operation_id_collision")
+                continue
+            operations[entry.operation_id] = entry.payload_digest
         record = RecordEnvelope.from_dict(entry.payload)
+        retired = retired_record_ref(entry.payload)
+        if retired is not None:
+            old_key = _scope_record_key(ScopeRef.from_dict(retired["scope"]), retired["record_id"])
+            old = latest_by_key.get(old_key)
+            if old is not None and old[4] != retired["source_id"]:
+                raise ValueError("backup_journal_retired_source_mismatch")
+            latest_by_key.pop(old_key, None)
         key = _record_storage_key(record)
-        latest_by_key[key]=(str(entry.path),entry.line,entry.offset,entry.payload_digest)
+        latest_by_key[key]=(str(entry.path),entry.line,entry.offset,entry.payload_digest,record.source_id)
     wanted={value[:3]:(key,value[3]) for key,value in latest_by_key.items()}
     found=set()
+    second_pass = hashlib.sha256()
     for entry in log.scan_strict():
+        second_pass.update(_journal_entry_fingerprint(entry))
         position=(str(entry.path),entry.line,entry.offset)
         expected=wanted.get(position)
         if expected is None:continue
@@ -534,18 +634,27 @@ def _records_from_jsonl_log(path: Path | None) -> Iterable[RecordEnvelope]:
             raise ValueError('backup_journal_changed_during_export')
         found.add(position)
         yield record
-    if len(found)!=len(wanted):raise ValueError('backup_journal_changed_during_export')
+    if len(found)!=len(wanted) or second_pass.digest()!=first_pass.digest():
+        raise ValueError('backup_journal_changed_during_export')
+
+
+def _journal_entry_fingerprint(entry) -> bytes:
+    return json.dumps([str(entry.path), entry.line, entry.offset, entry.operation_id,
+                       entry.payload_digest], ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
 
 
 def _record_storage_key(record: RecordEnvelope) -> str:
-    scope = record.scope
+    return _scope_record_key(record.scope, record.record_id)
+
+
+def _scope_record_key(scope: ScopeRef, record_id: str) -> str:
     return json.dumps(
         [
             scope.tenant_id,
             scope.agent_id,
             scope.workspace_id,
             scope.user_id,
-            record.record_id,
+            record_id,
         ], ensure_ascii=False, separators=(",", ":")
     )
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import copy
 from typing import Any
 
 from eimemory.intake.closure import build_research_closure_review
@@ -54,6 +55,24 @@ class PaperIntakePipeline:
         skipped_reason = _skipped_reason(candidate_record_or_dict, candidate)
         if skipped_reason:
             return _skip(skipped_reason)
+
+        # Durable candidates publish source, claims, pages, closure and the
+        # candidate transition together. A concurrent review must win before
+        # any downstream record can become visible to recall.
+        from eimemory.intake.promotion_batch import _PaperPromotionBatch
+        if isinstance(candidate_record_or_dict, RecordEnvelope) and not isinstance(self.runtime.store, _PaperPromotionBatch):
+            batch = _PaperPromotionBatch(self.runtime.store, candidate_record_or_dict)
+            prepared_runtime = copy(self.runtime)
+            prepared_runtime.store = batch
+            # Current paper methods use store directly; keep the MemoryAPI
+            # alias buffered as well so a future write cannot escape the batch.
+            if hasattr(prepared_runtime, "memory"):
+                prepared_runtime.memory = copy(prepared_runtime.memory)
+                prepared_runtime.memory.store = batch
+            report = PaperIntakePipeline(prepared_runtime).promote(candidate_record_or_dict, scope)
+            if report.get("ok"):
+                batch.publish()
+            return report
 
         paper_input = _paper_input_from_candidate(candidate)
         if not paper_input:

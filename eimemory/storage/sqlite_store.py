@@ -2610,13 +2610,21 @@ class SqliteRecordStore:
         params: list[Any] = []
         clean_ids = [str(item) for item in (operation_ids or []) if str(item)]
         if clean_ids:
-            where.append(f"operation_id IN ({','.join('?' for _ in clean_ids)})")
-            params.extend(clean_ids)
+            placeholders = ','.join('?' for _ in clean_ids)
+            # A later record snapshot/move cannot pass an older pending
+            # snapshot in the recovery log. Keep selective auxiliary exports,
+            # but include the record-stream prefix before selected records.
+            where.append(
+                f"(operation_id IN ({placeholders}) OR (stream = 'records' AND rowid <= "
+                "COALESCE((SELECT MAX(rowid) FROM export_outbox WHERE state = 'pending' "
+                f"AND stream = 'records' AND operation_id IN ({placeholders})), 0)))"
+            )
+            params.extend([*clean_ids, *clean_ids])
         rows = self.conn.execute(
             "SELECT operation_id, stream, payload_json, payload_digest, created_at "
             "FROM export_outbox WHERE "
             + " AND ".join(where)
-            + " ORDER BY created_at, operation_id LIMIT ?",
+            + " ORDER BY rowid LIMIT ?",
             [*params, max_limit],
         ).fetchall()
         return [
@@ -6463,6 +6471,7 @@ class SqliteRecordStore:
         limit: int = 501,
         offset: int = 0,
         record_ids: list[str] | tuple[str, ...] | None = None,
+        meta_filters: dict[str, str] | None = None,
     ) -> list[RecordEnvelope]:
         """Read a typed owner page; unrelated records cannot consume its limit.
 
@@ -6485,6 +6494,20 @@ class SqliteRecordStore:
                 raise ValueError("typed_record_page_invalid_record_ids")
             for record_id in record_ids:
                 validate_record_id(record_id)
+        if meta_filters is not None and (
+                not isinstance(meta_filters, dict) or not 1 <= len(meta_filters) <= 8
+                or any(not isinstance(key, str) or not key or "." in key
+                       or not _meta_json_text_expression(key)
+                       or not isinstance(value, str) or not value or len(value) > 512
+                       for key, value in meta_filters.items())):
+            raise ValueError("typed_record_page_invalid_meta_filters")
+        filters = meta_filters or {}
+        metadata_filter = "".join(
+            f"AND ({_meta_json_text_expression(key)} = ? "
+            f"OR CAST(json_extract(payload_json, '$.meta.{key}') AS TEXT) = ? "
+            f"OR CAST(json_extract(payload_json, '$.meta.business_meta.{key}') AS TEXT) = ?) "
+            for key in filters
+        )
         owner = {key: getattr(scope, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")}
         source_values, kind_values = tuple(dict.fromkeys(sources)), tuple(dict.fromkeys(kinds))
         exact_ids = () if record_ids is None else tuple(dict.fromkeys(record_ids))
@@ -6494,14 +6517,15 @@ class SqliteRecordStore:
             "WHERE tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? "
             "AND source IN (" + ",".join("?" for _ in source_values) + ") "
             "AND kind IN (" + ",".join("?" for _ in kind_values) + ") "
-            + identity_filter +
+            + identity_filter + metadata_filter +
             "ORDER BY updated_at DESC,record_id DESC,storage_key DESC LIMIT ? OFFSET ?) "
             "SELECT records.storage_key,records.record_id,records.kind,records.status,records.source,"
             "records.tenant_id,records.agent_id,records.workspace_id,records.user_id,records.source_id,"
-            "records.payload_json,records.payload_pointer_json,records.payload_digest "
+            "records.meta_json,records.payload_json,records.payload_pointer_json,records.payload_digest "
             "FROM selected JOIN records USING(storage_key) "
             "ORDER BY selected.updated_at DESC,selected.record_id DESC,selected.storage_key DESC",
-            (*owner.values(), *source_values, *kind_values, *exact_ids, limit, offset),
+            (*owner.values(), *source_values, *kind_values, *exact_ids,
+             *(value for value in filters.values() for _ in range(3)), limit, offset),
         ).fetchall()
         records = []
         for row in rows:
@@ -6516,9 +6540,12 @@ class SqliteRecordStore:
                 raise RuntimeError("typed_record_page_unavailable_or_mismatched")
             record = self._record_from_storage_row(
                 row, hydrate=True, preserve_unknown_occurred_at=True, preserve_unknown_times=True)
+            indexed_meta = self._payload_dict_from_json(row["meta_json"]) if filters else {}
             if (record is None or record.scope != scope
                     or record.source not in source_values or record.kind not in kind_values
                     or any(getattr(record, key) != row[key] for key in ("record_id", "source", "kind", "status", "source_id"))
+                    or any(business_metadata(record.meta).get(key) != value for key, value in filters.items())
+                    or any((indexed_meta or {}).get(key) != value for key, value in filters.items())
                     or self._storage_key(record) != row["storage_key"]):
                 raise RuntimeError("typed_record_page_unavailable_or_mismatched")
             records.append(record)
@@ -7202,24 +7229,39 @@ class SqliteRecordStore:
                 workspace_id=previous_scope.workspace_id,
                 user_id=previous_scope.user_id,
             )
-        for key in {self._storage_key(record), previous_key} - {None}:
-            existing = self.conn.execute("SELECT source_id FROM records WHERE storage_key = ?", (key,)).fetchone()
-            if existing is not None and str(existing["source_id"]) != record.source_id:
-                raise ValueError("source_id move requires an explicit mutation path")
         new_key = self._storage_key(record)
-        if previous_key and previous_key != new_key:
-            try:
+        started = not self.conn.in_transaction
+        if started:
+            self.conn.execute('BEGIN IMMEDIATE')
+        try:
+            for key in {new_key, previous_key} - {None}:
+                existing = self.conn.execute("SELECT source_id FROM records WHERE storage_key = ?", (key,)).fetchone()
+                if existing is not None and str(existing["source_id"]) != record.source_id:
+                    raise ValueError("source_id move requires an explicit mutation path")
+            if previous_key and previous_key != new_key:
+                previous = self.get_by_exact_ref(record.record_id, scope=previous_scope, source_id=record.source_id)
+                current = self.get_by_exact_ref(record.record_id, scope=record.scope, source_id=record.source_id)
+                if previous is None:
+                    if current is None or current.to_dict() != record.to_dict():
+                        raise ValueError('scope_move_source_missing')
+                    if commit:
+                        self.conn.commit()
+                    return
+                if current is not None:
+                    raise ValueError('scope_move_target_exists')
                 self.conn.execute("DELETE FROM records WHERE storage_key = ?", (previous_key,))
                 self._delete_recall_index(previous_key)
                 self.upsert(record, commit=False)
-                if commit:
-                    self.conn.commit()
-            except Exception:
-                if commit:
-                    self.conn.rollback()
-                raise
-            return
-        self.upsert(record, commit=commit)
+                from .record_replay import scope_move_payload
+                self.enqueue_export(stream='records', payload=scope_move_payload(record, previous_scope), commit=False)
+            else:
+                self.upsert(record, commit=False)
+            if commit:
+                self.conn.commit()
+        except BaseException:
+            if commit or started:
+                self.conn.rollback()
+            raise
 
     def repair_status_projection_mismatches(
         self,

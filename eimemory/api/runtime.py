@@ -2088,22 +2088,31 @@ class Runtime:
                 at_time=at_time,
                 legacy_compatibility=legacy_compatibility,
             )
-            ranked = rank_learning_signals(watch_report.get("signals") or [], self_model, [], max_items=max_items)
-            registry = load_goal_registry(legacy_compatibility=legacy_compatibility)
-            report = generate_thoughts(
-                self,
-                signals=ranked,
-                self_model=self_model,
-                goals=list(registry.get("long_term") or []),
-                scope=scope,
-                loop_id="think",
-                persist=persist,
-                max_items=max_items,
-                profile_key=profile_key,
-                capability_scope=capability_scope,
-                at_time=at_time,
-                legacy_compatibility=legacy_compatibility,
-            )
+            quality_closure = self_model.get("quality_closure") or {}
+            if quality_closure.get("status") == "blocked":
+                reason = str(self_model.get("reason") or "quality_closure_evidence_unavailable")
+                report = {
+                    "ok": False, "status": "blocked", "reason": reason, "error": reason,
+                    "thoughts": [], "thought_count": 0, "persisted_count": 0,
+                    "persisted_record_ids": [], "quality_closure": quality_closure,
+                }
+            else:
+                ranked = rank_learning_signals(watch_report.get("signals") or [], self_model, [], max_items=max_items)
+                registry = load_goal_registry(legacy_compatibility=legacy_compatibility)
+                report = generate_thoughts(
+                    self,
+                    signals=ranked,
+                    self_model=self_model,
+                    goals=list(registry.get("long_term") or []),
+                    scope=scope,
+                    loop_id="think",
+                    persist=persist,
+                    max_items=max_items,
+                    profile_key=profile_key,
+                    capability_scope=capability_scope,
+                    at_time=at_time,
+                    legacy_compatibility=legacy_compatibility,
+                )
             report["self_model_persistence"] = dict(self_model.get("persistence") or {})
             summary = supervisor_summary(
                 command="learn-think",

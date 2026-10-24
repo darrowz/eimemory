@@ -17,7 +17,7 @@ from eimemory.governance.release.evidence_contract import (
 from eimemory.governance.learning.goal_registry import load_goal_registry
 from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.promotion.rollout_lifecycle import is_executed_rollback_ledger_record
-from eimemory.governance.learning.self_model import build_self_model
+from eimemory.governance.learning.self_model import _current_weakness_records, build_self_model
 from eimemory.governance.safety.prompt_safety import (
     PROMPT_SAFETY_CASE_COUNT,
     PROMPT_SAFETY_MANIFEST_DIGEST,
@@ -74,6 +74,10 @@ def build_world_model(
         catalog=catalog,
         at_time=at_time,
     )
+    if (self_model.get("quality_closure") or {}).get("status") == "blocked":
+        return {
+            **self_model, "report_type": "l5_world_model", "persisted_record_id": "",
+        }
     ledger = build_dynamic_capability_ledger(
         runtime,
         scope=scope_ref,
@@ -181,6 +185,9 @@ def build_strategic_roadmap(
             legacy_compatibility=legacy_compatibility,
         )
     )
+    if (world.get("quality_closure") or {}).get("status") == "blocked":
+        return {**world, "report_type": "l5_strategic_roadmap", "stages": [], "milestone_count": 0,
+                "persisted_record_id": ""}
     horizons = [day for day in (30, 90, 180) if day <= max(30, int(horizon_days or 180))]
     if not horizons:
         horizons = [30]
@@ -285,6 +292,15 @@ def run_l5_cycle(
         at_time=at_time,
         legacy_compatibility=legacy_compatibility,
     )
+    if (world.get("quality_closure") or {}).get("status") == "blocked":
+        reason = str(world.get("reason") or "quality_chain_evidence_unavailable")
+        blocked = {"ok": False, "status": "blocked", "reason": reason}
+        return {
+            **blocked, "schema_version": L5_SCHEMA_VERSION, "report_type": "l5_closed_loop",
+            "loop_id": resolved_loop_id, "scope": asdict(scope_ref), "world_model": world,
+            "quality_closure": world["quality_closure"], "autonomous_learning": dict(blocked),
+            "assessment": {**blocked, "missing_evidence": [reason]}, "persisted_record_id": "",
+        }
     roadmap = build_strategic_roadmap(
         runtime,
         scope=scope_ref,
@@ -673,12 +689,14 @@ def _recent_records(runtime: Any, *, scope: ScopeRef, limit: int) -> list[Record
 
 
 def _weaknesses(runtime: Any, self_model: dict[str, Any], scope: ScopeRef) -> list[dict[str, Any]]:
-    items = list(self_model.get("weaknesses") or [])
-    if items:
-        return items
+    items = self_model.get("weaknesses")
+    if isinstance(items, list):
+        # An empty, computed self-model is authoritative. A smaller fallback
+        # window may omit chain ancestors and reopen an already closed gap.
+        return list(items)
     records = runtime.store.list_records(kinds=["reflection", "incident"], scope=scope, limit=50)
     fallback = []
-    for record in records:
+    for record in _current_weakness_records(records):
         content = record.content if isinstance(record.content, dict) else {}
         lesson = str(record.meta.get("fix") or content.get("fix") or record.summary or "").strip()
         if not lesson:
