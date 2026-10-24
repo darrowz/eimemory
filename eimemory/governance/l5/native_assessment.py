@@ -82,8 +82,11 @@ def _negative_evidence(envelope: dict[str, Any]) -> bool:
         if transaction.get("quarantined") is True:
             return True
         # known_before_detection / prior_user_reported / manual_bootstrap are
-        # product-completion gaps (awaiting a qualifying detector-origin
-        # incident), not archived proof that this reading itself failed.
+        # product-completion gaps when unproven. A verified True is adverse
+        # evidence, not an evidence wait, and must not be waived.
+        if any(transaction.get(key) is True for key in (
+                'known_before_detection', 'prior_user_reported', 'manual_bootstrap')):
+            return True
         if 'managed_incident_proof' in transaction:
             from eimemory.governance.evolution.managed_code_incident_proof import qualification_evidence
             try:

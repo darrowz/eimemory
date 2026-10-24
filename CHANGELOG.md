@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.27] — 2026-10-24
+
+- Keep unproven native incident facts as evidence waits. A verified known-before, user-reported, or manual-bootstrap fact is adverse evidence and no longer keeps nightly in a non-fatal wait.
+
+
 ## [1.15.26] — 2026-10-22
 
 - Allow reviewed abandonment of a failed manual deploy that already switched to the candidate but has not resumed. Inconsistent resumed flags and unrelated registry changes still fail closed.
