@@ -106,8 +106,12 @@ def test_each_agent_is_judged_separately_and_all_must_pass():
     reports = {"alpha": _report(True), "beta": _report(False, "false_recall_rate_above_threshold")}
     result = run_per_agent(scopes, BASE, {}, lambda s: reports[s["agent_id"]])
     assert result["agents"]["alpha"]["ok"] is True and result["agents"]["beta"]["ok"] is False
-    assert result["combined"] == {"ok": False, "blocked_reason": "false_recall_rate_above_threshold",
-                                  "blocking_agent": "beta", "failing_agents": ["beta"]}
+    assert result["combined"]["ok"] is False
+    assert result["combined"]["blocked_reason"] == "false_recall_rate_above_threshold"
+    assert result["combined"]["blocking_agent"] == "beta"
+    assert result["combined"]["failing_agents"] == ["beta"]
+    assert result["forced_agents"] == ["alpha", "beta"]
+    assert result["deferred_agents"] == []
 
 
 def test_evidence_waits_stay_waits_and_zero_agents_never_pass():
@@ -127,3 +131,48 @@ def test_bounded_gate_is_never_weaker_than_primary():
     assert _per_agent_bounded_gate(primary, failing)["ok"] is False
     assert _per_agent_bounded_gate({"ok": False, "blocked_reason": "p"}, passing)["ok"] is False
     assert _per_agent_bounded_gate(primary, {"ok": False})["ok"] is False
+
+def test_zero_sample_traffic_agents_are_deferred_not_forced():
+    scopes = [{**BASE, "agent_id": a, "discovered_decisions": n}
+              for a, n in (("hongrui", 10), ("hongtai", 5), ("hongxin", 3))]
+    reports = {
+        "hongrui": _report(True, n=3),
+        "hongtai": _report(False, "recall_quality_evidence_incomplete", n=0),
+        "hongxin": _report(False, "recall_quality_evidence_incomplete", n=0),
+    }
+    result = run_per_agent(scopes, {**BASE, "agent_id": "hongrui"}, reports["hongrui"],
+                           lambda s: reports[s["agent_id"]])
+    assert result["forced_agents"] == ["hongrui"]
+    assert result["deferred_agents"] == ["hongtai", "hongxin"]
+    assert result["agents"]["hongrui"]["force_status"] == "forced"
+    assert result["agents"]["hongtai"]["force_status"] == "deferred_awaiting_labeled_samples"
+    assert result["combined"]["ok"] is False
+    assert result["combined"]["blocked_reason"] == "recall_quality_evidence_incomplete"
+    assert result["combined"]["detail"] == "traffic_agents_awaiting_labeled_samples"
+    # Never pass on the labeled agent alone while traffic peers await samples.
+    assert "hongrui" not in result["combined"].get("failing_agents", [])
+    assert set(result["combined"]["deferred_agents"]) == {"hongtai", "hongxin"}
+
+
+def test_all_forced_agents_passing_with_no_deferred_still_passes():
+    scopes = [{**BASE, "agent_id": "solo", "discovered_decisions": 4}]
+    primary = _report(True, n=2)
+    result = run_per_agent(scopes, {**BASE, "agent_id": "solo"}, primary,
+                           lambda s: primary)
+    assert result["combined"]["ok"] is True
+    assert result["forced_agents"] == ["solo"]
+    assert result["deferred_agents"] == []
+
+
+def test_hard_fail_on_forced_agent_beats_deferred_evidence_wait():
+    scopes = [{**BASE, "agent_id": a} for a in ("alpha", "beta")]
+    reports = {
+        "alpha": _report(False, "false_recall_rate_above_threshold", n=4),
+        "beta": _report(False, "recall_quality_evidence_incomplete", n=0),
+    }
+    result = run_per_agent(scopes, BASE, {}, lambda s: reports[s["agent_id"]])
+    assert result["combined"]["ok"] is False
+    assert result["combined"]["blocked_reason"] == "false_recall_rate_above_threshold"
+    assert result["combined"]["blocking_agent"] == "alpha"
+    assert result["deferred_agents"] == ["beta"]
+

@@ -140,7 +140,7 @@ def test_no_traffic_profile_is_not_forced_g2c_and_explicit_capture_is_not_natura
         assert not report['combined']['ok']
         assert report['combined']['detail'] == 'no_agent_with_natural_traffic'
         assert report['rule'] == 'g2c_traffic_agents_must_pass_separately'
-        assert report['per_agent_force_policy'] == 'g2c_traffic_agents_only.v1'
+        assert report['per_agent_force_policy'] == 'g2c_traffic_agents_with_samples.v1'
         assert report['scope_verdicts'] == {}
         assert report['profile_inventory']['logical_profile_count'] == 5
         counts = coverage.profile_sampling_diagnostics(runtime, value, tenant_id='audit-tenant')

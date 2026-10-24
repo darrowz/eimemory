@@ -152,8 +152,10 @@ def test_scheduler_records_worker_outcome_before_business_steps(monkeypatch, suc
         jobs.run_nightly_jobs(object(), scope={}, deployment_admission=dict(
             status="terminal", job_key=KEY, worker_succeeded=success, release_complete=success))
     assert observed[0]["step"] == "deployment_admission"
-    assert observed[0]["ok"] is success
-    assert jobs._aggregate_nightly_ok({}, observed) is success
+    # Failed terminal is an operator evidence wait, not a nightly hard fail.
+    assert observed[0]["ok"] is True
+    assert observed[0]["evaluation_status"] == ("completed" if success else "awaiting_evidence")
+    assert jobs._aggregate_nightly_ok({}, observed) is True
 
 
 @pytest.fixture

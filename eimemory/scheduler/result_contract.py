@@ -267,6 +267,17 @@ def _non_actionable_step_wait(name: str, result: dict) -> bool:
         return (result.get("execution_ok") is True
                 and isinstance(quality, dict) and _quality_wait_is_non_actionable(quality)
                 and result.get("blocked_reason") == "recall_quality_evidence_incomplete")
+    if name == "deployment_admission":
+        # A failed or interrupted deploy terminal is operator evidence, not a
+        # business/nightly defect. Wait until the transition is abandoned or a
+        # successful release completes; never invent autonomous repair credit.
+        return (
+            result.get("ok") is False
+            and result.get("status") == "terminal"
+            and result.get("worker_succeeded") is False
+            and result.get("release_complete") is False
+            and result.get("autonomous_repair_credit") is not True
+        )
     return False
 
 

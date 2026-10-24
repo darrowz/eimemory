@@ -1,12 +1,14 @@
 """Per-agent recall-quality scopes.
 
 G2c: only agents (or topology-bound profiles) with natural proactive traffic
-are forced through the gate. Each is evaluated separately in its own base
-scope with the shared absolute thresholds. Results are never pooled. Declared
-profiles without traffic remain in roster/diagnostics but do not block the
-combined verdict. The combined verdict passes only when every forced agent
-passes; an agent whose only blocker is incomplete evidence makes the combined
-verdict an evidence wait, never a pass.
+are discovered. After evaluation, only agents with labeled samples
+(``sample_count > 0``) are forced through the absolute thresholds. Traffic
+agents with ``sample_count == 0`` are deferred (awaiting labeled samples):
+they stay in diagnostics and make the combined verdict an evidence wait,
+never a pass on the remaining forced agents alone. Declared profiles without
+traffic remain in roster/diagnostics and do not block. Results are never
+pooled. A forced agent whose only blocker is incomplete evidence also keeps
+the combined verdict as an evidence wait.
 """
 from __future__ import annotations
 
@@ -196,11 +198,38 @@ def run_per_agent(scopes: list[dict], primary_scope: dict, primary_report: dict[
             verdicts[agent] = {**(verdict if verdict["ok"] is not True else previous),
                 "ok": previous["ok"] is True and verdict["ok"] is True,
                 "sample_count": previous["sample_count"] + verdict["sample_count"]}
+    forced = {agent: verdict for agent, verdict in verdicts.items()
+              if int(verdict.get("sample_count") or 0) > 0}
+    deferred = {agent: verdict for agent, verdict in verdicts.items()
+                if int(verdict.get("sample_count") or 0) <= 0}
+    for agent, verdict in verdicts.items():
+        verdict["force_status"] = (
+            "forced" if agent in forced else "deferred_awaiting_labeled_samples")
+    combined = combine_agent_verdicts(forced)
+    if deferred:
+        hard = (combined.get("ok") is not True
+                and str(combined.get("blocked_reason") or "") not in EVIDENCE_WAIT_REASONS)
+        if not hard:
+            combined = {
+                "ok": False,
+                "blocked_reason": "recall_quality_evidence_incomplete",
+                "detail": "traffic_agents_awaiting_labeled_samples",
+                "failing_agents": sorted(set(combined.get("failing_agents") or []) | set(deferred)),
+                "deferred_agents": sorted(deferred),
+                "forced_agents": sorted(forced),
+            }
+        else:
+            combined = {**combined, "deferred_agents": sorted(deferred),
+                        "forced_agents": sorted(forced)}
+    else:
+        combined = {**combined, "deferred_agents": [], "forced_agents": sorted(forced)}
     result = {"schema": "recall_quality_per_agent.v1", "rule": "all_discovered_agents_must_pass_separately",
             "discovery": {"source": "EIMEMORY_RECALL_GATE_AGENTS" if any(i.get("source") == "override" for i in scopes)
                           else "proactive_decisions natural traffic", "window_days": DISCOVERY_WINDOW_DAYS,
                           "agents": discovered},
-            "agents": verdicts, "combined": combine_agent_verdicts(verdicts)}
+            "agents": verdicts, "combined": combined,
+            "per_agent_force_policy": "g2c_traffic_agents_with_samples.v1",
+            "deferred_agents": sorted(deferred), "forced_agents": sorted(forced)}
     from eimemory.evaluation.hermes_profile_coverage import load_topology, roster_summary
     topology = load_topology()
     if topology is not None or scope_verdicts:
@@ -209,7 +238,7 @@ def run_per_agent(scopes: list[dict], primary_scope: dict, primary_report: dict[
             raise ValueError("recall_profile_topology_disappeared")
         roster = roster_summary(topology)
         result.update(rule="g2c_traffic_agents_must_pass_separately",
-            per_agent_force_policy="g2c_traffic_agents_only.v1",
+            per_agent_force_policy="g2c_traffic_agents_with_samples.v1",
             profile_inventory=roster, scope_verdicts=scope_verdicts)
         result["discovery"]["source"] = "trusted_hermes_topology"
         result['unbound_profiles'] = [dict(profile_name=row['profile_name'], agent_id=row['agent_id'],

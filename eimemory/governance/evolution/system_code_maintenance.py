@@ -77,18 +77,34 @@ def run_system_code_maintenance(
             lambda: ensure_native_incident_policy(runtime, scope=scope_ref, repo_root=repo_root),
             "native_policy_owner",
         )
-        route = (_call(
-            lambda: process_system_code_incidents(runtime, scope=scope_ref, repo_root=repo_root, max_items=1,
-                **({'capability_authority': policy_owner['capability_authority']}
-                   if 'capability_authority' in policy_owner else {})),
-            "incident_router") if policy_owner.get("ok") is True else {
-                "ok": False, "status": "blocked", "reason": "native_policy_owner_unverified", "processed": []})
-        failure = (_call(
-            lambda: record_system_code_repair_failure(
-                runtime, scope=scope_ref, repair_report=route, detected_at=detected_at),
-            "repair_failure_detector",
-        ) if policy_owner.get("ok") is True else {
-            "ok": True, "status": "skipped", "reason": "router_not_executed", "incident_record_id": ""})
+        if policy_owner.get("ok") is not True:
+            route = {
+                "ok": False, "status": "blocked", "reason": "native_policy_owner_unverified", "processed": []}
+            failure = {
+                "ok": True, "status": "skipped", "reason": "router_not_executed", "incident_record_id": ""}
+        elif policy_owner.get("status") == "manual_policy_preserved":
+            # Expired/unowned automation policy stays operator-owned. Do not
+            # route incidents that need a live automation identity; recovery
+            # and failure accounting still run so leases are not stranded.
+            route = {
+                "ok": True, "status": "deferred", "reason": "manual_policy_preserved", "processed": []}
+            failure = _call(
+                lambda: record_system_code_repair_failure(
+                    runtime, scope=scope_ref, repair_report=route, detected_at=detected_at),
+                "repair_failure_detector",
+            )
+        else:
+            route = _call(
+                lambda: process_system_code_incidents(
+                    runtime, scope=scope_ref, repo_root=repo_root, max_items=1,
+                    **({'capability_authority': policy_owner['capability_authority']}
+                       if 'capability_authority' in policy_owner else {})),
+                "incident_router")
+            failure = _call(
+                lambda: record_system_code_repair_failure(
+                    runtime, scope=scope_ref, repair_report=route, detected_at=detected_at),
+                "repair_failure_detector",
+            )
     else:
         policy_owner = {"ok": True, "status": "skipped", "reason": "runtime_identity_unverified"}
         route = {"ok": False, "status": "blocked", "reason": "runtime_identity_unverified", "processed": []}

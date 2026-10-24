@@ -192,6 +192,21 @@ def test_valid_system_drift_is_an_observation_and_not_a_false_detector_exception
     assert report["code_evolution"] == owners.recovery
 
 
+def test_manual_policy_preserved_defers_router_without_hard_fail(owners, monkeypatch):
+    # Expired/unowned automation policy must not force incident routing that
+    # needs a live automation identity; recovery still runs.
+    monkeypatch.setattr(
+        "eimemory.governance.evolution.code_automation_policy_owner.ensure_native_incident_policy",
+        lambda *_a, **_k: {"ok": True, "status": "manual_policy_preserved", "repair_complete": False})
+    report = run(owners)
+    assert report["execution_ok"] is True
+    assert report["native_policy_owner"]["status"] == "manual_policy_preserved"
+    assert report["system_code_repair"] == {
+        "ok": True, "status": "deferred", "reason": "manual_policy_preserved", "processed": []}
+    assert [name for name, _ in owners.calls] == ["detector", "failure", "recovery"]
+    assert "router" not in [name for name, _ in owners.calls]
+
+
 def test_blocked_route_and_failed_recovery_remain_visible(owners):
     owners.route.update(ok=False, status="blocked", reason="automation_policy_identity_unavailable")
     owners.recovery.update(ok=False, status="blocked", reason="observation_failed")

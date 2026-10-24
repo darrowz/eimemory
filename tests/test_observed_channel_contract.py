@@ -51,5 +51,5 @@ def test_historical_policy_floors_and_digests_are_immutable():
     current = production_real_query_policy_payload()
     assert current['thresholds']['mrr'] == 0.50
     assert current['thresholds']['ndcg_at_5'] == 0.55
-    assert current['per_agent_force_policy'] == 'g2c_traffic_agents_only.v1'
+    assert current['per_agent_force_policy'] == 'g2c_traffic_agents_with_samples.v1'
     assert production_real_query_policy_digest() not in historical.values()
