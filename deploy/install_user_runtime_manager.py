@@ -1652,10 +1652,16 @@ def validate_failed_manual_recovery(contract, registry, record, transition, nati
     completed=(transition.get('complete') is True and transition.get('job_key')==key
         and transition.get('held') is False and record.get('phase')=='completed'
         and record.get('finalized') is True and record.get('resumed') is True)
+    # Pre-publish quiesce can fail before writers are proven stopped. That is
+    # still a failed manual attempt on the base runtime and must stay abandonable.
+    pre_quiesce_failed=(record.get('phase')=='quiesce_intent'
+        and record.get('quiesced') is not True
+        and record.get('resumed') is not True
+        and record.get('finalized') is not True)
     if (not (pending or completed)
             or record.get('manual_release') is not True
-            or record.get('quiesced') is not True
-            or record.get('phase') not in {'publish','activate','rollback','resume_deferred_until_terminal',
+            or (record.get('quiesced') is not True and not pre_quiesce_failed)
+            or record.get('phase') not in {'quiesce_intent','publish','activate','rollback','resume_deferred_until_terminal',
                                          'background_restore_intent','resumed_awaiting_business','completed'}
             or record.get('unit')!=contract.job_unit(key)):
         raise ValueError('user_recovery_failed_manual_binding_invalid')

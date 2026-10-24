@@ -104,13 +104,14 @@ def test_native_retry_requires_real_failed_main_or_distinct_prestart(monkeypatch
     assert record==before  # The adverse job/nonce is immutable to operator recovery.
 
 
-@pytest.mark.parametrize('fault',['none','deferred','candidate','completed_binding_failure',
+@pytest.mark.parametrize('fault',['none','deferred','pre_quiesce','candidate','completed_binding_failure',
     'candidate_not_resumed','switched_before_resume','switched_background_restore_stuck',
     'background_restore_without_serving','unrelated_registry','success','changed_transition'])
 def test_abandon_handles_rollback_and_current_failed_finalization_without_acceptance(fault):
     module=installer();record,native=attempt();registry=deepcopy(record['registry'])
     transition={'complete':False,'job_key':record['job_key']};current='b'*40
     if fault=='deferred':record['phase']='resume_deferred_until_terminal'
+    if fault=='pre_quiesce':record.update(phase='quiesce_intent',quiesced=False)
     if fault in {'candidate','completed_binding_failure','candidate_not_resumed','unrelated_registry'}:
         current='a'*40;registry['runtime_commit']=current;registry['generation']='e'*64
         record.update(resumed=True,phase='resumed_awaiting_business')
@@ -133,7 +134,7 @@ def test_abandon_handles_rollback_and_current_failed_finalization_without_accept
     if fault=='success':native.update(ActiveState='active',SubState='exited',Result='success',ExecMainStatus='0')
     if fault=='changed_transition':transition['job_key']='0'*64
     original=deepcopy((record,native,registry,transition))
-    if fault in {'none','deferred','candidate','completed_binding_failure','switched_before_resume',
+    if fault in {'none','deferred','pre_quiesce','candidate','completed_binding_failure','switched_before_resume',
                  'switched_background_restore_stuck'}:
         module.validate_failed_manual_recovery(contract,registry,record,transition,native,current)
     else:
