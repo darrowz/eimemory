@@ -1138,8 +1138,16 @@ class Bridge:
         # A later operator topology can legitimately retire an installed unit;
         # that does not erase or invalidate its earlier capture.
         self.verify_recovery_history(registry,prior,capture,current,source_chain)
+        # Mirror abandon: pre-quiesce failed manuals are abandonable, so their
+        # sealed capture must also be consumable by the next reviewed tip-change.
+        pre_quiesce_failed=(prior.get('phase')=='quiesce_intent'
+            and prior.get('quiesced') is not True
+            and prior.get('resumed') is not True
+            and prior.get('finalized') is not True
+            and isinstance(prior.get('active_before'),list))
         if (prior.get('job_key')!=source or prior.get('unit')!=self.c.job_unit(source)
-                or prior.get('manual_release') is not True or prior.get('quiesced') is not True
+                or prior.get('manual_release') is not True
+                or (prior.get('quiesced') is not True and not pre_quiesce_failed)
                 or prior.get('original_invocation')!=invocation
                 or old_registry['generation']!=capture['source_registry_generation']
                 or prior.get('active_before')!=capture['active_before']

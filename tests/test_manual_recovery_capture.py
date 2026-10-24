@@ -179,6 +179,16 @@ def test_recovery_rejects_unbound_or_unproven_captures(recovery,damage):
     assert r.calls==[]
 
 
+def test_pre_quiesce_abandoned_source_is_consumable(recovery):
+    """Abandonable pre-quiesce failures must bind as recovery sources."""
+    r=recovery
+    prior=dict(r.prior,phase='quiesce_intent',quiesced=False,resumed=False,finalized=None)
+    r.persist(prior)
+    capture,_,_=r.bridge.manual_recovery_capture(r.registry,r.record,r.base)
+    assert capture['source_job_key']==prior['job_key']
+    assert capture['active_before']==prior['active_before']
+
+
 def test_migration_audits_keep_system_timer_enablement_and_user_gateways(recovery):
     r=recovery;prior=deepcopy(r.prior);prior.pop('enabled_before')
     user=dict(schema='manual_user_owner_before.v1',states={unit:dict(LoadState='loaded',UnitFileState='disabled') for unit in prior['active_before']})
