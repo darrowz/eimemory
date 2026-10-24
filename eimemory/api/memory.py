@@ -808,6 +808,26 @@ class MemoryAPI:
         finally:
             reset_verifier_route(token)
 
+    def _final_paper_source_admission(self, bundle: RecallBundle, *, deadline_at: float) -> RecallBundle:
+        from eimemory.knowledge.evidence_gate import paper_source_evidence_reasons
+
+        delivered = [*bundle.items, *bundle.rules, *bundle.reflections]
+        reasons = Counter(reason for reason in paper_source_evidence_reasons(
+            delivered, store=self.store, deadline_at=deadline_at) if reason)
+        if not reasons:
+            return bundle
+        # As with final identity revocation, prebuilt explanation lanes may
+        # contain the rejected body. A partial edit cannot certify those lanes.
+        return RecallBundle(items=[], rules=[], reflections=[], confidence=0.0, next_action_hint="",
+            explanation={
+                "retrieval_state": {"schema": "retrieval_state.v1", "status": "unavailable",
+                    "selected_count": 0, "dropped_reasons": dict(reasons)},
+                "relevance_selector": {"status": "unavailable", "selected_count": 0,
+                    "dropped_reasons": dict(reasons)},
+                "retrieval_status": "unavailable",
+                "paper_source_evidence": {"ok": False, "blocked_count": sum(reasons.values())},
+            })
+
     @staticmethod
     def _pipeline_snapshot(
         *,

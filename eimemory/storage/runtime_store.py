@@ -13,6 +13,7 @@ from time import perf_counter
 import tempfile
 from collections.abc import Callable
 from typing import TYPE_CHECKING, TypeVar
+from uuid import uuid4
 
 from eimemory.storage.record_export import export_record_markdown
 from eimemory.metadata import business_metadata
@@ -676,36 +677,39 @@ class RuntimeStore:
         with self._lock:
             if commit:
                 self._require_own_transaction("update_intent_pattern_row")
-            updated = self.sqlite.execute(
-                """
-                UPDATE intent_patterns
-                SET status = ?, payload_json = ?, last_rollback_reason = ?, updated_at = ?
-                WHERE id = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
-                  AND (status NOT IN ('rolled_back', 'quarantined') OR status = ?)
-                  AND (COALESCE(json_extract(payload_json, '$.post_promotion_watch.status'), '')
-                       NOT IN ('active', 'rolled_back', 'quarantined') OR status = ?)
-                """,
-                (
-                    status,
-                    payload_json,
-                    last_rollback_reason,
-                    updated_at,
-                    str(pattern_id),
-                    scope_ref.tenant_id,
-                    scope_ref.agent_id,
-                    scope_ref.workspace_id,
-                    scope_ref.user_id,
-                    status,
-                    status,
-                ),
-            )
-            rowcount = int(updated.rowcount)
-            if rowcount != 1:
-                if commit:
-                    self.sqlite.rollback()
-                return rowcount
+            with self.sqlite._auxiliary_write_transaction(commit=commit):
+                previous = self.sqlite.execute(
+                    "SELECT payload_json FROM intent_patterns WHERE id=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?",
+                    (str(pattern_id), scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id),
+                ).fetchone()
+                updated = self.sqlite.execute(
+                    """
+                    UPDATE intent_patterns
+                    SET status = ?, payload_json = ?, last_rollback_reason = ?, updated_at = ?
+                    WHERE id = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
+                      AND (status NOT IN ('rolled_back', 'quarantined') OR status = ?)
+                      AND (COALESCE(json_extract(payload_json, '$.post_promotion_watch.status'), '')
+                           NOT IN ('active', 'rolled_back', 'quarantined') OR status = ?)
+                    """,
+                    (
+                        status,
+                        payload_json,
+                        last_rollback_reason,
+                        updated_at,
+                        str(pattern_id),
+                        scope_ref.tenant_id,
+                        scope_ref.agent_id,
+                        scope_ref.workspace_id,
+                        scope_ref.user_id,
+                        status,
+                        status,
+                    ),
+                )
+                rowcount = int(updated.rowcount)
+                if rowcount == 1 and (previous is None or json.loads(str(previous["payload_json"])) != json.loads(payload_json)):
+                    self.sqlite.enqueue_intent_pattern_export(str(pattern_id), scope=scope_ref)
             if commit:
-                self.sqlite.commit()
+                self._safe_post_commit_projection([], [])
             return rowcount
 
     def mutate_records_atomically(
@@ -1373,35 +1377,42 @@ class RuntimeStore:
                     commit=False,
                 )
                 self.sqlite.commit()
-            except Exception:
+            except BaseException:
                 self.sqlite.rollback()
                 raise
-            self._flush_committed_exports(export["operation_id"])
+            self._safe_post_commit_projection([export], [])
             return result
 
     def record_outcome(self, event_id: str, payload: dict, *, scope: ScopeRef | dict | None = None) -> dict:
         with self._lock:
             self._require_own_transaction("record_outcome")
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            from eimemory.events import ensure_outcome_payload
+            canonical = ensure_outcome_payload(event_id, payload)
+            exports: list[dict] = []
             try:
+                self.sqlite.execute("BEGIN IMMEDIATE")
+                previous = self.sqlite.execute("SELECT payload_json FROM event_outcomes WHERE id=?", (canonical["id"],)).fetchone()
                 result = self.sqlite.record_outcome(
                     event_id,
-                    payload,
+                    canonical,
                     scope=scope_ref,
                     commit=False,
                 )
-                export = self.sqlite.enqueue_export(
-                    stream="event_outcomes",
-                    payload=self._auxiliary_entry(
-                        "event_outcomes", result, scope=scope_ref
-                    ),
-                    commit=False,
-                )
+                stored = self.sqlite.execute("SELECT payload_json FROM event_outcomes WHERE id=?", (result["id"],)).fetchone()
+                persisted = json.loads(str(stored["payload_json"]))
+                if previous is None or json.loads(str(previous["payload_json"])) != persisted:
+                    exports.append(self.sqlite.enqueue_export(
+                        stream="event_outcomes",
+                        payload=self._auxiliary_entry("event_outcomes", persisted, scope=scope_ref),
+                        operation_id=uuid4().hex,
+                        commit=False,
+                    ))
                 self.sqlite.commit()
-            except Exception:
+            except BaseException:
                 self.sqlite.rollback()
                 raise
-            self._flush_committed_exports(export["operation_id"])
+            self._safe_post_commit_projection(exports, [])
             return result
 
     def record_terminal_bundle(
@@ -1535,8 +1546,8 @@ class RuntimeStore:
                 if stored_trace is None:
                     self.sqlite.upsert(trace_record, commit=False)
                     stored_trace = trace_record
-                trace_exports = self._enqueue_record_exports(stored_trace)
-                operation_ids.extend(item["operation_id"] for item in trace_exports)
+                    trace_exports = self._enqueue_record_exports(stored_trace)
+                    operation_ids.extend(item["operation_id"] for item in trace_exports)
                 self.sqlite.commit()
             except Exception:
                 self.sqlite.rollback()
@@ -1562,24 +1573,24 @@ class RuntimeStore:
         with self._lock:
             self._require_own_transaction("upsert_intent_pattern")
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            from eimemory.events import ensure_pattern_payload
+            canonical = ensure_pattern_payload(payload, scope_ref)
             try:
+                self.sqlite.execute("BEGIN IMMEDIATE")
+                previous = self.sqlite.execute("SELECT payload_json FROM intent_patterns WHERE id=?", (canonical["id"],)).fetchone()
                 result = self.sqlite.upsert_intent_pattern(
-                    payload,
+                    canonical,
                     scope=scope_ref,
                     commit=False,
                 )
-                export = self.sqlite.enqueue_export(
-                    stream="intent_patterns",
-                    payload=self._auxiliary_entry(
-                        "intent_patterns", result, scope=scope_ref
-                    ),
-                    commit=False,
-                )
+                stored = self.sqlite.execute("SELECT payload_json FROM intent_patterns WHERE id=?", (result["id"],)).fetchone()
+                if previous is None or json.loads(str(previous["payload_json"])) != json.loads(str(stored["payload_json"])):
+                    self.sqlite.enqueue_intent_pattern_export(result["id"], scope=scope_ref)
                 self.sqlite.commit()
-            except Exception:
+            except BaseException:
                 self.sqlite.rollback()
                 raise
-            self._flush_committed_exports(export["operation_id"])
+            self._safe_post_commit_projection([], [])
             return result
 
     def search_policy(
@@ -1623,7 +1634,14 @@ class RuntimeStore:
         with self._lock:
             self._require_own_transaction("rollback_intent_pattern")
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-            return self.sqlite.rollback_intent_pattern(pattern_id, scope=scope_ref, reason=reason, auto=auto)
+            try:
+                result = self.sqlite.rollback_intent_pattern(pattern_id, scope=scope_ref, reason=reason, auto=auto, commit=False)
+                self.sqlite.commit()
+            except BaseException:
+                self.sqlite.rollback()
+                raise
+            self._safe_post_commit_projection([], [])
+            return result
 
     def get_by_id(
         self, record_id: str, scope: ScopeRef | dict | None = None, *,
@@ -1647,12 +1665,14 @@ class RuntimeStore:
         scope: ScopeRef | dict,
         source_id: str,
         preserve_unknown_occurred_at: bool = False,
+        fail_on_unavailable: bool = False,
     ) -> RecordEnvelope | None:
         with self._lock:
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
             return self.sqlite.get_by_exact_ref(
                 record_id, scope=scope_ref, source_id=source_id,
-                preserve_unknown_occurred_at=preserve_unknown_occurred_at)
+                preserve_unknown_occurred_at=preserve_unknown_occurred_at,
+                fail_on_unavailable=fail_on_unavailable)
 
     def search_identity_candidates(
         self,
@@ -2524,10 +2544,15 @@ class RuntimeStore:
             )
 
     def _enqueue_record_exports(self, record: RecordEnvelope) -> list[dict]:
+        # A committed observation is not identified by its payload alone:
+        # lifecycle A -> B -> A must retain the final A in recovery order.
+        # Allocate once inside the write transaction; outbox flush retries
+        # reuse this persisted identity without creating another observation.
         exports = [
             self.sqlite.enqueue_export(
                 stream="records",
                 payload=record.to_dict(),
+                operation_id=uuid4().hex,
                 commit=False,
             )
         ]

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+from pathlib import Path
 import sqlite3
 import time
 from typing import Any, Callable
@@ -512,18 +513,60 @@ class CodeEvolutionTransactionManager:
                 raise CodeEvolutionTransactionError('managed incident proof invalid') from exc
             payload['managed_incident_proof'] = managed
             payload.setdefault('source_evidence',{})['managed_incident_proof'] = managed
+        existing = self.store.get_transaction(transaction_id)
+        if existing is not None:
+            original = (existing.get("payload") or {}).get("payload")
+            if not isinstance(original, Mapping) or digest_json(original) != digest_json(dict(proposal)):
+                raise CodeEvolutionConflict("transaction proposal identity conflict")
+            # Materialization is an effect-owner output, not proposal input.
+            # Preserve its recorded value for the store's identity replay only
+            # after matching the complete original proposal. All other scope
+            # and immutable coordinates still pass the existing store checks.
+            payload["candidate_tree_digest"] = str(existing.get("candidate_tree_digest") or "")
         current = self.create_detected(payload)
+        if str(current.get("current_state") or "") in {"OBSERVING", "SUCCEEDED_SEDIMENTED"}:
+            return self._read_applied_submission(
+                current, apply=apply, effects_enabled=effects_enabled,
+            )
+        if str(current.get("current_state") or "") in TERMINAL_STATES:
+            # An exact retry is a read of the immutable terminal outcome. In
+            # particular, apply=True must not re-authorize a proposal whose
+            # original submission was cancelled/disabled.
+            return {
+                "ok": False,
+                "applied": False,
+                "blocked_reason": "code_evolution_transaction_terminal",
+                "transaction_id": transaction_id,
+                "transaction": current,
+                "terminal_receipt": self.store.get_terminal_receipt(transaction_id),
+                "idempotent": True,
+            }
         milestones = (
             ("DIAGNOSED", "diagnosis"),
             ("PROVIDER_RESOLVED", "provider_resolution"),
             ("PATCH_PROPOSED", "proposal"),
             ("PATCH_VALIDATED", "patch_validation"),
         )
-        for state, step in milestones:
-            if str(current.get("current_state") or "") == state:
-                continue
-            if str(current.get("current_state") or "") in TERMINAL_STATES:
-                break
+        proposal_states = ("DETECTED", *(state for state, _step in milestones))
+        current_state = str(current.get("current_state") or "")
+        if current_state not in proposal_states:
+            # External effects may already exist even when their reply was
+            # lost. The recovery owner must read those effects before any
+            # continuation; resubmitting a proposal is not that authority.
+            return {
+                "ok": False,
+                "applied": False,
+                "blocked_reason": "code_evolution_transaction_recovery_required",
+                "reconciliation_required": True,
+                "transaction_id": transaction_id,
+                "transaction": current,
+                "idempotent": True,
+            }
+        # A submission can resume after any durable proposal boundary. Later
+        # effect/recovery states are owned by their existing executor, never
+        # rewound to diagnosis by the original proposal's retry.
+        completed = proposal_states.index(current_state)
+        for state, step in milestones[completed:]:
             updates = {}
             if state == "PATCH_PROPOSED":
                 updates["proposal_digest"] = payload["proposal_digest"]
@@ -571,6 +614,86 @@ class CodeEvolutionTransactionManager:
             transaction_id=transaction_id,
             owner_id=self.owner_id,
         )
+
+    def _read_applied_submission(
+        self, current: Mapping[str, Any], *, apply: bool, effects_enabled: bool,
+    ) -> dict[str, Any]:
+        """Consume an already executed proposal without restarting its effects.
+
+        Ledger state alone is not deployment proof. Reuse the native strict
+        receipt/current-release verifier and the original authority checks;
+        a changed release, revoked grant, or incomplete managed job stays
+        blocked. This is a result read, never new execution or L5 credit.
+        """
+        transaction_id = str(current["transaction_id"])
+        result = {
+            "ok": False, "applied": False, "idempotent": True,
+            "execution_attempted": False, "transaction_id": transaction_id,
+            "transaction": dict(current),
+        }
+        if not apply or not effects_enabled:
+            return {**result, "blocked_reason": "code_evolution_effects_disabled"}
+        try:
+            from eimemory.governance.release.release_closure import read_strict_deployment_receipt
+            from eimemory.governance.evolution.code_automation_policy_owner import verify_native_standing_authority
+            from eimemory.governance.evolution.code_deployment_job import (
+                observation_completion_error, post_resume_business_error,
+            )
+
+            payload = current.get("payload") or {}
+            policy = payload.get("authorized_policy") or {}
+            deployment = policy.get("deployment") or {}
+            candidate = str(current.get("candidate_commit") or "")
+            if (not effect_execution_authorized(current)
+                or policy.get("ok") is not True
+                or not current.get("policy_digest") or policy.get("policy_digest") != current["policy_digest"]
+                or len(candidate) != 40 or any(char not in "0123456789abcdef" for char in candidate)
+                or current.get("deployed_commit") != candidate
+                or payload.get("candidate_pushed_and_deployed") is not True
+                or not payload.get("deployment_receipt_digest")):
+                raise ValueError("code_evolution_submission_identity_unverified")
+            switch = str(policy.get("kill_switch_path") or "")
+            if switch and Path(switch).exists():
+                raise ValueError("code_evolution_submission_authority_revoked")
+            if verify_native_standing_authority(self.runtime, transaction=current).get("ok") is not True:
+                raise ValueError("code_evolution_submission_authority_revoked")
+            scope = {key: str(current.get(key) or "") for key in
+                     ("tenant_id", "agent_id", "workspace_id", "user_id")}
+            receipt = read_strict_deployment_receipt(
+                self.runtime, scope=scope, repo_root=str(current["repository_root"]),
+                current_link=str(deployment["current_link"]), health_url=str(deployment["health_url"]),
+                transaction_id=transaction_id, deployed_commit=candidate,
+            )
+            if (receipt.get("ok") is not True or receipt.get("strict_transaction") is not True
+                or receipt.get("transaction_id") != transaction_id or receipt.get("commit") != candidate
+                or receipt.get("scope") != scope or not receipt.get("promotion_request_id")
+                or digest_json(receipt) != payload["deployment_receipt_digest"]):
+                raise ValueError("code_evolution_submission_receipt_unverified")
+            if (payload.get("managed_deployment_jobs") or {}).get("deploy"):
+                if observation_completion_error(current) or post_resume_business_error(self.runtime, current):
+                    raise ValueError("code_evolution_submission_completion_unverified")
+            terminal = None
+            if current.get("current_state") == "SUCCEEDED_SEDIMENTED":
+                terminal = self.store.get_terminal_receipt(transaction_id)
+                if (terminal is None or terminal.get("outcome") != "succeeded_sedimented"
+                    or terminal.get("receipt_digest") != current.get("terminal_receipt_digest")
+                    or terminal.get("candidate_commit") != candidate or terminal.get("deployed_commit") != candidate
+                    or (terminal.get("payload") or {}).get("deployment_receipt_digest") != payload["deployment_receipt_digest"]):
+                    raise ValueError("code_evolution_submission_terminal_unverified")
+            fresh = self.store.get_transaction(transaction_id)
+            # The initial create/replay response carries a transient marker.
+            expected = {key: value for key, value in current.items() if key != "idempotent"}
+            if fresh != expected:
+                raise ValueError("code_evolution_submission_changed_during_readback")
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
+            return {**result, "blocked_reason": "code_evolution_submission_readback_unverified",
+                    "error_type": type(exc).__name__}
+        return {
+            **result, "ok": True, "applied": True, "blocked_reason": "",
+            "status": "already_applied", "deployment_receipt": receipt,
+            "deployment_receipt_digest": payload["deployment_receipt_digest"],
+            **({"terminal_receipt": terminal} if terminal is not None else {}),
+        }
 
     def acquire_lease(self, transaction_id: str) -> dict[str, Any]:
         return self.store.acquire_lease(transaction_id, owner=self.owner_id, now=self._now())

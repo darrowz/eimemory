@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 from eimemory.core.clock import now_iso
-from eimemory.knowledge.evidence_gate import grade_research_evidence
+from eimemory.knowledge.evidence_gate import grade_research_evidence, paper_source_evidence_reasons
 from eimemory.knowledge.pages import stable_compiled_id
 from eimemory.models.knowledge_pages import KnowledgePage
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -21,6 +21,7 @@ def build_research_digest(
     candidates: Iterable[RecordEnvelope] = (),
     limit: int = 5,
     digest_date: str | None = None,
+    store=None,
 ) -> dict:
     max_items = max(1, int(limit))
     date = _digest_date(digest_date)
@@ -35,9 +36,10 @@ def build_research_digest(
     )
     candidate_records = _recent_records([record for record in candidates if record.kind == "knowledge_candidate"])
 
-    paper_evidence = [(record, grade_research_evidence(record)) for record in papers]
-    claim_evidence = [(record, grade_research_evidence(record)) for record in claims]
-    page_evidence = [(record, grade_research_evidence(record)) for record in pages]
+    parent_reasons = iter(paper_source_evidence_reasons([*papers, *claims, *pages], store=store))
+    paper_evidence = [(record, grade_research_evidence(record, paper_source_reason=next(parent_reasons))) for record in papers]
+    claim_evidence = [(record, grade_research_evidence(record, paper_source_reason=next(parent_reasons))) for record in claims]
+    page_evidence = [(record, grade_research_evidence(record, paper_source_reason=next(parent_reasons))) for record in pages]
     gated_papers, excluded_papers = _gated_records(paper_evidence)
     gated_claims, excluded_claims = _gated_records(claim_evidence)
     gated_pages, excluded_pages = _gated_records(page_evidence)

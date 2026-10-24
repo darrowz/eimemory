@@ -31,6 +31,7 @@ def _allowed_order_by(fragment: str) -> str:
 
 
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import os
@@ -40,6 +41,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from hashlib import sha256
 from time import perf_counter
+from uuid import uuid4
 from eimemory.core.record_ids import validate_record_id
 from eimemory.contracts.recall_boundary import (DEFAULT_BLOCKED_RECALL_LANES,
     RECALL_LANE_MEMORY_TYPE_ALIASES, exact_ref, record_recall_memory_type)
@@ -2611,13 +2613,13 @@ class SqliteRecordStore:
         clean_ids = [str(item) for item in (operation_ids or []) if str(item)]
         if clean_ids:
             placeholders = ','.join('?' for _ in clean_ids)
-            # A later record snapshot/move cannot pass an older pending
-            # snapshot in the recovery log. Keep selective auxiliary exports,
-            # but include the record-stream prefix before selected records.
+            # Every recovery stream must retain committed observation order.
+            # Include the pending prefix before selected work so a newer
+            # policy/outcome snapshot cannot be followed by an older retry.
             where.append(
-                f"(operation_id IN ({placeholders}) OR (stream = 'records' AND rowid <= "
+                f"(operation_id IN ({placeholders}) OR rowid <= "
                 "COALESCE((SELECT MAX(rowid) FROM export_outbox WHERE state = 'pending' "
-                f"AND stream = 'records' AND operation_id IN ({placeholders})), 0)))"
+                f"AND operation_id IN ({placeholders})), 0))"
             )
             params.extend([*clean_ids, *clean_ids])
         rows = self.conn.execute(
@@ -6052,8 +6054,13 @@ class SqliteRecordStore:
         scope: ScopeRef,
         source_id: str,
         preserve_unknown_occurred_at: bool = False,
+        fail_on_unavailable: bool = False,
     ) -> RecordEnvelope | None:
-        """Hydrate one authoritative record without alias or global-user expansion."""
+        """Hydrate one authoritative record without alias or global-user expansion.
+
+        Opt-in callers can distinguish a genuinely absent row from an existing
+        row that cannot be hydrated or disagrees with its SQL projection.
+        """
         self.assert_connection_lock_held()
 
         normalized_source_id = normalize_source_id(source_id)
@@ -6084,6 +6091,8 @@ class SqliteRecordStore:
         record = self._record_from_storage_row(
             row, hydrate=True, preserve_unknown_occurred_at=preserve_unknown_occurred_at)
         if record is None or not self._record_matches_projection_row(record, row):
+            if fail_on_unavailable:
+                raise RuntimeError("exact_record_unavailable")
             return None
         return record
 
@@ -7915,6 +7924,53 @@ class SqliteRecordStore:
             return {}
         return dict(quality)
 
+    @contextmanager
+    def _auxiliary_write_transaction(self, *, commit: bool):
+        """Reserve the writer before checking an auxiliary identity or budget."""
+        started = not self.conn.in_transaction
+        if started:
+            self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute("SAVEPOINT eimemory_auxiliary_write")
+            try:
+                yield
+            except BaseException:
+                self.conn.execute("ROLLBACK TO SAVEPOINT eimemory_auxiliary_write")
+                self.conn.execute("RELEASE SAVEPOINT eimemory_auxiliary_write")
+                raise
+            else:
+                self.conn.execute("RELEASE SAVEPOINT eimemory_auxiliary_write")
+            if commit:
+                self.conn.commit()
+        except BaseException:
+            if started:
+                self.conn.rollback()
+            raise
+
+    def enqueue_intent_pattern_export(self, pattern_id: str, *, scope: ScopeRef) -> dict | None:
+        """Journal the stored policy snapshot within its authoritative mutation."""
+        if self.suppress_auxiliary_logging:
+            return None
+        if not self.conn.in_transaction:
+            raise RuntimeError("intent_pattern_export_requires_transaction")
+        row = self.conn.execute(
+            "SELECT payload_json FROM intent_patterns WHERE id=? AND tenant_id=? "
+            "AND agent_id=? AND workspace_id=? AND user_id=?",
+            (str(pattern_id), scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError("pattern_scope_conflict")
+        return self.enqueue_export(
+            stream="intent_patterns",
+            payload={
+                "log_type": "intent_patterns",
+                "scope": {key: getattr(scope, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")},
+                "payload": json.loads(str(row["payload_json"])),
+            },
+            operation_id=uuid4().hex,
+            commit=False,
+        )
+
     def record_event(
         self,
         payload: dict[str, Any],
@@ -7922,82 +7978,92 @@ class SqliteRecordStore:
         scope: ScopeRef | dict | None = None,
         commit: bool = True,
     ) -> dict[str, Any]:
-        from eimemory.governance import policy_rollout as _pr
-        scope_ref = normalize_scope(scope)
-        data = ensure_event_payload(payload, scope_ref)
-        existing = self.conn.execute("SELECT * FROM events WHERE id=?", (data["id"],)).fetchone()
-        if existing is not None:
-            if any(existing[key] != getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
-                raise ValueError("event_scope_conflict")
-            # Event identity fixes its original policy attribution. Retried
-            # delivery is not permission to rebind it to a newer policy.
-            return json.loads(str(existing["payload_json"]))
-        versions: dict[str, str] = {}
-        attribution = data.get("policy_attribution") if isinstance(data.get("policy_attribution"), dict) else {}
-        audit_id = str(data.get("audit_record_id") or attribution.get("audit_record_id") or "")
-        if audit_id:
-            # The task may finish after a policy replacement. Trust the stored
-            # recall-time version, never a client hash or terminal-time version.
-            audit_row = self.conn.execute(
-                "SELECT payload_json FROM records WHERE record_id=? AND kind='recall_view' "
-                "AND source='openclaw.before_prompt_build' AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?",
-                (audit_id, scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id),
-            ).fetchone()
-            audit = json.loads(str(audit_row["payload_json"])) if audit_row is not None else {}
-            content = audit.get("content") if isinstance(audit.get("content"), dict) else {}
-            audit_ids = _pr.extract_pattern_ids_from_outcome(content)
-            event_ids = _pr.extract_pattern_ids_from_outcome(data)
-            if not audit_ids or (event_ids and set(audit_ids) != set(event_ids)):
-                data["policy_binding_error"] = "event_audit_policy_conflict"
+        with self._auxiliary_write_transaction(commit=commit):
+            from eimemory.governance import policy_rollout as _pr
+            scope_ref = normalize_scope(scope)
+            data = ensure_event_payload(payload, scope_ref)
+            existing = self.conn.execute("SELECT * FROM events WHERE id=?", (data["id"],)).fetchone()
+            if existing is not None:
+                if any(existing[key] != getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
+                    raise ValueError("event_scope_conflict")
+                # Event identity fixes its original policy attribution. Retried
+                # delivery is not permission to rebind it to a newer policy.
+                return json.loads(str(existing["payload_json"]))
+            versions: dict[str, str] = {}
+            if self.suppress_auxiliary_logging:
+                # Recovery restores the original recall-time binding. Policies
+                # are replayed later and cannot re-authorize historical events.
+                recorded_versions = data.get("policy_version_ids", {})
+                if not isinstance(recorded_versions, dict) or any(
+                    not isinstance(key, str) or not isinstance(value, str)
+                    for key, value in recorded_versions.items()
+                ):
+                    raise ValueError("invalid_replayed_policy_versions")
+                versions = dict(recorded_versions)
             else:
-                data["policy_attribution"] = {
-                    **attribution, "policy_suggestion_ids": audit_ids,
-                    "audit_record_id": audit_id,
-                    "selected_records": list(content.get("selected_records") or []),
-                }
-                stored_versions = content.get("policy_version_ids")
-                if isinstance(stored_versions, dict):
-                    versions = {str(key): str(value) for key, value in stored_versions.items() if key in audit_ids}
-        else:
-            for policy_id in _pr.extract_pattern_ids_from_outcome(data):
-                row = self._pattern_row_for_scope(policy_id, scope_ref)
-                if row is not None and all(row[key] == getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
-                    versions[policy_id] = _pr.policy_version(json.loads(str(row["payload_json"])))
-        data["policy_version_ids"] = versions
-        now = datetime.now(timezone.utc).isoformat()
-        self.conn.execute(
-            """
-            INSERT INTO events (
-                id, timestamp, source, user_phrase, event_type, interpreted_intent,
-                goal, confidence, tenant_id, agent_id, workspace_id, user_id,
-                payload_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO NOTHING
-            """,
-            (
-                data["id"],
-                data["timestamp"],
-                data["source"],
-                data["user_phrase"],
-                data["event_type"],
-                data["interpreted_intent"],
-                data["goal"],
-                float(data["confidence"]),
-                scope_ref.tenant_id,
-                scope_ref.agent_id,
-                scope_ref.workspace_id,
-                scope_ref.user_id,
-                json.dumps(data, ensure_ascii=False, sort_keys=True),
-                now,
-                now,
-            ),
-        )
-        stored = self.conn.execute("SELECT * FROM events WHERE id=?", (data["id"],)).fetchone()
-        if any(stored[key] != getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
-            raise ValueError("event_scope_conflict")
-        if commit:
-            self.conn.commit()
-        return json.loads(str(stored["payload_json"]))
+                attribution = data.get("policy_attribution") if isinstance(data.get("policy_attribution"), dict) else {}
+                audit_id = str(data.get("audit_record_id") or attribution.get("audit_record_id") or "")
+                if audit_id:
+                    # The task may finish after a policy replacement. Trust the stored
+                    # recall-time version, never a client hash or terminal-time version.
+                    audit_row = self.conn.execute(
+                        "SELECT payload_json FROM records WHERE record_id=? AND kind='recall_view' "
+                        "AND source='openclaw.before_prompt_build' AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?",
+                        (audit_id, scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id),
+                    ).fetchone()
+                    audit = json.loads(str(audit_row["payload_json"])) if audit_row is not None else {}
+                    content = audit.get("content") if isinstance(audit.get("content"), dict) else {}
+                    audit_ids = _pr.extract_pattern_ids_from_outcome(content)
+                    event_ids = _pr.extract_pattern_ids_from_outcome(data)
+                    if not audit_ids or (event_ids and set(audit_ids) != set(event_ids)):
+                        data["policy_binding_error"] = "event_audit_policy_conflict"
+                    else:
+                        data["policy_attribution"] = {
+                            **attribution, "policy_suggestion_ids": audit_ids,
+                            "audit_record_id": audit_id,
+                            "selected_records": list(content.get("selected_records") or []),
+                        }
+                        stored_versions = content.get("policy_version_ids")
+                        if isinstance(stored_versions, dict):
+                            versions = {str(key): str(value) for key, value in stored_versions.items() if key in audit_ids}
+                else:
+                    for policy_id in _pr.extract_pattern_ids_from_outcome(data):
+                        row = self._pattern_row_for_scope(policy_id, scope_ref)
+                        if row is not None and all(row[key] == getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
+                            versions[policy_id] = _pr.policy_version(json.loads(str(row["payload_json"])))
+            data["policy_version_ids"] = versions
+            now = datetime.now(timezone.utc).isoformat()
+            self.conn.execute(
+                """
+                INSERT INTO events (
+                    id, timestamp, source, user_phrase, event_type, interpreted_intent,
+                    goal, confidence, tenant_id, agent_id, workspace_id, user_id,
+                    payload_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (
+                    data["id"],
+                    data["timestamp"],
+                    data["source"],
+                    data["user_phrase"],
+                    data["event_type"],
+                    data["interpreted_intent"],
+                    data["goal"],
+                    float(data["confidence"]),
+                    scope_ref.tenant_id,
+                    scope_ref.agent_id,
+                    scope_ref.workspace_id,
+                    scope_ref.user_id,
+                    json.dumps(data, ensure_ascii=False, sort_keys=True),
+                    now,
+                    now,
+                ),
+            )
+            stored = self.conn.execute("SELECT * FROM events WHERE id=?", (data["id"],)).fetchone()
+            if any(stored[key] != getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
+                raise ValueError("event_scope_conflict")
+            return json.loads(str(stored["payload_json"]))
 
     def resolve_outcome_policy_attribution(
         self, event_id: str, payload: dict[str, Any], *, scope: ScopeRef,
@@ -8036,58 +8102,70 @@ class SqliteRecordStore:
         commit: bool = True,
         apply_rollbacks: bool = True,
     ) -> dict[str, Any]:
-        if not self.conn.in_transaction:
-            self.conn.execute("BEGIN IMMEDIATE")
-        scope_ref = normalize_scope(scope)
-        data = ensure_outcome_payload(event_id, payload)
-        binding = self.resolve_outcome_policy_attribution(event_id, data, scope=scope_ref)
-        pattern_ids = binding["pattern_ids"]
-        if binding.get("reason"):
-            data["policy_attribution_error"] = binding["reason"]
-        if not outcome_evidence(data)["production_eligible"]:
-            apply_rollbacks = False
-        self.conn.execute(
-            """
-            INSERT INTO event_outcomes (
-                id, event_id, outcome, reason, correction_from_user, policy_update,
-                tenant_id, agent_id, workspace_id, user_id, payload_json, recorded_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                outcome=excluded.outcome,
-                reason=excluded.reason,
-                correction_from_user=excluded.correction_from_user,
-                policy_update=excluded.policy_update,
-                payload_json=excluded.payload_json,
-                recorded_at=excluded.recorded_at
-            """,
-            (
-                data["id"],
-                data["event_id"],
-                data["outcome"],
-                str(data.get("reason") or ""),
-                str(data.get("correction_from_user") or ""),
-                str(data.get("policy_update") or ""),
-                scope_ref.tenant_id,
-                scope_ref.agent_id,
-                scope_ref.workspace_id,
-                scope_ref.user_id,
-                json.dumps(data, ensure_ascii=False, sort_keys=True),
-                data["recorded_at"],
-            ),
-        )
-        rollback_report = {}
-        if apply_rollbacks and str(data.get("outcome") or "").lower() == "bad" and pattern_ids:
-            rollback_report = self._apply_pattern_rollback_if_needed(
-                event_id=event_id,
-                pattern_ids=pattern_ids,
-                outcome_payload=data,
-                scope_ref=scope_ref,
+        with self._auxiliary_write_transaction(commit=commit):
+            scope_ref = normalize_scope(scope)
+            data = ensure_outcome_payload(event_id, payload)
+            existing = self.conn.execute("SELECT * FROM event_outcomes WHERE id=?", (data["id"],)).fetchone()
+            if existing is not None:
+                if any(existing[key] != getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
+                    raise ValueError("outcome_scope_conflict")
+                if str(existing["event_id"]) != data["event_id"]:
+                    raise ValueError("outcome_event_conflict")
+            parent = self.conn.execute("SELECT * FROM events WHERE id=?", (data["event_id"],)).fetchone()
+            if parent is not None and any(parent[key] != getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
+                raise ValueError("event_scope_conflict")
+            pattern_ids = []
+            if self.suppress_auxiliary_logging:
+                # Preserve historical attribution diagnostics during replay;
+                # recovery must not execute rollbacks or re-evaluate evidence.
+                apply_rollbacks = False
+            else:
+                binding = self.resolve_outcome_policy_attribution(event_id, data, scope=scope_ref)
+                pattern_ids = binding["pattern_ids"]
+                if binding.get("reason"):
+                    data["policy_attribution_error"] = binding["reason"]
+            if not outcome_evidence(data)["production_eligible"]:
+                apply_rollbacks = False
+            self.conn.execute(
+                """
+                INSERT INTO event_outcomes (
+                    id, event_id, outcome, reason, correction_from_user, policy_update,
+                    tenant_id, agent_id, workspace_id, user_id, payload_json, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    outcome=excluded.outcome,
+                    reason=excluded.reason,
+                    correction_from_user=excluded.correction_from_user,
+                    policy_update=excluded.policy_update,
+                    payload_json=excluded.payload_json,
+                    recorded_at=excluded.recorded_at
+                """,
+                (
+                    data["id"],
+                    data["event_id"],
+                    data["outcome"],
+                    str(data.get("reason") or ""),
+                    str(data.get("correction_from_user") or ""),
+                    str(data.get("policy_update") or ""),
+                    scope_ref.tenant_id,
+                    scope_ref.agent_id,
+                    scope_ref.workspace_id,
+                    scope_ref.user_id,
+                    json.dumps(data, ensure_ascii=False, sort_keys=True),
+                    data["recorded_at"],
+                ),
             )
-        if commit:
-            self.conn.commit()
-        if rollback_report:
-            return {**data, **rollback_report}
-        return data
+            rollback_report = {}
+            if apply_rollbacks and str(data.get("outcome") or "").lower() == "bad" and pattern_ids:
+                rollback_report = self._apply_pattern_rollback_if_needed(
+                    event_id=event_id,
+                    pattern_ids=pattern_ids,
+                    outcome_payload=data,
+                    scope_ref=scope_ref,
+                )
+            if rollback_report:
+                return {**data, **rollback_report}
+            return data
 
     def get_policy_rollout_ledger(
         self,
@@ -8306,7 +8384,7 @@ class SqliteRecordStore:
         return ledger
 
     def pattern_row_for_scope(self, pattern_id: str, scope_ref: ScopeRef) -> sqlite3.Row | None:
-        """Public scope-exact intent pattern lookup (was ``_pattern_row_for_scope``)."""
+        """Read a visible pattern, including inheritance; writers require exact ownership."""
         return self._pattern_row_for_scope(pattern_id, scope_ref)
 
     def _pattern_row_for_scope(self, pattern_id: str, scope_ref: ScopeRef) -> sqlite3.Row | None:
@@ -8406,7 +8484,7 @@ class SqliteRecordStore:
     ) -> dict[str, Any]:
         from eimemory.governance import policy_rollout as _pr
         row = self._pattern_row_for_scope(pattern_id, scope_ref)
-        if row is None:
+        if row is None or any(row[key] != getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
             return {"ok": False, "error": "pattern_not_found", "pattern_id": str(pattern_id)}
 
         payload = json.loads(str(row["payload_json"]))
@@ -8473,6 +8551,7 @@ class SqliteRecordStore:
                 str(pattern_id),
             ),
         )
+        self.enqueue_intent_pattern_export(str(pattern_id), scope=scope_ref)
         follow_ups = _pr.follow_up_opportunities_from_rollback(
             pattern_id=str(pattern_id),
             event_id=str(event_id or ""),
@@ -8591,16 +8670,15 @@ class SqliteRecordStore:
         auto: bool = False,
         commit: bool = True,
     ) -> dict[str, Any]:
-        scope_ref = normalize_scope(scope)
-        result = self._rollback_pattern(
-            pattern_id=str(pattern_id),
-            scope_ref=scope_ref,
-            reason=str(reason or "manual rollback"),
-            auto=bool(auto),
-        )
-        if commit:
-            self.conn.commit()
-        return result
+        with self._auxiliary_write_transaction(commit=commit):
+            scope_ref = normalize_scope(scope)
+            result = self._rollback_pattern(
+                pattern_id=str(pattern_id),
+                scope_ref=scope_ref,
+                reason=str(reason or "manual rollback"),
+                auto=bool(auto),
+            )
+            return result
 
     def upsert_intent_pattern(
         self,
@@ -8609,89 +8687,93 @@ class SqliteRecordStore:
         scope: ScopeRef | dict | None = None,
         commit: bool = True,
     ) -> dict[str, Any]:
-        from eimemory.governance import policy_rollout as _pr
-        scope_ref = normalize_scope(scope)
-        data = ensure_pattern_payload(payload, scope_ref)
-        now = datetime.now(timezone.utc).isoformat()
+        with self._auxiliary_write_transaction(commit=commit):
+            from eimemory.governance import policy_rollout as _pr
+            scope_ref = normalize_scope(scope)
+            data = ensure_pattern_payload(payload, scope_ref)
+            existing = self.conn.execute("SELECT * FROM intent_patterns WHERE id=?", (data["id"],)).fetchone()
+            if existing is not None and any(existing[key] != getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
+                raise ValueError("pattern_scope_conflict")
+            now = datetime.now(timezone.utc).isoformat()
 
-        source_opportunity_id = str(data.get("source_opportunity_id") or "").strip()
-        is_auto = bool(data.get("is_auto", bool(source_opportunity_id)))
-        budget_decision = "manual_ok"
-        trust_report = dict(data.get("trust_report") or {})
-        replay_report = dict(data.get("replay_report") or {})
-        source_opportunity = dict(data.get("source_opportunity") or {})
+            source_opportunity_id = str(data.get("source_opportunity_id") or "").strip()
+            is_auto = bool(data.get("is_auto", bool(source_opportunity_id)))
+            budget_decision = "manual_ok"
+            trust_report = dict(data.get("trust_report") or {})
+            replay_report = dict(data.get("replay_report") or {})
+            source_opportunity = dict(data.get("source_opportunity") or {})
 
-        promotion_id = _pr.next_rollout_id(
-            kind="policy-promotion",
-            scope=scope_ref,
-            payload={"pattern_id": data["id"], "source_opportunity_id": source_opportunity_id},
-        )
-        if source_opportunity and source_opportunity_id:
-            budget_decision = _pr.budget_decision_for_promotion(
-                conn=self.conn,
+            promotion_id = _pr.next_rollout_id(
+                kind="policy-promotion",
                 scope=scope_ref,
-                auto=bool(is_auto),
-                budget_limit=_pr.AUTO_PROMOTION_BUDGET_PER_DAY,
+                payload={"pattern_id": data["id"], "source_opportunity_id": source_opportunity_id},
             )
-            budget_allowed = budget_decision in {"ok", "manual_ok"}
-            if not budget_allowed:
-                data["status"] = "candidate"
+            # Rebuild restores decisions and their ledger separately. It must
+            # not spend today's promotion budget or manufacture new decisions.
+            if source_opportunity and source_opportunity_id and not self.suppress_auxiliary_logging:
+                budget_decision = _pr.budget_decision_for_promotion(
+                    conn=self.conn,
+                    scope=scope_ref,
+                    auto=bool(is_auto),
+                    budget_limit=_pr.AUTO_PROMOTION_BUDGET_PER_DAY,
+                )
+                budget_allowed = budget_decision in {"ok", "manual_ok"}
+                if not budget_allowed:
+                    data["status"] = "candidate"
 
-            self._record_policy_rollout_ledger(
-                action_type="promotion",
-                scope=scope_ref,
-                promotion_id=promotion_id,
-                source_opportunity_id=source_opportunity_id,
-                source_opportunity=source_opportunity,
-                trust_report=trust_report,
-                replay_report=replay_report,
-                is_auto=is_auto,
-                applied_pattern_id=str(data["id"]) if budget_allowed else "",
-                budget_decision=budget_decision,
-                reason=str(data.get("promotion_blocked_reason") or ""),
-                details=dict(data.get("promotion_details") or {}),
+                self._record_policy_rollout_ledger(
+                    action_type="promotion",
+                    scope=scope_ref,
+                    promotion_id=promotion_id,
+                    source_opportunity_id=source_opportunity_id,
+                    source_opportunity=source_opportunity,
+                    trust_report=trust_report,
+                    replay_report=replay_report,
+                    is_auto=is_auto,
+                    applied_pattern_id=str(data["id"]) if budget_allowed else "",
+                    budget_decision=budget_decision,
+                    reason=str(data.get("promotion_blocked_reason") or ""),
+                    details=dict(data.get("promotion_details") or {}),
+                )
+
+            self.conn.execute(
+                """
+                INSERT INTO intent_patterns (
+                    id, pattern, default_event_type, interpreted_intent, confidence, status,
+                    tenant_id, agent_id, workspace_id, user_id, payload_json, last_rollback_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    pattern=excluded.pattern,
+                    default_event_type=excluded.default_event_type,
+                    interpreted_intent=excluded.interpreted_intent,
+                    confidence=excluded.confidence,
+                    status=excluded.status,
+                    payload_json=excluded.payload_json,
+                    last_rollback_reason=excluded.last_rollback_reason,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    data["id"],
+                    data["pattern"],
+                    data["default_event_type"],
+                    str(data.get("interpreted_intent") or ""),
+                    float(data["confidence"]),
+                    str(data.get("status") or "active"),
+                    scope_ref.tenant_id,
+                    scope_ref.agent_id,
+                    scope_ref.workspace_id,
+                    scope_ref.user_id,
+                    json.dumps(data, ensure_ascii=False, sort_keys=True),
+                    str(data.get("last_rollback_reason") or ""),
+                    now,
+                    now,
+                ),
             )
-
-        self.conn.execute(
-            """
-            INSERT INTO intent_patterns (
-                id, pattern, default_event_type, interpreted_intent, confidence, status,
-                tenant_id, agent_id, workspace_id, user_id, payload_json, last_rollback_reason, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                pattern=excluded.pattern,
-                default_event_type=excluded.default_event_type,
-                interpreted_intent=excluded.interpreted_intent,
-                confidence=excluded.confidence,
-                status=excluded.status,
-                payload_json=excluded.payload_json,
-                last_rollback_reason=excluded.last_rollback_reason,
-                updated_at=excluded.updated_at
-            """,
-            (
-                data["id"],
-                data["pattern"],
-                data["default_event_type"],
-                str(data.get("interpreted_intent") or ""),
-                float(data["confidence"]),
-                str(data.get("status") or "active"),
-                scope_ref.tenant_id,
-                scope_ref.agent_id,
-                scope_ref.workspace_id,
-                scope_ref.user_id,
-                json.dumps(data, ensure_ascii=False, sort_keys=True),
-                str(data.get("last_rollback_reason") or ""),
-                now,
-                now,
-            ),
-        )
-        if commit:
-            self.conn.commit()
-        data["_promotion_id"] = promotion_id
-        data["_promotion_budget_decision"] = budget_decision
-        data["_promotion_source_opportunity_id"] = source_opportunity_id
-        data["_promotion_is_auto"] = bool(is_auto)
-        return data
+            data["_promotion_id"] = promotion_id
+            data["_promotion_budget_decision"] = budget_decision
+            data["_promotion_source_opportunity_id"] = source_opportunity_id
+            data["_promotion_is_auto"] = bool(is_auto)
+            return data
 
     def search_policy(
         self,

@@ -10,6 +10,7 @@ from typing import Any
 from eimemory.core.clock import now_iso
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.security_screening import mark_external_origin, screen_record_payload
+from eimemory.storage.runtime_store import _stamp_canonical_hongtu_identity
 
 FORMAT_VERSION = "eimemory-pack-v1"
 PACK_RECORDS_NAME = "records.jsonl"
@@ -96,16 +97,34 @@ def import_knowledge_pack(
         to_write.append(record)
 
     target_scope = _scope_ref(scope)
+    written_count = 0
     if not dry_run:
+        mutate = getattr(runtime.store, "mutate_records_atomically", None)
+        if to_write and not callable(mutate):
+            raise ValueError("pack_import_requires_atomic_store")
         for record in to_write:
             record.scope = target_scope
-            runtime.store.append(record)
+
+            def mutation(sqlite):
+                # Keep the pack's existing global-ID collision contract, but
+                # decide under the writer lock. A concurrent import or review
+                # must not be overwritten by the earlier preview of the pack.
+                if sqlite.get_by_id(record.record_id) is not None:
+                    return False, [], []
+                _stamp_canonical_hongtu_identity(record)
+                sqlite.upsert(record, commit=False)
+                return True, [record], []
+
+            if mutate(mutation):
+                written_count += 1
+            else:
+                collisions.append(record.record_id)
 
     return {
         "ok": True,
         "dry_run": bool(dry_run),
         "record_count": len(records),
-        "written_count": 0 if dry_run else len(to_write),
+        "written_count": written_count,
         "rejected_count": len(rejected),
         "rejected": rejected[:20],
         "collision_count": len(collisions),

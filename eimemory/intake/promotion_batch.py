@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.knowledge.evidence_gate import paper_source_evidence_reasons
 from eimemory.storage.runtime_store import _stamp_canonical_hongtu_identity
 
 
@@ -156,6 +157,8 @@ class _PaperPromotionBatch:
                                                 or existing.source_id != record.source_id):
                         raise ValueError("paper_promotion_idempotency_changed_retry_required")
             records = list(self._records.values())
+            if any(paper_source_evidence_reasons(records, store=sqlite)):
+                raise ValueError("paper_promotion_source_not_eligible")
             for record in records:
                 sqlite.upsert(record, commit=False)
             return None, records, []

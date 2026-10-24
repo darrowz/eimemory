@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sqlite3
 from typing import Any, Mapping
 
 from eimemory.contracts.score_numbers import finite_score_number
 from eimemory.knowledge.evidence_contracts import assess_record_confidence
 from eimemory.knowledge.safety import evaluate_knowledge_safety
+from eimemory.models.records import ScopeRef
 
 GATED_ANSWER_KINDS = {
     "claim_card",
@@ -16,9 +18,137 @@ GATED_ANSWER_KINDS = {
     "source_candidate",
 }
 GATED_SOURCE_MARKERS = ("research", "knowledge.synthesis", "daily_brief", "news", "rss", "paper")
+MAX_PAPER_SOURCE_LOOKUPS = 4096
+# A native digest retains every source in its scan window, not just the five
+# displayed highlights. Its declaration limit must fit the shared read budget.
+MAX_PAPER_SOURCE_REFS = MAX_PAPER_SOURCE_LOOKUPS
 
 
-def grade_research_evidence(record: Any) -> dict[str, Any]:
+def paper_source_evidence_reasons(records: list[Any], *, store: Any = None, deadline_at: float = 0.0) -> list[str]:
+    """Resolve declared paper parents in one exact-owner read snapshot.
+
+    Missing parents remain compatible with manual text extraction, whose
+    public contract never required a persisted paper_source. A stored parent
+    in another owner/source partition cannot authorize or revoke this one.
+    Lookup failures and bounded-read exhaustion are not evidence of absence.
+    """
+    if store is None or not records:
+        return [""] * len(records)
+    payloads = [_payload(record) for record in records]
+    declarations = [_paper_parent_ids(payload) for payload in payloads]
+    if not any(ids or reason or _is_paper_projection(payload)
+               for payload, (ids, reason) in zip(payloads, declarations)):
+        return [""] * len(records)
+
+    def read(reader):
+        cache: dict[tuple, Any] = {}
+
+        def lookup(record_id, owner, source_id):
+            key = (owner.tenant_id, owner.agent_id, owner.workspace_id, owner.user_id, source_id, record_id)
+            if key not in cache:
+                if len(cache) >= MAX_PAPER_SOURCE_LOOKUPS:
+                    raise ValueError("paper_source_lookup_limit")
+                cache[key] = reader.get_by_exact_ref(record_id, scope=owner, source_id=source_id,
+                                                     fail_on_unavailable=True)
+            return cache[key]
+
+        reasons = []
+        for payload, (declared, reason) in zip(payloads, declarations):
+            if reason:
+                reasons.append(reason)
+                continue
+            if not declared and not _is_paper_projection(payload):
+                reasons.append("")
+                continue
+            owner_payload = payload.get("scope")
+            source_id = payload.get("source_id", "default")
+            if (not isinstance(owner_payload, Mapping) or not isinstance(source_id, str) or not source_id):
+                reasons.append("paper_source_identity_invalid")
+                continue
+            owner = ScopeRef.from_dict(dict(owner_payload))
+            ids = set(declared)
+            if _is_paper_projection(payload):
+                # Native projectors already retain this exact parent identity.
+                # One hop also covers older projections that did not copy the
+                # page's paper IDs into their own provenance.
+                ref = _deep(payload, "meta", "source_record_ref") or _deep(payload, "provenance", "source_record_ref")
+                if ref is not None:
+                    if (not isinstance(ref, Mapping) or ref.get("scope") != owner_payload
+                            or ref.get("source_id") != source_id
+                            or ref.get("kind") not in {"claim_card", "knowledge_page"}
+                            or not isinstance(ref.get("record_id"), str) or not ref["record_id"]):
+                        reasons.append("paper_source_identity_invalid")
+                        continue
+                    parent = lookup(ref["record_id"], owner, source_id)
+                    if parent is not None:
+                        if parent.kind != ref["kind"]:
+                            reasons.append("paper_source_identity_invalid")
+                            continue
+                        more, reason = _paper_parent_ids(_payload(parent))
+                        ids.update(more)
+            if reason or len(ids) > MAX_PAPER_SOURCE_REFS:
+                reasons.append(reason or "paper_source_reference_limit")
+                continue
+            for record_id in sorted(ids):
+                parent = lookup(record_id, owner, source_id)
+                if parent is None:
+                    continue
+                if (parent.kind != "paper_source" or parent.scope != owner or parent.source_id != source_id):
+                    reason = "paper_source_identity_invalid"
+                    break
+                if parent.status != "active" or any(
+                    bool(container.get(key))
+                    for container in (parent.content, parent.meta, parent.provenance)
+                    for key in ("deprecated", "conflict", "contradiction_ids", "contradiction_claim_ids")
+                ):
+                    reason = "paper_source_inactive"
+                    break
+            reasons.append(reason)
+        return reasons
+
+    try:
+        consistent = getattr(store, "read_consistent", None)
+        if deadline_at:
+            from eimemory.storage.recall_deadline import recall_read_scope
+
+            with recall_read_scope(store, {"_recall_collection_deadline_monotonic": deadline_at}):
+                return consistent(read) if callable(consistent) else read(store)
+        return consistent(read) if callable(consistent) else read(store)
+    except (OSError, ValueError, TypeError, RuntimeError, sqlite3.Error):
+        return ["paper_source_unavailable" if ids or reason or _is_paper_projection(payload) else ""
+                for payload, (ids, reason) in zip(payloads, declarations)]
+
+
+def _is_paper_projection(payload: dict[str, Any]) -> bool:
+    return payload.get("kind") == "memory" and any(
+        _deep(payload, container, "projection_type") == "operational_knowledge"
+        for container in ("content", "meta", "provenance")
+    )
+
+
+def _paper_parent_ids(payload: dict[str, Any]) -> tuple[set[str], str]:
+    ids: set[str] = set()
+    for name in ("content", "meta", "provenance"):
+        container = payload.get(name)
+        if not isinstance(container, Mapping):
+            continue
+        value = container.get("paper_source_id")
+        if value not in (None, ""):
+            if not isinstance(value, str) or not value.strip():
+                return set(), "paper_source_identity_invalid"
+            ids.add(value)
+        if payload.get("kind") == "knowledge_page" or _is_paper_projection(payload):
+            values = container.get("source_ids", [])
+            if (not isinstance(values, (list, tuple)) or len(values) > MAX_PAPER_SOURCE_REFS
+                    or any(not isinstance(item, str) or not item.strip() for item in values)):
+                return set(), "paper_source_reference_limit"
+            ids.update(values)
+    if len(ids) > MAX_PAPER_SOURCE_REFS:
+        return set(), "paper_source_reference_limit"
+    return ids, ""
+
+
+def grade_research_evidence(record: Any, *, paper_source_reason: str = "") -> dict[str, Any]:
     payload = _payload(record)
     source = _evidence_source(payload)
     published_at = _evidence_date(payload)
@@ -40,6 +170,8 @@ def grade_research_evidence(record: Any) -> dict[str, Any]:
         reasons.append("inactive_status")
     if deprecated:
         reasons.append("deprecated_source")
+    if paper_source_reason:
+        reasons.append(paper_source_reason)
     if not source:
         reasons.append("missing_source")
     if not published_at:
@@ -73,10 +205,16 @@ def filter_answer_evidence(
     *,
     task_type: str = "",
     registry: Any = None,
+    store: Any = None,
 ) -> dict[str, Any]:
     kept: list[Any] = []
     excluded: list[dict[str, Any]] = []
-    for record in records:
+    parent_reasons = paper_source_evidence_reasons(records, store=store)
+    for record, parent_reason in zip(records, parent_reasons):
+        if parent_reason:
+            excluded.append({"record_id": _record_id(record), "kind": _record_kind(record),
+                             "title": _record_title(record), "reason": parent_reason, "reasons": [parent_reason]})
+            continue
         if not _requires_answer_gate(record, task_type=task_type):
             kept.append(record)
             continue

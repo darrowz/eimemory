@@ -1,4 +1,4 @@
-"""Local fake regressions: no Runtime, provider, credentials, or network."""
+"""Local fake and isolated SQLite regressions; no provider or network."""
 from dataclasses import asdict
 from threading import RLock
 from types import SimpleNamespace
@@ -75,15 +75,32 @@ def test_commit_owner_leaves_outer_transaction_untouched(operation):
     assert store.sqlite.in_transaction and store.sqlite.pending == ['caller-owned']
 
 
-def test_commit_false_pattern_update_can_borrow():
-    store = object.__new__(RuntimeStore)
-    store._lock = RLock()
-    store.sqlite = TransactionFake()
-    assert store.update_intent_pattern_row(
-        pattern_id='p', scope_ref=ScopeRef(tenant_id='fake'), status='active',
-        payload_json='{}', last_rollback_reason='', updated_at='fake', commit=False) == 0
-    assert store.sqlite.in_transaction and store.sqlite.pending == ['caller-owned']
-    assert len(store.sqlite.calls) == 1
+def test_commit_false_pattern_update_can_borrow(tmp_path):
+    import json
+
+    store = RuntimeStore(tmp_path)
+    scope = ScopeRef(tenant_id='fake')
+    try:
+        with store.locked():
+            store.sqlite.execute('BEGIN IMMEDIATE')
+            store.sqlite.record_event({'id': 'caller-owned'}, scope=scope, commit=False)
+            assert store.update_intent_pattern_row(
+                pattern_id='missing', scope_ref=scope, status='active',
+                payload_json='{}', last_rollback_reason='', updated_at='fake', commit=False) == 0
+            store.sqlite.upsert_intent_pattern({'id': 'p', 'pattern': 'borrowed'}, scope=scope, commit=False)
+            assert store.update_intent_pattern_row(
+                pattern_id='p', scope_ref=scope, status='shadow',
+                payload_json=json.dumps({'id': 'p', 'pattern': 'borrowed', 'status': 'shadow'}),
+                last_rollback_reason='', updated_at='fake', commit=False) == 1
+            assert store.sqlite.in_transaction
+            assert store.sqlite.execute("SELECT id FROM events WHERE id='caller-owned'").fetchone() is not None
+            assert store.sqlite.execute("SELECT COUNT(*) FROM export_outbox WHERE stream='intent_patterns'").fetchone()[0] == 1
+            store.sqlite.rollback()
+            assert store.sqlite.execute("SELECT id FROM events WHERE id='caller-owned'").fetchone() is None
+            assert store.sqlite.execute("SELECT id FROM intent_patterns WHERE id='p'").fetchone() is None
+            assert store.sqlite.execute("SELECT COUNT(*) FROM export_outbox WHERE stream='intent_patterns'").fetchone()[0] == 0
+    finally:
+        store.close()
 
 
 @pytest.mark.parametrize('failure', [False, True])

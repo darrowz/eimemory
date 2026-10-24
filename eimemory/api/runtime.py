@@ -570,7 +570,7 @@ class Runtime:
         scope_ref = ScopeRef.from_dict(scope)
         day: str | date_type = date if date is not None else now_iso()[:10]
         records = _list_all_runtime_records(self, kinds=None, scope=scope_ref, limit=2500)
-        brief = build_daily_brief(records, date=day, research_lookback_days=research_lookback_days)
+        brief = build_daily_brief(records, date=day, research_lookback_days=research_lookback_days, store=self.store)
         delivery = build_daily_brief_delivery_payload(brief, channel=channel)
         persisted_record_id = ""
         if persist:
@@ -2778,9 +2778,23 @@ class Runtime:
             metadata=dict(paper_input.get("metadata") or {}),
             provenance=dict(paper_input.get("provenance") or {}),
         )
-        for record in result.to_records(scope=scope):
-            self.store.append(record)
+        self._persist_paper_derivatives(result.to_records(scope=scope))
         return result
+
+    def _persist_paper_derivatives(self, records: list[RecordEnvelope]) -> None:
+        from eimemory.knowledge.evidence_gate import paper_source_evidence_reasons
+        from eimemory.storage.runtime_store import _stamp_canonical_hongtu_identity
+
+        def mutation(sqlite):
+            reasons = paper_source_evidence_reasons(records, store=sqlite)
+            if any(reasons):
+                raise PaperArtifactError("paper_source_not_eligible", next(reason for reason in reasons if reason))
+            for record in records:
+                _stamp_canonical_hongtu_identity(record)
+                sqlite.upsert(record, commit=False)
+            return None, records, []
+
+        self.store.mutate_records_atomically(mutation)
 
     def extract_paper_source_memory(
         self,
@@ -2792,13 +2806,13 @@ class Runtime:
     ) -> PaperMemoryExtraction:
         """Extract knowledge from a previously materialized canonical paper text."""
         scope_ref = ScopeRef.from_dict(scope)
-        source_record = self.store.get_by_id(str(paper_source_id), scope=scope_ref)
+        source_record = self.store.get_by_exact_ref(str(paper_source_id), scope=scope_ref, source_id="default")
         if source_record is None or source_record.kind != "paper_source":
             raise ValueError("paper_source_not_found")
         source_payload = dict(source_record.content or {})
         metadata = dict(source_payload.get("metadata") or {})
         artifact = dict(metadata.get("artifact") or {})
-        if str(source_record.status or "").lower() in {"blocked", "rejected", "deprecated", "conflicted", "needs_refresh"}:
+        if source_record.status != "active":
             raise PaperArtifactError("paper_source_not_eligible", str(source_record.status))
         body = load_verified_canonical_text(
             self.store.root,
@@ -2845,8 +2859,7 @@ class Runtime:
             extraction=extraction,
             claim_records=claims if all(claim is not None for claim in claims) else None,
         )
-        for record in result.to_records(scope=scope):
-            self.store.append(record)
+        self._persist_paper_derivatives(result.to_records(scope=scope))
         return result
 
     def project_operational_knowledge(self, *, scope: dict | None = None, limit: int = 100) -> dict:
@@ -2937,6 +2950,7 @@ class Runtime:
             candidates=candidates,
             limit=limit,
             digest_date=digest_date,
+            store=self.store,
         )
         if persist and digest["ok"]:
             record = digest_to_record(digest, scope=scope)
@@ -2966,6 +2980,7 @@ class Runtime:
             records,
             task_type=task_type,
             registry=self.sources,
+            store=self.store,
         )
 
 

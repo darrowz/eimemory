@@ -11,7 +11,7 @@ import re
 from typing import Any, Iterable, Mapping
 
 from eimemory.core.clock import now_iso
-from eimemory.knowledge.evidence_gate import grade_research_evidence
+from eimemory.knowledge.evidence_gate import grade_research_evidence, paper_source_evidence_reasons
 from eimemory.models.records import RecordEnvelope
 
 DAILY_BRIEF_SCHEMA_VERSION = 1
@@ -28,6 +28,7 @@ def build_daily_brief(
     *,
     date: str | date_type,
     research_lookback_days: int = 0,
+    store=None,
 ) -> dict[str, Any]:
     """Build a JSON-serializable daily brief from already available records."""
     day = _date_string(date)
@@ -42,7 +43,7 @@ def build_daily_brief(
         if _is_research_digest_record(record)
         and _is_within_research_window(record, day, research_lookback_days)
     ]
-    digest_records, research_excluded = _apply_evidence_gate(digest_records)
+    digest_records, research_excluded = _apply_evidence_gate(digest_records, store=store)
     digest_records.sort(key=_record_sort_key)
     news_records = [
         record
@@ -50,7 +51,7 @@ def build_daily_brief(
         if _is_news_digest_record(record)
         and _is_news_within_window(record, day, research_lookback_days)
     ]
-    news_records, news_excluded = _apply_evidence_gate(news_records)
+    news_records, news_excluded = _apply_evidence_gate(news_records, store=store)
     news_records.sort(key=_record_sort_key)
     news_records = _dedupe_records_by_url(news_records)
 
@@ -304,11 +305,11 @@ def _looks_like_broken_html(value: str) -> bool:
     return "<" in value or ">" in value or value.lower().startswith(("http://", "https://"))
 
 
-def _apply_evidence_gate(records: list[Mapping[str, Any]]) -> tuple[list[Mapping[str, Any]], list[dict[str, Any]]]:
+def _apply_evidence_gate(records: list[Mapping[str, Any]], *, store=None) -> tuple[list[Mapping[str, Any]], list[dict[str, Any]]]:
     accepted: list[Mapping[str, Any]] = []
     excluded: list[dict[str, Any]] = []
-    for record in records:
-        gate = grade_research_evidence(record)
+    for record, reason in zip(records, paper_source_evidence_reasons(records, store=store)):
+        gate = grade_research_evidence(record, paper_source_reason=reason)
         if gate["ok"]:
             accepted.append(record)
         else:

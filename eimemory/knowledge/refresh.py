@@ -752,7 +752,7 @@ def _canonical_source_text(store: RuntimeStore, source_record: RecordEnvelope | 
     if source_record is None:
         return "", "missing_paper_source"
     source_status = str(source_record.status or "").lower()
-    if source_status in _BLOCKED_SOURCE_STATUSES:
+    if source_status != "active":
         return "", f"blocked_source_status_{source_status}"
     payload = source_record.content if isinstance(source_record.content, dict) else {}
     reference = str(payload.get("normalized_text_ref") or "").strip()

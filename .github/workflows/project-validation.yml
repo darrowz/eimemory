@@ -297,6 +297,14 @@ jobs:
           tests/test_governance_lifecycle_review2_20261024.py
           tests/test_intake_queue_review2_20261024.py
           tests/test_record_move_recovery_review2_20261024.py
+          tests/test_event_policy_review3_20261024.py
+          tests/test_governance_execution_review3_20261024.py
+          tests/test_governance_scheduler_results_review3_20261024.py
+          tests/test_intake_pack_review3_20261024.py
+          tests/test_intake_paper_source_review3_20261024.py
+          tests/test_intake_withdrawal_review3_20261024.py
+          tests/test_memory_auxiliary_journal_order_review3_20261024.py
+          tests/test_memory_lifecycle_journal_review3_20261024.py
   repository-regression:
     # The operator disabled full-repository CI; focused release gates remain active.
     if: ${{ false }}

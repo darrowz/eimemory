@@ -13,6 +13,7 @@ from eimemory.knowledge.evidence_contracts import (
     record_version_digest as _source_version_digest,
     versioned_record_ref as _versioned_record_ref,
 )
+from eimemory.knowledge.evidence_gate import paper_source_evidence_reasons
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, TimeRef, evaluate_memory_quality
 from eimemory.storage.runtime_store import RuntimeStore
 
@@ -208,6 +209,9 @@ def stable_projection_id(source: RecordEnvelope) -> str:
 def _candidate_from_record(record: RecordEnvelope, *, store=None) -> tuple[ProjectionCandidate | None, str]:
     if _is_blocked_source(record):
         return None, "unsafe_source_status"
+    parent_reason = paper_source_evidence_reasons([record], store=store)[0]
+    if parent_reason:
+        return None, parent_reason
     if record.kind == "claim_card":
         return _claim_candidate(record)
     if record.kind == "knowledge_page":
@@ -423,6 +427,9 @@ def _validated_supporting_claims(record: RecordEnvelope, *, store) -> tuple[tupl
             return (), "support_changed"
         if claim.kind != "claim_card" or _is_blocked_source(claim):
             return (), "unsafe_support"
+        parent_reason = paper_source_evidence_reasons([claim], store=store)[0]
+        if parent_reason:
+            return (), parent_reason
         if _claim_confidence(claim) < MIN_CLAIM_CONFIDENCE:
             return (), "low_support_confidence"
         seen.add(record_id)

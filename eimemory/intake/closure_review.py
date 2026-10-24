@@ -16,6 +16,7 @@ from eimemory.intake.closure import (
     REVIEW_STATUS_UNAVAILABLE,
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.knowledge.evidence_gate import paper_source_evidence_reasons
 from eimemory.llm.command_client import CommandCompletionError, LLMResult, _subprocess_env
 from eimemory.llm.completion_timing import failure_category, safe_timing, safe_provider_failure
 
@@ -76,9 +77,13 @@ def review_pending_research_closures(
     unavailable: list[dict[str, Any]] = []
 
     for record in records:
-        stage = "prompt"
+        stage = "source_authority"
         completion_timing = {}
         try:
+            parent_reason = paper_source_evidence_reasons([record], store=runtime.store)[0]
+            if parent_reason:
+                raise ValueError(parent_reason)
+            stage = "prompt"
             prompt = build_research_closure_review_prompt(record)
             stage = "execution"
             result = run(review_model, prompt)
@@ -117,6 +122,9 @@ def review_pending_research_closures(
             review_error="",
             completion_timing=completion_timing,
         )
+        if rewritten.meta.get("review_status") == REVIEW_STATUS_UNAVAILABLE:
+            unavailable.append({"record_id": rewritten.record_id, **rewritten.meta["review_failure"]})
+            continue
         reviewed_item = {"record_id": rewritten.record_id, "review_model_used": model_used,
                          "review_provider_used": provider_used}
         if completion_timing:
@@ -188,7 +196,11 @@ def _review_failure(exc: Exception, *, stage: str, completion_timing: dict) -> d
     category = failure_category(getattr(exc, "failure_category", None))
     reason = "research_review_execution_failed"
     validation_reason = ""
-    if isinstance(exc, CommandCompletionError):
+    if stage == "source_authority" and str(exc) in {
+        "paper_source_inactive", "paper_source_identity_invalid", "paper_source_reference_limit", "paper_source_unavailable",
+    }:
+        reason = str(exc)
+    elif isinstance(exc, CommandCompletionError):
         reason = "command_completion_failed" + (f":{category}" if category else "")
     elif isinstance(exc, subprocess.TimeoutExpired):
         reason = "research_review_command_timeout"
@@ -294,32 +306,34 @@ def _rewrite_review_record(
     review_failure: dict[str, Any] | None = None,
     completion_timing: dict[str, Any] | None = None,
 ) -> RecordEnvelope:
-    updated = RecordEnvelope.from_dict(record.to_dict())
-    reviewed_at = now_iso()
-    updated.content = {
-        **dict(updated.content or {}),
-        "review_status": status,
-        "review_model_used": review_model if status == REVIEW_STATUS_REVIEWED else "",
-        "review_provider_used": review_provider if status == REVIEW_STATUS_REVIEWED else "",
-        "reviewed_at": reviewed_at,
-        "model_review": review_output,
-        "review_error": review_error,
-        "review_failure": dict(review_failure or {}),
-        "review_completion_timing": safe_timing(completion_timing),
-    }
-    updated.meta = {
-        **dict(updated.meta or {}),
-        "review_status": status,
-        "review_model_used": review_model if status == REVIEW_STATUS_REVIEWED else "",
-        "review_provider_used": review_provider if status == REVIEW_STATUS_REVIEWED else "",
-        "reviewed_at": reviewed_at,
-        "review_error": review_error,
-        "review_failure": dict(review_failure or {}),
-        "review_completion_timing": safe_timing(completion_timing),
-    }
-    updated.detail = _review_detail(updated.detail, status=status, review_output=review_output, review_error=review_error)
-    updated.touch()
-    return runtime.store.rewrite(updated, previous_scope=record.scope)
+    def mutation(sqlite):
+        current = sqlite.get_by_exact_ref(record.record_id, scope=record.scope, source_id=record.source_id)
+        if current is None or current.to_dict() != record.to_dict():
+            raise ValueError("research_closure_changed_retry_required")
+        actual_status, output, error, failure = status, review_output, review_error, dict(review_failure or {})
+        if status == REVIEW_STATUS_REVIEWED:
+            parent_reason = paper_source_evidence_reasons([current], store=sqlite)[0]
+            if parent_reason:
+                actual_status, output, error = REVIEW_STATUS_UNAVAILABLE, "", parent_reason
+                failure = _review_failure(ValueError(parent_reason), stage="source_authority", completion_timing={})
+        updated = RecordEnvelope.from_dict(current.to_dict())
+        fields = {
+            "review_status": actual_status,
+            "review_model_used": review_model if actual_status == REVIEW_STATUS_REVIEWED else "",
+            "review_provider_used": review_provider if actual_status == REVIEW_STATUS_REVIEWED else "",
+            "reviewed_at": now_iso(),
+            "review_error": error,
+            "review_failure": failure,
+            "review_completion_timing": safe_timing(completion_timing),
+        }
+        updated.content = {**updated.content, **fields, "model_review": output}
+        updated.meta = {**updated.meta, **fields}
+        updated.detail = _review_detail(updated.detail, status=actual_status, review_output=output, review_error=error)
+        updated.touch()
+        sqlite.upsert(updated, commit=False)
+        return updated, [updated], []
+
+    return runtime.store.mutate_records_atomically(mutation)
 
 
 def _review_detail(detail: str, *, status: str, review_output: str, review_error: str) -> str:

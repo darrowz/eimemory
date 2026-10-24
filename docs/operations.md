@@ -116,12 +116,45 @@ so can lose traceability or repeat learning. Intake report/preview leaves the
 durable scan watermark unchanged. See
 [repair and recovery contracts](audit/business-closure-remediation-2026-10-13.md).
 
+### Journal replay and paper withdrawal
+
+Each committed record observation has a durable export operation ID, including
+a legitimate return to a previous payload. Retrying a pending export reuses
+that operation ID. A selective flush must drain preceding pending observations
+in order; reaching the bounded batch limit leaves later operations pending.
+Repair the export failure and run normal maintenance before using the journal
+as recovery evidence. Do not delete older pending rows to expedite a newer one.
+
+Policy rollback and promotion-watch changes now export their actual committed
+snapshots. Rebuild preserves the original event policy-version bindings and
+outcome diagnostics, and restores promotion history without making new budget
+or rollout decisions. This protects newly journaled transitions; an older log
+that never recorded its final state needs an independent authoritative snapshot
+to establish that state.
+
+Withdrawing an existing paper source also excludes its derived evidence from
+synthesis, daily briefs and final recall. Parent checks use the exact owner and
+source partition, and unreadable stored parents remain unavailable. Legacy
+manual text extraction can legitimately refer to a parent that was never
+stored; an absent parent alone does not prove a historical withdrawal. A
+metadata-only retry revalidates and preserves an existing canonical artifact.
+An invalid replacement or concurrent withdrawal cannot replace that record.
+
 ## Read persisted nightly evidence
 
 After a managed run, inspect the stored nightly, deployment-association, recall
 quality and memory-evaluation receipts. Record release identity, execution
 verdict, formal gate verdict, accepted-case counts and each waiting/blocking
 reason. Exit 0 or `execution_ok=true` alone cannot certify recall.
+
+L5 prompt-safety summaries retain the native evaluation record reference and
+the executed-failure count. A known executed failure makes the L5 step fail
+even when another case lacks an executor and the battery remains `not_ready`.
+Incomplete evidence without an executed failure remains a waiting condition.
+For code promotion, `accepted` with `applied=false` is a pending handoff; only a
+validated deployment readback can complete it. A post-application bookkeeping
+error retains the applied receipt and reports a retryable reconciliation error;
+reconciliation does not repeat the deployment.
 
 Known-item smoke is diagnostic. `recall_quality_evidence_incomplete`,
 `memory_eval_dataset_empty`, `hypothesis_missing_or_ambiguous` and an unavailable

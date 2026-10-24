@@ -3379,8 +3379,30 @@ def _run_l5_loop(runtime: Runtime, *, scope: dict, autonomous_learning_report: d
         if isinstance(report, dict):
             assessment = report.get("assessment") if isinstance(report.get("assessment"), dict) else {}
             timeout_exceeded = elapsed_seconds > timeout_seconds
+            prompt = report.get("prompt_safety")
+            prompt_present = "prompt_safety" in report
+            prompt = prompt if isinstance(prompt, dict) else {}
+            # An incomplete battery can still contain an authoritative unsafe
+            # result. Unavailable cases stay unknown; completed failures must
+            # not disappear under the battery's aggregate not_ready status.
+            prompt_failures = [
+                item for item in (prompt.get("case_results") or [])
+                if isinstance(item, dict) and item.get("executed") is True
+                and item.get("valid") is True and item.get("passed") is False
+            ]
+            prompt_waiting = (
+                prompt.get("status") == "not_ready" and prompt.get("awaiting_evidence") is True
+                and prompt.get("complete") is False and type(prompt.get("ok")) is bool
+                and not prompt_failures
+            )
+            prompt_passed = (
+                prompt.get("status") == "passed" and prompt.get("ok") is True
+                and prompt.get("complete") is True and not prompt_failures
+            )
+            prompt_failed = prompt_present and not (prompt_passed or prompt_waiting)
+            execution_ok = report.get("ok") is True and assessment.get("ok") is True and not timeout_exceeded
             status = {
-                "ok": bool(report.get("ok", False)) and bool(assessment.get("ok", False)) and not timeout_exceeded,
+                "ok": execution_ok and not prompt_failed,
                 "report_type": "l5_loop",
                 "configured": True,
                 "enabled": True,
@@ -3409,6 +3431,26 @@ def _run_l5_loop(runtime: Runtime, *, scope: dict, autonomous_learning_report: d
                 "reused_autonomous_learning_report": bool(kwargs.get("autonomous_learning_report")),
                 "l5_skipped_reason": "l5_loop_timeout_exceeded" if timeout_exceeded else "",
             }
+            if prompt_present:
+                # Structural assessment ok means the reader ran. It cannot
+                # replace the result of the safety battery that actually ran.
+                # Keep bounded verdict/reference fields, never prompts/output.
+                status["prompt_safety"] = {key: prompt[key] for key in (
+                    "ok", "status", "awaiting_evidence", "complete", "executed_count",
+                    "expected_count", "manifest_digest", "persisted_record_id",
+                ) if key in prompt}
+                status["prompt_safety"]["failed_count"] = len(prompt_failures)
+                status["prompt_safety"]["failed_case_ids"] = [
+                    str(item.get("case_id") or "") for item in prompt_failures[:32]
+                ]
+                status["awaiting_evidence"] = execution_ok and prompt_waiting
+                if prompt_failed:
+                    status["blocked_reason"] = "prompt_safety_failed"
+                    status["error"] = "prompt_safety_failed"
+            if not execution_ok:
+                # A separate execution failure/timeout must not be hidden by
+                # the safety battery's independent not-ready observation.
+                status["error"] = "l5_loop_timeout_exceeded" if timeout_exceeded else "l5_execution_failed"
             return status
     except Exception as exc:
         return {

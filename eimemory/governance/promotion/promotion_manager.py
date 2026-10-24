@@ -1290,44 +1290,109 @@ def _promote_code_evolution_v2_candidate(
             "blocked_reason": f"code_evolution_transaction_rejected:{type(exc).__name__}",
             "transaction_id": str(proposal.get("transaction_id") or ""),
         }
+    accepted = result.get("ok") is True
+    applied = accepted and result.get("applied") is True
+    pending = accepted and result.get("pending") is True and not applied
     blocked_reason = str(result.get("blocked_reason") or "code_evolution_transaction_blocked")
     gate = {
-        "ok": bool(result.get("ok")),
-        "blocked_reasons": [] if result.get("ok") else [blocked_reason],
+        "ok": accepted,
+        "blocked_reasons": [] if accepted else [blocked_reason],
         "automation_policy": automation_policy,
         "transaction_id": str(result.get("transaction_id") or ""),
     }
-    _record_candidate_lifecycle(
-        runtime,
-        candidate,
-        scope=scope_ref,
-        action_type="applied" if result.get("ok") else "gate_failed",
-        test_result=eval_result or {},
-        health_result=health or {"ok": True},
-        reason="" if result.get("ok") else blocked_reason,
-        details={"gate": gate, "code_evolution_transaction": result},
-    )
+    # A durable worker handoff is accepted work, not an applied promotion.
+    # A verified readback consumes a prior effect without executing it again.
+    if not (applied and result.get("idempotent") is True):
+        _record_candidate_lifecycle(
+            runtime,
+            candidate,
+            scope=scope_ref,
+            action_type="applied" if applied else "deployment_pending" if pending else "gate_failed",
+            test_result=eval_result or {},
+            health_result=health or {"ok": True},
+            reason="" if applied else blocked_reason,
+            details={"gate": gate, "code_evolution_transaction": result},
+        )
     request_id = _promotion_record(
         runtime,
         candidate,
         scope=scope_ref,
         loop_id=loop_id,
-        status="promoted" if result.get("ok") else "blocked",
+        status="promoted" if applied else "pending" if pending else "blocked",
         action="code_evolution_transaction",
         eval_result=eval_result or {},
         health=health or {"ok": True},
         gate=gate,
         side_effect=result,
     )
+    pending_bookkeeping = None
+    if applied:
+        try:
+            _complete_pending_code_promotions(
+                runtime, candidate=candidate, scope=scope_ref,
+                transaction_id=str(result.get("transaction_id") or ""),
+                promotion_request_id=request_id,
+            )
+            pending_bookkeeping = {"ok": True, "status": "complete", "retryable": False}
+        except Exception as exc:
+            # The verified applied result is already durable. An atomic
+            # bookkeeping failure must neither erase it nor invite another
+            # deployment; an exact retry revalidates it and closes the history.
+            pending_bookkeeping = {
+                "ok": False, "status": "retry_required", "retryable": True,
+                "blocked_reason": "code_promotion_pending_bookkeeping_failed",
+                "error_type": type(exc).__name__,
+            }
     return {
-        "ok": bool(result.get("ok")),
-        "applied": bool(result.get("applied")),
-        "blocked_reason": "" if result.get("ok") else blocked_reason,
+        "ok": accepted,
+        "applied": applied,
+        "pending": pending,
+        "idempotent": result.get("idempotent") is True,
+        "blocked_reason": "" if applied else blocked_reason,
         "promotion_request_id": request_id,
         "transaction_id": str(result.get("transaction_id") or ""),
         "side_effect": result,
         "automation_policy": automation_policy,
+        **({"pending_bookkeeping": pending_bookkeeping} if pending_bookkeeping is not None else {}),
     }
+
+
+def _complete_pending_code_promotions(
+    runtime: GovernanceRuntime, *, candidate: RecordEnvelope, scope: ScopeRef,
+    transaction_id: str, promotion_request_id: str,
+) -> None:
+    """Close prior handoffs after their verified result has been persisted.
+
+    Preserve each original pending receipt and link it to the completed
+    result. The update/outbox is atomic and retryable if a process stops
+    between result persistence and this bookkeeping step.
+    """
+    def mutation(sqlite):
+        records = sqlite.list_records_by_meta_value(
+            kinds=["promotion_request"], scope=scope, exact_scope=True,
+            meta_key="candidate_id", meta_value=candidate.record_id, status="pending",
+            meta_filters={"action": "code_evolution_transaction"}, limit=1001,
+        )
+        if records is None or len(records) > 1000:
+            raise ValueError("code_promotion_pending_history_unavailable")
+        changed = []
+        for record in records:
+            content = record.content or {}
+            side = content.get("side_effect") or {}
+            if (record.scope != scope or record.source != "eimemory.autonomous_learning"
+                or content.get("candidate_id") != candidate.record_id
+                or content.get("action") != "code_evolution_transaction"
+                or side.get("transaction_id") != transaction_id or side.get("pending") is not True):
+                continue
+            record.status = "completed"
+            record.content = {**content, "completed_by_promotion_request_id": promotion_request_id}
+            record.meta = {**record.meta, "completed_by_promotion_request_id": promotion_request_id}
+            record.touch()
+            sqlite.rewrite(record, commit=False)
+            changed.append(record)
+        return None, changed, []
+
+    runtime.store.mutate_records_atomically(mutation)
 
 
 def _apply_candidate(
