@@ -36,7 +36,7 @@ class PaperIntakePipeline:
         if isinstance(candidate_record_or_dict, RecordEnvelope):
             if candidate_record_or_dict.kind != "knowledge_candidate":
                 return _skip("not_a_knowledge_candidate")
-            if scope is not None and not _same_scope(candidate_record_or_dict.scope, ScopeRef.from_dict(scope)):
+            if not _same_scope(candidate_record_or_dict.scope, ScopeRef.from_dict(scope)):
                 return _skip("scope_mismatch")
             # A caller may still hold the pre-review candidate. Use the durable
             # envelope before any source/extraction writes, not its old status.
@@ -45,8 +45,11 @@ class PaperIntakePipeline:
                 scope=candidate_record_or_dict.scope,
                 source_id=candidate_record_or_dict.source_id,
             )
-            if current is not None:
-                candidate_record_or_dict = current
+            if current is None:
+                return _skip("candidate_not_found")
+            if current.kind != "knowledge_candidate":
+                return _skip("not_a_knowledge_candidate")
+            candidate_record_or_dict = current
         candidate = _candidate_payload(candidate_record_or_dict)
         skipped_reason = _skipped_reason(candidate_record_or_dict, candidate)
         if skipped_reason:

@@ -327,9 +327,11 @@ external side-effects by default; commit and deployment remain opt-in
 capabilities with their own evidence and rollback requirements.
 
 Network intake uses `intake.safe_transport`. Host credentials are read from
-private files and scrubbed from inherited environments. Receipts and evidence
-are bounded, signed or attested where required, and persisted without raw secret
-material.
+private files. Hermes resolves the active profile and revalidates its credential
+on each use while preserving the gateway environment. eiMemory LLM command
+subprocesses use an explicit environment allowlist; model/tool environment
+inheritance remains the host's policy. Receipts and evidence are bounded,
+signed or attested where required, and persisted without raw secret material.
 
 ## Test boundary
 

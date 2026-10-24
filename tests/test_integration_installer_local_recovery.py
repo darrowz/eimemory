@@ -106,6 +106,9 @@ def extract(path, function, env):
           'contextmanager': contextlib.contextmanager,
           'fcntl': SimpleNamespace(flock=env.flock, LOCK_EX=1, LOCK_UN=2),
           'msvcrt': SimpleNamespace(locking=env.locking, LK_LOCK=1, LK_UNLCK=2)}
+    # The installer now obtains YAML lazily. Keep that import boundary inert
+    # while preserving the same serialization fault and descriptor assertions.
+    ns['_yaml_module'] = lambda: ns['yaml']
     exec(compile(ast.fix_missing_locations(module), '<isolated-resource-probe>', 'exec'), ns)
     return ns[function]
 

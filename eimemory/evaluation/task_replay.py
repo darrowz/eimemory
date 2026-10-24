@@ -133,6 +133,7 @@ def _run_on_runtime(
         sample
         for sample in samples
         if sample.get("real_provenance_ok") is True and sample.get("executed") is True
+        and sample.get("evaluable") is True
     ]
     return {
         "ok": True,
@@ -146,6 +147,8 @@ def _run_on_runtime(
         "scope": asdict(scope),
         "seeded_record_ids": seeded_record_ids,
         "sample_count": len(samples),
+        "evaluation_complete": bool(samples) and all(sample.get("evaluable") is True for sample in samples),
+        "unevaluable_count": sum(sample.get("evaluable") is not True for sample in samples),
         "pass_count": sum(1 for sample in samples if sample.get("passed")),
         "fail_count": sum(1 for sample in samples if not sample.get("passed")),
         "pass_rate": pass_rate,
@@ -167,7 +170,9 @@ def _run_on_runtime(
 
 
 def _meets_threshold(pass_count: int, sample_count: int, threshold: float) -> bool:
-    rate = pass_count / sample_count if sample_count else 0.0
+    if sample_count <= 0:
+        return False
+    rate = pass_count / sample_count
     return rate >= threshold
 
 
@@ -286,6 +291,7 @@ def _run_case(
             "index": index,
             "case_id": case_id,
             "executed": False,
+            "evaluable": False,
             "passed": False,
             "failure_reason": "case_scope_mismatch",
             **provenance_fields,
@@ -295,8 +301,21 @@ def _run_case(
             "index": index,
             "case_id": case_id,
             "executed": False,
+            "evaluable": False,
             "passed": False,
             "failure_reason": "empty_query",
+            **provenance_fields,
+        }
+    expected_text = _strings(case.get("expected_text") or case.get("expect_any_text"))
+    negative_text = _strings(case.get("negative_expected_text") or case.get("forbid_any_text"))
+    if not expected_text and not negative_text:
+        return {
+            "index": index,
+            "case_id": case_id,
+            "executed": False,
+            "evaluable": False,
+            "passed": False,
+            "failure_reason": "missing_expectation",
             **provenance_fields,
         }
     task_context = {
@@ -305,6 +324,21 @@ def _run_case(
         **dict(case.get("task_context") or {}),
     }
     bundle = runtime.memory.recall(query=query, scope=asdict(scope), task_context=task_context, limit=int(case.get("limit") or 5))
+    # Use the existing controlled-evaluation completeness contract: a hit in
+    # a partial collection, or an empty unavailable result, is not a measured
+    # replay outcome. Preserve that the native call did execute.
+    from eimemory.evaluation.controlled_memory_benchmark import _retrieval_explicitly_incomplete
+
+    if _retrieval_explicitly_incomplete(bundle.explanation or {}):
+        return {
+            "index": index,
+            "case_id": case_id,
+            "executed": True,
+            "evaluable": False,
+            "passed": False,
+            "failure_reason": "retrieval_incomplete",
+            **provenance_fields,
+        }
     returned_text = "\n".join(
         " ".join(
             str(value or "")
@@ -318,8 +352,6 @@ def _run_case(
         )
         for item in bundle.items
     ).lower()
-    expected_text = _strings(case.get("expected_text") or case.get("expect_any_text"))
-    negative_text = _strings(case.get("negative_expected_text") or case.get("forbid_any_text"))
     expected_ok = not expected_text or any(term.lower() in returned_text for term in expected_text)
     negative_ok = not any(term.lower() in returned_text for term in negative_text)
     return {
@@ -335,6 +367,7 @@ def _run_case(
         "returned_titles": [item.title for item in bundle.items],
         "returned_count": len(bundle.items),
         "executed": True,
+        "evaluable": True,
         "expected_ok": expected_ok,
         "negative_ok": negative_ok,
         "passed": bool(expected_ok and negative_ok),
@@ -534,6 +567,7 @@ def _persistable_report(report: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "index",
         "executed",
+        "evaluable",
         "passed",
         "failure_reason",
         "latency_ms",

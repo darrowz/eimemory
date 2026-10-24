@@ -41,7 +41,7 @@ def record_openclaw_channel_acceptance(
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     receipt = runtime.store.get_by_id(current_release.receipt_id, scope=scope_ref)
-    if not same_release_authority(
+    if getattr(receipt, "scope", None) != scope_ref or not same_release_authority(
         verified_deployment_receipt_identity(receipt),
         current_release,
     ):
@@ -52,10 +52,13 @@ def record_openclaw_channel_acceptance(
     if receipt_recorded_at_ms <= 0:
         return {"ok": False, "error": "current_deployment_receipt_timestamp_invalid"}
 
-    if not Path(state_path).exists():
+    state_path = Path(state_path)
+    if not state_path.exists():
         return {"ok": False, "error": "channel_delivery_state_missing"}
+    if state_path.is_symlink() or not state_path.is_file():
+        return {"ok": False, "error": "channel_delivery_state_invalid"}
     try:
-        document = read_json_strict(Path(state_path), dict)
+        document = read_json_strict(state_path, dict)
     except (OSError, ValueError):
         return {"ok": False, "error": "channel_delivery_state_invalid"}
     if (
@@ -99,7 +102,9 @@ def record_openclaw_channel_acceptance(
         "deployment_commit": current_release.commit,
         "deployment_version": current_release.version,
         "promotion_request_id": current_release.receipt_id,
-        "release_session_id": current_release.session_id,
+        # Canonical release fields are store-owned. Retain an explicit alias
+        # for a verified receipt when no runtime release stamp is available.
+        "deployment_session_id": current_release.session_id,
         "platform_accepted_at_ms": accepted_at,
         "inbound_message_digest": _digest(inbound_id),
         "delivery_receipt_digest": _digest(delivery_id),
@@ -116,6 +121,8 @@ def record_openclaw_channel_acceptance(
         semantic_key=stable_semantic_key(
             "openclaw_channel_acceptance",
             current_release.commit,
+            current_release.receipt_id,
+            current_release.session_id,
             evidence_payload["delivery_receipt_digest"],
         ),
         authority_tier="L0",
@@ -131,6 +138,15 @@ def record_openclaw_channel_acceptance(
         evidence=[current_release.receipt_id],
         source=SOURCE,
     )
+    persisted = runtime.store.get_by_exact_ref(
+        record.record_id, scope=scope_ref, source_id=record.source_id,
+    )
+    if (
+        getattr(persisted, "scope", None) != scope_ref
+        or not validate_openclaw_channel_acceptance(persisted, current_release=current_release)
+        or any(persisted.content.get(key) != value for key, value in evidence_payload.items())
+    ):
+        return {"ok": False, "error": "persisted_channel_acceptance_invalid", "record_id": record.record_id}
     return {
         "ok": True,
         "record_id": record.record_id,
@@ -155,20 +171,17 @@ def validate_openclaw_channel_acceptance(
         if isinstance(getattr(evidence, "content", None), Mapping)
         else {}
     )
-    recorded_release = ReleaseIdentity(
-        commit=str(content.get("deployment_commit") or ""),
-        version=str(content.get("deployment_version") or ""),
-        receipt_id=str(content.get("promotion_request_id") or ""),
-        session_id=str(content.get("release_session_id") or ""),
-    )
+    from eimemory.governance.l5.external_channel_acceptance import _channel_release_identity_matches
+
     return bool(
         getattr(evidence, "kind", "") == "learning_eval"
+        and getattr(evidence, "status", "") == "active"
         and str(getattr(evidence, "source", "") or "") == SOURCE
         and str(content.get("report_type") or "") == REPORT_TYPE
         and str(content.get("schema_version") or "") == SCHEMA_VERSION
         and str(content.get("evidence_class") or "") == EVIDENCE_CLASS
         and content.get("passed") is True
-        and same_release_authority(recorded_release, current_release)
+        and _channel_release_identity_matches(evidence, current_release)
         and _positive_int(content.get("platform_accepted_at_ms")) > 0
         and all(
             _DIGEST_RE.fullmatch(str(content.get(field) or "")) is not None
@@ -182,10 +195,7 @@ def validate_openclaw_channel_acceptance(
 
 
 def _positive_int(value: Any) -> int:
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 0
+    return value if type(value) is int and value > 0 else 0
 
 
 def _digest(value: str) -> str:

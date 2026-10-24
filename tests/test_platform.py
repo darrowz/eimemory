@@ -526,9 +526,21 @@ def test_http_rpc_server_daily_brief_endpoint_returns_digest(tmp_path, monkeypat
     assert payload["news_digest"]["items"][0]["url"] == "https://example.test/news/rss"
 
 
-def test_scheduler_surfaces_unconfigured_nightly_failure_after_readback(tmp_path) -> None:
+def test_scheduler_surfaces_unconfigured_nightly_failure_after_readback(tmp_path, monkeypatch) -> None:
+    from eimemory.evaluation import application_catalog_bootstrap, capability_catalog
+
+    # Model an unconfigured deployment explicitly, independent of installed
+    # plugins or a catalog published by another test in this process.
+    monkeypatch.setattr(capability_catalog, "_APPLICATION_CATALOG", None)
+    monkeypatch.setattr(capability_catalog, "_APPLICATION_CATALOG_SOURCE", "")
+    monkeypatch.setattr(application_catalog_bootstrap, "installed_application_catalog_installers", lambda: ())
     scope = {"tenant_id": "default", "agent_id": "main", "workspace_id": "repo-x", "user_id": "scheduler-test"}
     with Runtime.create(root=tmp_path) as runtime:
+        assert runtime.capability_catalog is None
+        generation = runtime.build_replay_dataset(scope=scope, persist=False)
+        assert generation["ok"] is False
+        assert generation["reason"] == "evaluation_catalog_untrusted"
+        assert generation["errors"] == ["catalog_not_configured"]
         runtime.memory.ingest(
             text="Remember prompt build context", memory_type="fact", title="Prompt context", scope=scope,
         )
@@ -552,7 +564,7 @@ def test_scheduler_surfaces_unconfigured_nightly_failure_after_readback(tmp_path
         diagnostic = summary["nightly_diagnostics"]
         assert diagnostic["execution_ok"] is False
         assert {"memory_eval_ci", "capability_hypothesis_producer", "recall_quality_gate"} <= set(diagnostic["failed_steps"])
-        assert nightly["memory_eval_ci"]["dataset_generation"]["reason"] == "evaluation_catalog_has_no_active_cases"
+        assert nightly["memory_eval_ci"]["dataset_generation"]["reason"] == "evaluation_catalog_untrusted"
         assert nightly["recall_quality_gate"]["blocked_reason"] == "production_recall_dataset_unconfigured"
         before = build_supervisor_contract(runtime, scope=scope)
         assert before["status"] == "degraded"

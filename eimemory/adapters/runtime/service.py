@@ -43,7 +43,7 @@ from eimemory.governance.tool_receipts import (
 from eimemory.models.memory_edges import MemoryEdge
 from eimemory.metadata import business_metadata
 from eimemory.knowledge.l1_pipeline import extract_l1_from_l0_record
-from eimemory.knowledge.l1_queue import L1ExtractQueue
+from eimemory.knowledge.l1_queue import L1ExtractQueue, L1QueueStateError
 from eimemory.recall.query_clean import clean_user_query
 from eimemory.recall.loadout import assemble_loadout, render_loadout
 from eimemory.models.records import (
@@ -358,9 +358,6 @@ class AgentRuntimeMemoryService:
             scope=ScopeRef.from_dict(channel_scope),
             idempotency_key=idempotency_key,
         )
-        if existing is not None:
-            return self._memory_result(existing, channel=channel_id, scope=channel_scope, idempotent=True)
-
         default_title = f"{channel_id.title()} long-term memory"
         capture_title = str(title or default_title)
         capture_type = str(memory_type or "durable_fact").strip() or "durable_fact"
@@ -372,17 +369,30 @@ class AgentRuntimeMemoryService:
             identity = json.dumps([capture_type, normalized_text], ensure_ascii=False)
             capture_meta["semantic_key"] = "sk:" + sha256(identity.encode("utf-8")).hexdigest()[:24]
 
-        create_gate = gate_host_create(
-            self.runtime,
-            text=normalized_text,
-            scope=channel_scope,
-            force=bool(force_capture),
-            fusion_hint=capture_meta.get("create_safety") or capture_meta.get("fusion"),
-            # The probe recall carries no target_source_id, so fusion can only
-            # answer "unknown" (target_source_omitted). Turn sync skips it: same
-            # decision, without a full recall (and verifier call) per turn.
-            skip_probe=not create_probe,
-        )
+        if existing is not None:
+            # A matching event key does not prove a matching request. Reuse
+            # its original gate result, then let MemoryAPI's persisted digest
+            # and atomic write owner validate the complete retry contract.
+            # A new probe could make a committed retry depend on current
+            # recall health or a changed corpus, despite no new write intent.
+            if existing.scope != ScopeRef.from_dict(channel_scope) or existing.source_id != channel_id:
+                raise ValueError("memory event_id conflict for exact scope/source")
+            create_gate = {
+                "allow": True,
+                "create_safety": business_metadata(existing.meta).get("create_safety"),
+            }
+        else:
+            create_gate = gate_host_create(
+                self.runtime,
+                text=normalized_text,
+                scope=channel_scope,
+                force=bool(force_capture),
+                fusion_hint=capture_meta.get("create_safety") or capture_meta.get("fusion"),
+                # The probe recall carries no target_source_id, so fusion can only
+                # answer "unknown" (target_source_omitted). Turn sync skips it: same
+                # decision, without a full recall (and verifier call) per turn.
+                skip_probe=not create_probe,
+            )
         if not create_gate.get("allow"):
             return {
                 "ok": False,
@@ -397,7 +407,10 @@ class AgentRuntimeMemoryService:
             text=normalized_text,
             memory_type=capture_type,
             title=capture_title,
-            scope=channel_scope,
+            # The adapter has already resolved its exact channel owner. A
+            # legacy source-name heuristic must not move this write to a
+            # different agent/workspace than the response and retry key.
+            scope={**channel_scope, "preserve_scope": True},
             source=f"{channel_id}.memory",
             # Native partition: each channel's memories land in its exact
             # source partition so the proactive gate's single-exact-source
@@ -415,7 +428,7 @@ class AgentRuntimeMemoryService:
                 "source_event_id": normalized_event_id,
                 "create_safety": create_gate.get("create_safety"),
             },
-            record_id=self._deterministic_record_id(
+            record_id=existing.record_id if existing is not None else self._deterministic_record_id(
                 kind="memory",
                 channel=channel_id,
                 scope=channel_scope,
@@ -428,7 +441,7 @@ class AgentRuntimeMemoryService:
             business_meta = record.meta.get("business_meta")
             if isinstance(business_meta, dict):
                 business_meta["authoritative"] = False
-        return self._memory_result(record, channel=channel_id, scope=channel_scope, idempotent=False)
+        return self._memory_result(record, channel=channel_id, scope=channel_scope, idempotent=existing is not None)
 
     def mutate_memory(
         self,
@@ -521,26 +534,87 @@ class AgentRuntimeMemoryService:
                     target=target_id,
                     content_revision=content_revision,
                 )
-                deterministic = sqlite.get_by_id(record_id, scope=scope_ref)
-                if deterministic is not None:
-                    if not self._is_matching_hermes_record(
-                        deterministic, source_id=source_partition, target=target_id, active_only=True
-                    ) or str(deterministic.meta.get("idempotency_key") or "") != request_key or str(
-                        deterministic.meta.get("mutation_request_digest") or ""
-                    ) != request_digest:
+                # A content identity is not a forever-reserved write event.
+                # Prove there is no active or otherwise withdrawn incarnation
+                # before allowing a new event to restore explicitly removed
+                # content. The bounded lookahead must never certify absence.
+                history = sqlite.list_records_by_meta_value(
+                    kinds=["memory"], scope=scope_ref, source_ids=[source_partition],
+                    meta_key="content_revision", meta_value=content_revision,
+                    meta_filters={"hermes_target": target_id},
+                    status=None, exact_scope=True, limit=_HERMES_LEGACY_TARGET_LOOKUP_LIMIT + 1,
+                )
+                if history is None or len(history) > _HERMES_LEGACY_TARGET_LOOKUP_LIMIT:
+                    return ({"ok": False, "error": "mutation_history_unavailable"}, [], [])
+                removed = []
+                for prior in history:
+                    if prior.scope != scope_ref or prior.source_id != source_partition:
                         return ({"ok": False, "error": "mutation_target_conflict"}, [], [])
-                    return (
-                        self._mutation_result(
-                            deterministic,
-                            channel=channel_id,
-                            scope=channel_scope,
-                            action="add",
-                            content_revision=str(deterministic.meta.get("content_revision") or content_revision),
-                            idempotent=True,
-                        ),
-                        [],
-                        [],
+                    prior_meta = business_metadata(prior.meta)
+                    if str(prior_meta.get("hermes_target") or "") != target_id:
+                        return ({"ok": False, "error": "mutation_target_conflict"}, [], [])
+                    if (prior.kind != "memory" or prior.source != "hermes.memory_write"
+                            or not self._is_matching_hermes_record(
+                                prior, source_id=source_partition, target=target_id, active_only=False)
+                            or prior.status != "removed"
+                            or prior_meta.get("mutation_state") != "removed"
+                            or prior_meta.get("mutation_schema") != _HERMES_MUTATION_SCHEMA
+                            or prior_meta.get("mutation_action") not in {"add", "replace"}
+                            or self._content_revision(self._record_content(prior)) != content_revision):
+                        return ({"ok": False, "error": "mutation_target_conflict"}, [], [])
+                    tombstone_id = str(prior_meta.get("removed_by") or "")
+                    tombstone = sqlite.get_by_exact_ref(tombstone_id, scope=scope_ref, source_id=source_partition) if tombstone_id else None
+                    tombstone_meta = business_metadata(tombstone.meta) if tombstone is not None else {}
+                    expected_tombstone_id = self._mutation_record_id(
+                        channel=channel_id, scope=channel_scope, source_id=source_partition,
+                        action="remove", target=target_id, content_revision=content_revision,
+                        predecessor_id=prior.record_id,
                     )
+                    removal_digests = {
+                        self._mutation_request_digest(
+                            channel=channel_id, scope=channel_scope, action="remove", target=target_id,
+                            source_id=source_partition, content_revision="", expected_revision=content_revision,
+                            target_record_id=target_ref, provenance=dict(tombstone.provenance),
+                        )
+                        for target_ref in ("", prior.record_id)
+                    } if tombstone is not None else set()
+                    if (tombstone is None or tombstone.record_id != expected_tombstone_id
+                            or tombstone.scope != scope_ref or tombstone.source_id != source_partition
+                            or tombstone.kind != "memory" or tombstone.status != "removed"
+                            or tombstone.source != "hermes.memory_write"
+                            or not self._is_matching_hermes_record(
+                                tombstone, source_id=source_partition, target=target_id, active_only=False)
+                            or tombstone_meta.get("mutation_schema") != _HERMES_MUTATION_SCHEMA
+                            or tombstone_meta.get("mutation_action") != "remove"
+                            or tombstone.content != {} or tombstone_meta.get("content_revision") != ""
+                            or not str(tombstone_meta.get("idempotency_key") or "").strip()
+                            or tombstone_meta.get("mutation_request_digest") not in removal_digests
+                            or tombstone_meta.get("non_recallable") is not True
+                            or tombstone_meta.get("predecessor_record_id") != prior.record_id
+                            or {link.target_id for link in prior.links if link.relation == "removed_by"
+                                and link.target_kind == "record"} != {tombstone_id}
+                            or {link.target_id for link in tombstone.links if link.relation == "removes"
+                                and link.target_kind == "record"} != {prior.record_id}):
+                        return ({"ok": False, "error": "mutation_removal_evidence_invalid"}, [], [])
+                    removed.append(prior)
+                deterministic = sqlite.get_by_exact_ref(record_id, scope=scope_ref, source_id=source_partition)
+                if deterministic is not None and deterministic.record_id not in {prior.record_id for prior in removed}:
+                    return ({"ok": False, "error": "mutation_target_conflict"}, [], [])
+                predecessor_id = ""
+                links = []
+                if removed:
+                    # This is a new incarnation, not a rewrite of the retired
+                    # row or its tombstone. The edge records a verified origin;
+                    # it does not claim timestamp order among removed rows.
+                    predecessor_id = min(prior.record_id for prior in removed)
+                    record_id = self._mutation_record_id(
+                        channel=channel_id, scope=channel_scope, source_id=source_partition,
+                        action="add", target=target_id, content_revision=content_revision,
+                        event_key=request_key,
+                    )
+                    if sqlite.get_by_exact_ref(record_id, scope=scope_ref, source_id=source_partition) is not None:
+                        return ({"ok": False, "error": "mutation_target_conflict"}, [], [])
+                    links = [LinkRef(relation="restores", target_kind="record", target_id=predecessor_id)]
                 record = self._new_hermes_record(
                     record_id=record_id,
                     source_id=source_partition,
@@ -552,6 +626,8 @@ class AgentRuntimeMemoryService:
                     idempotency_key=request_key,
                     request_digest=request_digest,
                     provenance=safe_provenance,
+                    predecessor_id=predecessor_id,
+                    links=links,
                 )
                 sqlite.upsert(record, commit=False)
                 return (
@@ -723,6 +799,9 @@ class AgentRuntimeMemoryService:
             create_probe=False,
         )
         if not isinstance(episode.get("record"), dict):
+            return episode
+        if episode.get("ok") is not True or episode["record"].get("status") != "active":
+            episode.update(l1_atoms=[], l1_queued=False, l1_extraction_reason="l0_capture_not_active")
             return episode
         episode_id = str(episode["record"].get("record_id") or "")
         if isinstance(supporting_turn, dict):
@@ -1163,6 +1242,7 @@ class AgentRuntimeMemoryService:
         target: str,
         content_revision: str,
         predecessor_id: str = "",
+        event_key: str = "",
     ) -> str:
         payload = json.dumps(
             {
@@ -1174,6 +1254,7 @@ class AgentRuntimeMemoryService:
                 "target": target,
                 "content_revision": content_revision,
                 "predecessor_id": predecessor_id,
+                **({"event_key": event_key} if event_key else {}),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -1666,10 +1747,25 @@ class AgentRuntimeMemoryService:
 
     def _l1_extract_health(self) -> dict[str, Any]:
         queue = self._l1_queue()
+        try:
+            pending = queue.pending_count()
+            dead = queue.dead_count()
+        except (L1QueueStateError, OSError) as exc:
+            # Status stays readable when the worker's durable queue is not.
+            # Unknown queue counts cannot be reported as an empty healthy run.
+            return {
+                "ok": False,
+                "queue_state": "unavailable",
+                "error": exc.code if isinstance(exc, L1QueueStateError) else "queue_unreadable",
+                "retryable": exc.retryable if isinstance(exc, L1QueueStateError) else True,
+                "pending": None,
+                "dead": None,
+                "last_run": {},
+            }
         health: dict[str, Any] = {
             "ok": True,
-            "pending": queue.pending_count(),
-            "dead": queue.dead_count(),
+            "pending": pending,
+            "dead": dead,
             "last_run": {},
         }
         if health["dead"]:

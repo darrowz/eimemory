@@ -16,6 +16,7 @@ from eimemory.runtime_identity import runtime_package_tree_digest
 
 MIN_VERIFIED_REAL_REPLAY_SAMPLES = 10
 MIN_VERIFIED_REAL_REPLAY_PASS_RATE = 0.8
+REAL_REPLAY_INCOMPLETE_REASONS = frozenset({"not_evaluable", "not_run"})
 
 # A report with contradictory provenance cannot become trustworthy merely
 # by dropping the damaged samples and retaining enough passing ones.
@@ -43,8 +44,10 @@ REAL_REPLAY_AUTHENTICITY_REASONS = frozenset({
     "case_scope_mismatch",
     "source_record_id_missing",
     "sample_package_tree_digest_mismatch",
+    "sample_evaluation_unverified",
     "replay_execution_id_mismatch",
     "replay_report_identity_invalid",
+    "replay_report_inactive",
     "verified_real_replay_authenticity_failed",
 })
 
@@ -61,7 +64,9 @@ def build_verified_real_replay_summary(
     record = runtime.store.latest_record_by_meta_value_exact_scope(
         kind="replay_result",
         source="eimemory.real_task_replay",
-        status="active",
+        # Read the insertion high-water observation, including revocations.
+        # Filtering active rows here would resurrect an older passing report.
+        status=None,
         scope=scope_ref,
         meta_key="package_tree_digest",
         meta_value=current_digest,
@@ -71,6 +76,11 @@ def build_verified_real_replay_summary(
             package_tree_digest=current_digest,
             reason="current_code_replay_missing",
         )
+    if record.status != "active":
+        return {
+            **_empty_summary(package_tree_digest=current_digest, reason="replay_report_inactive"),
+            "record_id": record.record_id,
+        }
     report = record.content.get("report") if isinstance(record.content, dict) else {}
     report = report if isinstance(report, dict) else {}
     execution_id = report.get("replay_execution_id")
@@ -103,6 +113,9 @@ def build_verified_real_replay_summary(
             continue
         if raw_sample.get("replay_execution_id") != execution_id:
             rejection_reasons["replay_execution_id_mismatch"] += 1
+            continue
+        if type(raw_sample.get("evaluable")) is not bool:
+            rejection_reasons["sample_evaluation_unverified"] += 1
             continue
         source_record_id = str(raw_sample.get("source_record_id") or "")
         if not source_record_id:
@@ -145,6 +158,9 @@ def build_verified_real_replay_summary(
             rejection_reasons["duplicate_terminal_evidence"] += 1
             continue
         seen_terminal_evidence.add(terminal_evidence_digest)
+        if raw_sample.get("evaluable") is False:
+            rejection_reasons["not_evaluable"] += 1
+            continue
         if raw_sample.get("executed") is not True:
             rejection_reasons["not_run"] += 1
             continue
@@ -168,16 +184,21 @@ def build_verified_real_replay_summary(
     authenticity_failed = source_verification_lost or bool(
         REAL_REPLAY_AUTHENTICITY_REASONS.intersection(rejection_reasons)
     )
+    unevaluable_count = sum(rejection_reasons[reason] for reason in REAL_REPLAY_INCOMPLETE_REASONS)
     return {
         "ok": bool(
             sample_deficit == 0
             and pass_rate_deficit == 0.0
             and not authenticity_failed
+            and unevaluable_count == 0
         ),
         "reason": (
             "verified_real_replay_authenticity_failed" if authenticity_failed
+            else "verified_real_replay_incomplete" if unevaluable_count
             else "" if sample_count else "verified_real_samples_missing"
         ),
+        "evaluation_complete": unevaluable_count == 0 and not authenticity_failed,
+        "unevaluable_count": unevaluable_count,
         "record_id": record.record_id,
         "replay_execution_id": str(report.get("replay_execution_id") or ""),
         "provenance_contract": REAL_PROVENANCE_CONTRACT,
@@ -199,6 +220,8 @@ def _empty_summary(*, package_tree_digest: str, reason: str) -> dict[str, Any]:
     return {
         "ok": False,
         "reason": reason,
+        "evaluation_complete": False,
+        "unevaluable_count": 0,
         "record_id": "",
         "replay_execution_id": "",
         "provenance_contract": REAL_PROVENANCE_CONTRACT,
@@ -214,3 +237,13 @@ def _empty_summary(*, package_tree_digest: str, reason: str) -> dict[str, Any]:
         "distinct_task_types": 0,
         "rejection_reasons": {},
     }
+
+
+def real_replay_execution_incomplete(summary: dict[str, Any]) -> bool:
+    """Unavailable attempted samples are execution gaps, not new-data waits."""
+    reasons = summary.get("rejection_reasons")
+    return bool(
+        summary.get("reason") == "verified_real_replay_incomplete"
+        or isinstance(reasons, dict)
+        and any(reasons.get(reason) for reason in REAL_REPLAY_INCOMPLETE_REASONS)
+    )

@@ -230,7 +230,6 @@ def validate_external_channel_acceptance(
         if isinstance(getattr(evidence, "content", None), Mapping)
         else {}
     )
-    recorded_release = release_identity_from_record(evidence)
     return bool(
         getattr(evidence, "kind", "") == "learning_eval"
         and getattr(evidence, "status", "") == "active"
@@ -239,7 +238,7 @@ def validate_external_channel_acceptance(
         and str(content.get("schema_version") or "") == SCHEMA_VERSION
         and str(content.get("evidence_class") or "") == EVIDENCE_CLASS
         and content.get("passed") is True
-        and same_release_authority(recorded_release, current_release)
+        and _channel_release_identity_matches(evidence, current_release)
         and str(content.get("transport_owner") or "").strip().lower()
         in _TRUSTED_TRANSPORT_OWNERS
         and _valid_platform(content.get("platform"))
@@ -254,6 +253,37 @@ def validate_external_channel_acceptance(
                 "channel_session_digest",
             )
         )
+    )
+
+
+def _channel_release_identity_matches(evidence: Any, current_release: ReleaseIdentity) -> bool:
+    """A store stamp cannot relabel a receipt declared for another release.
+
+    Older channel evidence may have only deployment aliases. When canonical
+    fields are present, every copy must agree on commit, receipt and session.
+    Version stays descriptive, as in the existing release-authority contract.
+    """
+    content = getattr(evidence, "content", None)
+    if not isinstance(content, Mapping):
+        return False
+    declared = ReleaseIdentity(
+        commit=str(content.get("deployment_commit") or ""),
+        version=str(content.get("deployment_version") or ""),
+        receipt_id=str(content.get("promotion_request_id") or ""),
+        session_id=str(content.get("deployment_session_id") or content.get("release_session_id") or ""),
+    )
+    if not (same_release_authority(declared, current_release)
+            and same_release_authority(release_identity_from_record(evidence), current_release)):
+        return False
+    expected = {
+        "release_commit": current_release.commit, "deployment_commit": current_release.commit,
+        "deployment_receipt_id": current_release.receipt_id, "promotion_request_id": current_release.receipt_id,
+        "release_session_id": current_release.session_id, "deployment_session_id": current_release.session_id,
+    }
+    return all(
+        value == expected[key]
+        for payload in (content, getattr(evidence, "meta", None)) if isinstance(payload, Mapping)
+        for key, value in payload.items() if key in expected
     )
 
 

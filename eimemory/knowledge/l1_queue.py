@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from eimemory.models.records import ScopeRef
 from eimemory.storage.atomic_file import atomic_write_json, interprocess_lock
 
 
@@ -15,6 +16,16 @@ MAX_ATTEMPTS = 5
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parent_identity(job: dict[str, Any]) -> tuple[str, str, ScopeRef]:
+    # Record IDs can legitimately repeat in separate storage partitions. The
+    # worker reads the exact source and scope, so enqueue must use the same key.
+    return (
+        str(job.get("episode_id") or "").strip(),
+        str(job.get("channel_id") or "hermes"),
+        ScopeRef.from_dict(job.get("channel_scope") or {}),
+    )
 
 
 class L1QueueStateError(RuntimeError):
@@ -54,16 +65,28 @@ class L1ExtractQueue:
             raise L1QueueStateError("queue_schema_invalid")
         for key in ("jobs", "dead"):
             if key not in payload:
-                payload[key] = []
+                raise L1QueueStateError("queue_schema_invalid")
             if not isinstance(payload[key], list) or any(
                 not isinstance(item, dict) for item in payload[key]
             ):
                 raise L1QueueStateError("queue_schema_invalid")
+            for item in payload[key]:
+                if (not isinstance(item.get("job_id"), str) or not item["job_id"]
+                        or not isinstance(item.get("status"), str)
+                        or item.get("status") not in ({"queued", "running"} if key == "jobs" else {"dead"})
+                        or type(item.get("attempts", 0)) is not int
+                        or item.get("attempts", 0) < 0):
+                    raise L1QueueStateError("queue_schema_invalid")
         return payload
 
     def _save(self, payload: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(self.path, payload)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(self.path, payload)
+        except OSError as exc:
+            # Atomic publication can fail before or after replace/fsync. Keep
+            # the outcome unknown and preserve the actual handler/ACK phase.
+            raise L1QueueStateError("queue_unwritable", retryable=True) from exc
 
     def enqueue(self, job: dict[str, Any]) -> dict[str, Any]:
         episode_id = str(job.get("episode_id") or "").strip()
@@ -71,8 +94,9 @@ class L1ExtractQueue:
             payload = self._load()
             jobs: list[dict[str, Any]] = list(payload.get("jobs") or [])
             if episode_id:
+                identity = _parent_identity(job)
                 for existing in jobs:
-                    if str(existing.get("episode_id") or "") == episode_id and existing.get("status") in {
+                    if _parent_identity(existing) == identity and existing.get("status") in {
                         "queued",
                         "running",
                     }:
@@ -140,8 +164,11 @@ class L1ExtractQueue:
                 handler_completed = True
                 phase = "acknowledge_handler"
                 completion_recorded = self._complete(str(job.get("job_id") or ""), claim_token=claim_token)
-                if completion_recorded:
-                    processed += 1
+                if not completion_recorded:
+                    # A completed handler is insufficient if its fenced claim
+                    # disappeared or changed before the acknowledgement.
+                    raise L1QueueStateError("queue_acknowledgement_lost", retryable=True)
+                processed += 1
             phase = "count_pending"
             pending = self.pending_count()
             phase = "count_dead"
@@ -154,7 +181,10 @@ class L1ExtractQueue:
                 "dead": dead,
                 "errors": errors[-5:],
             }
-        except L1QueueStateError as exc:
+        except (L1QueueStateError, OSError) as error:
+            exc = error if isinstance(error, L1QueueStateError) else L1QueueStateError(
+                "queue_unreadable", retryable=True
+            )
             exc.context = {
                 "phase": phase,
                 "processed": processed,
@@ -168,6 +198,8 @@ class L1ExtractQueue:
             }
             if handler_error is not None and handler_error is not exc:
                 raise exc from handler_error
+            if exc is not error:
+                raise exc from error
             raise
 
     def _recover_interrupted(self) -> int:

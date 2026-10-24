@@ -43,9 +43,12 @@ string is diagnostic, not trusted L5 proof.
 Trusted Hermes task evidence is fail-closed behind the operator-separated
 host profile. The host plugin receives a private
 `EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE` plus
-`EIMEMORY_ATTESTATION_HOST_PROFILE=operator-separated-v1`, loads the token
-once, and removes producer configuration from the inherited environment before
-ordinary child tools can run. `EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE` stores
+`EIMEMORY_ATTESTATION_HOST_PROFILE=operator-separated-v1`. It resolves the
+active profile and rereads the private file on each use, so credential rotation
+and permission changes take effect without rewriting the native gateway
+environment. The host owns model/tool environment inheritance and credential
+isolation; the profile marker alone does not attest that isolation.
+`EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE` stores
 only bounded receipt IDs; the protected runtime database remains authoritative
 for the exact pending set and atomic terminal claim. Without this separated
 profile, memory and recall keep working, `attestation_available` is false, and

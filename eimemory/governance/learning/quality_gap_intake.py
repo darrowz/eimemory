@@ -14,6 +14,7 @@ QUALITY_GAP_SCHEMA = "eimemory.quality_gap.v1"
 QUALITY_GAP_SOURCE = "eimemory.l5.quality_gap_intake"
 _MAX_BLOCKING_METRICS = 32
 _MAX_TEXT_CHARS = 240
+_GATE_FIELDS = ("quality_gate", "threshold_gate", "safety_gate", "isolation_gate", "gate")
 
 # Compatibility mapping for historical report names, not a live capability catalog.
 LEGACY_REPORT_CAPABILITIES = {
@@ -244,7 +245,18 @@ def _quality_finding(report_name: str, report: dict[str, Any]) -> dict[str, Any]
     gate = _gate(report)
     if not gate:
         return None
-    gate_ok = gate.get("ok") is True
+    from eimemory.scheduler.result_contract import _authority_boundary_failed, _has_report_failure
+
+    report_parts = [report, gate, *(dict(report[key]) for key in _GATE_FIELDS
+                                  if isinstance(report.get(key), Mapping))]
+    # A stale nested pass must not resolve a gap when execution, authority, or
+    # the containing report explicitly failed. Omitted legacy report fields
+    # remain compatible, but present verdicts must be native JSON booleans.
+    gate_ok = (
+        gate.get("ok") is True
+        and all(report[key] is True for key in ("ok", "execution_ok") if key in report)
+        and not any(_has_report_failure(part) or _authority_boundary_failed(part) for part in report_parts)
+    )
     raw_blocking = gate.get("blocking_metrics")
     blocking: Mapping[str, Any] = raw_blocking if isinstance(raw_blocking, Mapping) else {}
     normalized_blocking = {
@@ -281,17 +293,27 @@ def _quality_finding(report_name: str, report: dict[str, Any]) -> dict[str, Any]
 
 
 def _gate(report: dict[str, Any]) -> dict[str, Any]:
-    for key in ("quality_gate", "threshold_gate", "safety_gate", "isolation_gate", "gate"):
-        value = report.get(key)
-        if isinstance(value, Mapping):
-            return dict(value)
-    if "gate_ok" in report or "passed_threshold" in report:
-        return {
-            "ok": bool(report.get("gate_ok") or report.get("passed_threshold")),
+    gates = [dict(report[key]) for key in _GATE_FIELDS if isinstance(report.get(key), Mapping)]
+    gate: dict[str, Any] = dict(gates[0]) if gates else {}
+    flags = [report[key] for key in ("gate_ok", "passed_threshold") if key in report]
+    if not gates and flags:
+        gate = {
+            "ok": flags[0],
             "blocked_reason": report.get("blocked_reason"),
             "blocking_metrics": report.get("blocking_metrics") or {},
         }
-    return {}
+    # Gate fields are optional when absent. A present malformed or null gate
+    # cannot be hidden by a different native gate or a legacy success flag.
+    if any(key in report and not isinstance(report[key], Mapping) for key in _GATE_FIELDS):
+        gate.update(ok=False, error="quality_gate_shape_invalid",
+                    blocked_reason="quality_gate_shape_invalid")
+        return gate
+    verdicts = [item.get("ok") for item in gates] + flags
+    if verdicts:
+        if any(type(value) is not bool for value in verdicts) or len(set(verdicts)) != 1:
+            gate.update(ok=False, error="quality_gate_verdict_invalid",
+                        blocked_reason="quality_gate_verdict_invalid")
+    return gate
 
 
 def _gap_record(

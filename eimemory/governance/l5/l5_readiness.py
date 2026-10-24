@@ -39,7 +39,9 @@ from eimemory.governance.release.evidence_contract import (
 )
 from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.l5.l5_maturity import apply_monotonic_maturity
-from eimemory.governance.l5.real_replay_gate import build_verified_real_replay_summary
+from eimemory.governance.l5.real_replay_gate import (
+    build_verified_real_replay_summary, real_replay_execution_incomplete,
+)
 from eimemory.governance.l5.real_task_coverage import (
     assess_capability_lifecycle,
     pass_rate_inspection_alerts,
@@ -2677,6 +2679,8 @@ def _real_business_gate(
     )
     replay_ok = bool(
         verified_real_replay.get("ok") is True
+        and verified_real_replay.get("evaluation_complete", True) is True
+        and not real_replay_execution_incomplete(verified_real_replay)
         and int(verified_real_replay.get("sample_count") or 0) >= 10
         and float(verified_real_replay.get("pass_rate") or 0.0) >= 0.8
         and str(verified_real_replay.get("provenance_contract") or "")

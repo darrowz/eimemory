@@ -177,8 +177,13 @@ class NewlyDeadTests(unittest.TestCase):
     def test_success_without_ack_not_processed(self):
         m = MemoryQueue([job()], 200)
         m.queue._complete = lambda *args, **kwargs: False
-        result = m.queue.drain_report(lambda _: None, limit=1)
-        self.assertEqual(result, dict(processed=0, failed=0, newly_dead=0, pending=1, dead=200, errors=[]))
+        with self.assertRaises(m.error_type) as caught:
+            m.queue.drain_report(lambda _: None, limit=1)
+        self.assertEqual(caught.exception.code, 'queue_acknowledgement_lost')
+        self.assertEqual(caught.exception.context['processed'], 0)
+        self.assertTrue(caught.exception.context['handler_completed'])
+        self.assertFalse(caught.exception.context['completion_recorded'])
+        self.assertEqual(m.state['jobs'][0]['status'], 'running')
         self.assertEqual(m.saves, 1)
 
     def test_limit_zero_still_recovers_without_handler(self):

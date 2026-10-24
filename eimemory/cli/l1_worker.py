@@ -118,7 +118,9 @@ def drain_l1(*, root: str, limit: int = 5) -> dict[str, Any]:
             )
             phase = "recent_dead"
             report["dead_jobs"] = queue.recent_dead(limit=5)
-        except L1QueueStateError as exc:
+        except (L1QueueStateError, OSError) as exc:
+            if not isinstance(exc, L1QueueStateError):
+                exc = L1QueueStateError("queue_unreadable", retryable=True)
             report = _queue_state_failure_report(
                 exc, stats=stats, completed_report=report, phase=phase
             )

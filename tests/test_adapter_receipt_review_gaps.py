@@ -1520,6 +1520,10 @@ def test_hermes_attestation_and_terminal_use_exact_channel_release(monkeypatch, 
 def test_hermes_terminal_retry_keeps_verified_original_release(monkeypatch, tmp_path, mismatch):
     monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
     runtime = Runtime.create(root=tmp_path)
+    # This case exercises receipt/release binding after an actual delivery.
+    # Its prerequisite must not depend on the unrelated experiment cohort,
+    # whose deterministic assignment changes with the recall policy version.
+    runtime.proactive.control_percent = 0
     try:
         exact = resolve_channel_scope("hermes", BASE_SCOPE)
         _seed_release(runtime, scope_payload=exact)

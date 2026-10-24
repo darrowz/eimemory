@@ -1072,6 +1072,9 @@ def test_fixed_empty_pycache_rejects_cached_or_untrusted_directory(monkeypatch,f
     base=Path(tempfile.mkdtemp(prefix='eimemory-manager-cache-fs-',dir='/run'))
     assert base.resolve().parent==Path('/run')
     cache=base/'cache';cache.mkdir(mode=0o555)
+    # The private test umask strips other-execute during mkdir; the contract
+    # requires an exact protected mode after provisioning, as the installer does.
+    cache.chmod(0o555)
     monkeypatch.setattr(m,'EMPTY_PYCACHE',cache)
     monkeypatch.setenv('PYTHONPYCACHEPREFIX','preexisting-fixture')
     monkeypatch.setenv('PYTHONDONTWRITEBYTECODE','1')

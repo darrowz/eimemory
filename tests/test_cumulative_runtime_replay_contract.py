@@ -183,14 +183,14 @@ def test_real_replay_uses_caller_catalog_without_fixed_type_quota(monkeypatch):
     catalog = object()
     samples = [dict(source_record_id=f'source-{i}', source_evidence_digest=f'digest-{i}',
                     source_task_type='only-enabled-type', terminal_evidence_digest=f'terminal-{i}',
-                    executed=True, passed=True, package_tree_digest='fake-digest',
+                    executed=True, evaluable=True, passed=True, package_tree_digest='fake-digest',
                     replay_execution_id='fixture-execution') for i in range(10)]
     report = dict(ok=True, schema_version='real_task_replay.v1', report_type='real_task_replay',
                   scope=asdict(scope), replay_execution_id='fixture-execution',
                   real_provenance_contract=gate.REAL_PROVENANCE_CONTRACT,
                   package_tree_digest='fake-digest', samples=samples)
     runtime = SimpleNamespace(store=SimpleNamespace(latest_record_by_meta_value_exact_scope=
-                              Mock(return_value=SimpleNamespace(content={'report': report}, record_id='fake'))))
+                              Mock(return_value=SimpleNamespace(content={'report': report}, record_id='fake', status='active'))))
     monkeypatch.setattr(gate, 'runtime_package_tree_digest', lambda: 'fake-digest')
     def validate(runtime, *, source_record_id, scope, catalog):
         assert catalog is expected_catalog

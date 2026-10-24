@@ -680,6 +680,13 @@ class MemoryAPI:
             or bool(existing_business.get("force_capture")) != bool(force_capture)
         ):
             return False
+        # These fields may be generated for older records, but an explicit
+        # caller value is business identity and must still match on retry.
+        # Ignoring it would acknowledge a changed legacy request without
+        # applying its intended fact identity or memory-layer transition.
+        for key in ("semantic_key", "memory_layer"):
+            if key in business_metadata(request_meta) and existing_business.get(key) != requested_business.get(key):
+                return False
         mutable_generated = {
             _INGEST_REQUEST_DIGEST_META_KEY,
             LIVING_MEMORY_META_KEY,
@@ -1394,7 +1401,10 @@ class MemoryAPI:
     @staticmethod
     def _is_temporally_stale_memory(item: RecordEnvelope) -> bool:
         meta = business_metadata(item.meta)
-        if MemoryAPI._valid_until_is_past(meta.get("invalid_at") or meta.get("valid_until") or meta.get("effective_until")):
+        # These are independent upper bounds. A future or malformed value in
+        # one field must not hide another bound that has already elapsed.
+        if any(MemoryAPI._valid_until_is_past(meta.get(key))
+               for key in ("invalid_at", "valid_until", "effective_until")):
             return True
         if item.kind != "memory":
             return False

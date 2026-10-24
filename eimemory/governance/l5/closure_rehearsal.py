@@ -19,7 +19,9 @@ from eimemory.governance.release.evidence_contract import (
 from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.l5.l5_readiness import _real_business_gate, readiness_gate_status, readiness_gate_status_diagnostics
 from eimemory.governance.l5.real_task_coverage import real_task_type_coverage_deficits
-from eimemory.governance.l5.real_replay_gate import REAL_REPLAY_AUTHENTICITY_REASONS
+from eimemory.governance.l5.real_replay_gate import (
+    REAL_REPLAY_AUTHENTICITY_REASONS, real_replay_execution_incomplete,
+)
 from eimemory.models.records import ScopeRef
 
 
@@ -555,6 +557,11 @@ def _bootstrap_pending_readiness_evidence_reason(
         if isinstance(readiness.get("verified_real_replay"), dict)
         else {}
     )
+    if _replay_authenticity_deficits(replay_gate) or real_replay_execution_incomplete(replay_gate):
+        diagnostics["non_recall_evidence_deficits"] = bootstrap_pending_non_recall_deficits(
+            readiness, release=release,
+        )
+        return NON_RECALL_EVIDENCE_INCOMPLETE
     real_business_gate = _real_business_gate(live_gate, replay_gate)
     live_task_accumulating = real_business_gate.get("ok") is not True
     if live_task_accumulating and not _compatible_live_task_accumulation(
@@ -744,6 +751,8 @@ def bootstrap_pending_non_recall_deficits(
         samples.get("verified_real_task_type_counts"),
     ))
     deficits.update(_replay_authenticity_deficits(replay))
+    if real_replay_execution_incomplete(replay):
+        deficits.add("verified_real_replay_incomplete")
     probes = _count(samples.get("current_deployment_operational_probes"))
     live_probes = _count(live.get("current_deployment_operational_probes"))
     if (
@@ -805,6 +814,11 @@ def _compatible_live_task_accumulation(
     *,
     release: ReleaseIdentity,
 ) -> bool:
+    replay = readiness.get("verified_real_replay")
+    if isinstance(replay, dict) and (
+        _replay_authenticity_deficits(replay) or real_replay_execution_incomplete(replay)
+    ):
+        return False
     live = (
         readiness.get("live_task_gate")
         if isinstance(readiness.get("live_task_gate"), dict)

@@ -288,12 +288,12 @@ class GovernedRecallEngine:
     """Single owner of recall hydration, governance, ordering, and packaging."""
 
     name = "governed"
-    policy_version = "governed-recall.v5"
+    policy_version = "governed-recall.v6"
     _minimum_candidate_budget = 48
     _candidate_budget_multiplier = 3
     _max_query_scope_refs = 64
     _max_legacy_fallback_scope_refs = 8
-    _relevance_selector_policy_version = "post-fusion-relevance.v3"
+    _relevance_selector_policy_version = "post-fusion-relevance.v4"
     _relevance_selector_thresholds = {
         "non_exact_min_grounding": 0.08,
         "non_exact_min_score": 0.18,
@@ -2220,16 +2220,19 @@ class GovernedRecallEngine:
             items = prioritized
         ordered_scores = [score_for(item) for item in items if not is_exact_identity(item)]
         top_score = max(ordered_scores or [0.0])
-        selected: list[RecordEnvelope] = []
-        for item in items:
-            if len(selected) >= bounded_limit:
-                break
-            if is_exact_identity(item):
-                selected.append(item)
-                continue
-            if self._is_strongly_lexical_durable_event(query, item):
-                selected.append(item)
-                continue
+        eligibility: dict[tuple[str, ExactScope, str], bool] = {}
+
+        def eligible(item: RecordEnvelope) -> bool:
+            # The anchor reserve is a ranking exception, never an admission
+            # exception. Share the exact gate with ordinary delivered slots;
+            # cache decisions so rejected anchors are not counted twice.
+            key = self._record_key(item)
+            if key in eligibility:
+                return eligibility[key]
+            if is_exact_identity(item) or self._is_strongly_lexical_durable_event(query, item):
+                eligibility[key] = True
+                return True
+            eligibility[key] = False
             score = score_for(item)
             if (
                 canonical_first_strategy
@@ -2240,7 +2243,7 @@ class GovernedRecallEngine:
                 dropped_reasons["score"] += 1
                 if target_trace is not None:
                     target_trace.drop("selector_input", item, "score")
-                continue
+                return False
             if (
                 not research_multi_hit
                 and canonical_first_strategy
@@ -2251,7 +2254,7 @@ class GovernedRecallEngine:
                 dropped_reasons["top_score_margin"] += 1
                 if target_trace is not None:
                     target_trace.drop("selector_input", item, "top_score_margin")
-                continue
+                return False
             grounding_score, grounding_reason = self._non_exact_grounding_score(
                 query=query,
                 item=item,
@@ -2268,8 +2271,16 @@ class GovernedRecallEngine:
                 dropped_reasons[grounding_reason or "grounding"] += 1
                 if target_trace is not None:
                     target_trace.drop("selector_input", item, grounding_reason or "grounding")
-                continue
-            selected.append(item)
+                return False
+            eligibility[key] = True
+            return True
+
+        selected: list[RecordEnvelope] = []
+        for item in items:
+            if len(selected) >= bounded_limit:
+                break
+            if eligible(item):
+                selected.append(item)
 
         anchor_reserve_swap = False
         if bounded_limit > 1 and len(selected) >= bounded_limit:
@@ -2291,7 +2302,8 @@ class GovernedRecallEngine:
                 (
                     item
                     for item in items
-                    if self._record_key(item) not in selected_refs and high_quality_anchor(item)
+                    if (self._record_key(item) not in selected_refs
+                        and high_quality_anchor(item) and eligible(item))
                 ),
                 None,
             )

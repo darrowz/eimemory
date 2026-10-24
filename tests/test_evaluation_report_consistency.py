@@ -42,7 +42,8 @@ def test_nonempty_regression_expectation_can_pass():
 
 @pytest.mark.parametrize("passed,total,threshold,expected", [
     (2499, 2500, 1.0, False), (2500, 2500, 1.0, True),
-    (4, 5, 0.8004, False), (4, 5, 0.8, True), (0, 0, 0.0, True),
+    (4, 5, 0.8004, False), (4, 5, 0.8, True),
+    (0, 0, 0.0, False),  # Zero evaluated samples cannot certify success, even at a zero threshold.
 ])
 def test_replay_verdict_uses_unrounded_ratio(passed, total, threshold, expected):
     assert _meets_threshold(passed, total, threshold) is expected

@@ -22,4 +22,3 @@ eimemory/storage/runtime_store.py:remove_sqlite_files
 # Fixed readonly child entry: code_deployment_job._run_legacy_validation compiles
 # a separately attested target-release program. AST callers cannot see imports
 # inside that program string; integration tests execute the real child dispatch.
-eimemory/governance/release/release_closure.py:run_manual_post_resume_closure

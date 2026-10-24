@@ -10,7 +10,7 @@ import json
 import os
 from pathlib import Path
 import stat
-from typing import Mapping, MutableMapping
+from typing import Mapping
 
 
 MIN_PRODUCER_TOKEN_LENGTH = 32
@@ -22,10 +22,6 @@ PRODUCER_TOKEN_FILE_ENVS = {
     "codex": "EIMEMORY_CODEX_ATTESTATION_TOKEN_FILE",
     "hermes": "EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE",
 }
-_LEGACY_TOKEN_ENVS = (
-    "EIMEMORY_ATTESTATION_TOKEN",
-    "EIMEMORY_ATTESTATION_TOKENS_JSON",
-)
 
 
 def is_strong_producer_token(value: object) -> bool:
@@ -82,19 +78,6 @@ def attestation_tokens_from_private_file(
             return {}
         tokens[token] = str(producer)
     return tokens
-
-
-def scrub_producer_credential_environment(
-    environ: MutableMapping[str, str] | None = None,
-) -> None:
-    target = os.environ if environ is None else environ
-    for name in (
-        *PRODUCER_TOKEN_FILE_ENVS.values(),
-        ATTESTATION_TOKENS_FILE_ENV,
-        ATTESTATION_HOST_PROFILE_ENV,
-        *_LEGACY_TOKEN_ENVS,
-    ):
-        target.pop(name, None)
 
 
 def _read_private_file(path: Path, *, max_bytes: int) -> bytes:

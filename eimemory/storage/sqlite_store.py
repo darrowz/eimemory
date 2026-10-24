@@ -6950,6 +6950,7 @@ class SqliteRecordStore:
         source_ids: list[str] | tuple[str, ...] | None = None,
         offset: int = 0,
         exact_scope: bool = False,
+        meta_filters: dict[str, Any] | None = None,
     ) -> list[RecordEnvelope] | None:
         if exact_scope and scope is None:
             raise ValueError("exact_scope_requires_scope")
@@ -6959,6 +6960,14 @@ class SqliteRecordStore:
         limit = self._normalize_limit(limit)
         where = ["1=1", f"{expression} = ?"]
         params: list[object] = [str(meta_value)]
+        # All partition predicates must precede LIMIT so an unrelated
+        # metadata value cannot consume a caller's bounded history window.
+        for filter_key, filter_value in (meta_filters or {}).items():
+            filter_expression = _meta_json_text_expression(filter_key)
+            if not filter_expression:
+                return None
+            where.append(f"{filter_expression} = ?")
+            params.append(str(filter_value))
         if kinds:
             where.append(f"kind IN ({','.join('?' for _ in kinds)})")
             params.extend(kinds)

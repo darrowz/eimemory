@@ -145,10 +145,26 @@ def test_ret02_keyword_eligible_despite_vector_score_key() -> None:
     assert engine._keyword_component_eligible({"lexical_score": 0.15, "vector_score": 0.05}) is True
     # Provider rank FTS evidence eligible even when vector_score key exists
     assert engine._keyword_component_eligible({"_provider_rank": 1, "vector_score": 0.05, "lexical_score": 0}) is True
-    # Explicit arm flags
-    assert engine._keyword_component_eligible({"_fts_arm_present": True, "vector_score": 0.0}) is True
+    # A hybrid FTS hit remains eligible when its own lexical evidence exists.
+    assert engine._keyword_component_eligible({
+        "_fts_arm_present": True, "_provider_rank_is_hybrid": True,
+        "lexical_score": 0.15, "vector_score": 0.0,
+    }) is True
     # Identity indexed still denied
     assert engine._keyword_component_eligible({"_provider_rank": 1, "identity_indexed": True}) is False
+
+
+@pytest.mark.parametrize("arm_marker", ["_fts_arm_present", "_lexical_arm_present"])
+@pytest.mark.parametrize("lexical_score", [None, 0.0])
+def test_ret02_arm_marker_without_keyword_evidence_is_ineligible(arm_marker, lexical_score) -> None:
+    engine = GovernedRecallEngine.__new__(GovernedRecallEngine)
+    hints = {arm_marker: True, "vector_score": 0.0}
+    if lexical_score is not None:
+        hints["lexical_score"] = lexical_score
+    # Arm provenance alone cannot create a keyword RRF vote. FTS prefix
+    # matches without lexical support remain candidates for later grounding.
+    assert engine._keyword_component_eligible(hints) is False
+    assert engine._keyword_component_score(hints) == 0.0
 
 
 # ---------- RET-03 ----------
