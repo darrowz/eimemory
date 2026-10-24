@@ -15,6 +15,18 @@ AIGC:
 
 - Allow reviewed abandonment of a failed manual deploy that already switched to the candidate but has not resumed. Inconsistent resumed flags and unrelated registry changes still fail closed.
 
+### Additional changes included in the formal release — 2026-10-23–24
+
+- Keep a bounded lexical FTS arm alongside hybrid and PostgreSQL recall, split mixed CJK/ASCII query terms, and reject zero-lexical keyword votes. Judge admission against the actual host query; use literal-request fallback when context-expanded recall is empty, exclude current-turn echoes, and bypass host background notifications.
+- Prefer durable delivery preferences for procedure, deployment and acceptance queries while retaining scoped retrieval and the current ranking policy.
+- Introduce `production_recall_gate_policy.v6` with temporary absolute MRR and nDCG@5 floors of 0.50 and 0.55. Historical v5 policy digests retain their 0.80/0.80 floors; pollution, leakage and other quality constraints remain in force. G2c requires separate passes only for authorized agent/profile scopes with natural traffic; zero-traffic profiles remain in inventory and diagnostics. The G3 semantic judge retains its `max_new=8` limit.
+- Validate trusted legacy baselines against their recorded supported policy schema and thresholds. Reject unknown schemas and partially present identity fields; preserve strict current-report validation.
+- Distinguish stale vector projection authority from authority changes during a readiness probe. Align projection settling with the configured maximum index lag, restore projection after storage transaction markers clear, and begin read-only readiness and stability observation after that restoration.
+- Evaluate intentionally held background activity under the admission hold contract. Permit reviewed abandonment of a failed `background_restore_intent` after core serving is proven, retaining the failed native evidence.
+- Accept reviewed release-scope bindings under the storage state directory during worker finalization, and record intentional controlled-path recall/L5 skips with their explicit reason codes.
+- Register vector projection restoration in the recall, governance, storage-integrity and deployment-runtime release domains, closing the missing production-file classification that blocked both CI suites.
+- Publish consolidated [1.15.26 release notes](docs/releases/v1.15.26.md), covering all source changes since the previous formal release, 1.14.101.
+
 ## [1.15.25] — 2026-10-22
 
 - Treat timer and path units as quiet when inactive, without requiring process IDs that systemd does not return. Service units still require zero main and control PIDs.

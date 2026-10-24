@@ -64,6 +64,7 @@ def test_every_tracked_production_file_has_a_domain() -> None:
         ("eimemory/core/nightly_deployment_admission.py", set(DOMAIN_PATHS)),
         ("eimemory/adapters/hermes/profile_context.py", set(DOMAIN_PATHS)),
         ("eimemory/ops/hermes_native_topology.py", set(DOMAIN_PATHS)),
+        ("eimemory/ops/projection_acceptance_restore.py", {"memory.recall", "memory.governance", "storage.integrity", "deployment.runtime"}),
         ("deploy/retire_manual_code_policy.py", {"memory.governance", "deployment.runtime", "code.evolution"}),
         ("eimemory/adapters/eibrain/health_probe.py", {"channel.delivery", "deployment.runtime"}),
         ("eimemory/adapters/hermes/outbox.py", {"memory.recall", "channel.delivery"}),
@@ -92,7 +93,7 @@ def test_1_14_46_unknown_paths_now_have_owners(path: str, required: set[str]) ->
 
 @pytest.mark.parametrize(
     "path",
-    ["deploy/brand_new_helper.py", "eimemory/knowledge/brand_new.py", "scripts/brand_new.py", "eimemory/adapters/hermes/brand_new.py", "eimemory/scheduler/brand_new.py"],
+    ["deploy/brand_new_helper.py", "eimemory/knowledge/brand_new.py", "scripts/brand_new.py", "eimemory/adapters/hermes/brand_new.py", "eimemory/scheduler/brand_new.py", "eimemory/ops/projection_acceptance_restore_extra.py"],
 )
 def test_new_unregistered_files_still_fail_closed(path: str) -> None:
     assert _domains(path) == set()

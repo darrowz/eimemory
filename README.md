@@ -24,6 +24,7 @@ AIGC:
   <a href="#why-eimemory">Why eimemory</a> ·
   <a href="#runtime-integrations">Integrations</a> ·
   <a href="#current-validation-status">Validation status</a> ·
+  <a href="https://github.com/darrowz/eimemory/releases/latest">Releases</a> ·
   <a href="#documentation">Docs</a>
 </p>
 
@@ -42,6 +43,13 @@ AIGC:
 knowledge and capability evidence across agent sessions. It retrieves context
 through CLI, Python, authenticated RPC and host adapters, then uses evaluation
 and governance to decide whether a proposed improvement can advance.
+
+**Package 1.15.26:** [release notes](docs/releases/v1.15.26.md) consolidate the
+changes since the previous formal release, 1.14.101, including native Hermes
+profiles, deployment recovery, vector readiness and hybrid recall. The notes
+also describe the temporary recall policy v6 ranking floors and natural-traffic
+scope requirements. Download versioned packages and checksums from the
+[1.15.26 release page](https://github.com/darrowz/eimemory/releases/tag/v1.15.26).
 
 **Native L5 maintenance:** nightly now persists the current native assessment after maintenance, uses exact-source quality and incident pages, and separates report-owned repair transactions from authorized shared product capability evidence. Watch and nightly share bounded system detection and recovery. See [the operator guide](docs/operations/l5-native-maintenance.md).
 
@@ -80,8 +88,9 @@ The supplied execution receipts do not verify recovery of those two participant
 queries, factual truth of model output or team recall quality. The 1.14.70
 inventory, provider and controlled-retrieval contracts remain available;
 their earlier source validation is separate from this production readback.
-Policy v5 still requires three qualifying cases and trusted labels within the
-existing exact dataset scope, with unchanged quality and authorization checks.
+That historical policy v5 required three qualifying cases and trusted labels
+within the exact dataset scope. The current v6 policy is described in the
+[1.15.26 release notes](docs/releases/v1.15.26.md#recall-policy-changes-to-review-before-upgrading).
 See the [receipt-based acceptance status](docs/acceptance-status.md).
 
 Version **1.14.72** adds a private native trace for one controlled target,
@@ -276,7 +285,11 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.15.26, mainline)
+## Current package status (1.15.26, source package)
+
+See the [1.15.26 release notes](docs/releases/v1.15.26.md) for the cumulative
+source changes, installation options and current recall policy. The dated
+production observations below retain their original version and evidence scope.
 
 An operator can authorize `controlled_existing_memory` production operation acceptance with the protected root-owned `/etc/eimemory-controlled-production-acceptance/policy.json` (`controlled_production_acceptance_policy.v1`). The policy binds the actual operator request digest, owning deployment scope, every colleague's exact Hermes scope/source, an old-memory cutoff, at least three cases per scope, a maximum of fifty cases, a receipt lifetime of at most 24 hours, and the live `engine_contract_digest`. Where nightly's service scope and deployment's real Hermes scope differ, the root policy can explicitly list up to four `additional_owner_scopes` under the same tenant and primary agent. Every caller must exactly match one listed owner; each receipt retains its actual owner and release authority. Derive that digest with `digest(controlled_retrieval_contract(runtime))` under the actual RPC retrieval configuration; a lexical-only evaluator cannot substitute for the configured vector path.
 
@@ -403,12 +416,18 @@ liveness skips these readers and cannot substitute for deployment health.
 The operator's subsequent 1.14.66 readback reports deployment and nightly
 execution success; business evidence remains insufficient.
 
-Policy **`production_recall_gate_policy.v5`** lowers the minimum qualifying
-case and label counts from 15 to **3**, as explicitly requested by the operator.
-It keeps trusted labels, release authorization, exact scope/source boundaries,
-ranking, latency, resource, isolation and noninferiority checks. Historical
-v4/v3/v2 policy payloads and digests keep their original 15-case/15-label floors;
-older receipts cannot become accepted under the new policy by changing a count.
+Current policy **`production_recall_gate_policy.v6`** retains the minimum of
+**3 qualifying cases and 3 trusted labels** introduced by v5. It temporarily
+sets the absolute **MRR floor to 0.50** and **nDCG@5 floor to 0.55**. Historical
+v5 payloads retain their **0.80/0.80** ranking floors; v4/v3/v2 payloads also
+retain their original 15-case/15-label minimums. Historical baselines are
+validated against their recorded supported policy, without rewriting receipts.
+Pollution, leakage, release authorization, exact scope/source, other metric
+limits and noninferiority checks remain in force. G2c forces separate evaluation
+only for authorized agent/profile scopes with natural traffic; zero-traffic
+profiles remain visible in inventory and diagnostics. The G3 semantic judge
+retains its `max_new=8` limit. These temporary floors and traffic
+coverage rules do not establish recovered quality for every installed profile.
 The reported 1.14.72 execution does not certify business recall quality. Existing memory can supply
 controlled positive targets and companion checks; generated questions remain
 controlled acceptance, outside natural production gold. See
@@ -556,9 +575,11 @@ diagnostics, confirmed in the earlier operator readback. Version **1.14.63**
 repairs digest identity collisions and preserves expected IDs/error-rate counts.
 Deployment, nightly and smoke have now passed their reported checks; formal
 business acceptance remains open.
-The 1.14.58 repairs cover model-command routing, memory/catalog separation,
-persisted not-run evidence and binding diagnostics. No new production acceptance
-or relaxed threshold is implied by these package changes.
+The 1.14.58 repairs covered model-command routing, memory/catalog separation,
+persisted not-run evidence and binding diagnostics. Those historical repairs
+did not establish new production acceptance or change thresholds. The temporary
+ranking-floor changes in 1.15.26 are documented separately in the
+[release notes](docs/releases/v1.15.26.md#recall-policy-changes-to-review-before-upgrading).
 See [acceptance status and remaining work](docs/acceptance-status.md).
 
 ## Development and deployment

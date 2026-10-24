@@ -674,6 +674,11 @@ for _domain in ("memory.recall", "memory.governance", "deployment.runtime"):
         "eimemory/subject_projection.py", "eimemory/subject_projection_cli.py",
         "eimemory/subject_projection_consumption.py")
 
+# Projection catch-up writes the retrieval index only after storage transaction
+# guards clear, and its result controls readiness and release acceptance.
+for _domain in ("memory.recall", "memory.governance", "storage.integrity", "deployment.runtime"):
+    DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], "eimemory/ops/projection_acceptance_restore.py")
+
 # Native profile identity and topology bind the subjects used by release
 # evidence. Their changes invalidate each dependent domain's prior evidence.
 for _domain in DOMAINS:

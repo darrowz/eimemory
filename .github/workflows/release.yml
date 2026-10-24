@@ -1,0 +1,128 @@
+name: Publish GitHub release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      actions: read
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: Check version, notes and exact source commit
+        run: |
+          python - <<'PY'
+          import os, pathlib, re, subprocess, tomllib
+          version = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version']
+          assert re.fullmatch(r'\d+\.\d+\.\d+', version), 'Stable releases require a final version'
+          assert os.environ['GITHUB_REF_NAME'] == f'v{version}', 'Tag/package version mismatch'
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == os.environ['GITHUB_SHA']
+          assert pathlib.Path(f'docs/releases/v{version}.md').is_file(), 'Missing release notes'
+          PY
+      - name: Require both validation workflows on this master commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -u - <<'PY'
+          import json, os, subprocess, time
+          repo, sha = os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_SHA']
+          pending = {'project-validation.yml', 'linux-deployment-contracts.yml'}
+          deadline = time.monotonic() + 65 * 60
+          while pending:
+              for workflow in sorted(pending):
+                  endpoint = f'repos/{repo}/actions/workflows/{workflow}/runs?head_sha={sha}&branch=master&event=push&per_page=100'
+                  payload = json.loads(subprocess.check_output(['gh', 'api', endpoint], text=True))
+                  runs = [r for r in payload['workflow_runs'] if r['head_sha'] == sha and r['head_branch'] == 'master' and r['event'] == 'push']
+                  if not runs:
+                      print(f'{workflow}: waiting for this commit to run on master', flush=True)
+                      continue
+                  run = max(runs, key=lambda r: r['id'])
+                  print(f"{workflow}: {run['status']} / {run['conclusion']} — {run['html_url']}", flush=True)
+                  if run['status'] == 'completed':
+                      if run['conclusion'] != 'success':
+                          raise SystemExit(f"Release blocked by {workflow}: {run['conclusion']}")
+                      pending.remove(workflow)
+              if pending:
+                  if time.monotonic() >= deadline:
+                      raise SystemExit('Timed out waiting for successful validation on the tag commit')
+                  time.sleep(30)
+          PY
+      - name: Check packaging contracts and build distributions
+        run: |
+          python -B -m pip install --no-compile build pytest '.[hermes]'
+          python -B -m pytest -q -p no:cacheprovider tests/test_version.py tests/test_codex_plugin_package.py tests/test_hermes_plugin_package.py
+          python -B -m build
+          python - <<'PY'
+          import hashlib, pathlib, tomllib
+          version = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version']
+          dist = pathlib.Path('dist')
+          expected = {f'eimemory-{version}-py3-none-any.whl', f'eimemory-{version}.tar.gz'}
+          assert {p.name for p in dist.iterdir()} == expected, 'Unexpected distribution set'
+          lines = [f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in sorted(dist.iterdir())]
+          (dist / 'SHA256SUMS').write_text(''.join(lines))
+          PY
+      - name: Smoke-check the built wheel outside the checkout
+        run: |
+          python -m venv "$RUNNER_TEMP/eimemory-wheel"
+          "$RUNNER_TEMP/eimemory-wheel/bin/python" -m pip install --no-deps dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/eimemory-wheel/bin/python" -I -c 'import os; from eimemory.version import __version__; assert "v" + __version__ == os.environ["GITHUB_REF_NAME"]'
+          "$RUNNER_TEMP/eimemory-wheel/bin/eimemory" --help
+      - name: Retain the verified release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: github-release-${{ github.ref_name }}
+          path: |
+            dist/*
+            docs/releases/${{ github.ref_name }}.md
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: github-release-${{ github.ref_name }}
+          path: release-bundle
+      - name: Publish the complete stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd release-bundle
+          (cd dist && sha256sum -c SHA256SUMS)
+          if existing_draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft); then
+            if [ "$existing_draft" != true ]; then
+              echo 'This tag already has a public release; refusing to replace published assets.' >&2
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "eiMemory $RELEASE_TAG" --notes-file "docs/releases/$RELEASE_TAG.md"
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release edit "$RELEASE_TAG" --title "eiMemory $RELEASE_TAG" --notes-file "docs/releases/$RELEASE_TAG.md" --draft=false --prerelease=false --latest
