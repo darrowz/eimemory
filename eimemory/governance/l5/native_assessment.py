@@ -81,9 +81,9 @@ def _negative_evidence(envelope: dict[str, Any]) -> bool:
         transaction = qualification_provenance(transaction)
         if transaction.get("quarantined") is True:
             return True
-        if any(transaction.get(key) is True for key in
-                ('known_before_detection', 'prior_user_reported', 'manual_bootstrap')):
-            return True
+        # known_before_detection / prior_user_reported / manual_bootstrap are
+        # product-completion gaps (awaiting a qualifying detector-origin
+        # incident), not archived proof that this reading itself failed.
         if 'managed_incident_proof' in transaction:
             from eimemory.governance.evolution.managed_code_incident_proof import qualification_evidence
             try:
@@ -91,8 +91,20 @@ def _negative_evidence(envelope: dict[str, Any]) -> bool:
             except (TypeError,ValueError,RuntimeError,OSError):return True
         # Existing immutable proof rejected by the native verifier is not the
         # same claim as having no terminal proof yet. Retain that distinction.
+        # terminal_state_outcome_mismatch on a non-qualifying terminal (for
+        # example aborted_candidate_restored) means the sample does not
+        # qualify for product L5; product completion already records gaps.
         error = transaction.get("evidence_error")
-        if error and error not in {"quality_repair_provenance_unproven", "quality_repair_release_unbound"}:
+        outcome = str(transaction.get("qualifying_terminal_outcome") or "")
+        non_qualifying_mismatch = (
+            error == "terminal_state_outcome_mismatch"
+            and outcome not in {"succeeded_sedimented", "rolled_back_healthy"}
+        )
+        if (
+            error
+            and error not in {"quality_repair_provenance_unproven", "quality_repair_release_unbound"}
+            and not non_qualifying_mismatch
+        ):
             return True
     return False
 

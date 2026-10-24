@@ -118,6 +118,69 @@ def test_real_negative_evidence_is_archived_but_never_waived_as_starvation(produ
     assert not steps[0]["ok"] and not _aggregate_nightly_ok({"native_l5_assessment": result}, steps)
 
 
+
+def test_nonqualifying_aborted_maintenance_is_evidence_wait_not_blocked(producer):
+    """User-reported aborted maintenance must not poison nightly as evidence_failed.
+
+    Production tip 1db43370 archived ref_dfcb3e16493d with
+    aborted_candidate_restored + terminal_state_outcome_mismatch and
+    known_before/prior_user_reported flags. Those are product gaps, not
+    verifier rejection of a qualifying terminal proof.
+    """
+    producer.value["transaction_evidence"] = {
+        "transaction_id": "maintenance-repair-synthetic",
+        "terminal_receipt_digest": "f" * 64,
+        "qualifying_terminal_outcome": "aborted_candidate_restored",
+        "origin": "user_reported",
+        "known_before_detection": True,
+        "prior_user_reported": True,
+        "manual_bootstrap": False,
+        "observation_valid": False,
+        "evidence_verified": False,
+        "evidence_error": "terminal_state_outcome_mismatch",
+        "quarantined": False,
+    }
+    producer.value["gaps"] = [
+        "transaction_evidence_unverified",
+        "no_qualifying_terminal_receipt",
+        "incident_known_before_system_detection",
+        "incident_not_system_originated",
+        "observation_not_valid",
+    ]
+    result = native.run_native_l5_assessment(producer, scope=asdict(SCOPE))
+    assert result["execution_ok"] and result["archive_verified"]
+    assert not result["evidence_failed"] and result["status"] == "incomplete"
+    assert result["awaiting_evidence"] and not result["product_l5_complete"]
+    steps = []
+    _nightly_step(steps, "native_l5_assessment", lambda: result)
+    assert steps[0]["ok"] and steps[0]["evaluation_status"] == "awaiting_evidence"
+    assert _aggregate_nightly_ok({"native_l5_assessment": result}, steps)
+
+
+
+def test_qualifying_terminal_state_mismatch_still_blocks(producer):
+    """succeeded_sedimented with state mismatch remains verifier rejection."""
+    producer.value["transaction_evidence"] = {
+        "transaction_id": "maintenance-repair-corrupt",
+        "terminal_receipt_digest": "c" * 64,
+        "qualifying_terminal_outcome": "succeeded_sedimented",
+        "origin": "system_detector",
+        "known_before_detection": False,
+        "prior_user_reported": False,
+        "manual_bootstrap": False,
+        "observation_valid": True,
+        "evidence_verified": False,
+        "evidence_error": "terminal_state_outcome_mismatch",
+        "quarantined": False,
+    }
+    result = native.run_native_l5_assessment(producer, scope=asdict(SCOPE))
+    assert result["execution_ok"] and result["archive_verified"] and result["evidence_failed"]
+    assert result["status"] == "blocked" and not result["awaiting_evidence"]
+    steps = []
+    _nightly_step(steps, "native_l5_assessment", lambda: result)
+    assert not steps[0]["ok"] and not _aggregate_nightly_ok({"native_l5_assessment": result}, steps)
+
+
 def test_terminal_lineage_binding_failure_agrees_in_product_archive_and_nightly(producer):
     from eimemory.governance.l5.l5_product_completion import build_product_completion
 
