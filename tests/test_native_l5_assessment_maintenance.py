@@ -119,13 +119,10 @@ def test_real_negative_evidence_is_archived_but_never_waived_as_starvation(produ
 
 
 
-def test_nonqualifying_aborted_maintenance_is_evidence_wait_not_blocked(producer):
-    """User-reported aborted maintenance must not poison nightly as evidence_failed.
+def test_proven_adverse_aborted_maintenance_is_not_an_evidence_wait(producer):
+    """Verified known-before or user-reported facts are adverse, not a wait.
 
-    Production tip 1db43370 archived ref_dfcb3e16493d with
-    aborted_candidate_restored + terminal_state_outcome_mismatch and
-    known_before/prior_user_reported flags. Those are product gaps, not
-    verifier rejection of a qualifying terminal proof.
+    An aborted candidate with those facts must fail nightly aggregation.
     """
     producer.value["transaction_evidence"] = {
         "transaction_id": "maintenance-repair-synthetic",
@@ -149,12 +146,11 @@ def test_nonqualifying_aborted_maintenance_is_evidence_wait_not_blocked(producer
     ]
     result = native.run_native_l5_assessment(producer, scope=asdict(SCOPE))
     assert result["execution_ok"] and result["archive_verified"]
-    assert not result["evidence_failed"] and result["status"] == "incomplete"
-    assert result["awaiting_evidence"] and not result["product_l5_complete"]
+    assert result["evidence_failed"] and result["status"] == "blocked"
+    assert not result["awaiting_evidence"] and not result["product_l5_complete"]
     steps = []
     _nightly_step(steps, "native_l5_assessment", lambda: result)
-    assert steps[0]["ok"] and steps[0]["evaluation_status"] == "awaiting_evidence"
-    assert _aggregate_nightly_ok({"native_l5_assessment": result}, steps)
+    assert not steps[0]["ok"] and not _aggregate_nightly_ok({"native_l5_assessment": result}, steps)
 
 
 

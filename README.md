@@ -31,7 +31,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.15.27" src="https://img.shields.io/badge/version-1.15.27-blue">
+  <img alt="Package version 1.15.28" src="https://img.shields.io/badge/version-1.15.28-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -44,12 +44,12 @@ knowledge and capability evidence across agent sessions. It retrieves context
 through CLI, Python, authenticated RPC and host adapters, then uses evaluation
 and governance to decide whether a proposed improvement can advance.
 
-**Package 1.15.27:** [release notes](docs/releases/v1.15.27.md) consolidate the
+**Package 1.15.28:** [release notes](docs/releases/v1.15.28.md) consolidate the
 changes since the previous formal release, 1.14.101, including native Hermes
 profiles, deployment recovery, vector readiness and hybrid recall. The notes
 also describe the temporary recall policy v6 ranking floors and natural-traffic
 scope requirements. Download versioned packages and checksums from the
-[1.15.27 release page](https://github.com/darrowz/eimemory/releases/tag/v1.15.27).
+[1.15.28 release page](https://github.com/darrowz/eimemory/releases/tag/v1.15.28).
 
 **Native L5 maintenance:** nightly now persists the current native assessment after maintenance, uses exact-source quality and incident pages, and separates report-owned repair transactions from authorized shared product capability evidence. Watch and nightly share bounded system detection and recovery. See [the operator guide](docs/operations/l5-native-maintenance.md).
 
@@ -90,7 +90,7 @@ inventory, provider and controlled-retrieval contracts remain available;
 their earlier source validation is separate from this production readback.
 That historical policy v5 required three qualifying cases and trusted labels
 within the exact dataset scope. The current v6 policy is described in the
-[1.15.27 release notes](docs/releases/v1.15.27.md#recall-policy-changes-to-review-before-upgrading).
+[1.15.28 release notes](docs/releases/v1.15.28.md#recall-policy-changes-to-review-before-upgrading).
 See the [receipt-based acceptance status](docs/acceptance-status.md).
 
 Version **1.14.72** adds a private native trace for one controlled target,
@@ -285,9 +285,9 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.15.27, source package)
+## Current package status (1.15.28, source package)
 
-See the [1.15.27 release notes](docs/releases/v1.15.27.md) for the cumulative
+See the [1.15.28 release notes](docs/releases/v1.15.28.md) for the cumulative
 source changes, installation options and current recall policy. The dated
 production observations below retain their original version and evidence scope.
 
@@ -578,8 +578,8 @@ business acceptance remains open.
 The 1.14.58 repairs covered model-command routing, memory/catalog separation,
 persisted not-run evidence and binding diagnostics. Those historical repairs
 did not establish new production acceptance or change thresholds. The temporary
-ranking-floor changes in 1.15.27 are documented separately in the
-[release notes](docs/releases/v1.15.27.md#recall-policy-changes-to-review-before-upgrading).
+ranking-floor changes in 1.15.28 are documented separately in the
+[release notes](docs/releases/v1.15.28.md#recall-policy-changes-to-review-before-upgrading).
 See [acceptance status and remaining work](docs/acceptance-status.md).
 
 ## Development and deployment

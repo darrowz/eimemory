@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.28] — 2026-10-24
+
+- Align nightly and policy contracts with the current gates: proven adverse incident facts fail aggregation, and the live per-agent force policy is traffic-discovered only.
+
+
 ## [1.15.27] — 2026-10-24
 
 - Keep unproven native incident facts as evidence waits. A verified known-before, user-reported, or manual-bootstrap fact is adverse evidence and no longer keeps nightly in a non-fatal wait.
