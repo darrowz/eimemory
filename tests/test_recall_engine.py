@@ -156,7 +156,7 @@ def test_effective_identity_binds_candidate_budget_policy(tmp_path) -> None:
     engine = GovernedRecallEngine(store=store, candidate_source=SQLiteCandidateSource(store))
 
     original = engine.effective_identity()
-    assert original["policy_version"] == "governed-recall.v4"
+    assert original["policy_version"] == "governed-recall.v5"
     assert original["fusion_version"] == "governed-rrf.v1"
     assert original["candidate_budget_policy"] == {
         "minimum": 48,
@@ -164,7 +164,8 @@ def test_effective_identity_binds_candidate_budget_policy(tmp_path) -> None:
         "max_query_scope_refs": 64,
     }
 
-    engine.policy_version = "governed-recall.v3"
+    # A receipt from the previous recall algorithm cannot identify this one.
+    engine.policy_version = "governed-recall.v4"
     previous_policy = engine.effective_identity()
     assert previous_policy["identity_digest"] != original["identity_digest"]
     engine.policy_version = GovernedRecallEngine.policy_version

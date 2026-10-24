@@ -36,6 +36,30 @@ _SENTENCE_EXCLUDE = re.compile(
 _HISTORY_FACT = re.compile(r'已授权|授权了|已安排|安排了|约定了|决定了|已决定|我们约定|'
                            r'\b(?:authorized|agreed|decided|assigned)\b', re.I)
 
+# Shared factual grammar: release outcomes are task evidence too. Keep this
+# below the intent definitions and independent of retrieval's answer module so
+# pre-filters and final admission cannot disagree or import each other.
+_RELEASE_ASSERTION = re.compile(
+    r'(?:已|已经|尚未|还未|未|没有|正在)\s*(?:部署|发布|上线|回滚|滚动发布)|'
+    r'(?:部署|发布|上线|回滚)中|'
+    r'(?:部署|发布|上线|切换|验收)[^，,；;。！？!?\n]{0,16}(?:成功|失败|完成|进行中|滚动|阻塞|取消)|'
+    r'\b(?:deploy(?:ment)?|release|rollout|acceptance)\s+(?:(?:is|was|has been)\s+)?(?:not\s+)?'
+    r'(?:successful|succeeded|failed|rolling|in progress|blocked|pending|cancelled|canceled|completed?|rolled\s+back)\b|'
+    r'\b(?:is|was)\s+deploying\b|'
+    r'\b(?:deployed|rolled\s+back)\b|'
+    r'\b(?:release[_ -]?)?status\s*[:=]\s*(?:success|failed|rolling|blocked|rollback)\b', re.I)
+_RELEASE_NONFACT = re.compile(
+    r'[？?]|如果|假如|一旦|计划|预计|准备|打算|将要|将会|应该|必须|建议|请先|'
+    r'是否|吗(?:$|[，,；;。！？!?])|未知|不确定|未确认|可能|或许|'
+    r'(?:成功|失败|完成)(?:后|时)[^，,；;。！？!?\n]{0,16}(?:再|应|需|就|才)|'
+    r'\b(?:if|when|once|will|would|could|should|must|may|might|whether|unknown|unconfirmed|'
+    r'plan(?:ned)?|intend(?:ed)?)\b', re.I)
+
+
+def supports_release_status_evidence(text: str) -> bool:
+    """Recognize an asserted outcome without treating it as success."""
+    return bool(_RELEASE_ASSERTION.search(text)) and not _RELEASE_NONFACT.search(text)
+
 
 def task_recall_mode(query: str) -> str:
     text = str(query or '')[:16000]
@@ -65,7 +89,8 @@ def supports_task_evidence(mode: str, text: str) -> bool:
     sentences = re.split(r'[。\n]', text)
     return any(
         not _SENTENCE_EXCLUDE.search(sentence)
-        and bool(_STATE_FACT.search(sentence) or (mode == 'history' and _HISTORY_FACT.search(sentence)))
+        and bool(_STATE_FACT.search(sentence) or supports_release_status_evidence(sentence)
+                 or (mode == 'history' and _HISTORY_FACT.search(sentence)))
         for sentence in sentences)
 
 

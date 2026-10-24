@@ -208,6 +208,12 @@ def authoritative_text(record: RecordEnvelope, *, max_chars: int) -> str:
 
 
 class RelevanceAdmission:
+    """Preserve fused delivery order; model comparison is an explicit offline task.
+
+    Supplying a scorer or enabling its configuration does not authorize an
+    online model call. Use ``reranker_shadow.evaluate_reranker_shadow`` for a
+    bounded comparison against independently labelled, authorized candidates.
+    """
     def __init__(self, config: RelevanceConfig, scorer=None):
         self.config = config
         self.scorer = scorer if scorer is not None else TEIReranker(config)
@@ -265,6 +271,7 @@ class RelevanceAdmission:
             status = "unavailable"
         return selected, {**self.config.identity(), "status": status, "mode": mode,
             "quality_evaluation": "post_delivery",
+            "reranker_called": False,
             "candidate_count": len(valid), "selected_count": len(selected),
             "scored": scored, "dropped_reasons": dropped,
             "elapsed_ms": round((perf_counter() - started) * 1000, 3)}

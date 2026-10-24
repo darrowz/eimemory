@@ -101,7 +101,9 @@ def _evaluate(query, items):
 
 
 def _cached_report(record, scope, observation, item_count):
-    if record.scope != scope or record.source != SOURCE or record.meta.get('report_type') != VERSION:
+    if (record is None or record.scope != scope or record.source != SOURCE
+            or record.source_id != 'default' or record.status != 'active'
+            or record.kind != 'evaluation_packet' or record.meta.get('report_type') != VERSION):
         return None
     report = record.content
     fields = {'verdict', 'reason', 'relevance', 'off_topic', 'duplicates', 'unanswered'}
@@ -195,6 +197,7 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
                     and not decision['control_cohort'] and decision['acceptance_generated'] is False
                     and surface in ELIGIBLE_TASK_TYPES
                     and len(sources) == 1 and sources[0] not in ('', '*') and len(sources[0]) <= 160)
+        hydrated_items = None
         if eligible:
             receipt = deployment_receipt_for_scope(runtime, release['deployment_receipt_id'], scope)
             identity = verified_deployment_receipt_identity(receipt)
@@ -208,11 +211,11 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
             version=VERSION, decision_id=decision['decision_id'], scope=decision['scope'],
             source_ids=sources, query_digest=decision['query_digest'], release_identity=release,
             delivered=[(i['record_id'], i.get('source_id'), i.get('render_digest')) for i in delivered]))
-        existing = runtime.store.list_records_by_meta_value(
-            kinds=['evaluation_packet'], scope=scope, meta_key='semantic_monitor_identity',
-            meta_value=observation['evaluation_identity'], limit=32)
-        cached_record = next((record for record in existing
-                              if _cached_report(record, scope, observation, len(delivered)) is not None), None)
+        # Native insertion order, including invalidated observations: a newer
+        # rejection must never reveal an older positive review as the cache.
+        cached_record = runtime.store.latest_record_by_meta_value_exact_scope(
+            kind='evaluation_packet', source=SOURCE, status=None, scope=scope,
+            meta_key='semantic_monitor_identity', meta_value=observation['evaluation_identity'])
         cached = (_cached_report(cached_record, scope, observation, len(delivered))
                   if cached_record is not None else None)
         if not eligible:
@@ -267,6 +270,7 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
             else:
                 items = service._rehydrate_persisted_items(dict(decision, items=delivered), cache_key='')
                 if len(items) == len(delivered):
+                    hydrated_items = [dict(title=i['title'], text=i['text']) for i in items]
                     # Hydration checks exact scope/source AND delivered render digest;
                     # current edited records cannot stand in for historical output.
                     if cached is not None:
@@ -275,7 +279,7 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
                                                         'off_topic', 'duplicates', 'unanswered')}
                     else:
                         counts['provider_calls'] += 1
-                        result = _evaluate(query, [dict(title=i['title'], text=i['text']) for i in items])
+                        result = _evaluate(query, hydrated_items)
         report = dict(observation, **result)
         key = _digest(report)
         if cached is not None and any(report[k] != cached[k] for k in result):
@@ -305,19 +309,42 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
         else:
             counts['verdict_counts'][result['verdict']] += 1
         counts['by_surface'][surface] = int(counts['by_surface'].get(surface) or 0) + 1
-        if eligible and result['verdict'] == 'off_topic':
+        from .semantic_quality_confirmation import (
+            MODERATE_KINDS, cached_confirmation, confirm, confirmed_kinds, issue_kinds, quality_gate,
+        )
+        kinds = issue_kinds(report) if eligible and hydrated_items is not None else set()
+        # Exact repeated references already have a deterministic delivery
+        # detector. Do not create a second semantic duplicate incident for it.
+        if len({item['record_id'] for item in delivered}) != len(delivered):
+            kinds.discard('semantic_redundancy')
+        confirmation = None
+        if kinds & MODERATE_KINDS:
+            confirmation = cached_confirmation(runtime, record, scope)
+            if confirmation is None and budget_used < max_new:
+                budget_used += 1
+                counts['provider_calls'] += 1
+                confirmation = confirm(runtime, observation=record, scope=scope,
+                                       query=query, items=hydrated_items)
+            elif confirmation is None:
+                counts['deferred_count'] += 1
+            kinds &= confirmed_kinds(record, confirmation, scope)
+        for kind in sorted(kinds):
             identity_payload = dict(scope=asdict(scope), source_id=sources[0],
                                     query_digest=decision['query_digest'], release_identity=release)
             if surface != LEGACY_SURFACE:
                 identity_payload['decision_surface'] = surface
+            if kind in MODERATE_KINDS:
+                identity_payload['quality_issue'] = kind
             finding = _quality_finding('recall_semantic:' + _digest(identity_payload), {
                 'target_capability': 'memory.recall', 'report_type': VERSION,
                 'record_id': record.record_id, 'sample_count': 1,
-                'quality_gate': {'ok': False, 'blocked_reason': 'confirmed_semantic_off_topic',
-                                 'blocking_metrics': {'semantic_off_topic': {'actual': 1, 'threshold': 0, 'operator': '=='}}},
+                'quality_gate': quality_gate(kind),
             })
-            finding['observation'] = dict(identity_payload, version=VERSION, severity='severe',
-                                          evidence_kind='semantic_off_topic', report_digest=key)
+            finding['observation'] = dict(identity_payload, version=VERSION,
+                severity='moderate' if kind in MODERATE_KINDS else 'severe',
+                evidence_kind=kind, report_digest=key)
+            if kind in MODERATE_KINDS:
+                finding['observation']['confirmation_ref'] = confirmation.record_id
             findings.append(finding)
     return dict(counts, status='observation_only', automatic_promotion=False), findings
 
@@ -694,18 +721,34 @@ def _semantic_gap_replay_input(runtime, *, gap_id, scope, require_current=True):
     if not any({k: entry[k] for k in asdict(exact)} == asdict(exact)
                and entry['channel'] == channel and entry['source_id'] == source_id for entry in policy):
         raise ValueError('semantic_repair_scope_not_authorized')
+    from .semantic_quality_confirmation import (
+        MODERATE_KINDS, cached_confirmation, confirmed_kinds, issue_kinds, quality_gate,
+    )
+    kind = provenance.get('evidence_kind')
+    if kind not in issue_kinds(body):
+        raise ValueError('semantic_repair_gap_identity_invalid')
+    if kind in MODERATE_KINDS:
+        latest_observation = runtime.store.latest_record_by_meta_value_exact_scope(
+            kind='evaluation_packet', source=SOURCE, status=None, scope=exact,
+            meta_key='semantic_monitor_identity', meta_value=body.get('evaluation_identity'))
+        if latest_observation is None or latest_observation.record_id != old.record_id:
+            raise ValueError('semantic_repair_observation_unavailable')
+        confirmation = cached_confirmation(runtime, old, exact)
+        if (provenance.get('severity') != 'moderate'
+                or confirmation is None
+                or confirmation.record_id != provenance.get('confirmation_ref')
+                or kind not in confirmed_kinds(old, confirmation, exact)):
+            raise ValueError('semantic_repair_confirmation_invalid')
     expected = _quality_finding(str(source.get('name') or ''), {
         'target_capability': 'memory.recall', 'report_type': VERSION,
         'record_id': old.record_id, 'sample_count': 1,
-        'quality_gate': {'ok': False, 'blocked_reason': 'confirmed_semantic_off_topic',
-                         'blocking_metrics': {'semantic_off_topic': {'actual': 1, 'threshold': 0, 'operator': '=='}}},
+        'quality_gate': quality_gate(kind),
     })
     if (not expected or not str(source.get('name') or '').startswith('recall_semantic:')
             or content.get('semantic_key') != expected['semantic_key']
             or gap.meta.get('semantic_key') != expected['semantic_key']
             or source.get('digest') != expected['report_digest']
-            or gap.meta.get('report_digest') != expected['report_digest']
-            or body.get('verdict') != 'off_topic'):
+            or gap.meta.get('report_digest') != expected['report_digest']):
         raise ValueError('semantic_repair_gap_identity_invalid')
     latest = _latest_gap(runtime, scope=exact, semantic_key=expected['semantic_key'])
     if require_current and (latest is None or latest.record_id != gap.record_id):
@@ -715,10 +758,12 @@ def _semantic_gap_replay_input(runtime, *, gap_id, scope, require_current=True):
                     query_digest=body.get('query_digest'), release_identity=release)
     if surface != LEGACY_SURFACE:
         incident['decision_surface'] = surface
+    if kind in MODERATE_KINDS:
+        incident['quality_issue'] = kind
     if (source.get('name') != 'recall_semantic:' + _digest(incident)
             or any(provenance.get(key) != value for key, value in incident.items())
             or provenance.get('version') != VERSION
-            or provenance.get('evidence_kind') != 'semantic_off_topic'
+            or provenance.get('evidence_kind') != kind
             or content.get('target_capability') != 'memory.recall'
             or gap.meta.get('target_capability') != 'memory.recall'):
         raise ValueError('semantic_repair_incident_lineage_invalid')

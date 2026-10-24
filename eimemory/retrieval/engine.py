@@ -288,12 +288,12 @@ class GovernedRecallEngine:
     """Single owner of recall hydration, governance, ordering, and packaging."""
 
     name = "governed"
-    policy_version = "governed-recall.v4"
+    policy_version = "governed-recall.v5"
     _minimum_candidate_budget = 48
     _candidate_budget_multiplier = 3
     _max_query_scope_refs = 64
     _max_legacy_fallback_scope_refs = 8
-    _relevance_selector_policy_version = "post-fusion-relevance.v2"
+    _relevance_selector_policy_version = "post-fusion-relevance.v3"
     _relevance_selector_thresholds = {
         "non_exact_min_grounding": 0.08,
         "non_exact_min_score": 0.18,
@@ -1692,20 +1692,9 @@ class GovernedRecallEngine:
         normalized_query = normalize_identity_text(query)
         keyword_required_terms = self._keyword_required_terms(query)
         by_token = {self._fusion_record_token(item): item for item in pre_pool_items}
-        # Procedure/acceptance queries should not let episodic dense neighbors
-        # outrank durable delivery guidance via RRF vector ranks.
-        if self._is_procedure_query_without_episodic_cues(query):
-            demoted: dict[tuple[str, ExactScope, str], dict[str, Any]] = {}
-            for item in pre_pool_items:
-                if self._record_memory_type(item) != "episodic":
-                    continue
-                ref = self._record_key(item)
-                hints = dict(component_hints_by_ref.get(ref) or {})
-                hints["vector_score"] = 0.0
-                hints.pop("dense_vector_score", None)
-                demoted[ref] = hints
-            if demoted:
-                component_hints_by_ref = {**component_hints_by_ref, **demoted}
+        # Record type is not negative relevance evidence. Preserve the source's
+        # vector signal for facts and events; answer and authority gates still
+        # decide whether an individual record can support this request.
         evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]] = {}
         strong_evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]] = {}
         group_items: dict[int, list[RecordEnvelope]] = {}
@@ -1884,11 +1873,15 @@ class GovernedRecallEngine:
         pooled: list[RecordEnvelope] = []
         pool_members: dict[tuple[str, ExactScope, str], list[RecordEnvelope]] = {}
         representative_by_page: dict[str, tuple[str, ExactScope, str]] = {}
+        page_candidate_counts: Counter[str] = Counter()
+        page_candidate_limit = 1
         from .lightweight_admission import LightweightAdmission
         if isinstance(self.relevance_admission, LightweightAdmission):
-            # Select a page representative using its own evidence, not the
-            # sibling with the most lifecycle votes. Final admission still
-            # checks this exact record and span against SQLite authority.
+            # Keep bounded independent alternatives until answer admission.
+            # A dense leader cannot discard a sibling that has the requested
+            # fact. Each retained record keeps only its own evidence and refs.
+            page_candidate_limit = max(1, min(8, int(getattr(
+                self.relevance_admission.config, "per_page_candidate_limit", 3))))
             def _dense_rank(item: RecordEnvelope) -> float:
                 hints = component_hints_by_ref.get(self._record_key(item)) or {}
                 # RET-09: missing dense_vector_score must sort below an explicit 0.0.
@@ -1900,6 +1893,12 @@ class GovernedRecallEngine:
                 -_dense_rank(item)))
         for item in fused:
             page_key = page_pool_key(item)
+            page_candidate_counts[page_key] += 1
+            if isinstance(self.relevance_admission, LightweightAdmission):
+                if page_candidate_counts[page_key] <= page_candidate_limit:
+                    pooled.append(item)
+                    pool_members[self._record_key(item)] = [item]
+                continue
             representative_ref = representative_by_page.get(page_key)
             if representative_ref is None:
                 representative_ref = self._record_key(item)
@@ -2014,6 +2013,11 @@ class GovernedRecallEngine:
             "weights": effective_weights,
             "pre_pool_count": len(pre_pool_items),
             "post_pool_count": len(pooled),
+            "page_candidate_limit": page_candidate_limit,
+            "page_candidate_input_count": len(fused),
+            "page_candidate_retained_count": len(pooled),
+            "page_candidate_budget_dropped_count": max(0, len(fused) - len(pooled)),
+            "page_count": len(page_candidate_counts),
             "detail_by_ref": detail_by_ref,
             "evidence_by_ref": evidence_by_ref,
             "pool_members": pool_members,
@@ -2107,12 +2111,17 @@ class GovernedRecallEngine:
                         return False
                     return record_digest(found) == record_digest(item)
 
-            return self.relevance_admission.select(
+            selected, report = self.relevance_admission.select(
                 items, query=query, limit=max(0, int(limit)),
                 validate=check,
                 deadline_at=deadline_at,
                 **extra,
             )
+            if isinstance(self.relevance_admission, LightweightAdmission):
+                report = {**report, **{key: fusion_state[key] for key in (
+                    "page_candidate_limit", "page_candidate_input_count", "page_candidate_retained_count",
+                    "page_candidate_budget_dropped_count", "page_count") if key in fusion_state}}
+            return selected, report
         thresholds = dict(self._relevance_selector_thresholds)
         bounded_limit = max(0, int(limit or 0))
         detail_by_ref = fusion_state.get("detail_by_ref") or {}
@@ -2293,14 +2302,20 @@ class GovernedRecallEngine:
         delivery_priority_applied = False
         if selected and self._is_procedure_query_without_episodic_cues(query):
             gate_query = self._procedure_gate_query(query)
-            prioritized = sorted(
-                selected,
-                key=lambda item: not self._is_project_delivery_durable_evidence(
-                    gate_query,
-                    item,
-                    self._record_evidence_text(item),
-                ),
-            )
+            # Explicit procedure intent breaks only equal-score ties. It does
+            # not move a weaker standing preference ahead of stronger facts.
+            prioritized = []
+            index = 0
+            while index < len(selected):
+                end = index + 1
+                while (end < len(selected)
+                       and abs(score_for(selected[end]) - score_for(selected[index])) <= 1e-12
+                       and is_exact_identity(selected[end]) == is_exact_identity(selected[index])):
+                    end += 1
+                prioritized.extend(sorted(selected[index:end], key=lambda item:
+                    not self._is_project_delivery_durable_evidence(
+                        gate_query, item, self._record_evidence_text(item))))
+                index = end
             delivery_priority_applied = [self._record_key(item) for item in prioritized] != [
                 self._record_key(item) for item in selected
             ]
@@ -2325,6 +2340,7 @@ class GovernedRecallEngine:
             "anchor_reserve_swap": anchor_reserve_swap,
             "identity_priority_applied": identity_priority_applied,
             "delivery_priority_applied": delivery_priority_applied,
+            "delivery_priority_policy": "explicit_procedure_equal_score.v1",
         }
 
     @staticmethod
@@ -2462,10 +2478,11 @@ class GovernedRecallEngine:
 
     @classmethod
     def _is_procedure_query_without_episodic_cues(cls, query: str) -> bool:
+        from .answer_requirements import is_procedure_request
         gate = cls._procedure_gate_query(query)
         if not gate or not cls._PROCEDURE_QUERY_RE.search(gate):
             return False
-        return not bool(cls._EPISODIC_QUERY_RE.search(gate))
+        return is_procedure_request(gate) and not bool(cls._EPISODIC_QUERY_RE.search(gate))
 
     @staticmethod
     def _record_memory_type(item: RecordEnvelope) -> str:

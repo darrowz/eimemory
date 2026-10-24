@@ -16,6 +16,7 @@ from eimemory.models.identity_aliases import normalize_identity_text
 from eimemory.recall.task_queries import task_recall_mode, is_task_evidence
 from eimemory.recall.dedupe import memory_dedupe_identities
 from .relevance import record_digest
+from .fusion import page_pool_key
 from .evidence_fragments import POLICY, TOKENIZER, evidence_fragments, lexical_coverage
 from .postgres_vector import candidate_record_keyword_text
 from .answer_requirements import requested_attribute, supports_answer_requirements, explicit_project
@@ -29,6 +30,7 @@ class LightweightConfig:
     lexical_weight: float = 0.10
     max_score_gap: float = 0.05
     max_candidates: int = 48
+    per_page_candidate_limit: int = 3
     calibration: str = "unvalidated"
 
     def __post_init__(self):
@@ -37,6 +39,8 @@ class LightweightConfig:
             raise ValueError('lightweight_admission_bounds')
         if not 4 <= self.max_candidates <= 96:
             raise ValueError('lightweight_candidate_bounds')
+        if type(self.per_page_candidate_limit) is not int or not 1 <= self.per_page_candidate_limit <= 8:
+            raise ValueError('lightweight_page_candidate_bounds')
 
     @classmethod
     def from_env(cls):
@@ -47,10 +51,11 @@ class LightweightConfig:
             min_coverage=float(os.environ.get('EIMEMORY_LIGHTWEIGHT_MIN_COVERAGE', '.08')),
             lexical_weight=float(os.environ.get('EIMEMORY_LIGHTWEIGHT_LEXICAL_WEIGHT', '.10')),
             max_score_gap=float(os.environ.get('EIMEMORY_LIGHTWEIGHT_MAX_SCORE_GAP', '.05')),
+            per_page_candidate_limit=int(os.environ.get('EIMEMORY_LIGHTWEIGHT_PAGE_CANDIDATES', '3')),
             calibration=os.environ.get('EIMEMORY_LIGHTWEIGHT_CALIBRATION', 'unvalidated'))
 
     def identity(self):
-        return {**asdict(self), 'policy': 'lightweight-evidence-admission.v5',
+        return {**asdict(self), 'policy': 'lightweight-evidence-admission.v6',
                 'quality_evaluation': 'post_delivery',
                 'projection': POLICY, 'tokenizer': TOKENIZER,
                 'score_kind': 'cosine_plus_lexical_coverage_not_probability'}
@@ -66,6 +71,12 @@ class LightweightAdmission:
         attribute = requested_attribute(query)
         task_mode = task_recall_mode(query)
         dropped, scored = {}, []
+        stages = dict.fromkeys((
+            'authority_passed_count', 'task_eligible_count', 'candidate_pool_count',
+            'identity_match_count',
+            'fragment_valid_count', 'answer_supported_count', 'threshold_admitted_count',
+            'score_band_count', 'page_representative_count', 'final_count'), 0)
+        stages['input_count'] = len(items)
         def drop(reason):
             dropped[reason] = dropped.get(reason, 0) + 1
         def expired():
@@ -75,13 +86,15 @@ class LightweightAdmission:
             if expired():
                 dropped['authority_validation_timeout'] = len(items) - index
                 break
-            if validate(item):
+            if getattr(item, 'status', None) == 'active' and validate(item):
+                stages['authority_passed_count'] += 1
                 if task_mode and not is_task_evidence(item, task_mode):
                     drop('task_evidence_missing')
                 else:
                     valid.append(item)
             else:
                 drop('authority_changed_or_forbidden')
+        stages['task_eligible_count'] = len(valid)
         normalized = normalize_identity_text(query)
         exact = [item for item in valid if normalized and (
             normalized == normalize_identity_text(item.record_id) or
@@ -90,7 +103,22 @@ class LightweightAdmission:
         chosen = []
         mode, status = 'lightweight_evidence', 'no_evidence'
         if exact:
-            chosen, mode = exact[:max(0, limit)], 'identity_lookup'
+            pages, representatives = set(), []
+            for item in exact:
+                if expired():
+                    break
+                page = page_pool_key(item)
+                if page in pages:
+                    drop('same_page_representative')
+                    continue
+                pages.add(page)
+                representatives.append(item)
+            stages['identity_match_count'] = len(exact)
+            stages['candidate_pool_count'] = len(exact)
+            stages['page_representative_count'] = len(representatives)
+            chosen, mode = representatives[:max(0, limit)], 'identity_lookup'
+            if len(representatives) > len(chosen):
+                dropped['delivery_limit'] = len(representatives) - len(chosen)
         elif deadline_at and perf_counter() >= deadline_at:
             status = 'unavailable'
             drop('admission_deadline_exceeded')
@@ -102,16 +130,25 @@ class LightweightAdmission:
             # order alone must not exclude a top semantic-only candidate.
             dense = sorted(valid, key=lambda r: -float(hints_for(r).get('dense_vector_score') or 0))
             lexical = sorted(valid, key=lambda r: -float(hints_for(r).get('fragment_fts_score') or 0))
-            pool, seen = [], set()
+            pool, seen, page_counts = [], set(), {}
             for index in range(len(valid)):
                 if expired():
                     break
                 for arm in (dense, lexical, valid):
                     item = arm[index]
                     key = ((item.scope.tenant_id, item.scope.agent_id, item.scope.workspace_id, item.scope.user_id), item.source_id, item.record_id)  # RET-27
-                    if key not in seen and len(pool) < self.config.max_candidates:
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    page = page_pool_key(item)
+                    if page_counts.get(page, 0) >= self.config.per_page_candidate_limit:
+                        drop('page_candidate_budget')
+                    elif len(pool) >= self.config.max_candidates:
+                        drop('candidate_budget')
+                    else:
                         pool.append(item)
-                        seen.add(key)
+                        page_counts[page] = page_counts.get(page, 0) + 1
+            stages['candidate_pool_count'] = len(pool)
             ranked = []
             for item in pool:
                 if expired():
@@ -129,9 +166,11 @@ class LightweightAdmission:
                 if fragment is None or not math.isfinite(cosine) or not 0 <= cosine <= 1:
                     drop('invalid_fragment_evidence')
                     continue
+                stages['fragment_valid_count'] += 1
                 coverage = lexical_coverage(query, fragment['text'])
                 score = cosine + self.config.lexical_weight * coverage
                 attribute_supported = supports_answer_requirements(query, fragment['text'], item.aliases)
+                stages['answer_supported_count'] += int(attribute_supported)
                 admitted = (attribute_supported and cosine >= self.config.min_cosine
                             and coverage >= self.config.min_coverage)
                 scored.append({'record_id': item.record_id, 'source_id': item.source_id, 'scope': {'tenant_id': item.scope.tenant_id, 'agent_id': item.scope.agent_id, 'workspace_id': item.scope.workspace_id, 'user_id': item.scope.user_id},
@@ -143,6 +182,7 @@ class LightweightAdmission:
                     ranked.append((score, item, fragment['text']))
                 else:
                     drop('requested_attribute_missing' if not attribute_supported else 'insufficient_evidence')
+            stages['threshold_admitted_count'] = len(ranked)
             latest = task_mode and re.search(r'最近|最新|上次|\b(?:latest|last|recent)\b', query, re.I)
             def event_time(item):
                 try:
@@ -160,10 +200,18 @@ class LightweightAdmission:
                 else:
                     eligible.append(row)
             eligible.sort(key=lambda row: (-(event_time(row[1]) if latest else 0), -row[0], row[1].record_id))
-            representatives = set()
+            stages['score_band_count'] = len(eligible)
+            representatives, pages, representative_items = set(), set(), []
             for score, item, text in eligible:
                 if expired():
                     break
+                # A sibling's vector score cannot grant answer support. Choose
+                # one representative only after this exact span passed all
+                # answer requirements and the common evidence score band.
+                page = page_pool_key(item)
+                if page in pages:
+                    drop('same_page_representative')
+                    continue
                 partition = ((item.scope.tenant_id, item.scope.agent_id, item.scope.workspace_id, item.scope.user_id), item.source_id)  # RET-27
                 identities = (
                     memory_dedupe_identities(item)
@@ -175,9 +223,12 @@ class LightweightAdmission:
                     continue
                 for identity in identities:
                     representatives.add((partition, identity))
-                chosen.append(item)
-                if len(chosen) >= max(0, limit):
-                    break
+                pages.add(page)
+                representative_items.append(item)
+            stages['page_representative_count'] = len(representative_items)
+            chosen = representative_items[:max(0, limit)]
+            if len(representative_items) > len(chosen):
+                dropped['delivery_limit'] = len(representative_items) - len(chosen)
         # Model relevance/support is assessed after delivery, never here.
         selected = []
         final_rejected = False
@@ -186,7 +237,7 @@ class LightweightAdmission:
                 dropped['authority_validation_timeout'] = (
                     dropped.get('authority_validation_timeout', 0) + len(chosen) - index)
                 break
-            if validate(item):
+            if getattr(item, 'status', None) == 'active' and validate(item):
                 selected.append(item)
             else:
                 final_rejected = True
@@ -200,8 +251,10 @@ class LightweightAdmission:
         if expired():
             drop('admission_deadline_exceeded')
             selected, status = [], 'unavailable'
+        stages['final_count'] = len(selected)
         report = {**self.config.identity(), 'mode': mode, 'status': status,
             'requested_attribute': attribute,
             'candidate_count': len(valid), 'selected_count': len(selected), 'scored': scored,
+            'candidate_stages': stages,
             'dropped_reasons': dropped, 'elapsed_ms': round((perf_counter() - started) * 1000, 3)}
         return selected, report

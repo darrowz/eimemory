@@ -326,13 +326,11 @@ def test_corrupt_cached_report_is_not_reused(runtime, monkeypatch):
     calls = []
     monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: calls.append(True) or answer(['relevant']))
     _run_quality_gap_intake(runtime, scope=SCOPE, reports={})
-    original = runtime.store.list_records_by_meta_value
-    def corrupt(**kwargs):
-        records = original(**kwargs)
-        if kwargs['meta_key'] == 'semantic_monitor_identity' and records:
-            records[0].content['verdict'] = 'off_topic'
-        return records
-    monkeypatch.setattr(runtime.store, 'list_records_by_meta_value', corrupt)
+    # Corrupt the persisted evidence itself so this check remains independent
+    # of whether the cache owner uses a list or the native latest-record API.
+    cached = runtime.store.get_by_id(saved_reports(runtime)[0]['persisted_record_id'], scope=SCOPE)
+    cached.content['verdict'] = 'off_topic'
+    runtime.store.rewrite(cached)
     result = _run_quality_gap_intake(runtime, scope=SCOPE, reports={})
     assert len(calls) == 2
     assert result['semantic_relevance']['reused_count'] == 0

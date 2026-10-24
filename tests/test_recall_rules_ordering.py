@@ -1,4 +1,4 @@
-"""Gate top5 relevance: bundle.rules must be query-ordered before gate merge."""
+"""Rule-channel relevance and label-independent diagnostic deduplication."""
 import tempfile
 from pathlib import Path
 
@@ -50,7 +50,7 @@ def test_bundle_rules_head_is_query_relevant(tmp_path) -> None:
     # The query-matching rule must outrank newer zero-overlap rules.
     head_titles = [(r.title or "") for r in bundle.rules[:2]]
     assert any("Ground truth" in t for t in head_titles), head_titles
-    # And a rules-first consumer (the gate) would surface it at slot 1.
+    # An explicitly rules-first consumer would surface it at slot 1.
     merged = [*(bundle.rules or []), *(bundle.items or [])]
     seen: set[str] = set()
     returned = []
@@ -113,7 +113,7 @@ def test_dedupe_records_by_ranking_identity_collapses_ground_truth_clones() -> N
     assert len({_record_ranking_ref(item) for item in unique}) == 2
 
 
-def test_candidate_records_keep_at_most_one_rule_ahead_of_items() -> None:
+def test_candidate_records_keep_the_declared_channel_without_label_merging() -> None:
     from eimemory.evaluation.real_query_gate import _candidate_records_for_case
 
     class _Bundle:
@@ -128,13 +128,12 @@ def test_candidate_records_keep_at_most_one_rule_ahead_of_items() -> None:
                 for i in range(4)
             ]
 
-    merged = _candidate_records_for_case(_Bundle(), label_kinds={"rule"})
-    assert merged[0].kind == "rule"
-    assert [item.kind for item in merged[1:]] == ["memory"] * 4
-    assert len(merged) == 5
+    bundle = _Bundle()
+    assert _candidate_records_for_case(bundle, label_kinds={"rule"}) == bundle.items
+    assert _candidate_records_for_case(bundle, evaluation_channel="rules") == bundle.rules
 
 
-def test_dedupe_prefers_label_referenced_clone_and_deep_pool_surfaces_label() -> None:
+def test_diagnostic_dedupe_keeps_first_identity_without_changing_delivery_slots() -> None:
     from eimemory.evaluation.real_query_gate import (
         _REAL_QUERY_RECALL_DEPTH,
         _dedupe_records_by_ranking_identity,
@@ -160,9 +159,8 @@ def test_dedupe_prefers_label_referenced_clone_and_deep_pool_surfaces_label() ->
         source="hermes.memory",
         status="active",
     )
-    # Engine ranks a growing family of turn-clones ahead of the labeled replay
-    # record.  The production candidate pool must contain the entire bounded
-    # fixture before semantic-title dedupe selects the distinct top five.
+    # Diagnostic identity grouping may describe a deep pool, but cannot refill
+    # the delivered top five or move the later replay into the scored prefix.
     ranked = [*clones, labeled]
     assert _REAL_QUERY_RECALL_DEPTH >= len(ranked)
     deduped = _dedupe_records_by_ranking_identity(ranked, prefer_ids={labeled.record_id})

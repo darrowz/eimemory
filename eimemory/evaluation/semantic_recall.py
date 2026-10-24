@@ -47,6 +47,11 @@ def _semantic_bundle_path_verified(identity, explanation):
 def validate_dataset(dataset):
     if not isinstance(dataset,dict) or dataset.get('schema') != 'semantic_recall_cases.v1':
         raise ValueError('semantic_dataset_schema_invalid')
+    if 'candidate_diagnostics' in dataset:
+        diagnostics = dataset['candidate_diagnostics']
+        if (not isinstance(diagnostics, dict) or set(diagnostics) != {'k'}
+                or type(diagnostics.get('k')) is not int or not 1 <= diagnostics['k'] <= 5000):
+            raise ValueError('semantic_candidate_diagnostics_invalid')
     cases = dataset.get('cases')
     if not isinstance(cases,list) or not 1 <= len(cases) <= 1000:
         raise ValueError('semantic_dataset_bounds')
@@ -97,18 +102,25 @@ def validate_dataset(dataset):
 
 
 def score_case(refs, groups, *, forbidden_refs=(), unavailable=False, boundary_violation=False):
-    refs = list(dict.fromkeys(refs))[:5]
+    refs = list(refs)[:5]
     gold = {ref for group in groups for ref in group}
-    hits = [i for i,ref in enumerate(refs,1) if ref in gold]
-    # Positive hits require every declared fact in the deduplicated top five;
+    seen, hits = set(), []
+    for i, ref in enumerate(refs, 1):
+        if ref in gold and ref not in seen:
+            hits.append(i)
+            seen.add(ref)
+    # Positive hits require every declared fact in the actual top five;
     # group alternatives and aggregate hit thresholds retain their meaning.
     groups_complete = all(set(group)&set(refs) for group in groups)
     forbidden = len(set(refs)&set(forbidden_refs)) + int(boundary_violation)
     return {'hit_at_1':bool(hits and hits[0] == 1 and groups_complete) if groups else None,
         'hit_at_5':bool(hits and groups_complete) if groups else None,
+        'precision_at_1':float(bool(hits and hits[0] == 1)) if groups else None,
+        'precision_at_5':len(hits)/5 if groups else None,
+        'reciprocal_rank':(1/hits[0] if hits else 0.0) if groups else None,
         'group_recall':sum(bool(set(group)&set(refs)) for group in groups)/len(groups) if groups else None,
         'returned_relevant_count':len(hits),'returned_count':len(refs),
-        'false_recall':bool(refs) if not groups else None,
+        'false_recall':bool(refs) if not groups and not unavailable else None,
         'forbidden_hit_count':forbidden,'unavailable':bool(unavailable),
         'passed':not unavailable and not forbidden and
             ((bool(hits) and hits[0] == 1 and len(hits) == len(refs)
@@ -117,14 +129,24 @@ def score_case(refs, groups, *, forbidden_refs=(), unavailable=False, boundary_v
 
 def summarize(samples):
     positives = [s for s in samples if s['metrics']['hit_at_1'] is not None]
-    negatives = [s for s in samples if s['metrics']['false_recall'] is not None]
+    negatives = [s for s in samples if s['metrics']['hit_at_1'] is None]
+    evaluated_negatives = [s for s in negatives if s['metrics']['false_recall'] is not None
+                           and not s['metrics']['unavailable']]
     returned = sum(s['metrics']['returned_count'] for s in samples)
     metrics = {'hit_at_1':sum(s['metrics']['hit_at_1'] for s in positives)/len(positives) if positives else None,
         'hit_at_5':sum(s['metrics']['hit_at_5'] for s in positives)/len(positives) if positives else None,
-        'false_recall_rate':sum(s['metrics']['false_recall'] for s in negatives)/len(negatives) if negatives else None,
+        'precision_at_1':(sum(s['metrics']['precision_at_1'] for s in positives)/len(positives)
+                          if positives and all(s['metrics'].get('precision_at_1') is not None for s in positives) else None),
+        'precision_at_5':(sum(s['metrics']['precision_at_5'] for s in positives)/len(positives)
+                          if positives and all(s['metrics'].get('precision_at_5') is not None for s in positives) else None),
+        'mrr':(sum(s['metrics']['reciprocal_rank'] for s in positives)/len(positives)
+               if positives and all(s['metrics'].get('reciprocal_rank') is not None for s in positives) else None),
+        'false_recall_rate':(sum(s['metrics']['false_recall'] for s in evaluated_negatives)/len(evaluated_negatives)
+                             if evaluated_negatives else None),
         'returned_precision':sum(s['metrics']['returned_relevant_count'] for s in samples)/returned if returned else None,
         'forbidden_hit_count':sum(s['metrics']['forbidden_hit_count'] for s in samples),
         'unavailable_count':sum(s['metrics']['unavailable'] for s in samples),
+        'availability_rate':sum(not s['metrics']['unavailable'] for s in samples)/len(samples) if samples else None,
         'latency_ms_p95':percentile([s['latency_ms'] for s in samples],95)}
     failures = []
     for name, threshold in THRESHOLDS.items():
@@ -138,9 +160,16 @@ def summarize(samples):
     latency = summarize_latency(samples)
     if not latency['passed']:
         failures.append('latency_ms_p95')
-    return {'case_count':len(samples),'positive_count':len(positives),'negative_count':len(negatives),
+    result = {'case_count':len(samples),'positive_count':len(positives),'negative_count':len(negatives),
+            'negative_evaluated_count':len(evaluated_negatives),
+            'negative_unavailable_count':sum(s['metrics']['unavailable'] for s in negatives),
+            'negative_evaluation_coverage':len(evaluated_negatives)/len(negatives) if negatives else None,
             'latency_contract':latency,
             'metrics':metrics,'failed_gates':failures,'passed':not failures}
+    if any('candidate_diagnostics' in sample for sample in samples):
+        from .recall_stage_metrics import summarize_candidate_diagnostics
+        result['candidate_diagnostics'] = summarize_candidate_diagnostics(samples)
+    return result
 
 
 def release_quality_passed(samples, splits):
@@ -167,7 +196,13 @@ def evaluate_semantic_recall(runtime, dataset):
         context = dict(case.get('task_context') or {})
         context.update({'exact_scope_only':True,'source_ids':[case['source_id']]})
         started = perf_counter()
-        bundle = runtime.memory.recall(query=case['query'],scope=case['scope'],limit=5,task_context=context)
+        diagnostics = None
+        if 'candidate_diagnostics' in dataset:
+            from .recall_stage_metrics import recall_with_candidate_trace
+            bundle, diagnostics = recall_with_candidate_trace(runtime, case=case, context=context,
+                k=dataset['candidate_diagnostics']['k'])
+        else:
+            bundle = runtime.memory.recall(query=case['query'],scope=case['scope'],limit=5,task_context=context)
         elapsed = (perf_counter()-started)*1000
         refs = [item.record_id for item in bundle.items]
         boundary = any(asdict(item.scope) != asdict(ScopeRef.from_dict(case['scope']))
@@ -181,12 +216,17 @@ def evaluate_semantic_recall(runtime, dataset):
             'latency_ms':round(elapsed,3),'retrieval_status':bundle.explanation.get('retrieval_status','unknown'),
             'admission':selector,'semantic_path_verified':path_verified,
             'candidate_identity':identity.get('candidate_source',{}),
+            **({'candidate_diagnostics':diagnostics} if diagnostics is not None else {}),
             'metrics':score_case(refs,case['expected_groups'],forbidden_refs=case.get('forbidden_refs',[]),
                 unavailable=not path_verified,boundary_violation=boundary)})
     splits = {split:summarize([s for s in samples if s['split'] == split])
               for split in sorted({s['split'] for s in samples})}
     passed = release_quality_passed(samples, splits)
     return {'schema':'semantic_admission_acceptance.v1','created_at':now_iso(),
+        'scoring_contract':'semantic_delivery_slots.v2',
+        'evaluation_channel':'items',
+        'metric_denominators':{'precision_at_5':5, 'returned_precision':'actual_delivered_slots_up_to_5',
+            'precision_and_mrr_population':'positive_cases', 'false_recall_rate':'verified_semantic_path_negative_cases'},
         'evaluation_role':'acceptance_only','natural_gate_replacement':False,
         'dataset_digest':sha256(json.dumps(dataset,ensure_ascii=False,sort_keys=True).encode()).hexdigest(),
         'engine_identity':runtime.memory.recall_engine.effective_identity(),

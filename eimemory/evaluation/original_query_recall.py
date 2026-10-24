@@ -21,9 +21,13 @@ from .recall_latency import tier as latency_tier
 
 
 def _metrics(refs, labels):
-    refs = list(dict.fromkeys(refs))[:5]
+    refs = list(refs)[:5]
     gold = {label['record_ref'] for label in labels}
-    hits = [i for i, ref in enumerate(refs, 1) if ref in gold]
+    seen, hits = set(), []
+    for i, ref in enumerate(refs, 1):
+        if ref in gold and ref not in seen:
+            hits.append(i)
+            seen.add(ref)
     return {'recall_at_5': len(hits) / len(gold) if gold else None,
             'precision_at_5': len(hits) / 5,
             'returned_precision': len(hits) / len(refs) if refs else None,
@@ -109,6 +113,7 @@ def evaluate_original_queries(runtime, *, scope, cases):
             'rerun':_metrics([item.record_id for item in items], case['labels']),
             'latency_ms':round((perf_counter()-start)*1000, 3)})
     return {'ok':True, 'schema':'production_original_query_rerun.v1',
+            'scoring_contract':'original_query_delivery_slots.v2', 'evaluation_channel':'items',
             'created_at':now_iso(), 'evaluator_version':__version__,
             'engine_identity':runtime.memory.recall_engine.effective_identity(),
             'evaluation_role':'supplemental_engine_rerun', 'natural_gate_replacement':False,

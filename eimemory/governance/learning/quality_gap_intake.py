@@ -156,8 +156,17 @@ def _ingest_verified_findings(runtime: Any, *, findings: list[dict[str, Any]], s
 
         if existing is not None and existing.status not in {"resolved", "closed"}:
             if str(existing.meta.get("report_digest") or "") == finding["report_digest"]:
-                deduplicated.append(existing.record_id)
-                continue
+                observation = finding.get("observation") or {}
+                confirmed_partial = (observation.get("severity") == "moderate"
+                    and observation.get("evidence_kind") in {"semantic_mixed", "semantic_redundancy"}
+                    and observation.get("confirmation_ref"))
+                previous = ((existing.content.get("source_report") or {}).get("observation") or {}
+                            if confirmed_partial else {})
+                # A fresh confirmation after revocation owns a new current
+                # gap. Reusing the old parent would retain the revoked ref.
+                if not confirmed_partial or previous.get("confirmation_ref") == observation["confirmation_ref"]:
+                    deduplicated.append(existing.record_id)
+                    continue
 
         record = _gap_record(finding, scope=scope_ref, supersedes=existing)
         runtime.store.append(record)
@@ -293,6 +302,11 @@ def _gap_record(
 ) -> RecordEnvelope:
     capability = str(finding["capability"])
     metric_names = list(finding["blocking_metrics"])
+    observation = finding.get("observation") or {}
+    moderate_kind = str(observation.get("evidence_kind") or "")
+    if (observation.get("severity") != "moderate" or not observation.get("confirmation_ref")
+            or moderate_kind not in {"semantic_mixed", "semantic_redundancy"}):
+        moderate_kind = ""
     summary = (
         f"{finding['report_name']} quality gate failed for {capability}: "
         + (", ".join(metric_names) if metric_names else str(finding["blocked_reason"]))
@@ -344,7 +358,9 @@ def _gap_record(
             "report_digest": finding["report_digest"],
             "target_capability": capability,
             "capability": capability,
-            "tag": capability,
+            # A partial hit must not dedupe away a more severe miss in the
+            # self-model's capability/tag/lesson grouping.
+            "tag": moderate_kind or capability,
             "miss": summary,
             "fix": content["fix"],
             "is_failure": True,

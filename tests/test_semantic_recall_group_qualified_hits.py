@@ -25,15 +25,15 @@ def test_alternatives_rank_and_noise_keep_their_existing_meanings():
     assert noisy['returned_relevant_count'] == 2 and noisy['returned_count'] == 3
 
 
-def test_group_qualification_uses_deduplicated_top_five_not_just_first_result():
+def test_group_qualification_uses_delivered_top_five_without_duplicate_refill():
     within_five = score_case(['a', 'n1', 'n2', 'n3', 'b'], [['a'], ['b']])
     assert within_five['hit_at_1'] and within_five['hit_at_5']
     assert within_five['group_recall'] == 1 and not within_five['passed']
     outside_five = score_case(['a', 'n1', 'n2', 'n3', 'n4', 'b'], [['a'], ['b']])
     assert not outside_five['hit_at_1'] and not outside_five['hit_at_5']
     assert outside_five['group_recall'] == .5 and outside_five['returned_count'] == 5
-    deduplicated = score_case(['a', 'a', 'n1', 'n2', 'n3', 'b'], [['a'], ['b']])
-    assert deduplicated == within_five
+    duplicate_slots = score_case(['a', 'a', 'n1', 'n2', 'n3', 'b'], [['a'], ['b']])
+    assert duplicate_slots == outside_five
 
 
 @pytest.mark.parametrize('partial_count,expected', [(0, True), (1, True), (2, True), (3, False), (20, False)])

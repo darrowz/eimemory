@@ -6,7 +6,7 @@ unambiguous requested attributes; unknown question shapes remain semantic.
 import re
 import unicodedata
 from eimemory.recall.task_queries import (task_recall_mode, supports_task_evidence,
-                                          _STATE_FACT, _HISTORY_FACT)
+    supports_release_status_evidence, _STATE_FACT, _HISTORY_FACT, _RELEASE_ASSERTION, _RELEASE_NONFACT)
 
 _MONEY_QUESTION = re.compile(
     r'多少钱|(?:金额|总金额|价格|单价|总价|费用|花费|售价|造价|成本|报价).{0,8}(?:多少|几元)|'
@@ -57,6 +57,69 @@ _CONSTRAINT_REQUEST = re.compile(
     r'\b(?:what|which|list|show)\b[^.!?\n]{0,64}\b(?:requirements?|rules?|constraints?|criteria|conditions?)\b|'
     r'\b(?:requirements?|rules?|constraints?|criteria|conditions?)\s*\??$', re.I)
 
+_PROCEDURE_REQUEST = re.compile(
+    r'(?:如何|怎样|怎么(?!样|了))\s*(?=[\u4e00-\u9fffA-Za-z])|'
+    r'(?:步骤|流程|顺序)\s*(?:是什么|有哪些|如何|怎么|怎样|[？?]|$)|'
+    r'\bhow\s+(?:to|should|do\s+(?:i|we))\b|'
+    r'\b(?:what|which|show|list)\b[^.!?\n]{0,48}\b(?:steps?|procedures?|workflow|checklist)\b|'
+    r'\b(?:steps?|procedures?|workflow|checklist)\s*\??$', re.I)
+_RELEASE_TOPIC = re.compile(r'部署|发布|上线|回滚|\b(?:deploy\w*|release|rollout|rollback)\b', re.I)
+# An outcome word alone is a topic lookup (e.g. "deployment rollback").
+# Unversioned state requests need a state property or an actual question form.
+_RELEASE_STATE_REQUEST = re.compile(
+    r'状态|结果|进展|进度|情况|是否|'
+    r'(?:部署|发布|上线|成功|失败|回滚|阻塞|完成)(?:了)?(?:吗|么|了没|了没有)\s*[？?]?$|'
+    r'\b(?:status|result|progress)\b|'
+    r'^\s*(?:is|are|was|were|has|have|had|did)\b[^.!?\n]{0,128}'
+    r'\b(?:deployed|deploying|succeed(?:ed)?|fail(?:ed)?|blocked|complete(?:d)?|rolled\s+back)\b', re.I)
+_CAUSAL_REQUEST = re.compile(r'为什么|为何|原因|怎么会|\b(?:why|root cause|what caused)\b', re.I)
+_ABSOLUTE_DATE = re.compile(r'(?<!\d)(\d{4})(?:-|年)(\d{1,2})(?:-|月)(\d{1,2})(?:日)?(?!\d)')
+
+
+def is_procedure_request(query: str) -> bool:
+    """Require a request for guidance, not merely a deployment-related noun."""
+    text = str(query or '')[:16000]
+    return not _CAUSAL_REQUEST.search(text) and bool(_CONSTRAINT_REQUEST.search(text) or _PROCEDURE_REQUEST.search(text)
+                or (re.search(r'(?:先|首先)[^。！？!?\n]{0,40}(?:再|然后)', text)
+                    and not _RELEASE_STATE_REQUEST.search(text)))
+
+
+def _absolute_dates(text: str) -> set[tuple[int, int, int]]:
+    return {tuple(int(part) for part in match.groups()) for match in _ABSOLUTE_DATE.finditer(text)}
+
+
+def _release_identity_matches(query: str, sentence: str, aliases=()) -> bool:
+    """Keep project, release and explicit date on the actual status assertion."""
+    requested_dates = _absolute_dates(query)
+    if (not supports_query_identity(query, sentence, aliases)
+            or not requested_dates.issubset(_absolute_dates(sentence))):
+        return False
+    requested_versions = {value.casefold() for value in _VERSION.findall(query)}
+    project = explicit_project(query).casefold()
+    versions = list(_VERSION.finditer(sentence))
+    dates = list(_ABSOLUTE_DATE.finditer(sentence))
+    for assertion in _RELEASE_ASSERTION.finditer(sentence):
+        preceding = [match for match in versions if match.end() <= assertion.start()]
+        following = [match for match in versions if match.start() >= assertion.end()]
+        if preceding or following:
+            # The first post-verb version is the deployment target; later
+            # comparison/rollback versions must not answer for that target.
+            version = preceding[-1] if preceding else following[0]
+            if requested_versions and version.group(1).casefold() not in requested_versions:
+                continue
+            subject = re.search(r'([A-Za-z][A-Za-z0-9_-]*)\s*(?:(?:version|release|build)\s+)?$',
+                                sentence[:version.start()], re.I) if preceding else None
+            if (project and subject and subject.group(1).casefold() != project
+                    and subject.group(1).casefold() not in {'version', 'release', 'build', 'for', 'to', 'from', 'at', 'on'}):
+                continue
+        if requested_dates and dates:
+            before = [match for match in dates if match.end() <= assertion.start()]
+            date = before[-1] if before else dates[0]
+            if tuple(int(part) for part in date.groups()) not in requested_dates:
+                continue
+        return True
+    return False
+
 
 _CONTEXT_ENTITIES_SUFFIX = re.compile(
     r"(?:\r?\n|\s+)Context entities:\s*.*\Z",
@@ -86,7 +149,10 @@ def requested_attribute(query: str) -> str:
         return 'secret'
     if _CONSTRAINT_REQUEST.search(query.strip()):
         return 'constraint'
-    if _VERSION.search(query) and re.search(r'部署|验收|\bdeploy', query, re.I):
+    if ((_RELEASE_TOPIC.search(query)
+         or _VERSION.search(query) and re.search(r'验收|\bacceptance\b', query, re.I))
+            and (_VERSION.search(query) or _RELEASE_STATE_REQUEST.search(query))
+            and not is_procedure_request(query) and not _CAUSAL_REQUEST.search(query)):
         return 'release_status'
     if _MODEL_QUESTION.search(query):
         for name, pattern in _OBJECTS:
@@ -102,8 +168,9 @@ def supports_requested_attribute(attribute: str, evidence: str) -> bool:
     if attribute == 'secret':
         return bool(_SECRET_FACT.search(evidence))
     if attribute == 'release_status':
-        return (bool(re.search(r'已部署|部署已完成|部署.{0,8}(?:成功|通过)|生产为|发布.{0,8}(?:完成|成功)|\bdeployed\b', evidence, re.I))
-                and supports_task_evidence('status', evidence))
+        # Negative/current/rolling outcomes answer a status request too. Keep
+        # the original assertion; admission does not turn it into a success.
+        return supports_release_status_evidence(evidence)
     if attribute in {'task_status', 'task_history'}:
         return supports_task_evidence(attribute.removeprefix('task_'), evidence)
     if attribute.startswith('model_'):
@@ -166,7 +233,7 @@ def _supports_money_role(query: str, evidence: str, aliases=()) -> bool:
                  if re.search(pattern, query, re.I)), '')
     if not role:
         return supports_requested_attribute('money', evidence)
-    assertion = re.compile(_MONEY_ROLES[role] + r'\s*(?:为|是|约为|约|共计|合计|[:：=])?\s*'
+    assertion = re.compile('(?:' + _MONEY_ROLES[role] + r')\s*(?:为|是|约为|约|共计|合计|[:：=])?\s*'
                            + _CURRENCY_AMOUNT, re.I)
     previous = ''
     for sentence in re.split(r'[。\n]', evidence):
@@ -191,20 +258,36 @@ def _supports_bound_attribute(query: str, evidence: str, attribute: str, aliases
     previous = ''
     # ponytail: only a standalone heading and its next bounded line inherit
     # identity; general discourse/coreference needs grounded source structure.
-    parts = re.split(r'([。!?！？\n])', evidence[:4096])
+    bounded = evidence[:4096]
+    if attribute == 'release_status':
+        # Preserve the whole sentence's modality before separating identity
+        # clauses. "If approved, X is deployed" and "X succeeded, or failed?"
+        # cannot become factual by dropping their other half at a comma.
+        statements = re.split(r'([。!?！？\n]|(?<=\.)\s+)', bounded)
+        for index in range(0, len(statements), 2):
+            ending = statements[index + 1] if index + 1 < len(statements) else ''
+            if _RELEASE_NONFACT.search(statements[index]) or ending in {'?', '？'}:
+                statements[index] = ''
+        bounded = ''.join(statements)
+    separators = r'([。!?！？\n；;，,]|(?<=\.)\s+)' if attribute == 'release_status' else r'([。!?！？\n])'
+    parts = re.split(separators, bounded)
     for index, part in enumerate(parts):
-        if part == '\n':
+        if part == '\n' or attribute == 'release_status' and part in {'，', ','}:
             continue
         sentence = part.strip()
         projects = {next(v for v in m.groups() if v).casefold()
                     for m in _PROJECT.finditer(sentence)}
         conflicting = bool(project and projects - {project})
-        question = attribute == 'constraint' and index + 1 < len(parts) and parts[index + 1] in '?!？！'
+        question = (attribute == 'constraint' and index + 1 < len(parts) and parts[index + 1] in '?!？！')
         if not conflicting and not question and supports_requested_attribute(attribute, sentence):
-            if supports_query_identity(query, sentence, aliases):
+            identity = (_release_identity_matches(query, sentence, aliases) if attribute == 'release_status'
+                        else supports_query_identity(query, sentence, aliases))
+            if identity:
                 return True
             heading = re.sub(r'^#{1,6}\s+', '', previous).rstrip(':：').strip()
             heading_project = _VERSION.sub('', heading).strip()
+            if attribute == 'release_status':
+                heading_project = _ABSOLUTE_DATE.sub('', heading_project).strip()
             versions = {v.casefold() for v in _VERSION.findall(heading)}
             # Full-match syntax prevents notifications or other prose becoming
             # an implicit identity grant. Versions belong to this heading only;
@@ -215,7 +298,12 @@ def _supports_bound_attribute(query: str, evidence: str, attribute: str, aliases
                     and supports_query_identity(query, heading)
                     and not {v.casefold() for v in _VERSION.findall(sentence)} - versions
                     and not projects
+                    and (attribute != 'release_status'
+                         or (_absolute_dates(query).issubset(_absolute_dates(heading + ' ' + sentence))
+                             and (not _absolute_dates(sentence)
+                                  or _absolute_dates(query).issubset(_absolute_dates(sentence)))))
                     and (_STATE_FACT.match(sentence)
+                         or attribute == 'release_status' and _RELEASE_ASSERTION.match(sentence)
                          or attribute == 'task_history' and _HISTORY_FACT.match(sentence)
                          or attribute == 'constraint' and _CONSTRAINT_FACT.match(sentence))):
                 return True

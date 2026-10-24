@@ -479,6 +479,15 @@ def _severity(record: RecordEnvelope, primary_label: str) -> float:
         return 0.8
     if record.kind == "unknown":
         return 0.65
+    if record.kind == "reflection" and record.source == "eimemory.l5.quality_gap_intake":
+        content = record.content if isinstance(record.content, dict) else {}
+        report = content.get("source_report")
+        report = report if isinstance(report, dict) else {}
+        observation = report.get("observation")
+        observation = observation if isinstance(observation, dict) else {}
+        if (observation.get("severity") == "moderate" and observation.get("confirmation_ref")
+                and observation.get("evidence_kind") in {"semantic_mixed", "semantic_redundancy"}):
+            return 0.4
     return 0.6
 
 

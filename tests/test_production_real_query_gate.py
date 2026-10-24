@@ -133,6 +133,8 @@ def _trusted_baseline(dataset: dict) -> dict:
     }
     return {
         "report_id": "prg_baseline_previous_release",
+        "scoring_contract": real_query_gate.DELIVERY_SCORING_CONTRACT,
+        "evaluation_plan_digest": _digest(real_query_gate._delivery_evaluation_plan(frozen)),
         "release_identity": {
             "release_commit": "b" * 40,
             "release_version": "1.9.79",
@@ -505,9 +507,9 @@ def test_formula_contract_at_k5_uses_all_relevant_and_capacity_denominator() -> 
         "recall_at_5": 1.0,
         "precision_at_5": 0.4,
         "mrr": 1.0,
-        "ndcg_at_5": 1.0,
+        "ndcg_at_5": pytest.approx((7 + 3 / 2) / (7 + 3 / 1.5849625007)),
         "top1_stable": 1.0,
-        "jaccard_at_5": 1.0,
+        "jaccard_at_5": .8,
     }
 
 
@@ -1093,7 +1095,12 @@ def test_real_query_gate_is_bound_sanitized_and_deterministic(tmp_path, monkeypa
     assert first["dataset_digest"] == first["baseline_identity"]["dataset_digest"]
     assert first["cross_channel_leakage_count"] == 0
     assert first["source_filter_leakage_count"] == 0
-    assert all(len(sample["returned_refs"]) == 1 for sample in first["samples"])
+    assert all(len(sample["returned_refs"]) == 2 for sample in first["samples"])
+    assert real_query_gate._independent_real_query_metrics_valid(
+        first, baseline=_trusted_baseline(dataset), runtime=runtime, scope=BASE_SCOPE,
+    )
+    assert all(sample["channel_rankings"]["items"]["returned_precision"] == .5
+               for sample in first["samples"])
     assert first["peak_memory_bytes"] >= 0
     assert first["peak_memory_bytes"] >= 2 * 1024 * 1024
     assert first["memory_measurement"] == {
@@ -1257,6 +1264,12 @@ def _structural_persisted_report(*, policy_schema: str | None = None) -> dict:
     }
     # Own-schema digest must include the thresholds embedded in the gate.
     report["policy_digest"] = real_query_gate._policy_digest_for_persisted_report(report)
+    if schema == real_query_gate.PRODUCTION_REAL_QUERY_POLICY:
+        report["scoring_contract"] = real_query_gate.DELIVERY_SCORING_CONTRACT
+        report["evaluation_plan"] = real_query_gate._delivery_evaluation_plan({
+            "dataset_digest": report["dataset_digest"], "cases": [],
+        })
+        report["evaluation_plan_digest"] = _digest(report["evaluation_plan"])
     return report
 
 
@@ -1475,6 +1488,7 @@ def test_real_query_gate_scores_rule_labels_against_policy_rule_lane(tmp_path, m
         "baseline_report_id": "prg_baseline_previous_release",
     }
     for case in dataset["cases"]:
+        case["evaluation_channel"] = "rules"
         index = int(str(case["case_id"]).rsplit("-", 1)[1])
         features = {
             "terms": ["missing", "capability", "replay", "rollback", f"case-{index}"],
@@ -1569,6 +1583,7 @@ def test_real_query_gate_semantic_duplicate_uses_shared_ground_truth_ranking_ide
         "baseline_report_id": "prg_baseline_previous_release",
     }
     for index, case in enumerate(dataset["cases"]):
+        case["evaluation_channel"] = "rules"
         features = {
             "terms": ["missing", "capability", "replay", "rollback", f"case-{index}"],
             "intent": "living_posture",
@@ -1770,6 +1785,7 @@ def test_real_query_gate_semantic_behavior_change_remains_distinct(
         "baseline_report_id": "prg_baseline_previous_release",
     }
     for index, case in enumerate(dataset["cases"]):
+        case["evaluation_channel"] = "rules"
         features = {
             "terms": ["missing", "capability", "replay", "rollback", f"case-{index}"],
             "intent": "living_posture",

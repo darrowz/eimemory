@@ -53,6 +53,40 @@ from eimemory.governance.deployment_receipt import (
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import normalize_source_id
 
+DELIVERY_SCORING_CONTRACT = "production_delivery_ranking.v1"
+_EVALUATION_CHANNELS = ("items", "rules", "reflections")
+_DELIVERY_SCORING_DENOMINATORS = {
+    "precision_at_5": "min(5, exact_scope_active_corpus_capacity)",
+    "recall_at_5": "distinct_positive_ranking_identities",
+    "channel_precision_at_5": 5,
+    "channel_returned_precision": "actual_delivered_slots_up_to_5",
+    "aggregation": "macro_average_over_declared_case_channels",
+}
+
+
+def _delivery_evaluation_plan(frozen: dict[str, Any]) -> dict[str, Any]:
+    """Bind channel selection and invocation depth before reading any labels."""
+    return {"schema": "recall_bundle_delivery_plan.v1", "dataset_digest": frozen["dataset_digest"],
+            "invocation_depth": _REAL_QUERY_RECALL_DEPTH, "scored_depth": 5,
+            "cases": [{"case_id": case["case_id"], "evaluation_channel": case.get("evaluation_channel", "items")}
+                      for case in frozen["cases"]]}
+
+
+def _delivery_evaluation_plan_valid(report: dict[str, Any]) -> bool:
+    plan = report.get("evaluation_plan")
+    samples = report.get("samples")
+    if not isinstance(plan, dict) or not isinstance(samples, list):
+        return False
+    expected = {"schema": "recall_bundle_delivery_plan.v1", "dataset_digest": report.get("dataset_digest"),
+                "invocation_depth": _REAL_QUERY_RECALL_DEPTH, "scored_depth": 5,
+                "cases": [{"case_id": sample.get("case_id"), "evaluation_channel": sample.get("evaluation_channel")}
+                          for sample in samples if isinstance(sample, dict)]}
+    return (plan == expected and len(expected["cases"]) == len(samples)
+            and all(isinstance(case["case_id"], str) and 0 < len(case["case_id"]) <= 160
+                    and case["evaluation_channel"] in _EVALUATION_CHANNELS for case in expected["cases"])
+            and len({case["case_id"] for case in expected["cases"]}) == len(samples)
+            and report.get("evaluation_plan_digest") == _stable_digest(plan))
+
 from eimemory.evaluation.real_query_schema import (  # A2: shared schema/digest layer
     PRODUCTION_REAL_QUERY_SCHEMA,
     PRODUCTION_REAL_QUERY_REPORT_SCHEMA,
@@ -114,9 +148,9 @@ from eimemory.evaluation.real_query_schema import (  # A2: shared schema/digest 
 # labeled answer remains first.  Keep the hard absolute quality thresholds,
 # but treat small baseline movement as non-inferior and allow bounded tail
 # churn only when the labeled top result and recall remain very strong.
-# The labeled top-5 is cut from a deeper candidate pool: clone families
-# (deployment-loop memories, duplicate GT rules) must collapse before the
-# cut, otherwise five clones fill every slot and genuine hits never surface.
+# The ranked top five are the first five actual delivery slots in the declared
+# channel. Equivalent labels may match an identity; they never move a candidate
+# forward or refill slots from the deeper diagnostic pool.
 def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
     """Validate and freeze the non-secret production query contract.
 
@@ -234,6 +268,8 @@ def _freeze_real_query_case(
         return None, ["invalid_case"]
     case = dict(value)
     reasons: list[str] = []
+    if "evaluation_channel" in case and case["evaluation_channel"] not in _EVALUATION_CHANNELS:
+        reasons.append("evaluation_channel_invalid")
     case_id = str(case.get("case_id") or "").strip()
     if not case_id or len(case_id) > 160:
         reasons.append("stable_case_id_required")
@@ -348,6 +384,8 @@ def _freeze_real_query_case(
             "capture_ref": str(provenance.get("capture_ref") or "")[:200],
         },
     }
+    if "evaluation_channel" in case:
+        frozen["evaluation_channel"] = case["evaluation_channel"]
     return frozen, list(dict.fromkeys(reasons))
 
 
@@ -368,8 +406,13 @@ def evaluate_labeled_ranking_at_5(
     labels: list[dict[str, Any]],
     corpus_result_capacity: int,
     baseline_refs: list[str] | None = None,
+    preserve_delivery_slots: bool = True,
 ) -> dict[str, float]:
-    refs = _stable_unique_refs(candidate_refs, limit=5)
+    # Legacy persisted reports retain their old arithmetic for validation only.
+    # New evaluations keep duplicates in their delivered positions and never
+    # pull a sixth result into the top five after deduplication.
+    refs = ([str(ref or "") for ref in candidate_refs[:5]] if preserve_delivery_slots
+            else _stable_unique_refs(candidate_refs, limit=5))
     grades: dict[str, int] = {}
     for label in labels:
         ref = str(label.get("record_ref") or "")
@@ -381,10 +424,16 @@ def evaluate_labeled_ranking_at_5(
     capacity = max(0, int(corpus_result_capacity))
     denominator = min(5, capacity)
     first_rank = next((index for index, ref in enumerate(refs, start=1) if ref in relevant), 0)
-    dcg = sum(((2 ** grades[ref]) - 1) / log2(index + 1) for index, ref in enumerate(refs, start=1) if ref in grades)
+    credited: set[str] = set()
+    dcg = 0.0
+    for index, ref in enumerate(refs, start=1):
+        if ref in grades and ref not in credited:
+            dcg += ((2 ** grades[ref]) - 1) / log2(index + 1)
+            credited.add(ref)
     ideal = sorted(grades.values(), reverse=True)[:5]
     idcg = sum(((2 ** grade) - 1) / log2(index + 1) for index, grade in enumerate(ideal, start=1))
-    baseline = _stable_unique_refs(list(baseline_refs or []), limit=5)
+    baseline = ([str(ref or "") for ref in list(baseline_refs or [])[:5]] if preserve_delivery_slots
+                else _stable_unique_refs(list(baseline_refs or []), limit=5))
     union = set(refs) | set(baseline)
     return {
         "recall_at_5": len(set(relevant_returned)) / len(relevant) if relevant else 0.0,
@@ -477,6 +526,7 @@ def run_real_query_gate(
                 "gate_status": "not_run",
                 "blocked_reason": baseline_reason,
                 "baseline_capture": False,
+                "baseline_comparison": {"status": "not_comparable", "reason": baseline_reason},
             }
         )
         return _persist_eligible_high_water(runtime, report, scope=dataset_scope, persist=persist_report)
@@ -1200,6 +1250,8 @@ def _resolve_trusted_baseline(
         )
         if node is None:
             return None, f"baseline_parent_invalid:{reason}" if chain else reason
+        if not chain and node["report"].get("scoring_contract") != DELIVERY_SCORING_CONTRACT:
+            return None, "baseline_scoring_contract_mismatch"
         summary, identity = node["summary"], node["identity"]
         authority = (identity.commit, identity.receipt_id, identity.session_id)
         if summary["persisted_record_id"] in seen_attempts or authority in seen_releases:
@@ -1375,11 +1427,16 @@ def _load_trusted_baseline_node(
         "policy_digest": str(report["policy_digest"]),
         "result_digest": str(report["result_digest"]),
         "result_refs": {
-            str(key): _stable_unique_refs(list(value), limit=5)
+            str(key): (list(value)[:5] if report.get("scoring_contract") == DELIVERY_SCORING_CONTRACT
+                       else _stable_unique_refs(list(value), limit=5))
             for key, value in results.items()
         },
         "metrics": dict(report.get("metrics") or {}),
     }
+    if "scoring_contract" in report:
+        summary["scoring_contract"] = report["scoring_contract"]
+    if "evaluation_plan_digest" in report:
+        summary["evaluation_plan_digest"] = report["evaluation_plan_digest"]
     return {"summary": summary, "report": report, "report_digest": _stable_digest(report), "identity": identity,
             "bootstrap": bootstrap_baseline}, ""
 
@@ -1464,6 +1521,16 @@ def _evaluate_real_query_candidate(
     capacities: dict[str, int],
     evaluator_commit: str = "",
 ) -> dict[str, Any]:
+    evaluation_plan = _delivery_evaluation_plan(frozen)
+    evaluation_plan_digest = _stable_digest(evaluation_plan)
+    baseline_incompatibility = ""
+    if baseline is not None:
+        if baseline.get("scoring_contract") != DELIVERY_SCORING_CONTRACT:
+            baseline_incompatibility = "scoring_contract_mismatch"
+        elif baseline.get("evaluation_plan_digest") != evaluation_plan_digest:
+            baseline_incompatibility = "evaluation_plan_mismatch"
+    if baseline_incompatibility:
+        baseline = None
     def recall_inputs(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         features = dict(case["query_features"])
         query = _vault_bound_replay_query(runtime, case) or " ".join(
@@ -1520,42 +1587,13 @@ def _evaluate_real_query_candidate(
         )
         latency_ms = (perf_counter() - start) * 1000.0
         label_kinds = _label_kinds_for_case(runtime, case)
-        label_record_ids = {
-            str(label.get("record_ref") or "").strip()
-            for label in list(case.get("labels") or [])
-            if str(label.get("record_ref") or "").strip()
-        }
-        returned: list[RecordEnvelope] = []
-        returned_ids: set[str] = set()
-        candidate_records = _dedupe_records_by_ranking_identity(
-            _candidate_records_for_case(
-                bundle,
-                label_kinds=label_kinds,
-                label_record_ids=label_record_ids,
-            ),
-            prefer_ids=label_record_ids,
-        )
-        # Take five DISTINCT ranking identities: duplicate GT-rule clones must
-        # not consume multiple slots of the labeled top-5.
-        seen_ranking_refs: set[str] = set()
-        for item in candidate_records:
-            record_id = str(item.record_id or "")
-            if not record_id or record_id in returned_ids:
-                continue
-            item_ref = _record_ranking_ref(item)
-            if item_ref in seen_ranking_refs:
-                continue
-            returned_ids.add(record_id)
-            seen_ranking_refs.add(item_ref)
-            returned.append(item)
-            if len(returned) >= 5:
-                break
+        evaluation_channel = case.get("evaluation_channel", "items")
+        returned = _candidate_records_for_case(
+            bundle, evaluation_channel=evaluation_channel,
+        )[:5]
         refs = [str(item.record_id) for item in returned]
         result_refs[str(case["case_id"])] = refs
-        returned_ranking_refs = _stable_unique_refs(
-            [_record_ranking_ref(item) for item in returned],
-            limit=5,
-        )
+        returned_ranking_refs = [_record_ranking_ref(item) for item in returned]
         ranking_result_refs[str(case["case_id"])] = returned_ranking_refs
         case_cross = sum(
             1 for item in returned if _record_runtime_channel(item) != str(case["channel"])
@@ -1568,6 +1606,7 @@ def _evaluate_real_query_candidate(
             runtime,
             baseline_refs,
             scope=ScopeRef.from_dict(case["scope"]),
+            preserve_delivery_slots=True,
         )
         ranking_labels = _ranking_labels_for_case(runtime, case)
         ranking = evaluate_labeled_ranking_at_5(
@@ -1579,6 +1618,13 @@ def _evaluate_real_query_candidate(
         samples.append(
             {
                 "case_id": str(case["case_id"]),
+                "evaluation_channel": evaluation_channel,
+                "evaluation_channel_declared": "evaluation_channel" in case,
+                "evaluation_channel_notice": (
+                    "rule_labels_require_explicit_channel_review"
+                    if "evaluation_channel" not in case and "rule" in label_kinds else ""
+                ),
+                "channel_rankings": _delivery_channel_rankings(bundle, ranking_labels),
                 "channel": str(case["channel"]),
                 "source_id": str(case["source_id"]),
                 "query_digest": str(case["query_digest"]),
@@ -1650,6 +1696,8 @@ def _evaluate_real_query_candidate(
     ranking_result_digest = _stable_digest(ranking_result_refs)
     report_seed = {
         "schema": PRODUCTION_REAL_QUERY_REPORT_SCHEMA,
+        "scoring_contract": DELIVERY_SCORING_CONTRACT,
+        "evaluation_plan_digest": evaluation_plan_digest,
         "release_identity": release_payload,
         "evaluator_commit": effective_evaluator_commit,
         "dataset_digest": frozen["dataset_digest"],
@@ -1669,8 +1717,15 @@ def _evaluate_real_query_candidate(
         "ok": bool(gate["ok"]),
         "accepted": bool(gate["ok"] and baseline is not None),
         "gate_status": "accepted" if gate["ok"] and baseline is not None else "blocked",
-        "blocked_reason": "" if gate["ok"] and baseline is not None else str(gate.get("blocked_reason") or "baseline_unavailable"),
+        "blocked_reason": (f"baseline_{baseline_incompatibility}" if baseline_incompatibility else
+            "" if gate["ok"] and baseline is not None else str(gate.get("blocked_reason") or "baseline_unavailable")),
         "schema": PRODUCTION_REAL_QUERY_REPORT_SCHEMA,
+        "scoring_contract": DELIVERY_SCORING_CONTRACT,
+        "evaluation_plan": evaluation_plan,
+        "evaluation_plan_digest": evaluation_plan_digest,
+        "scoring_denominators": dict(_DELIVERY_SCORING_DENOMINATORS),
+        "baseline_comparison": {"status": "comparable" if baseline is not None else "not_comparable",
+            "reason": baseline_incompatibility or ("" if baseline else "baseline_unavailable")},
         "report_type": "production_recall_gate",
         "report_id": report_id,
         "generated_at": now_iso(),
@@ -1738,6 +1793,7 @@ def _ranking_refs_for_record_ids(
     record_ids: list[str],
     *,
     scope: ScopeRef,
+    preserve_delivery_slots: bool = False,
 ) -> list[str]:
     refs: list[str] = []
     for record_id in record_ids:
@@ -1746,7 +1802,7 @@ def _ranking_refs_for_record_ids(
             continue
         record = runtime.store.get_by_id(exact_ref, scope=scope)
         refs.append(_record_ranking_ref(record) if record is not None else exact_ref)
-    return _stable_unique_refs(refs, limit=5)
+    return refs[:5] if preserve_delivery_slots else _stable_unique_refs(refs, limit=5)
 
 
 def _record_ranking_ref(record: RecordEnvelope) -> str:
@@ -1828,6 +1884,7 @@ def _authoritative_ranking_refs(
     exact_refs: list[str],
     *,
     scope: ScopeRef,
+    preserve_delivery_slots: bool = False,
 ) -> list[str] | None:
     ranking_refs: list[str] = []
     for exact_ref in exact_refs:
@@ -1840,7 +1897,7 @@ def _authoritative_ranking_refs(
         ):
             return None
         ranking_refs.append(ranking_ref)
-    return _stable_unique_refs(ranking_refs, limit=5)
+    return ranking_refs[:5] if preserve_delivery_slots else _stable_unique_refs(ranking_refs, limit=5)
 
 
 def _authoritative_ranking_labels(
@@ -1888,27 +1945,37 @@ def _label_kinds_for_case(runtime: Any, case: dict[str, Any]) -> set[str]:
 def _candidate_records_for_case(
     bundle: Any,
     *,
-    label_kinds: set[str],
+    evaluation_channel: str = "items",
+    label_kinds: set[str] | None = None,
     label_record_ids: set[str] | None = None,
 ) -> list[RecordEnvelope]:
-    items = list(getattr(bundle, "items", []) or [])
-    rules = list(getattr(bundle, "rules", []) or [])
-    if "rule" in label_kinds:
-        # At most one rule identity — the rest of the labeled top-5 must come
-        # from the engine's ranked items. Dumping the whole active-rule list
-        # in front of items lets boilerplate capability-candidate rules occupy
-        # every remaining slot and starve genuine memory hits (precision@5
-        # caps at 1/5 ≈ 0.20 even when recall is 96%).
-        head_rules = rules
-        if label_record_ids:
-            labeled_rule = next(
-                (rule for rule in rules if str(rule.record_id) in label_record_ids),
-                None,
-            )
-            if labeled_rule is not None:
-                head_rules = [labeled_rule]
-        return [*head_rules[:1], *items]
-    return items
+    """Return a caller-declared channel verbatim; labels are scoring-only.
+
+    Historical keyword arguments remain accepted for local callers, but cannot
+    select a channel, choose a rule, change ordering, or add delivery records.
+    """
+    if evaluation_channel not in _EVALUATION_CHANNELS:
+        raise ValueError("evaluation_channel_invalid")
+    return list(getattr(bundle, evaluation_channel, []) or [])
+
+
+def _delivery_channel_rankings(bundle: Any, labels: list[dict[str, Any]]) -> dict[str, Any]:
+    """Report each delivered channel independently with fixed-k precision."""
+    relevant = {str(label["record_ref"]) for label in labels}
+    result = {}
+    for channel in _EVALUATION_CHANNELS:
+        records = _candidate_records_for_case(bundle, evaluation_channel=channel)[:5]
+        refs = [_record_ranking_ref(record) for record in records]
+        unique_hits = len(set(refs) & relevant)
+        result[channel] = {
+            "returned_refs": [str(record.record_id) for record in records],
+            "returned_ranking_refs": refs,
+            "delivered_count": len(records),
+            "precision_at_1": float(bool(refs and refs[0] in relevant)),
+            "returned_precision": unique_hits / len(refs) if refs else None,
+            **evaluate_labeled_ranking_at_5(candidate_refs=refs, labels=labels, corpus_result_capacity=5),
+        }
+    return result
 
 
 def _dedupe_records_by_ranking_identity(
@@ -1916,16 +1983,10 @@ def _dedupe_records_by_ranking_identity(
     *,
     prefer_ids: set[str] | None = None,
 ) -> list[RecordEnvelope]:
-    """Collapse semantically identical records before scoring.
+    """Collapse equivalent records for diagnostics, keeping the first delivery.
 
-    Duplicate T0 ground-truth behavior rules share one ranking identity, and
-    deployment-loop writers emit one memory clone per run ("Hermes completed
-    turn", "Hermes deployment replay"). If the gate keeps every copy the
-    clones consume the entire top-5 and starve genuine hits (precision@5
-    collapses to 1/5). Keep the first occurrence per identity — callers pass
-    engine-ranked candidates, so the kept copy is the highest-ranked one —
-    unless the labels reference a specific copy of that identity, in which
-    case that exact record represents the group.
+    ``prefer_ids`` is retained for compatibility but never changes the chosen
+    representative. This diagnostic must not refill the scored top five.
     """
 
     seen: set[str] = set()
@@ -1934,21 +1995,8 @@ def _dedupe_records_by_ranking_identity(
         identity = str(_record_semantic_identity(record))
         if identity in seen:
             continue
-        if prefer_ids and record.record_id in prefer_ids:
-            unique.append(record)
-            seen.add(identity)
-            continue
-        representative = record
-        if prefer_ids:
-            for follower in records:
-                if (
-                    follower.record_id in prefer_ids
-                    and str(_record_semantic_identity(follower)) == identity
-                ):
-                    representative = follower
-                    break
         seen.add(identity)
-        unique.append(representative)
+        unique.append(record)
     return unique
 
 
@@ -2332,6 +2380,8 @@ def _real_query_attempt_payload(report: dict[str, Any]) -> dict[str, Any]:
     # equal rankings cannot make one event interchangeable with another.
     fields = (
         "report_id", "schema", "report_type", "dataset_kind", "scope",
+        "scoring_contract", "scoring_denominators", "baseline_comparison",
+        "evaluation_plan", "evaluation_plan_digest",
         "release_identity", "deployment_receipt_id", "evaluator_commit",
         "dataset_digest", "secure_dataset_evidence", "engine_digest", "engine_identity_valid",
         "fusion_digest", "policy_digest", "policy_schema", "result_digest", "result_refs",
@@ -2346,6 +2396,7 @@ def _real_query_attempt_payload(report: dict[str, Any]) -> dict[str, Any]:
 def _ranking_evidence_payload(report: dict[str, Any]) -> dict[str, Any]:
     sample_fields = (
         "case_id", "channel", "source_id", "query_digest", "corpus_result_capacity",
+        "evaluation_channel", "evaluation_channel_declared", "evaluation_channel_notice", "channel_rankings",
         "cross_channel_leakage_count", "source_filter_leakage_count",
         "label_refs",
         "label_grades",
@@ -2357,6 +2408,9 @@ def _ranking_evidence_payload(report: dict[str, Any]) -> dict[str, Any]:
     )
     samples = report.get("samples") if isinstance(report.get("samples"), list) else []
     return {
+        "scoring_contract": report.get("scoring_contract"),
+        "evaluation_plan": report.get("evaluation_plan"),
+        "evaluation_plan_digest": report.get("evaluation_plan_digest"),
         "ranking_identity_schema": report.get("ranking_identity_schema"),
         "ranking_result_digest": report.get("ranking_result_digest"),
         "ranking_result_refs": report.get("ranking_result_refs"),
@@ -2438,6 +2492,8 @@ def _sanitized_real_query_report(report: dict[str, Any]) -> dict[str, Any]:
         "cross_channel_leakage_count", "source_filter_leakage_count", "proactive_metrics",
         "threshold_gate", "eligibility", "samples", "baseline_capture", "memory_measurement", "attempt_id",
         "previous_attempt_id",
+        "scoring_contract", "scoring_denominators", "baseline_comparison",
+        "evaluation_plan", "evaluation_plan_digest",
     }
     return {key: _bounded_safe_value(value) for key, value in report.items() if key in allowed}
 
@@ -2699,6 +2755,14 @@ def _independent_real_query_metrics_valid(
     scope: ScopeRef | dict[str, Any] | None = None,
     allow_legacy_exact_ranking: bool = False,
 ) -> bool:
+    delivery_slots = report.get("scoring_contract") == DELIVERY_SCORING_CONTRACT
+    if not delivery_slots and (not allow_legacy_exact_ranking or "scoring_contract" in report):
+        return False
+    if delivery_slots and report.get("scoring_denominators") != _DELIVERY_SCORING_DENOMINATORS:
+        return False
+    if delivery_slots and (not _delivery_evaluation_plan_valid(report)
+            or (baseline is not None and baseline.get("evaluation_plan_digest") != report.get("evaluation_plan_digest"))):
+        return False
     policy_schema = str(report.get("policy_schema") or "").strip()
     if allow_legacy_exact_ranking:
         if policy_schema not in _known_baseline_policy_schemas():
@@ -2769,14 +2833,17 @@ def _independent_real_query_metrics_valid(
         channel = str(sample.get("channel") or "")
         source_id = str(sample.get("source_id") or "")
         raw_refs = [str(item) for item in list(sample.get("returned_refs") or [])]
-        refs = _stable_unique_refs(raw_refs, limit=5)
+        refs = raw_refs[:5] if delivery_slots else _stable_unique_refs(raw_refs, limit=5)
+        if delivery_slots and (not all(refs) or sample.get("evaluation_channel") not in _EVALUATION_CHANNELS):
+            return False
         label_refs = [str(item) for item in list(sample.get("label_refs") or [])]
         label_grades = list(sample.get("label_grades") or [])
         raw_ranking_refs = [
             str(item)
             for item in list(sample.get("returned_ranking_refs") or [])
         ]
-        candidate_ranking_refs = _stable_unique_refs(raw_ranking_refs, limit=5)
+        candidate_ranking_refs = (raw_ranking_refs[:5] if delivery_slots
+                                  else _stable_unique_refs(raw_ranking_refs, limit=5))
         label_ranking_refs = [
             str(item)
             for item in list(sample.get("label_ranking_refs") or [])
@@ -2800,6 +2867,7 @@ def _independent_real_query_metrics_valid(
                 runtime,
                 refs,
                 scope=sample_scope,
+                preserve_delivery_slots=delivery_slots,
             )
             baseline_exact_refs = [
                 str(item)
@@ -2811,6 +2879,7 @@ def _independent_real_query_metrics_valid(
                 runtime,
                 baseline_exact_refs,
                 scope=sample_scope,
+                preserve_delivery_slots=delivery_slots,
             )
         else:
             authoritative_labels = None
@@ -2832,7 +2901,7 @@ def _independent_real_query_metrics_valid(
                     or not label_ranking_refs
                     or len(set(label_ranking_refs)) != len(label_ranking_refs)
                     or baseline_ranking_refs
-                    != _stable_unique_refs(baseline_ranking_refs, limit=5)
+                    != (baseline_ranking_refs[:5] if delivery_slots else _stable_unique_refs(baseline_ranking_refs, limit=5))
                     or authoritative_labels is None
                     or label_ranking_refs != authoritative_labels[0]
                     or label_ranking_grades != authoritative_labels[1]
@@ -2865,6 +2934,7 @@ def _independent_real_query_metrics_valid(
             labels=labels,
             corpus_result_capacity=capacity,
             baseline_refs=metric_baseline_refs,
+            preserve_delivery_slots=delivery_slots,
         )
         for key, expected in ranking.items():
             if abs(float(sample.get(key) or 0.0) - round(float(expected), 6)) > 1e-6:
@@ -2970,6 +3040,11 @@ def _validate_persisted_real_query_report(
     Strict validation (default) always requires the current release contract.
     """
     gate = report.get("threshold_gate") if isinstance(report.get("threshold_gate"), dict) else {}
+    if report.get("scoring_contract") != DELIVERY_SCORING_CONTRACT:
+        if not allow_legacy_exact_ranking or "scoring_contract" in report:
+            return False
+    elif not _delivery_evaluation_plan_valid(report):
+        return False
     thresholds = gate.get("thresholds") if isinstance(gate.get("thresholds"), dict) else {}
     policy_schema = str(report.get("policy_schema") or "").strip()
     accepted_policy_schemas = {PRODUCTION_REAL_QUERY_POLICY}
