@@ -68,7 +68,7 @@ def refresh_commit(payload: bytes, commit: str) -> bytes:
     return rendered.encode("utf-8")
 
 
-def write_refresh(target: Path, commit: str) -> None:
+def write_refresh(target: Path, commit: str, *, check_only: bool = False) -> None:
     # Walk directory descriptors so no component can redirect the update.
     target = Path(os.path.abspath(target))
     directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -92,7 +92,7 @@ def write_refresh(target: Path, commit: str) -> None:
         with os.fdopen(os.dup(source), "rb") as stream:
             payload = stream.read(65537)
         rendered = refresh_commit(payload, commit)
-        if rendered == payload:
+        if check_only or rendered == payload:
             return
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      0o600, dir_fd=directory)
@@ -126,9 +126,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True, type=Path)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args(argv)
     try:
-        write_refresh(args.target, args.commit)
+        write_refresh(args.target, args.commit, check_only=args.check_only)
     except (RefreshError, OSError) as exc:
         parser.exit(2, f"user control-plane commit refresh failed: {exc}\n")
     return 0

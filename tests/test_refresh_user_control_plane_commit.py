@@ -43,6 +43,63 @@ def test_refresh_is_idempotent_for_same_commit(tmp_path: Path):
     assert target.read_bytes() == before
 
 
+def test_check_only_validates_without_creating_or_replacing_files(tmp_path, monkeypatch):
+    import os
+    from deploy.refresh_user_control_plane_commit import write_refresh
+
+    target = tmp_path / 'policy'
+    target.write_bytes(SAMPLE.encode())
+    before = target.stat()
+    original_open = os.open
+
+    def no_creating_open(path, flags, *args, **kwargs):
+        assert not flags & os.O_CREAT, 'preflight must never stage a replacement'
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'open', no_creating_open)
+    write_refresh(target, 'b' * 40, check_only=True)
+
+    after = target.stat()
+    assert target.read_bytes() == SAMPLE.encode()
+    assert (after.st_ino, after.st_mtime_ns, after.st_mode) == (
+        before.st_ino, before.st_mtime_ns, before.st_mode,
+    )
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_check_only_cli_preserves_the_current_commit(tmp_path):
+    from deploy.refresh_user_control_plane_commit import main
+
+    target = tmp_path / 'policy'
+    target.write_bytes(SAMPLE.encode())
+    before = target.stat()
+    assert main(['--target', str(target), '--commit', 'b' * 40, '--check-only']) == 0
+    assert target.read_bytes() == SAMPLE.encode()
+    assert target.stat().st_mtime_ns == before.st_mtime_ns
+    assert list(tmp_path.iterdir()) == [target]
+
+
+@pytest.mark.parametrize('damage', ['missing_assignment', 'writable', 'symlink'])
+def test_check_only_still_rejects_invalid_or_untrusted_policy(tmp_path, damage):
+    from deploy.refresh_user_control_plane_commit import write_refresh
+
+    target = tmp_path / 'policy'
+    target.write_bytes(SAMPLE.encode())
+    if damage == 'missing_assignment':
+        target.write_bytes(b'[Service]\nPrivateUsers=yes\n')
+    elif damage == 'writable':
+        target.chmod(0o666)
+    else:
+        original = tmp_path / 'original'
+        target.rename(original)
+        target.symlink_to(original)
+    before = target.read_bytes()
+    with pytest.raises((RefreshError, OSError)):
+        write_refresh(target, 'b' * 40, check_only=True)
+    assert target.read_bytes() == before
+    assert not list(tmp_path.glob('.eimemory-control-plane-*'))
+
+
 def run_refresh(tmp_path, unit, mode='user', metadata=None):
     import subprocess, sys
     source = Path('deploy/install_immutable_release.sh').read_text()
@@ -55,6 +112,89 @@ def run_refresh(tmp_path, unit, mode='user', metadata=None):
                EIMEMORY_CONTROL_PLANE=mode, UNIT=unit, SHA='b'*40,
                METADATA=str(metadata or repo))
     return subprocess.run(['bash', '-eu', '-c', script], env=env, capture_output=True)
+
+
+def run_preflight(tmp_path, damage=None):
+    import os
+    import subprocess
+    import sys
+
+    repo = Path.cwd()
+    unit_dir = tmp_path / 'units'
+    unit_dir.mkdir()
+    env = dict(os.environ, USER_SYSTEMD_DIR=str(unit_dir), PYTHON_BIN=sys.executable,
+               CONTROL_PYCACHE_PREFIX=str(tmp_path / 'cache'), REPO_DIR=str(repo),
+               RELEASE_DIR=str(repo), EIMEMORY_CONTROL_PLANE='user',
+               USER_SYSTEMD_ENABLE_SERVICE='1', COMMIT='b' * 40)
+    env.pop('EIMEMORY_RUNTIME_TRANSITION_JOB', None)
+    discovery = subprocess.run(
+        ['bash', str(repo / 'deploy/discover_python_runtime_units.sh'), str(unit_dir)],
+        env=env, check=True, capture_output=True, text=True,
+    )
+    for unit in discovery.stdout.splitlines():
+        # Existing unit files avoid any dependency on a live systemd manager.
+        (unit_dir / unit).write_text('[Service]\nExecStart=/usr/bin/true\n')
+        directory = unit_dir / (unit + '.d')
+        directory.mkdir()
+        (directory / 'zzzzzz-eimemory-user-control-plane.conf').write_bytes(SAMPLE.encode())
+    target = unit_dir / 'eimemory-rpc.service.d/zzzzzz-eimemory-user-control-plane.conf'
+    if damage == 'missing':
+        target.unlink()
+    elif damage == 'malformed':
+        target.write_bytes(b'[Service]\nPrivateUsers=yes\n')
+    before = {path: (path.read_bytes(), path.stat().st_mtime_ns)
+              for path in unit_dir.rglob('*.conf')}
+
+    source = (repo / 'deploy/install_immutable_release.sh').read_text()
+    functions = []
+    for name in ('_refresh_user_control_plane_commit', '_preflight_user_control_plane_commits'):
+        body = source.split(name + '() {', 1)[1].split('\n}\n', 1)[0]
+        functions.append(name + '() {' + body + '\n}\n')
+    marker = tmp_path / 'service-actions'
+    env['ACTION_MARKER'] = str(marker)
+    script = '''
+_runtime_manager_enabled() { return 1; }
+_run_as_service_user() { "$@"; }
+_is_unselected_openclaw_unit() { return 1; }
+systemctl() { echo systemctl >> "$ACTION_MARKER"; return 99; }
+_prepare_storage_for_release() { echo storage >> "$ACTION_MARKER"; }
+_stop_storage_writers() { echo stop >> "$ACTION_MARKER"; }
+'''
+    script += '\n'.join(functions)
+    script += '\n_preflight_user_control_plane_commits\n_prepare_storage_for_release\n_stop_storage_writers\n'
+    result = subprocess.run(['bash', '-eu', '-c', script], env=env, capture_output=True)
+    return result, marker, before
+
+
+def test_preflight_checks_discovered_units_without_refreshing_identity(tmp_path):
+    result, marker, before = run_preflight(tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert b'user_control_plane_commit_preflight=passed' in result.stdout
+    assert marker.read_text().splitlines() == ['storage', 'stop']
+    assert before
+    for path, (payload, modified) in before.items():
+        assert path.read_bytes() == payload
+        assert path.stat().st_mtime_ns == modified
+    assert not list(tmp_path.rglob('.eimemory-control-plane-*'))
+
+
+@pytest.mark.parametrize('damage', ['missing', 'malformed'])
+def test_preflight_failure_leaves_services_and_storage_untouched(tmp_path, damage):
+    result, marker, before = run_preflight(tmp_path, damage)
+    assert result.returncode == 2, result.stderr
+    assert not marker.exists()
+    for path, (payload, modified) in before.items():
+        assert path.read_bytes() == payload
+        assert path.stat().st_mtime_ns == modified
+    assert not list(tmp_path.rglob('.eimemory-control-plane-*'))
+
+
+def test_installer_runs_identity_preflight_before_live_storage_preparation():
+    source = Path('deploy/install_immutable_release.sh').read_text()
+    preflight = source.index('\n_preflight_user_control_plane_commits\n')
+    observe = source.index('\n_observe_pre_switch_l5\n')
+    storage = source.index('\n_prepare_storage_for_release\n')
+    assert preflight < observe < storage
 
 
 def test_unmanaged_unit_without_control_plane_is_optional(tmp_path):

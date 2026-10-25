@@ -35,8 +35,23 @@ BASE_UNITS=(
 # site-specific name list. Emit only units whose file already exists.
 
 declare -A SEEN=()
+is_release_independent_control_unit() {
+  # These are the fixed controller and job/validation templates built by
+  # build_runtime_manager_bundle.py, outside runtime_manager.PRODUCT_SERVICES.
+  # Their installed guards or old identity drop-ins do not make them product
+  # processes. Controller identity follows its reviewed bundle, not promotion.
+  case "$1" in
+    eimemory-runtime-manager.service|eimemory-code-deployment-job@*.service|\
+    eimemory-code-validation-receipt@*.service|\
+    eimemory-code-validation-pre-observation@*.service|\
+    eimemory-code-validation-post-resume@*.service) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 emit_once() {
   local unit="$1"
+  if is_release_independent_control_unit "$unit"; then return 0; fi
   # Templates define jobs; they are never a running service identity.
   [[ "$unit" == *@.service ]] && return 0
   if [[ ! "$unit" =~ ^[A-Za-z0-9_.@-]+\.service$ ]] || [ -n "${SEEN[$unit]:-}" ]; then
@@ -86,6 +101,7 @@ if [ -n "$_dropin_dirs" ]; then
   while IFS= read -r dropin_dir; do
     [ -n "$dropin_dir" ] || continue
     unit="$(basename "$dropin_dir" .d)"
+    if is_release_independent_control_unit "$unit"; then continue; fi
     [[ "$unit" == *@.service ]] && continue
     if [[ ! "$unit" =~ ^[A-Za-z0-9_.@-]+\.service$ ]]; then
       continue

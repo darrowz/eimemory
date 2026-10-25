@@ -1532,6 +1532,8 @@ _refresh_user_control_plane_commit() {
   local runtime_unit="$1"
   local target_commit="$2"
   local metadata_release="${3:-$RELEASE_DIR}"
+  local -a check_args=()
+  if [ "${4:-}" = check ]; then check_args=(--check-only); fi
   local target="$USER_SYSTEMD_DIR/$runtime_unit.d/zzzzzz-eimemory-user-control-plane.conf"
   if [ ! -e "$target" ] && [ ! -L "$target" ]; then
     # Only eiMemory units and gateways require the user control-plane policy.
@@ -1545,7 +1547,22 @@ _refresh_user_control_plane_commit() {
   fi
   "$PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" \
     "$REPO_DIR/deploy/refresh_user_control_plane_commit.py" \
-    --target "$target" --commit "$target_commit"
+    --target "$target" --commit "$target_commit" "${check_args[@]}"
+}
+
+_preflight_user_control_plane_commits() {
+  if _runtime_manager_enabled; then return 0; fi
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
+    return 0
+  fi
+  local units runtime_unit
+  units="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" < "$REPO_DIR/deploy/discover_python_runtime_units.sh")" || return $?
+  while IFS= read -r runtime_unit; do
+    [ -n "$runtime_unit" ] || continue
+    if _is_unselected_openclaw_unit "$runtime_unit"; then continue; fi
+    _refresh_user_control_plane_commit "$runtime_unit" "$COMMIT" "$REPO_DIR" check || return $?
+  done <<< "$units"
+  echo "user_control_plane_commit_preflight=passed"
 }
 
 _install_current_runtime_metadata() {
@@ -3442,6 +3459,7 @@ _source_checkpoint "$RELEASE_DIR" console_verified
   --repo-root "$REPO_DIR" --commit "$COMMIT"
 _preflight_release_readonly
 _preflight_research_review_configuration
+_preflight_user_control_plane_commits
 
 chmod 0755 "$INSTALL_ROOT" 2>/dev/null || true
 _ensure_runtime_dir "$EIMEMORY_ROOT" 0750
