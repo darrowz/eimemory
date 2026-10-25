@@ -74,6 +74,41 @@ def test_incomplete_native_reading_is_archived_without_certifying_product(produc
     assert diagnostics["native_l5_assessment"]["product_l5_complete"] is False
 
 
+def test_historical_diagnostics_are_archived_without_completion_credit(producer):
+    history = [{"classification": "historical_predeployment_abort", "transaction_id": "historical-abort",
+        "terminal_receipt_digest": "f" * 64, "known_before_detection": True, "prior_user_reported": True,
+        "ledger_transaction_json": '{"error":"old_full_suite_failure"}',
+        "qualifies_for_product_completion": False}]
+    producer.value["transaction_evidence"] = {"historical_transactions": history}
+    result = native.run_native_l5_assessment(producer, scope=asdict(SCOPE))
+    assert result["execution_ok"] and result["archive_verified"] and result["awaiting_evidence"]
+    assert not result["evidence_failed"] and not result["product_l5_complete"]
+    saved = producer.store.get_by_id(result["record_id"])
+    assert saved.content["envelope"]["transaction_evidence"]["historical_transactions"] == history
+    assert native._digest(saved.content["envelope"]) == result["envelope_digest"]
+
+
+def test_native_archive_rejects_tampered_historical_diagnostics(producer, monkeypatch):
+    producer.value["transaction_evidence"] = {"historical_transactions": [{
+        "transaction_id": "historical-abort", "terminal_receipt_digest": "f" * 64,
+        "known_before_detection": True, "qualifies_for_product_completion": False}]}
+    original = producer.store.list_records_by_sources_exact_scope
+    def changed_readback(**kwargs):
+        records = original(**kwargs)
+        changed = []
+        for record in records:
+            if record.source == native.SOURCE:
+                content = deepcopy(record.content)
+                content["envelope"]["transaction_evidence"]["historical_transactions"][0]["known_before_detection"] = False
+                record = replace(record, content=content)
+            changed.append(record)
+        return changed
+    monkeypatch.setattr(producer.store, "list_records_by_sources_exact_scope", changed_readback)
+    result = native.run_native_l5_assessment(producer, scope=asdict(SCOPE))
+    assert not result["archive_verified"] and not result["product_l5_complete"]
+    assert not result["awaiting_evidence"] and result["error"] == "native_l5_archive_authority_mismatch"
+
+
 @pytest.mark.parametrize('error',['current_release_lineage_not_found','lineage_attestation_mismatch','database_read_failed'])
 def test_initial_lineage_absence_is_distinct_from_failed_or_invalid_reads(producer,error):
     from eimemory.governance.l5.l5_reader import _initial_lineage_observation

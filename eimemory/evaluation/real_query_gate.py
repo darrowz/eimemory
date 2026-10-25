@@ -64,11 +64,20 @@ _DELIVERY_SCORING_DENOMINATORS = {
 }
 
 
-def _delivery_evaluation_plan(frozen: dict[str, Any]) -> dict[str, Any]:
+_DELIVERY_PLAN_SCHEMA = "recall_bundle_delivery_plan.v2"
+_REPLAY_CONTEXT_POLICY = "verified_vault_semantics_fixed_gate_constraints.v1"
+
+
+def _delivery_evaluation_plan(
+    frozen: dict[str, Any], *, replay_inputs: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Bind channel selection and invocation depth before reading any labels."""
-    return {"schema": "recall_bundle_delivery_plan.v1", "dataset_digest": frozen["dataset_digest"],
+    return {"schema": _DELIVERY_PLAN_SCHEMA, "dataset_digest": frozen["dataset_digest"],
+            "replay_context_policy": _REPLAY_CONTEXT_POLICY,
             "invocation_depth": _REAL_QUERY_RECALL_DEPTH, "scored_depth": 5,
-            "cases": [{"case_id": case["case_id"], "evaluation_channel": case.get("evaluation_channel", "items")}
+            "cases": [{"case_id": case["case_id"], "evaluation_channel": case.get("evaluation_channel", "items"),
+                       "replay_input_binding": (replay_inputs or {}).get(str(case["case_id"]),
+                           case.get("replay_input_binding", {"mode": "redacted_features"}))}
                       for case in frozen["cases"]]}
 
 
@@ -77,15 +86,39 @@ def _delivery_evaluation_plan_valid(report: dict[str, Any]) -> bool:
     samples = report.get("samples")
     if not isinstance(plan, dict) or not isinstance(samples, list):
         return False
-    expected = {"schema": "recall_bundle_delivery_plan.v1", "dataset_digest": report.get("dataset_digest"),
+    schema = plan.get("schema")
+    if schema not in {"recall_bundle_delivery_plan.v1", _DELIVERY_PLAN_SCHEMA}:
+        return False
+    expected = {"schema": schema, "dataset_digest": report.get("dataset_digest"),
                 "invocation_depth": _REAL_QUERY_RECALL_DEPTH, "scored_depth": 5,
                 "cases": [{"case_id": sample.get("case_id"), "evaluation_channel": sample.get("evaluation_channel")}
                           for sample in samples if isinstance(sample, dict)]}
+    if schema == _DELIVERY_PLAN_SCHEMA:
+        expected["replay_context_policy"] = _REPLAY_CONTEXT_POLICY
+        if len(expected["cases"]) != len(samples):
+            return False
+        for entry, sample in zip(expected["cases"], samples):
+            binding = sample.get("replay_input_binding")
+            if not _replay_input_binding_valid(binding):
+                return False
+            entry["replay_input_binding"] = binding
     return (plan == expected and len(expected["cases"]) == len(samples)
             and all(isinstance(case["case_id"], str) and 0 < len(case["case_id"]) <= 160
                     and case["evaluation_channel"] in _EVALUATION_CHANNELS for case in expected["cases"])
             and len({case["case_id"] for case in expected["cases"]}) == len(samples)
             and report.get("evaluation_plan_digest") == _stable_digest(plan))
+
+
+def _replay_input_binding_valid(binding: Any) -> bool:
+    if binding == {"mode": "redacted_features"}:
+        return True
+    return bool(isinstance(binding, dict)
+                and set(binding) == {"mode", "input_digest", "identity_schema", "context_digest"}
+                and binding.get("mode") == "verified_vault"
+                and binding.get("identity_schema") in {"proactive-query-identity.v2", "legacy-plain-query.v1"}
+                and all(isinstance(binding.get(key), str)
+                        and re.fullmatch(r"[0-9a-f]{64}", binding[key])
+                        for key in ("input_digest", "context_digest")))
 
 from eimemory.evaluation.real_query_schema import (  # A2: shared schema/digest layer
     PRODUCTION_REAL_QUERY_SCHEMA,
@@ -597,9 +630,13 @@ def bootstrap_production_recall_baseline(
             persist=persist_report,
         )
 
+    expected_plan_digest = _stable_digest(_delivery_evaluation_plan(
+        frozen, replay_inputs={str(case["case_id"]): _real_query_recall_inputs(runtime, case)[2]
+                               for case in frozen["cases"]}))
     latest = _qualified_bootstrap_anchor(
         runtime, scope=dataset_scope, release=release, candidate_commit=candidate,
         dataset_digest=str(frozen["dataset_digest"]),
+        expected_evaluation_plan_digest=expected_plan_digest,
     )
     if latest is not None:
         return {
@@ -636,6 +673,7 @@ def bootstrap_production_recall_baseline(
             runtime, scope=dataset_scope, release=release, candidate_commit=candidate,
             dataset_digest=str(frozen["dataset_digest"]),
             expected_record_id=str(persisted.get("persisted_record_id") or ""),
+            expected_evaluation_plan_digest=str(persisted.get("evaluation_plan_digest") or ""),
         ) if persisted.get("persisted_record_id") else None
         if anchor is None:
             return {**persisted, "ok": False, "bootstrap_status": "blocked",
@@ -656,7 +694,7 @@ def bootstrap_production_recall_baseline(
 
 def _qualified_bootstrap_anchor(
     runtime: Any, *, scope: ScopeRef, release: ReleaseIdentity, candidate_commit: str,
-    dataset_digest: str, expected_record_id: str = "",
+    dataset_digest: str, expected_record_id: str = "", expected_evaluation_plan_digest: str = "",
 ) -> RecordEnvelope | None:
     """Read an actual native anchor before reporting or recording readiness."""
     high_water_key = _baseline_high_water_key(release.commit, dataset_digest)
@@ -677,6 +715,8 @@ def _qualified_bootstrap_anchor(
             or report.get("attempt_id") != record.record_id
             or not same_scope(report.get("scope") or {}, scope)
             or report.get("dataset_digest") != dataset_digest
+            or (expected_evaluation_plan_digest
+                and report.get("evaluation_plan_digest") != expected_evaluation_plan_digest)
             or report.get("evaluator_commit") != candidate_commit
             or candidate_commit == release.commit
             or report.get("baseline_capture") is not True
@@ -1472,8 +1512,8 @@ def _release_from_payload(value: object) -> ReleaseIdentity | None:
     return identity if identity.complete else None
 
 
-def _vault_bound_replay_query(runtime: Any, case: dict[str, Any]) -> str:
-    """The captured online query for this case, or "" (features fallback).
+def _vault_bound_replay_input(runtime: Any, case: dict[str, Any]) -> dict[str, Any] | None:
+    """The verified private online input for this case, or None.
 
     Uses only the existing private query-input vault (never stores or reports
     the query). Accepted only when the vault payload verifies against its
@@ -1491,11 +1531,11 @@ def _vault_bound_replay_query(runtime: Any, case: dict[str, Any]) -> str:
     capture_ref = str(provenance.get("capture_ref") or "")
     case_id = str(case.get("case_id") or "")
     if not capture_ref or not case_id.startswith("real-"):
-        return ""
+        return None
     try:
         scope = ScopeRef.from_dict(dict(case.get("scope") or {}))
     except Exception:  # noqa: BLE001
-        return ""
+        return None
     agents = [scope.agent_id] + [legacy for legacy in legacy_agent_ids()
                                  if legacy != scope.agent_id and canonical_agent_id(legacy) == scope.agent_id]
     for agent in agents:
@@ -1508,8 +1548,58 @@ def _vault_bound_replay_query(runtime: Any, case: dict[str, Any]) -> str:
         expected = "real-" + _stable_digest({"decision_id": capture_ref, "query_digest": decision_digest})[:24]
         effective = str(payload.get("effective_query") or "").strip()
         if expected == case_id and effective:
-            return effective
-    return ""
+            return payload
+    return None
+
+
+def _vault_bound_replay_query(runtime: Any, case: dict[str, Any]) -> str:
+    """Retain the query-only private reader for existing diagnostic callers."""
+    payload = _vault_bound_replay_input(runtime, case)
+    return str(payload["effective_query"]).strip() if payload is not None else ""
+
+
+def _real_query_recall_inputs(
+    runtime: Any, case: dict[str, Any],
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Replay verified online semantics under the fixed natural gate controls.
+
+    Redacted features are labels/diagnostics, not the captured request context.
+    In particular, replacing a proactive exact-scope research request with an
+    inferred intent also changes scope expansion and the verifier route.
+    """
+    payload = _vault_bound_replay_input(runtime, case)
+    features = dict(case["query_features"])
+    if payload is not None:
+        query = str(payload["effective_query"]).strip()
+        original_context = payload.get("task_context")
+        if not isinstance(original_context, dict):
+            raise ValueError("original_query_input_context_invalid")
+        # These are the same public semantic keys retained by the vault writer.
+        # Never import a stale deadline or arbitrary private execution options.
+        task_context = {key: value for key, value in original_context.items() if key in {
+            "source_ids", "runtime_channel", "exact_scope_only", "task_type", "recall_profile",
+            "scope_strategy", "recall_mode", "candidate_limit", "intent", "target_source_id"}}
+        task_context.setdefault("runtime_channel", str(case["channel"]))
+    else:
+        # Preserve the existing legacy features fallback contract.
+        query = " ".join([*features.get("terms", []), *features.get("entities", []),
+                          str(features.get("intent") or "")]).strip()
+        task_context = {"runtime_channel": str(case["channel"])}
+        if str(features.get("intent") or "").strip():
+            task_context["intent"] = str(features.get("intent") or "").strip()
+    task_context.update({
+        "source_ids": [str(case["source_id"])],
+        "target_source_id": str(case["source_id"]),
+        "evaluation_policy": PRODUCTION_REAL_QUERY_POLICY,
+        "recall_profile": "precision",
+        "candidate_limit": _REAL_QUERY_RECALL_DEPTH,
+    })
+    binding = ({"mode": "verified_vault", "input_digest": payload["input_digest"],
+                "identity_schema": payload["identity_schema"], "context_digest": _stable_digest(task_context)}
+               if payload is not None else {"mode": "redacted_features"})
+    if not _replay_input_binding_valid(binding):
+        raise ValueError("original_query_input_binding_invalid")
+    return query, task_context, binding
 
 
 def _evaluate_real_query_candidate(
@@ -1521,41 +1611,30 @@ def _evaluate_real_query_candidate(
     capacities: dict[str, int],
     evaluator_commit: str = "",
 ) -> dict[str, Any]:
-    evaluation_plan = _delivery_evaluation_plan(frozen)
-    evaluation_plan_digest = _stable_digest(evaluation_plan)
-    baseline_incompatibility = ""
-    if baseline is not None:
-        if baseline.get("scoring_contract") != DELIVERY_SCORING_CONTRACT:
-            baseline_incompatibility = "scoring_contract_mismatch"
-        elif baseline.get("evaluation_plan_digest") != evaluation_plan_digest:
-            baseline_incompatibility = "evaluation_plan_mismatch"
-    if baseline_incompatibility:
-        baseline = None
-    def recall_inputs(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        features = dict(case["query_features"])
-        query = _vault_bound_replay_query(runtime, case) or " ".join(
-            [
-                *features.get("terms", []),
-                *features.get("entities", []),
-                str(features.get("intent") or ""),
-            ]
-        ).strip()
-        task_context = {
-            "source_ids": [str(case["source_id"])],
-            "target_source_id": str(case["source_id"]),
-            "runtime_channel": str(case["channel"]),
-            "evaluation_policy": PRODUCTION_REAL_QUERY_POLICY,
-            "recall_profile": "precision",
-            "candidate_limit": _REAL_QUERY_RECALL_DEPTH,
-        }
-        if str(features.get("intent") or "").strip():
-            task_context["intent"] = str(features.get("intent") or "").strip()
-        return query, task_context
-
     external_tracer = tracemalloc.is_tracing()
     if not external_tracer:
         tracemalloc.start()
-        try:
+    try:
+        # Pinning can retain a full private input for every case. Include these
+        # allocations in the same memory ceiling as the native recall warmup.
+        replay_inputs = {str(case["case_id"]): _real_query_recall_inputs(runtime, case)
+                         for case in frozen["cases"]}
+        evaluation_plan = _delivery_evaluation_plan(
+            frozen, replay_inputs={case_id: value[2] for case_id, value in replay_inputs.items()})
+        evaluation_plan_digest = _stable_digest(evaluation_plan)
+        baseline_incompatibility = ""
+        if baseline is not None:
+            if baseline.get("scoring_contract") != DELIVERY_SCORING_CONTRACT:
+                baseline_incompatibility = "scoring_contract_mismatch"
+            elif baseline.get("evaluation_plan_digest") != evaluation_plan_digest:
+                baseline_incompatibility = "evaluation_plan_mismatch"
+        if baseline_incompatibility:
+            baseline = None
+        def recall_inputs(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+            query, task_context, _binding = replay_inputs[str(case["case_id"])]
+            return query, deepcopy(task_context)
+
+        if not external_tracer:
             for case in frozen["cases"]:
                 query, task_context = recall_inputs(case)
                 runtime.memory.recall(
@@ -1566,11 +1645,11 @@ def _evaluate_real_query_candidate(
                 )
             _current, peak = tracemalloc.get_traced_memory()
             peak_memory = int(peak)
-        finally:
-            if tracemalloc.is_tracing():
-                tracemalloc.stop()
-    else:
-        peak_memory = 0
+        else:
+            peak_memory = 0
+    finally:
+        if not external_tracer and tracemalloc.is_tracing():
+            tracemalloc.stop()
     samples: list[dict[str, Any]] = []
     result_refs: dict[str, list[str]] = {}
     ranking_result_refs: dict[str, list[str]] = {}
@@ -1628,6 +1707,7 @@ def _evaluate_real_query_candidate(
                 "channel": str(case["channel"]),
                 "source_id": str(case["source_id"]),
                 "query_digest": str(case["query_digest"]),
+                "replay_input_binding": replay_inputs[str(case["case_id"])][2],
                 "label_refs": [str(label["record_ref"]) for label in case["labels"]],
                 "label_grades": [int(label["grade"]) for label in case["labels"]],
                 "label_ranking_refs": [

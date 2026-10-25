@@ -83,6 +83,7 @@ jobs:
           tests/test_projection_reader_transaction_ownership.py
           tests/test_controlled_projection_phase_readiness.py
           tests/test_l5_service_receipt_lineage.py
+          tests/test_l5_historical_aborts.py
           tests/test_record_release_lineage_cli.py
           tests/test_installer_receipt_before_maintenance.py
           tests/test_llm_command_client.py
@@ -98,6 +99,7 @@ jobs:
           tests/test_production_query_repair_targets.py
           tests/test_production_query_repair_channel_counts.py
           tests/test_production_real_query_gate.py
+          tests/test_production_real_query_replay_context.py
           tests/test_hermes_explicit_host_context.py
           tests/test_business_closure_evaluation.py
           tests/test_capability_negative_evidence.py

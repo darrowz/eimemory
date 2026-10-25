@@ -165,6 +165,8 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "deploy/eimemory_backup.py",
         "deploy/rotate_releases.py",
         "deploy/discover_python_runtime_units.sh",
+        "deploy/preflight_runtime_metadata.py",
+        "deploy/retire_completed_user_transition.py",
         "deploy/deploy_scope_default.sh",
         "deploy/ensure_evidence_receipt",
         "deploy/install_hermes_integration.py",

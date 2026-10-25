@@ -7,7 +7,7 @@ import pytest
 from eimemory.api.runtime import Runtime
 from eimemory.core.clock import now_iso
 from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog
-from eimemory.governance.l5.l5_reader import _code_evolution_evidence
+from eimemory.governance.l5.l5_reader import _code_evolution_evidence, _historical_abort_authority
 from eimemory.governance.release import evidence_contract
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from test_deployment_receipt import (
@@ -148,6 +148,98 @@ def test_damaged_native_receipt_cannot_be_repaired_by_scope_resolution(native_re
     result = _lineage(runtime, owner, repo)
     assert result["ok"] is False
     assert result["reason"] == "current_release_identity_unavailable"
+
+
+def test_historical_abort_authority_requires_native_receipt(native_receipt, monkeypatch):
+    runtime, owner, _, _, receipt = native_receipt
+    actual = evidence_contract.current_release_identity(runtime, owner)
+    proof = _historical_abort_authority(runtime, owner)
+    assert proof and proof["commit"] == actual.commit
+    assert proof["receipt_id"] == receipt.record_id and proof["scope"] == asdict(owner)
+    assert len(proof["receipt_snapshot_digest"]) == 64
+    # Cached release labels cannot repair a damaged native receipt.
+    receipt.content["gate"]["receipt_verified"] = False
+    with runtime.store._lock:
+        runtime.store.sqlite.upsert(receipt)
+    monkeypatch.setattr(evidence_contract, "current_release_identity", lambda *args: actual)
+    assert _historical_abort_authority(runtime, owner) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="shared service receipt uses POSIX immutable-release path anchors")
+def test_historical_abort_authority_uses_shared_service_contract_not_scope_alias(native_receipt, monkeypatch):
+    runtime, _, report_owner, _, receipt = native_receipt
+    proof = _historical_abort_authority(runtime, report_owner)
+    assert proof and proof["receipt_id"] == receipt.record_id
+    assert proof["scope"] == asdict(report_owner)
+    # Receipt reuse still has to pass the canonical service anchors.
+    from eimemory.governance.release import deployment_receipt
+    with monkeypatch.context() as override:
+        override.setattr(deployment_receipt, "DEFAULT_DEPLOYMENT_HEALTH_URL", "http://127.0.0.1:1/health")
+        assert _historical_abort_authority(runtime, report_owner) is None
+
+
+def test_historical_abort_authority_rejects_cross_tenant_receipt(native_receipt, monkeypatch):
+    runtime, owner, _, _, receipt = native_receipt
+    actual = evidence_contract.current_release_identity(runtime, owner)
+    foreign = replace(owner, tenant_id="different-tenant")
+    monkeypatch.setattr(evidence_contract, "current_release_identity", lambda *args: actual)
+    monkeypatch.setattr(evidence_contract, "deployment_receipt_for_scope", lambda *args: receipt)
+    assert _historical_abort_authority(runtime, foreign) is None
+
+
+@pytest.mark.parametrize("timestamp", ["", "2026-10-25T08:00:00", "2999-01-01T00:00:00Z"])
+def test_historical_abort_authority_rejects_unproven_or_future_receipt_time(native_receipt, monkeypatch, timestamp):
+    runtime, owner, _, _, receipt = native_receipt
+    receipt.time.created_at = timestamp
+    monkeypatch.setattr(evidence_contract, "deployment_receipt_for_scope", lambda *args: receipt)
+    assert _historical_abort_authority(runtime, owner) is None
+
+
+@pytest.mark.parametrize("same_release", [False, True])
+def test_reader_separates_only_proven_old_abort_before_quality_wait(native_receipt, monkeypatch, same_release):
+    from eimemory.governance.l5 import l5_reader as reader
+    from eimemory.governance.l5.native_assessment import _negative_evidence
+    from eimemory.storage.code_evolution_store import CodeEvolutionStore
+
+    runtime, owner, _, repo, receipt = native_receipt
+    identity = evidence_contract.current_release_identity(runtime, owner)
+    base = identity.commit if same_release else "a" * 40
+    ledger = CodeEvolutionStore(runtime.store)
+    row = ledger.create_transaction({
+        "transaction_id": "predeployment-repair", "idempotency_key": "predeployment-repair",
+        "scope": asdict(owner), "base_commit": base,
+        "incident": {"incident_id": "reported-failure"}, "origin": "user_reported",
+        "known_before_detection": True, "prior_user_reported": True, "manual_bootstrap": False,
+        "repository": {"root": str(repo), "ref": "master"}, "current_state": "REGRESSION_VERIFIED",
+    })
+    ledger.add_terminal_receipt(row["transaction_id"], {
+        "outcome": "aborted_candidate_restored", "base_commit": base, "evidence_digest": "e" * 64,
+        "created_at": "2000-01-01T00:00:00Z", "reason": "full_suite_verification_failed",
+    }, terminal_state="ABORTED_CANDIDATE_RESTORED")
+    calls = []
+    def waiting_quality(*args, **kwargs):
+        calls.append(kwargs)
+        return {"transaction_id": "quality-repair:observed-gap", "qualifying_terminal_outcome": "quality_repaired",
+                "origin": "system_detector", "known_before_detection": None, "prior_user_reported": None,
+                "manual_bootstrap": None, "evidence_verified": False,
+                "evidence_error": "quality_repair_provenance_unproven", "terminal_receipt_digest": ""}
+    monkeypatch.setattr(reader, "_quality_repair_transaction", waiting_quality)
+    original = ledger.get_transaction(row["transaction_id"])
+    _, transaction, lineage = reader._code_evolution_evidence(runtime, runtime_scope=owner,
+        evidence_scope=owner, capability_scope="global", checked_at=now_iso(), repo_root=str(repo),
+        catalog=CapabilityEvaluationCatalog().seal())
+    assert ledger.get_transaction(row["transaction_id"]) == original
+    if same_release:
+        assert transaction["transaction_id"] == row["transaction_id"] and not calls
+        assert not transaction.get("historical_transactions")
+        assert _negative_evidence({"assessment": {}, "transaction_evidence": transaction})
+    else:
+        assert len(calls) == 1 and transaction["transaction_id"] == "quality-repair:observed-gap"
+        assert transaction["evidence_verified"] is False and transaction["known_before_detection"] is None
+        assert transaction["terminal_receipt_digest"] == ""
+        assert transaction["historical_transactions"][0]["known_before_detection"] is True
+        assert not _negative_evidence({"assessment": {}, "transaction_evidence": transaction})
+    assert lineage["compatible"] is False
 
 
 @pytest.mark.parametrize('fault', ['', 'session', 'scope', 'receipt', 'prior', 'health', 'transaction'])

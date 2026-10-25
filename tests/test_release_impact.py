@@ -59,6 +59,13 @@ def _commit(repo: Path, path: str, content: str, message: str) -> str:
             [],
             "classified_production_change",
         ),
+        *[
+            (path, ["deployment.runtime"], [], "classified_production_change")
+            for path in (
+                "deploy/preflight_runtime_metadata.py",
+                "deploy/retire_completed_user_transition.py",
+            )
+        ],
         (
             "eimemory/retrieval/engine.py",
             ["memory.recall"],

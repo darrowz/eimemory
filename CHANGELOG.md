@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.15.33] — 2026-10-25
+
+- Retain verified aborted transactions from prior releases as historical diagnostics instead of letting them override current L5 readiness. Historical disposition does not establish L5 qualification.
+- Restore verified captured request context during production recall gate replay while retaining exact scope/source boundaries and evaluation policy.
+- Register candidate runtime metadata preflight and completed-transition retirement helpers in deployment-runtime release-impact classification.
+
+
 ## [1.15.32] — 2026-10-25
 
 - Keep the runtime controller and deployment/validation jobs outside application runtime discovery, and validate final identity before stopping services.

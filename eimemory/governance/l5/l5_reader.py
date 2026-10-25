@@ -646,7 +646,17 @@ def _code_evolution_evidence(
             raise RuntimeError("code_evolution_source_page_incomplete")
         ledger_complete = True
         transaction["ledger_page_complete"] = True
-        active, latest = _select_code_evolution_rows(ledger, scoped)
+        historical_transactions: list[dict[str, Any]] = []
+        active, latest = _select_code_evolution_rows(
+            ledger, scoped,
+            current_deployment=_historical_abort_authority(
+                runtime, evidence_scope if evidence_scope is not None else runtime_scope,
+                checked_at=checked_at,
+            ),
+            historical_transactions=historical_transactions,
+        )
+        if historical_transactions:
+            transaction["historical_transactions"] = historical_transactions
         if active is not None:
             transaction.update({
                 "transaction_id": str(active.get("transaction_id") or ""),
@@ -1052,9 +1062,130 @@ def _current_quality_tip(
     return max(candidates, key=lambda item: item[:2])[2] if candidates else None
 
 
+def _historical_abort_authority(
+    runtime: Any, scope: Mapping[str, Any] | ScopeRef,
+    *, checked_at: str = "",
+) -> dict[str, Any] | None:
+    """Resolve current receipt authority; absence never dismisses a ledger row."""
+
+    from eimemory.governance.release.evidence_contract import (
+        current_release_identity, deployment_receipt_for_scope,
+        same_release_authority, verified_deployment_receipt_identity,
+    )
+
+    owner = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope))
+    try:
+        trusted_now = _quality_observation_time(now_iso())
+        checked = _quality_observation_time(checked_at) if checked_at else trusted_now
+        if checked is None or trusted_now is None:
+            return None
+        cutoff = min(checked, trusted_now)
+        current = current_release_identity(runtime, owner)
+        if current is None or not current.complete:
+            return None
+        receipt = deployment_receipt_for_scope(runtime, current.receipt_id, owner)
+        actual = verified_deployment_receipt_identity(receipt)
+        created_at = getattr(getattr(receipt, "time", None), "created_at", None)
+        if (actual is None or not same_release_authority(actual, current)
+                or getattr(receipt, "record_id", None) != current.receipt_id
+                or getattr(getattr(receipt, "scope", None), "tenant_id", None) != owner.tenant_id
+                or _quality_observation_time(created_at) is None
+                or _quality_observation_time(created_at) > cutoff
+                or not same_release_authority(current, current_release_identity(runtime, owner))):
+            return None
+        snapshot = json.dumps(receipt.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return {
+            "commit": current.commit, "receipt_id": current.receipt_id,
+            "created_at": created_at, "receipt_snapshot_digest": sha256(snapshot.encode()).hexdigest(),
+            "checked_at": cutoff.isoformat(),
+            "scope": {key: getattr(owner, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")},
+        }
+    except (AttributeError, TypeError, ValueError, RuntimeError, OSError, sqlite3.Error):
+        return None
+
+
+def _historical_predeployment_abort(
+    ledger: Any, row: Mapping[str, Any], authority: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Archive only a verified abort superseded by a later deployed release.
+
+    This proves historical relevance, never autonomous incident provenance or
+    product completion. Qualifying outcomes and uncertain evidence stay current.
+    """
+
+    outcomes = {
+        "ABORTED_CANDIDATE_RESTORED": "aborted_candidate_restored",
+        "ABORTED_NO_EXTERNAL_EFFECT": "aborted_no_external_effect",
+    }
+    outcome = outcomes.get(str(row.get("current_state") or ""))
+    if authority is None or outcome is None:
+        return None
+    expected_scope = authority.get("scope")
+    if (not isinstance(expected_scope, Mapping)
+            or any(row.get(key) != expected_scope.get(key)
+                   for key in ("tenant_id", "agent_id", "workspace_id", "user_id"))):
+        return None
+    base = row.get("base_commit")
+    current = authority.get("commit")
+    if (not isinstance(base, str) or len(base) != 40 or any(c not in "0123456789abcdef" for c in base)
+            or not isinstance(current, str) or len(current) != 40
+            or any(c not in "0123456789abcdef" for c in current) or base == current
+            or row.get("candidate_commit") != "" or row.get("deployed_commit") != ""):
+        return None
+    # The native read verifies the immutable payload digest and its normalized
+    # identity. Exceptions propagate to the existing fail-closed ledger path.
+    receipt = ledger.get_terminal_receipt(str(row.get("transaction_id") or ""))
+    if not isinstance(receipt, Mapping):
+        return None
+    payload = receipt.get("payload")
+    receipt_digest = receipt.get("receipt_digest")
+    if (not isinstance(payload, Mapping) or not isinstance(receipt_digest, str)
+            or len(receipt_digest) != 64
+            or any(c not in "0123456789abcdef" for c in receipt_digest)
+            or receipt.get("transaction_id") != row.get("transaction_id")
+            or receipt_digest != row.get("terminal_receipt_digest")
+            or receipt.get("outcome") != outcome or receipt.get("base_commit") != base
+            or receipt.get("candidate_commit") != "" or receipt.get("deployed_commit") != ""):
+        return None
+    encoded_receipt = json.dumps(dict(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    if sha256(encoded_receipt.encode()).hexdigest() != receipt_digest:
+        return None
+    for key in ("transaction_id", "outcome", "base_commit", "candidate_commit", "deployed_commit", "created_at"):
+        if payload.get(key) != receipt.get(key):
+            return None
+    terminal_at = _quality_observation_time(receipt.get("created_at"))
+    deployed_at = _quality_observation_time(authority.get("created_at"))
+    checked_at = _quality_observation_time(authority.get("checked_at"))
+    if (terminal_at is None or deployed_at is None or checked_at is None
+            or not terminal_at < deployed_at <= checked_at):
+        return None
+    # Preserve the complete original snapshots as canonical JSON, plus explicit
+    # adverse facts. Historical error keys must not masquerade as an exception
+    # in the current reader; the native archive still hashes every byte.
+    encoded_transaction = json.dumps(dict(row), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    from eimemory.contracts.code_incident_provenance import qualification_provenance
+    facts = qualification_provenance(row)
+    return {
+        "classification": "historical_predeployment_abort",
+        "transaction_id": row["transaction_id"], "outcome": outcome,
+        "terminal_receipt_digest": receipt_digest, "base_commit": base,
+        "known_before_detection": facts.get("known_before_detection"),
+        "prior_user_reported": facts.get("prior_user_reported"),
+        "manual_bootstrap": facts.get("manual_bootstrap"), "origin": facts.get("origin"),
+        "terminal_created_at": receipt["created_at"], "current_deployment": dict(authority),
+        "ledger_transaction_json": encoded_transaction,
+        "ledger_transaction_digest": sha256(encoded_transaction.encode()).hexdigest(),
+        "terminal_receipt_json": encoded_receipt,
+        "qualifies_for_product_completion": False,
+    }
+
+
 def _select_code_evolution_rows(
     ledger: Any,
     scoped_rows: list[dict[str, Any]],
+    *,
+    current_deployment: Mapping[str, Any] | None = None,
+    historical_transactions: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Select the current transaction or the latest unresolved terminal."""
 
@@ -1062,13 +1193,23 @@ def _select_code_evolution_rows(
     if nonterminal:
         # ``list_transactions`` is ordered by updated_at descending.
         return nonterminal[0], None
+    # An unresolved quarantine is a repository barrier even if a newer terminal
+    # happens to precede it. Never choose a favourable row around that barrier.
+    for row in scoped_rows:
+        if (bool(row.get("terminal")) and row.get("current_state") == "RECOVERY_QUARANTINED"
+                and ledger.get_quarantine_resolution(str(row.get("transaction_id") or "")) is None):
+            return None, row
     for row in scoped_rows:
         if not bool(row.get("terminal")):
             continue
-        if str(row.get("current_state") or "") != "RECOVERY_QUARANTINED":
-            return None, row
-        if ledger.get_quarantine_resolution(str(row.get("transaction_id") or "")) is None:
-            return None, row
+        if str(row.get("current_state") or "") == "RECOVERY_QUARANTINED":
+            continue
+        historical = _historical_predeployment_abort(ledger, row, current_deployment)
+        if historical is not None:
+            if historical_transactions is not None:
+                historical_transactions.append(historical)
+            continue
+        return None, row
     return None, None
 
 
@@ -1087,17 +1228,24 @@ def _qualifying_ledger_evidence_error(
 
     transaction_id = str(transaction_row.get("transaction_id") or "")
     outcome = str(terminal_receipt.get("outcome") or "")
+    if (
+        terminal_receipt.get("transaction_id") != transaction_id
+        or transaction_row.get("terminal_receipt_digest") != terminal_receipt.get("receipt_digest")
+        or not str(terminal_receipt.get("receipt_digest") or "")
+    ):
+        return "terminal_receipt_identity_mismatch"
+    nonqualifying_states = {
+        "aborted_candidate_restored": "ABORTED_CANDIDATE_RESTORED",
+        "aborted_no_external_effect": "ABORTED_NO_EXTERNAL_EFFECT",
+    }
+    if outcome in nonqualifying_states and transaction_row.get("current_state") != nonqualifying_states[outcome]:
+        return "terminal_nonqualifying_state_outcome_mismatch"
     expected_state = {
         "succeeded_sedimented": "SUCCEEDED_SEDIMENTED",
         "rolled_back_healthy": "ROLLED_BACK_HEALTHY",
     }.get(outcome)
     if expected_state is None or transaction_row.get("current_state") != expected_state:
         return "terminal_state_outcome_mismatch"
-    if (
-        terminal_receipt.get("transaction_id") != transaction_id
-        or transaction_row.get("terminal_receipt_digest") != terminal_receipt.get("receipt_digest")
-    ):
-        return "terminal_receipt_identity_mismatch"
     if 'managed_incident_proof' in transaction_row:
         from eimemory.governance.evolution.managed_code_incident_proof import qualification_evidence
         try:

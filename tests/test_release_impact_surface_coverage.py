@@ -74,6 +74,8 @@ def test_every_tracked_production_file_has_a_domain() -> None:
         ("eimemory/scheduler/review_references.py", {"memory.recall", "memory.governance", "deployment.runtime", "code.evolution"}),
         ("deploy/capture_prior_health_snapshot.py", {"deployment.runtime"}),
         ("deploy/eimemory-deploy-worker", {"deployment.runtime"}),
+        ("deploy/preflight_runtime_metadata.py", {"deployment.runtime"}),
+        ("deploy/retire_completed_user_transition.py", {"deployment.runtime"}),
         ("deploy/prepare_qwen_reranker.py", {"memory.recall", "deployment.runtime"}),
         ("eimemory/adapters/hermes/native_memory.py", {"memory.recall", "channel.delivery"}),
         ("eimemory/adapters/codex/mcp_server.py", {"channel.delivery"}),

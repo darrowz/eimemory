@@ -453,6 +453,8 @@ def capture_env():
 
 def test_native_capture_grants_check_returns_no_tokens(monkeypatch):
     from eimemory.adapters.runtime import host_auth
+    # The synthetic six-scope policy exercises the legacy inventory contract.
+    monkeypatch.setattr(probe, "_topology", lambda: None)
     monkeypatch.setattr(host_auth, "attestation_tokens_from_private_file", lambda **kw: {"secret-token": "hermes"})
     report = probe._capture_environment_status(capture_env(), probe.RUNTIME_UNITS[0], COMMIT)
     assert report["ok"] and report["capture_scope_count"] == 6
@@ -462,6 +464,7 @@ def test_native_capture_grants_check_returns_no_tokens(monkeypatch):
 @pytest.mark.parametrize("change", ["missing_agent", "wildcard", "duplicate", "disabled", "budget", "no_grant"])
 def test_real_capture_config_contract_rejects_broken_policy(monkeypatch, change):
     from eimemory.adapters.runtime import host_auth
+    monkeypatch.setattr(probe, "_topology", lambda: None)
     monkeypatch.setattr(host_auth, "attestation_tokens_from_private_file", lambda **kw: {} if change == "no_grant" else {"secret": "hermes"})
     env = capture_env(); policy = json.loads(env["EIMEMORY_CAPTURE_QUERY_SCOPES"])
     if change == "missing_agent": policy[0]["agent_id"] = "foreign"
