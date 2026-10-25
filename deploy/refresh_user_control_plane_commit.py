@@ -69,31 +69,57 @@ def refresh_commit(payload: bytes, commit: str) -> bytes:
 
 
 def write_refresh(target: Path, commit: str) -> None:
-    if target.is_symlink() or not target.is_file():
-        raise RefreshError("target must be a regular non-symlink file")
-    info = target.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-        raise RefreshError("target must be a regular non-symlink file")
-    if info.st_uid not in {os.geteuid(), 0}:
-        raise RefreshError("target owner is unexpected")
-    payload = target.read_bytes()
-    rendered = refresh_commit(payload, commit)
-    if rendered == payload:
-        return
-    temporary = target.with_name(f".eimemory-control-plane-{secrets.token_hex(8)}")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    # Walk directory descriptors so no component can redirect the update.
+    target = Path(os.path.abspath(target))
+    directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temporary = f".eimemory-control-plane-{secrets.token_hex(8)}"
+    fd = -1
+    source = -1
+    staged = False
     try:
-        os.write(fd, rendered)
-        os.fsync(fd)
-        os.fchmod(fd, stat.S_IMODE(info.st_mode))
+        for component in target.parent.parts[1:]:
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=directory)
+            os.close(directory)
+            directory = child
+        source = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         dir_fd=directory)
+        info = os.fstat(source)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_uid not in {os.geteuid(), 0} or info.st_mode & 0o022
+                or info.st_size > 65536):
+            raise RefreshError("target must be a trusted regular file")
+        with os.fdopen(os.dup(source), "rb") as stream:
+            payload = stream.read(65537)
+        rendered = refresh_commit(payload, commit)
+        if rendered == payload:
+            return
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory)
+        staged = True
+        with os.fdopen(os.dup(fd), "wb") as stream:
+            stream.write(rendered)
+            stream.flush()
         os.fchown(fd, info.st_uid, info.st_gid)
-        os.close(fd)
-        fd = -1
-        os.replace(temporary, target)
+        os.fchmod(fd, stat.S_IMODE(info.st_mode))
+        os.fsync(fd)
+        current = os.stat(target.name, dir_fd=directory, follow_symlinks=False)
+        identity = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns,
+                               st.st_ctime_ns, st.st_mode, st.st_uid, st.st_gid, st.st_nlink)
+        os.lseek(source, 0, os.SEEK_SET)
+        if identity(current) != identity(info) or os.read(source, 65537) != payload:
+            raise RefreshError("target changed during refresh")
+        os.replace(temporary, target.name, src_dir_fd=directory, dst_dir_fd=directory)
+        staged = False
+        os.fsync(directory)
     finally:
         if fd >= 0:
             os.close(fd)
-        temporary.unlink(missing_ok=True)
+        if source >= 0:
+            os.close(source)
+        if staged:
+            os.unlink(temporary, dir_fd=directory)
+        os.close(directory)
 
 
 def main(argv: list[str] | None = None) -> int:

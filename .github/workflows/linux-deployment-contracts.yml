@@ -252,6 +252,7 @@ jobs:
           tests/test_eibrain_rpc_contract.py
           tests/test_rpc_health_probe_bounds.py
           tests/test_storage_deploy.py
+          tests/test_refresh_user_control_plane_commit.py
           tests/test_l1_user_evidence.py
           tests/test_l1_source_order.py
           tests/test_l1_extraction_diagnostics.py

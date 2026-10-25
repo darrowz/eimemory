@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.31] — 2026-10-25
+
+- Scope final control-plane refresh to owned units, use current controller helper during rollback, and harden atomic metadata publication.
+
+
 ## [1.15.30] — 2026-10-25
 
 - Keep final user-control-plane commit refresh on eiMemory runtime units only. Gateway memory metadata stays a memory-only publication.

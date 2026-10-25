@@ -1533,12 +1533,18 @@ _refresh_user_control_plane_commit() {
   local target_commit="$2"
   local metadata_release="${3:-$RELEASE_DIR}"
   local target="$USER_SYSTEMD_DIR/$runtime_unit.d/zzzzzz-eimemory-user-control-plane.conf"
-  if [ ! -f "$target" ]; then
+  if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+    # Only eiMemory units and gateways require the user control-plane policy.
+    if [ "${EIMEMORY_CONTROL_PLANE:-}" != "user" ]; then return 0; fi
+    case "$runtime_unit" in
+      eimemory-*.service|*-gateway.service|hermes-gateway-*.service) ;;
+      *) return 0 ;;
+    esac
     echo "user_control_plane_commit=missing unit=$runtime_unit" >&2
     return 2
   fi
   "$PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" \
-    "$metadata_release/deploy/refresh_user_control_plane_commit.py" \
+    "$REPO_DIR/deploy/refresh_user_control_plane_commit.py" \
     --target "$target" --commit "$target_commit"
 }
 
