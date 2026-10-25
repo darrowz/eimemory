@@ -24,6 +24,12 @@ MAX_PAPER_SOURCE_LOOKUPS = 4096
 MAX_PAPER_SOURCE_REFS = MAX_PAPER_SOURCE_LOOKUPS
 
 
+def current_evidence_reasons(records: list[Any], *, store: Any = None, deadline_at: float = 0.0) -> list[str]:
+    from eimemory.knowledge.current_evidence import current_evidence_reasons as _current
+
+    return _current(records, store=store, deadline_at=deadline_at)
+
+
 def paper_source_evidence_reasons(records: list[Any], *, store: Any = None, deadline_at: float = 0.0) -> list[str]:
     """Resolve declared paper parents in one exact-owner read snapshot.
 
@@ -209,11 +215,11 @@ def filter_answer_evidence(
 ) -> dict[str, Any]:
     kept: list[Any] = []
     excluded: list[dict[str, Any]] = []
-    parent_reasons = paper_source_evidence_reasons(records, store=store)
+    parent_reasons = current_evidence_reasons(records, store=store)
     for record, parent_reason in zip(records, parent_reasons):
         if parent_reason:
             excluded.append({"record_id": _record_id(record), "kind": _record_kind(record),
-                             "title": _record_title(record), "reason": parent_reason, "reasons": [parent_reason]})
+                             "reason": parent_reason, "reasons": [parent_reason]})
             continue
         if not _requires_answer_gate(record, task_type=task_type):
             kept.append(record)

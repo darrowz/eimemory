@@ -533,6 +533,17 @@ def test_openclaw_before_prompt_build_strict_injection_plan_classifies_and_audit
         summary="Run verification before claiming completion.",
         content={"execution_policy": ["Run tests before status updates."]},
     )
+    # The fake recall is a prefetch fixture, not an authority bypass. Persist
+    # and hydrate the records before exercising the real answer evidence gate.
+    current_records = []
+    for record in (preference, regular_memory, candidate, incident, rule):
+        stored = runtime.store.append(record)
+        current = runtime.store.get_by_exact_ref(
+            stored.record_id, scope=stored.scope, source_id=stored.source_id,
+        )
+        assert current is not None
+        current_records.append(current)
+    preference, regular_memory, candidate, incident, rule = current_records
 
     def fake_recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
         return RecallBundle(

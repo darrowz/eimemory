@@ -11,10 +11,13 @@ import re
 from typing import Any, Iterable, Mapping
 
 from eimemory.core.clock import now_iso
-from eimemory.knowledge.evidence_gate import grade_research_evidence, paper_source_evidence_reasons
+from eimemory.knowledge.evidence_contracts import versioned_record_ref
+from eimemory.knowledge.evidence_gate import current_evidence_reasons, grade_research_evidence
 from eimemory.models.records import RecordEnvelope
 
 DAILY_BRIEF_SCHEMA_VERSION = 1
+DAILY_BRIEF_SOURCE_LINEAGE_SCHEMA = "daily_brief_sources.v1"
+MAX_DAILY_BRIEF_SOURCE_REFS = 2500
 RESEARCH_DIGEST_KINDS = {"paper_source", "knowledge_page"}
 NEWS_DIGEST_KINDS = {"news"}
 EXPERIENCE_SOURCES = {
@@ -32,37 +35,51 @@ def build_daily_brief(
 ) -> dict[str, Any]:
     """Build a JSON-serializable daily brief from already available records."""
     day = _date_string(date)
-    all_records = [_record_payload(record) for record in records]
+    inputs = [(record, _record_payload(record)) for record in records]
+    all_records = [payload for _, payload in inputs]
     day_records = [record for record in all_records if _is_on_day(record, day)]
     day_records.sort(key=_record_sort_key)
 
-    experience_records = [record for record in day_records if _is_new_memory_record(record)]
     digest_records = [
         record
         for record in all_records
         if _is_research_digest_record(record)
         and _is_within_research_window(record, day, research_lookback_days)
     ]
-    digest_records, research_excluded = _apply_evidence_gate(digest_records, store=store)
-    digest_records.sort(key=_record_sort_key)
     news_records = [
         record
         for record in all_records
         if _is_news_digest_record(record)
         and _is_news_within_window(record, day, research_lookback_days)
     ]
-    news_records, news_excluded = _apply_evidence_gate(news_records, store=store)
+    # Every body section uses the same current-evidence boundary. A research
+    # record rejected from the digest must not reappear as a followup or as an
+    # already projected memory. Health retains only status/count diagnostics.
+    body_candidates = list({id(record): record for record in
+                            [*day_records, *digest_records, *news_records]}.values())
+    allowed, body_excluded = _apply_evidence_gate(body_candidates, store=store)
+    allowed_ids = {id(record) for record in allowed}
+    current_day_records = [record for record in day_records if id(record) in allowed_ids]
+    experience_records = [record for record in current_day_records if _is_new_memory_record(record)]
+    digest_records = [record for record in digest_records if id(record) in allowed_ids]
+    digest_records.sort(key=_record_sort_key)
+    news_records = [record for record in news_records if id(record) in allowed_ids]
     news_records.sort(key=_record_sort_key)
     news_records = _dedupe_records_by_url(news_records)
 
-    decisions = _extract_marked_items(
+    decisions = _extract_marked_items(_marked_records(
         experience_records,
         markers=("decision:", "decided:", "决策", "决定"),
-    )
-    followups = _extract_marked_items(
-        day_records,
+    ))
+    followup_records = _marked_records(
+        current_day_records,
         markers=("follow up:", "follow-up:", "todo:", "next:", "待跟进", "跟进"),
     )
+    followups = _extract_marked_items(followup_records)
+    contributors = {id(record) for record in
+                    [*experience_records, *digest_records, *news_records, *followup_records]}
+    source_lineage = _source_lineage([record for record, payload in inputs
+                                    if id(payload) in contributors])
 
     return {
         "ok": True,
@@ -81,7 +98,8 @@ def build_daily_brief(
             "items": [_news_item(record) for record in news_records],
         },
         "followups": followups,
-        "source_health": _source_health(day_records, evidence_excluded=[*research_excluded, *news_excluded]),
+        "source_health": _source_health(day_records, evidence_excluded=body_excluded),
+        **source_lineage,
     }
 
 
@@ -197,26 +215,44 @@ def _conversation_summary(records: list[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _extract_marked_items(
+def _marked_records(
     records: list[Mapping[str, Any]],
     *,
     markers: tuple[str, ...],
-) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
+) -> list[Mapping[str, Any]]:
+    marked: list[Mapping[str, Any]] = []
     for record in records:
         text = _record_text(record)
         lowered = text.lower()
-        if not text or not any(marker in lowered or marker in text for marker in markers):
-            continue
-        items.append(
-            {
-                "record_id": str(record.get("record_id") or ""),
-                "title": str(record.get("title") or ""),
-                "source": str(record.get("source") or ""),
-                "text": text,
-            }
-        )
-    return items
+        if text and any(marker in lowered or marker in text for marker in markers):
+            marked.append(record)
+    return marked
+
+
+def _extract_marked_items(records: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [{"record_id": str(record.get("record_id") or ""),
+             "title": str(record.get("title") or ""),
+             "source": str(record.get("source") or ""),
+             "text": _record_text(record)} for record in records]
+
+
+def _source_lineage(records: list[RecordEnvelope | Mapping[str, Any]]) -> dict[str, Any]:
+    # Native Runtime input is authoritative RecordEnvelope data. The pure
+    # mapping helper remains usable, but cannot certify a versioned source it
+    # did not read. Empty native briefs have a complete empty declaration.
+    if any(not isinstance(record, RecordEnvelope) for record in records):
+        return {}
+    refs = {}
+    for record in records:
+        ref = versioned_record_ref(record)
+        key = (*ref["scope"].values(), ref["source_id"], ref["record_id"])
+        if key in refs and refs[key] != ref:
+            raise ValueError("daily_brief_source_version_conflict")
+        refs[key] = ref
+        if len(refs) > MAX_DAILY_BRIEF_SOURCE_REFS:
+            raise ValueError("daily_brief_source_reference_limit")
+    return {"source_lineage_schema": DAILY_BRIEF_SOURCE_LINEAGE_SCHEMA,
+            "source_record_refs": [refs[key] for key in sorted(refs)]}
 
 
 def _brief_record(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -308,12 +344,20 @@ def _looks_like_broken_html(value: str) -> bool:
 def _apply_evidence_gate(records: list[Mapping[str, Any]], *, store=None) -> tuple[list[Mapping[str, Any]], list[dict[str, Any]]]:
     accepted: list[Mapping[str, Any]] = []
     excluded: list[dict[str, Any]] = []
-    for record, reason in zip(records, paper_source_evidence_reasons(records, store=store)):
-        gate = grade_research_evidence(record, paper_source_reason=reason)
-        if gate["ok"]:
-            accepted.append(record)
-        else:
-            excluded.append({"record_id": str(record.get("record_id") or ""), "title": str(record.get("title") or ""), "reason": gate["reason"], "reasons": gate["reasons"]})
+    for record, parent_reason in zip(records, current_evidence_reasons(records, store=store)):
+        reasons = []
+        if parent_reason:
+            reasons.append(parent_reason)
+        if (_is_research_digest_record(record) or _is_news_digest_record(record)
+                or record.get("kind") in {"claim_card", "paper_extract"}):
+            reasons.extend(grade_research_evidence(record)["reasons"])
+        if reasons:
+            reasons = list(dict.fromkeys(reasons))
+            # Exclusion diagnostics must not become another body channel.
+            excluded.append({"record_id": str(record.get("record_id") or ""),
+                             "reason": reasons[0], "reasons": reasons})
+            continue
+        accepted.append(record)
     return accepted, excluded
 
 

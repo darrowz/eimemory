@@ -40,6 +40,20 @@ def _bind_test_proactive_release(runtime: Runtime) -> None:
     )
 
 
+def _persist_prefetched_records(runtime: Runtime, *records: RecordEnvelope) -> list[RecordEnvelope]:
+    # Prefetch replaces retrieval only; answer admission still requires the
+    # exact, currently persisted envelope that a native recall would return.
+    current_records = []
+    for record in records:
+        stored = runtime.store.append(record)
+        current = runtime.store.get_by_exact_ref(
+            stored.record_id, scope=stored.scope, source_id=stored.source_id,
+        )
+        assert current is not None
+        current_records.append(current)
+    return current_records
+
+
 def test_openclaw_authoritative_prefetch_filters_through_shared_proactive_service(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)
@@ -61,6 +75,7 @@ def test_openclaw_authoritative_prefetch_filters_through_shared_proactive_servic
         kind="memory", title="Drop", summary="Unrelated memory.",
         scope=ScopeRef.from_dict(scope), source="test.openclaw", source_id="default",
     )
+    keep, drop = _persist_prefetched_records(runtime, keep, drop)
     bundle = RecallBundle(
         items=[keep, drop], rules=[], reflections=[], confidence=0.9,
         next_action_hint="", explanation={"selected_count": 2},
@@ -1169,6 +1184,9 @@ def test_openclaw_before_prompt_build_defaults_to_fast_recall_context(tmp_path, 
 
 
 def test_openclaw_before_prompt_build_returns_strict_injection_plan(tmp_path, monkeypatch) -> None:
+    from itertools import count
+    from time import perf_counter
+
     runtime = Runtime.create(root=tmp_path)
     _bind_test_proactive_release(runtime)
     hooks = OpenClawMemoryHooks(runtime)
@@ -1202,6 +1220,7 @@ def test_openclaw_before_prompt_build_returns_strict_injection_plan(tmp_path, mo
         scope=scope_ref,
         meta={"task_type": "ops.health"},
     )
+    preference, incident, rule = _persist_prefetched_records(runtime, preference, incident, rule)
 
     def fake_recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
         return RecallBundle(
@@ -1222,6 +1241,12 @@ def test_openclaw_before_prompt_build_returns_strict_injection_plan(tmp_path, mo
 
     monkeypatch.setattr(runtime.memory, "recall", fake_recall)
 
+    # This contract checks lanes and audit formatting; deadline behavior has
+    # separate tests. Keep the default budget with a deterministic hook clock.
+    # Prefetch is already supplied, and the native answer gate uses no deadline.
+    hook_ticks = count(perf_counter(), 0.001)
+    monkeypatch.setattr("eimemory.adapters.openclaw.hooks.perf_counter", lambda: next(hook_ticks))
+
     result = hooks.before_prompt_build(
         {
             "sessionId": "strict-plan-session",
@@ -1234,6 +1259,7 @@ def test_openclaw_before_prompt_build_returns_strict_injection_plan(tmp_path, mo
 
     plan = result["injection_plan"]
     by_id = {item["record_id"]: item for item in plan["items"]}
+    assert result["task_context"]["recall_budget_ms"] == 800
     assert plan["mode"] == "strict"
     assert by_id[preference.record_id]["action"] == "full_text"
     assert by_id[rule.record_id]["action"] == "policy_only"
@@ -1276,6 +1302,7 @@ def test_openclaw_injection_plan_prechecks_context_token_budget(tmp_path, monkey
         scope=scope_ref,
         meta={"memory_type": "preference", "quality": {"quality_tier": "confirmed"}},
     )
+    first, second = _persist_prefetched_records(runtime, first, second)
 
     def fake_recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
         return RecallBundle(

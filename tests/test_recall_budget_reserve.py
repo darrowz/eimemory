@@ -219,10 +219,11 @@ def test_collection_cutoff_keeps_time_to_validate_collected_identity(tmp_path, m
 @pytest.fixture
 def legacy_sqlite_recall(tmp_path, monkeypatch):
     clock = [100.0]
+    # Final source validation shares the simulated recall deadline's clock.
     for module in ('eimemory.api.memory', 'eimemory.retrieval.engine',
                    'eimemory.retrieval.authority_gate', 'eimemory.retrieval.verification_budget',
                    'eimemory.retrieval.sqlite_source', 'eimemory.storage.runtime_store',
-                   'eimemory.storage.sqlite_store'):
+                   'eimemory.storage.sqlite_store', 'eimemory.knowledge.current_evidence'):
         monkeypatch.setattr(module + '.perf_counter', lambda: clock[0])
     monkeypatch.setattr('eimemory.storage.recall_deadline.monotonic', lambda: clock[0])
     monkeypatch.setenv('EIMEMORY_RECALL_BUDGET_SECONDS', '3')

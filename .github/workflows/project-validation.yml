@@ -305,6 +305,11 @@ jobs:
           tests/test_intake_withdrawal_review3_20261024.py
           tests/test_memory_auxiliary_journal_order_review3_20261024.py
           tests/test_memory_lifecycle_journal_review3_20261024.py
+          tests/test_memory_withdrawal_closure_review4_20261025.py
+          tests/test_current_evidence_withdrawal_review4_20261025.py
+          tests/test_derived_memory_withdrawal_review4_20261025.py
+          tests/test_persona_closed_loop.py
+          tests/test_openclaw_gateway_bridge.py
   repository-regression:
     # The operator disabled full-repository CI; focused release gates remain active.
     if: ${{ false }}

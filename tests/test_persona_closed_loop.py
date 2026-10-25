@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from time import perf_counter
+
+import pytest
+
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.api.runtime import Runtime
 from eimemory.models.records import ScopeRef
@@ -199,3 +203,91 @@ def test_openclaw_persona_trace_tolerates_malformed_duration(tmp_path, monkeypat
 
     assert result["persona_trace"]["guidance_latency_ms"] == 0.0
     assert result["persona_trace"]["scene"] == "coding_plan"
+
+
+@pytest.mark.parametrize("persona_mode", ["disabled", "enabled", "guidance_error"])
+def test_openclaw_persona_timeout_preserves_disabled_contract_without_writes(
+    tmp_path, monkeypatch, persona_mode
+) -> None:
+    monkeypatch.setenv("EIMEMORY_PERSONA_ENABLED", "0" if persona_mode == "disabled" else "1")
+    monkeypatch.setenv("EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED", "0")
+    monkeypatch.setenv("EIMEMORY_RERANKER_ENABLED", "0")
+    runtime = Runtime.create(root=tmp_path)
+    hooks = OpenClawMemoryHooks(runtime)
+    event = {
+        "session_id": "sess-persona-timeout",
+        "agent_id": "main",
+        "workspace_id": "repo-x",
+        "user_id": "darrow",
+        "query": "检查 persona 超时后的返回状态",
+    }
+    scope = ScopeRef.from_dict(hooks._scope_from_event(event))
+    clock = [perf_counter()]
+    started = clock[0]
+    monkeypatch.setattr("eimemory.adapters.openclaw.hooks.perf_counter", lambda: clock[0])
+    native_recall = runtime.memory.recall
+    recalled = []
+
+    def expire_after_native_recall(**kwargs):
+        # The real recall and its evidence gates receive a deadline on the real
+        # monotonic clock. Only after they return does the host clock expire.
+        bundle = native_recall(**kwargs)
+        context = kwargs["task_context"]
+        recalled.append((context["recall_budget_ms"], context["_recall_deadline_monotonic"]))
+        clock[0] = context["_recall_deadline_monotonic"] + 0.001
+        return bundle
+
+    monkeypatch.setattr(runtime.memory, "recall", expire_after_native_recall)
+    native_filter = runtime.filter_answer_evidence
+    filtered = []
+
+    def filter_current_evidence(*args, **kwargs):
+        filtered.append(clock[0])
+        return native_filter(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, "filter_answer_evidence", filter_current_evidence)
+    attempted_writes = []
+
+    def no_expired_audit(*_args, **_kwargs):
+        attempted_writes.append("prompt_audit")
+        raise AssertionError("expired hook must not write the prompt audit")
+
+    def no_expired_trace(*_args, **_kwargs):
+        attempted_writes.append("persona_trace")
+        raise AssertionError("expired hook must not write a persona trace")
+
+    monkeypatch.setattr(hooks, "_audit_prompt_recall", no_expired_audit)
+    monkeypatch.setattr(PersonaStore, "record_trace", no_expired_trace)
+    if persona_mode == "guidance_error":
+        def fail_persona_load(_self):
+            raise OSError("persona state unavailable")
+
+        monkeypatch.setattr(PersonaStore, "load_state", fail_persona_load)
+
+    result = hooks.before_prompt_build(event)
+
+    assert recalled == [(800, pytest.approx(started + 0.8))]
+    assert filtered and all(at >= started + 0.8 for at in filtered)
+    assert result["task_context"]["recall_budget_ms"] == 800
+    assert result["task_context"]["latency_ms"] >= 800.0
+    assert "_recall_deadline_monotonic" not in result["task_context"]
+    assert attempted_writes == []
+    records = runtime.store.list_records(kinds=["reflection", "recall_view"], scope=scope, limit=20)
+    assert not [record for record in records if record.source in {"persona.trace", "openclaw.before_prompt_build"}]
+    if persona_mode == "disabled":
+        assert result["persona_guidance"]["enabled"] is False
+        assert "persona_guidance" not in result["task_context"]
+        assert result["persona_trace"] == {
+            "stored": None,
+            "enabled": False,
+            "scene": "",
+            "guidance_length": 0,
+            "guidance_latency_ms": 0.0,
+            "injection_latency_ms": 801.0,
+            "skipped_reason": "persona_disabled",
+        }
+    else:
+        assert result["persona_trace"] == {}
+        assert result["persona_guidance"]["enabled"] is (persona_mode == "enabled")
+        if persona_mode == "guidance_error":
+            assert result["persona_guidance"]["error"] == "persona state unavailable"

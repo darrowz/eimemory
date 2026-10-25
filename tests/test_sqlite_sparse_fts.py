@@ -50,10 +50,11 @@ def add_foreign_projection_noise(store, template, count=4096):
 @pytest.mark.parametrize('query', [QUERY, 'Hermes deployment replay'])
 def test_slow_large_foreign_fts_preserves_completeness_and_authority(tmp_path, monkeypatch, guard, query):
     clock = [100.0]
+    # Final source validation shares the simulated recall deadline's clock.
     for module in ('eimemory.api.memory', 'eimemory.retrieval.engine',
                    'eimemory.retrieval.authority_gate', 'eimemory.retrieval.verification_budget',
                    'eimemory.retrieval.sqlite_source', 'eimemory.storage.runtime_store',
-                   'eimemory.storage.sqlite_store'):
+                   'eimemory.storage.sqlite_store', 'eimemory.knowledge.current_evidence'):
         monkeypatch.setattr(module + '.perf_counter', lambda: clock[0])
     monkeypatch.setattr(recall_deadline, 'monotonic', lambda: clock[0])
     monkeypatch.setenv('EIMEMORY_RECALL_BUDGET_SECONDS', '3')

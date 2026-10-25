@@ -3025,6 +3025,8 @@ def _list_all_runtime_records(
 
 def _daily_brief_record(brief: dict[str, Any], delivery: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:
     day = str(brief.get("date") or now_iso()[:10])
+    source_lineage_schema = brief["source_lineage_schema"]
+    source_record_refs = _json_safe(brief["source_record_refs"])
     record_id = f"daily_brief_{day.replace('-', '')}_{_scope_hash(scope)}"
     summary = (
         f"Daily brief for {day}: "
@@ -3042,6 +3044,8 @@ def _daily_brief_record(brief: dict[str, Any], delivery: dict[str, Any], *, scop
         content={
             "brief": _json_safe(brief),
             "delivery": _json_safe(delivery),
+            "source_lineage_schema": source_lineage_schema,
+            "source_record_refs": source_record_refs,
         },
         tags=["daily-brief", "experience-brief", "delivery-prepared"],
         links=[],
@@ -3049,7 +3053,9 @@ def _daily_brief_record(brief: dict[str, Any], delivery: dict[str, Any], *, scop
         source="eimemory.daily_brief",
         scope=scope,
         time=TimeRef.now(),
-        provenance={"report_type": "daily_brief", "date": day, "channel": str(delivery.get("channel") or "")},
+        provenance={"report_type": "daily_brief", "date": day,
+                    "channel": str(delivery.get("channel") or ""),
+                    "source_lineage_schema": source_lineage_schema},
         meta={
             "report_type": "daily_brief",
             "date": day,

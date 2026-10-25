@@ -1,8 +1,10 @@
 import json
 import os
 from pathlib import Path
+from queue import Queue
 import shutil
 import subprocess
+from threading import Thread
 import time
 
 import pytest
@@ -52,7 +54,9 @@ def test_gateway_timeout_reports_phase_without_private_data(tmp_path, connected,
     if not node:
         pytest.skip('Node is unavailable')
     sdk = tmp_path / 'client.mjs'
-    sdk.write_text('export class t { constructor(opts) {this.opts=opts;} '
+    sdk.write_text("await new Promise(resolve=>setTimeout(resolve,500)); "
+        "process.stderr.write('gateway_fixture_ready\\n'); "
+        'export class t { constructor(opts) {this.opts=opts;} '
         + ('start() {queueMicrotask(()=>this.opts.onHelloOk());} ' if connected else 'start() {} ')
         + 'request() {return new Promise(()=>{});} stop() {} }')
     config = tmp_path / 'config.json'
@@ -60,13 +64,62 @@ def test_gateway_timeout_reports_phase_without_private_data(tmp_path, connected,
     env = {**os.environ, 'EIMEMORY_OPENCLAW_GATEWAY_MODE': 'client',
         'EIMEMORY_OPENCLAW_GATEWAY_MODULE': str(sdk), 'EIMEMORY_OPENCLAW_GATEWAY_EXPORT': 't',
         'EIMEMORY_OPENCLAW_GATEWAY_CONFIG': str(config)}
-    result = subprocess.run([node, str(Path('eimemory/llm/openclaw_gateway.mjs').resolve())],
-        input=json.dumps({'system_prompt': 'private policy', 'user_prompt': 'private query',
-                          'deadline_unix_ms': int((time.time() + 1.5) * 1000)}),
-        text=True, capture_output=True, env=env, timeout=4)
+    # This tests time spent in a gateway phase. Cold Node/SDK startup must not
+    # consume its 1.5s request window and exercise the distinct pre-client
+    # budget rejection instead. A deliberately slow import verifies the split.
+    command = [node, str(Path('eimemory/llm/openclaw_gateway.mjs').resolve())]
+    with subprocess.Popen(command, text=True, stdin=subprocess.PIPE,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env) as process:
+        ready = Queue()
+        reader = Thread(target=lambda: ready.put(process.stderr.readline()), daemon=True)
+        reader.start()
+        try:
+            assert ready.get(timeout=4) == 'gateway_fixture_ready\n'
+            reader.join(timeout=4)
+            assert not reader.is_alive()
+            stdout, stderr = process.communicate(
+                input=json.dumps({'system_prompt': 'private policy', 'user_prompt': 'private query',
+                                  'deadline_unix_ms': int((time.time() + 1.5) * 1000)}),
+                timeout=4)
+            result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=4)
+            reader.join(timeout=4)
     assert result.returncode == 1
     error = json.loads(result.stderr)
     assert error['reason'] == 'timeout' and error['gateway_stage'] == stage
     assert 900 <= error['gateway_elapsed_ms'] <= 1600
     assert error['verification_session_id'].startswith('eimemory-verification-')
     assert 'private' not in result.stderr
+
+
+def test_gateway_rejects_insufficient_budget_before_creating_client(tmp_path):
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node is unavailable')
+    constructed = tmp_path / 'client-constructed'
+    sdk = tmp_path / 'client.mjs'
+    sdk.write_text("import {writeFileSync} from 'node:fs'; "
+        'export class t { constructor() {writeFileSync('
+        + json.dumps(str(constructed)) + ", 'constructed');} "
+        "start() {throw Error('private client must not start');} stop() {} }")
+    config = tmp_path / 'config.json'
+    config.write_text(json.dumps({'gateway': {'auth': {'token': 'fixture-private-token'}}}))
+    env = {**os.environ, 'EIMEMORY_OPENCLAW_GATEWAY_MODE': 'client',
+        'EIMEMORY_OPENCLAW_GATEWAY_MODULE': str(sdk), 'EIMEMORY_OPENCLAW_GATEWAY_EXPORT': 't',
+        'EIMEMORY_OPENCLAW_GATEWAY_CONFIG': str(config)}
+    result = subprocess.run([node, str(Path('eimemory/llm/openclaw_gateway.mjs').resolve())],
+        input=json.dumps({'system_prompt': 'private policy', 'user_prompt': 'private query',
+                          'deadline_unix_ms': int((time.time() + 0.5) * 1000)}),
+        text=True, capture_output=True, env=env, timeout=4)
+
+    assert result.returncode == 1
+    error = json.loads(result.stderr)
+    assert error['reason'] == 'timeout'
+    assert not constructed.exists()
+    assert 'gateway_stage' not in error
+    assert 'gateway_elapsed_ms' not in error
+    assert 'verification_session_id' not in error
+    assert 'private' not in result.stdout + result.stderr

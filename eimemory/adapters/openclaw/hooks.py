@@ -367,7 +367,16 @@ class OpenClawMemoryHooks:
         # is recorded only by proactive_injected. This legacy selection audit
         # must never claim delivery before that acknowledgement.
         if self._recall_deadline_exceeded(recall_context):
-            persona_trace = {}
+            # A known disabled state needs no persistence. Preserve that
+            # diagnostic even when the deadline prevents audit/trace writes.
+            persona_trace = (
+                self._disabled_persona_trace(
+                    persona_guidance=persona_guidance,
+                    injection_latency_ms=latency_ms,
+                )
+                if not bool(persona_guidance.get("enabled")) and not persona_enabled()
+                else {}
+            )
         else:
             audit = self._audit_prompt_recall(event=event, bundle=bundle, injected=False)
             policy_attribution = self._normalize_policy_attribution(audit.content)
@@ -896,17 +905,23 @@ class OpenClawMemoryHooks:
                 "duration_ms": round((perf_counter() - start) * 1000.0, 3),
             }
 
+    def _disabled_persona_trace(self, *, persona_guidance: dict, injection_latency_ms: float) -> dict:
+        return {
+            "stored": None,
+            "enabled": False,
+            "scene": str(persona_guidance.get("scene") or ""),
+            "guidance_length": 0,
+            "guidance_latency_ms": self._float_or_zero(persona_guidance.get("duration_ms")),
+            "injection_latency_ms": self._float_or_zero(injection_latency_ms),
+            "skipped_reason": "persona_disabled",
+        }
+
     def _record_persona_trace(self, *, event: dict, persona_guidance: dict, injection_latency_ms: float) -> dict:
         if not bool(persona_guidance.get("enabled")) and not persona_enabled():
-            return {
-                "stored": None,
-                "enabled": False,
-                "scene": str(persona_guidance.get("scene") or ""),
-                "guidance_length": 0,
-                "guidance_latency_ms": self._float_or_zero(persona_guidance.get("duration_ms")),
-                "injection_latency_ms": self._float_or_zero(injection_latency_ms),
-                "skipped_reason": "persona_disabled",
-            }
+            return self._disabled_persona_trace(
+                persona_guidance=persona_guidance,
+                injection_latency_ms=injection_latency_ms,
+            )
         trace = PersonaTraceEvent(
             session_id=self._session_id_from_event(event),
             scene=str(persona_guidance.get("scene") or ""),

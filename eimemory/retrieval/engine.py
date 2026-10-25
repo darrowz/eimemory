@@ -236,7 +236,7 @@ class RecallCallbacks(Protocol):
         task_recall_mode: str = "",
         explicit_evidence_boundary: bool = False,
     ) -> tuple[list[RecordEnvelope], Counter[str]]: ...
-    def _final_paper_source_admission(self, bundle: RecallBundle, *, deadline_at: float) -> RecallBundle: ...
+    def _final_current_evidence_admission(self, bundle: RecallBundle, *, deadline_at: float) -> RecallBundle: ...
     def _memory_usage_adjustments(
         self, scope: ScopeRef, *, source_ids: tuple[str, ...] | None = None
     ) -> dict[tuple[str, str, str, str, str, str], dict[str, object]]: ...
@@ -409,7 +409,7 @@ class GovernedRecallEngine:
                         "retrieval_status": "unavailable",
                         "identity_current_view": {"ok": False, "blocked_count": identity_drops},
                     })
-            bundle = self._callbacks._final_paper_source_admission(bundle,
+            bundle = self._callbacks._final_current_evidence_admission(bundle,
                 deadline_at=final_authority_deadline(self._safe_float(
                     request.task_context_dict().get("_recall_deadline_monotonic"))))
             target_trace = current_target_trace(self)

@@ -1,10 +1,12 @@
 """A stored paper's withdrawal governs its derived, user-visible evidence."""
 from dataclasses import asdict
+from datetime import datetime
 import json
 
 import pytest
 
 from eimemory.api.runtime import Runtime
+from eimemory.core import clock
 from eimemory.intake.closure import build_research_closure_review
 from eimemory.intake.papers.artifacts import PaperArtifactError
 from eimemory.models.paper_sources import PaperSource
@@ -18,6 +20,26 @@ TEXT = 'Verified operational memory recall must preserve exact source provenance
 DATE = '2026-10-24'
 REVIEW = json.dumps({'verdict': 'approve', 'rationale': 'The source supports the proposal',
                      'required_followup': 'Add a local replay', 'risk': 'low'})
+
+
+@pytest.fixture
+def paper_clock(monkeypatch):
+    """Keep fixed-date evidence fixtures independent of the day pytest runs."""
+    current = datetime.fromisoformat(f'{DATE}T12:00:00+00:00')
+
+    class FixtureDatetime:
+        @staticmethod
+        def now(tz):
+            return current.astimezone(tz)
+
+    def set_instant(value):
+        nonlocal current
+        current = datetime.fromisoformat(value.replace('Z', '+00:00'))
+
+    # Patch the shared clock's dependency, including callers that imported
+    # now_iso before this fixture, and restore it after this test only.
+    monkeypatch.setattr(clock, 'datetime', FixtureDatetime)
+    return set_instant
 
 
 def _extract(runtime, source_id):
@@ -55,7 +77,7 @@ def _recall(runtime, kind):
 
 
 @pytest.mark.parametrize('status', ['deprecated', 'rejected', 'quarantined'])
-def test_withdrawal_removes_derived_digest_answer_context_and_daily_brief(tmp_path, status):
+def test_withdrawal_removes_derived_digest_answer_context_and_daily_brief(tmp_path, status, paper_clock):
     with Runtime.create(root=tmp_path) as runtime:
         source, _, claim, page = _chain(runtime)
         assert runtime.build_research_digest(scope=asdict(SCOPE), digest_date=DATE)['claim_count'] == 1
@@ -72,6 +94,42 @@ def test_withdrawal_removes_derived_digest_answer_context_and_daily_brief(tmp_pa
         assert answer['records'] == []
         assert {row['reason'] for row in answer['evidence_gate']['excluded']} == {'paper_source_inactive'}
         assert runtime.build_daily_brief(scope=asdict(SCOPE), date=DATE)['research_digest']['count'] == 0
+
+
+@pytest.mark.parametrize('status', ['deprecated', 'rejected', 'quarantined'])
+def test_withdrawal_across_utc_midnight_gates_both_daily_brief_windows(tmp_path, status, paper_clock):
+    next_day = '2026-10-25'
+    before_midnight = f'{DATE}T23:59:59Z'
+    after_midnight = f'{next_day}T00:00:01Z'
+    paper_clock(before_midnight)
+    with Runtime.create(root=tmp_path) as runtime:
+        source, _, claim, page = _chain(runtime)
+        assert all(row.time.created_at == before_midnight for row in (source, claim, page))
+        assert runtime.build_daily_brief(scope=asdict(SCOPE), date=DATE)['research_digest']['count'] >= 1
+
+        paper_clock(after_midnight)
+        for day in (DATE, next_day):
+            assert runtime.build_research_digest(scope=asdict(SCOPE), digest_date=day)['claim_count'] == 1
+            brief = runtime.build_daily_brief(scope=asdict(SCOPE), date=day)
+            assert brief['generated_at'] == after_midnight
+            assert page.record_id in {row['record_id'] for row in brief['research_digest']['items']}
+        assert len(runtime.filter_answer_evidence([claim, page], task_type='research')['records']) == 2
+
+        _withdraw(runtime, source, status)
+
+        for day in (DATE, next_day):
+            digest = runtime.build_research_digest(scope=asdict(SCOPE), digest_date=day)
+            assert digest['claim_count'] == 0
+            assert digest['knowledge_page_count'] == 0
+            assert source.record_id not in digest['source_ids']
+            assert TEXT not in digest['summary']
+            brief = runtime.build_daily_brief(scope=asdict(SCOPE), date=day)
+            assert brief['research_digest']['count'] == 0
+            excluded = {row['record_id']: row for row in brief['source_health']['evidence_gate']['excluded']}
+            assert excluded[page.record_id]['reason'] == 'paper_source_inactive'
+        answer = runtime.filter_answer_evidence([claim, page], task_type='research')
+        assert answer['records'] == []
+        assert {row['reason'] for row in answer['evidence_gate']['excluded']} == {'paper_source_inactive'}
 
 
 @pytest.mark.parametrize('kind', ['claim_card', 'knowledge_page', 'memory'])
