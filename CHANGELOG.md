@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.30] — 2026-10-25
+
+- Keep final user-control-plane commit refresh on eiMemory runtime units only. Gateway memory metadata stays a memory-only publication.
+
+
 ## [1.15.29] — 2026-10-25
 
 - Ordinary user promotion refreshes the final user-control-plane drop-in commit before reload. Earlier drop-ins no longer leave a stale runtime commit in effect.

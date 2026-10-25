@@ -369,5 +369,7 @@ _reject_unsupported_system_rpc_owner
     assert '_refresh_user_control_plane_commit' in ordinary
     assert ordinary.count('--render-commit "$target_commit"') == 1
     assert '_refresh_user_control_plane_commit "$runtime_unit" "$target_commit"' in ordinary
+    hermes = function('_install_hermes_integration')
+    assert '_refresh_user_control_plane_commit' not in hermes
     assert ordinary.index('_refresh_user_control_plane_commit') < ordinary.rindex(
         '_user_systemctl daemon-reload')

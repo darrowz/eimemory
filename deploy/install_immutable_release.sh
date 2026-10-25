@@ -1722,7 +1722,6 @@ _install_hermes_integration() {
       --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" --render-commit "$target_commit" \
       --render-releases-root "$INSTALL_ROOT/releases" \
       --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
-    _refresh_user_control_plane_commit "$unit" "$target_commit" "$metadata_release" || return $?
   done
   # The common renderer above supplies the complete memory environment.
   # Do not reinstall the retired gateway command wrapper, umask or startup
