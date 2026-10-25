@@ -255,6 +255,7 @@ jobs:
           tests/test_refresh_user_control_plane_commit.py
           tests/test_runtime_unit_discovery.py
           tests/test_candidate_metadata_preparation.py
+          tests/test_retire_completed_user_transition.py
           tests/test_l1_user_evidence.py
           tests/test_l1_source_order.py
           tests/test_l1_extraction_diagnostics.py
