@@ -348,7 +348,9 @@ def inspect_storage_status(
     }
 
 
-def _checkpoint_and_exclusive_connection(db_path: Path) -> sqlite3.Connection:
+def _checkpoint_and_exclusive_connection(
+    db_path: Path, *, validate_integrity: bool = True
+) -> sqlite3.Connection:
     connection = sqlite3.connect(db_path, timeout=0.1, isolation_level=None)
     try:
         connection.execute("PRAGMA busy_timeout=0")
@@ -356,9 +358,10 @@ def _checkpoint_and_exclusive_connection(db_path: Path) -> sqlite3.Connection:
         if checkpoint is not None and int(checkpoint[0]) != 0:
             raise StorageMaintenanceError("storage checkpoint is busy; a writer may still be active")
         connection.execute("BEGIN EXCLUSIVE")
-        result = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
-        if result.lower() != "ok":
-            raise StorageMaintenanceError(f"SQLite integrity_check failed: {result}")
+        if validate_integrity:
+            result = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
+            if result.lower() != "ok":
+                raise StorageMaintenanceError(f"SQLite integrity_check failed: {result}")
         return connection
     except sqlite3.OperationalError as exc:
         connection.close()
@@ -470,7 +473,9 @@ def create_consistent_storage_snapshot(
     staging = snapshot.parent / f".snapshot-stage-{uuid4().hex}"
     lock_path = database.parent / ".storage-maintenance.lock"
     with _exclusive_maintenance_lock(lock_path):
-        connection = _checkpoint_and_exclusive_connection(database)
+        # The immutable copy receives a full integrity check below. Reading the
+        # same database once before copying only extends the writer-stop window.
+        connection = _checkpoint_and_exclusive_connection(database, validate_integrity=False)
         try:
             _mkdir_with_durable_ancestors(staging)
             os.chmod(staging, 0o700)
@@ -593,7 +598,9 @@ def verify_sealed_snapshot_identity(
     }
 
 
-def _validate_sqlite_database(path: str | Path) -> dict[str, Any]:
+def _validate_sqlite_database(
+    path: str | Path, *, include_table_counts: bool = False
+) -> dict[str, Any]:
     database = Path(path)
     connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro&immutable=1", uri=True)
     try:
@@ -608,10 +615,11 @@ def _validate_sqlite_database(path: str | Path) -> dict[str, Any]:
             )
         ]
         counts: dict[str, int] = {}
-        for object_type, name, _sql in schema:
-            if object_type != "table" or not name.replace("_", "").isalnum():
-                continue
-            counts[name] = int(connection.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0])
+        if include_table_counts:
+            for object_type, name, _sql in schema:
+                if object_type != "table" or not name.replace("_", "").isalnum():
+                    continue
+                counts[name] = int(connection.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0])
         return {"integrity_check": integrity, "schema": schema, "table_counts": counts}
     finally:
         connection.close()
@@ -997,7 +1005,18 @@ def restore_storage_snapshot(
     if journal_path.exists():
         recover_storage_restore(db_path=database, segment_root=segments)
     snapshot = Path(snapshot_dir)
-    verification = verify_storage_snapshot(snapshot)
+    if expected_manifest_sha256 is not None:
+        # Release snapshots have already passed full integrity/pointer checks
+        # before their manifest identity was journaled. Verify that bound seal,
+        # then hash every copied byte and validate the actual staging database.
+        # Never weaken verification for an unbound or unsealed snapshot.
+        verification = verify_sealed_snapshot_identity(
+            snapshot,
+            expected_manifest_sha256=expected_manifest_sha256,
+            expected_binding=expected_binding,
+        )
+    else:
+        verification = verify_storage_snapshot(snapshot)
     if expected_binding is not None and verification["binding"] != dict(expected_binding):
         raise StorageMaintenanceError("storage snapshot binding mismatch")
     if (
@@ -1014,7 +1033,9 @@ def restore_storage_snapshot(
     lock_path = database.parent / ".storage-maintenance.lock"
     with _exclusive_maintenance_lock(lock_path):
         try:
-            guard = _checkpoint_and_exclusive_connection(database)
+            # Enforce the offline SQLite boundary; the database being replaced
+            # does not need another full scan before validating its replacement.
+            guard = _checkpoint_and_exclusive_connection(database, validate_integrity=False)
             guard.rollback()
             guard.close()
             if segments.is_symlink() or (
@@ -1032,6 +1053,7 @@ def restore_storage_snapshot(
             _copy_tree(snapshot / "payload_segments", staging / "payload_segments")
             _verify_staged_snapshot_copy(staging, snapshot)
             _validate_sqlite_database(staging / database.name)
+            verified_database = _validate_regular(staging / database.name)
             planned: list[dict[str, Any]] = []
             for suffix in _DB_SIDECAR_SUFFIXES:
                 live = Path(str(database) + suffix)
@@ -1102,7 +1124,22 @@ def restore_storage_snapshot(
             _fsync_file(database)
             _fsync_directory(segments)
             _fsync_directory(database.parent)
-            _validate_sqlite_database(database)
+            # os.replace publishes the exact validated inode on this filesystem.
+            # Check that identity rather than scanning the same SQLite file a
+            # second time. Payload pointers are still checked at their live path.
+            published_database = _validate_regular(database)
+            if (
+                published_database.st_dev,
+                published_database.st_ino,
+                published_database.st_size,
+                published_database.st_mtime_ns,
+            ) != (
+                verified_database.st_dev,
+                verified_database.st_ino,
+                verified_database.st_size,
+                verified_database.st_mtime_ns,
+            ):
+                raise StorageMaintenanceError("restored database changed after staging validation")
             _validate_live_payload_pointers(database, segments)
             journal["status"] = "complete"
             atomic_write_json(journal_path, journal)
@@ -1283,7 +1320,7 @@ def vacuum_into_atomic(
     temporary = database.parent / f".{database.name}.vacuum-{token}"
     backup = database.parent / f".{database.name}.pre-vacuum-{token}.bak"
     before_digest = _file_digest(database)
-    original = _validate_sqlite_database(database)
+    original = _validate_sqlite_database(database, include_table_counts=True)
     lock_path = database.parent / ".storage-maintenance.lock"
     with _exclusive_maintenance_lock(lock_path):
         # Exclusive SQLite lock must cover VACUUM INTO through path replace. Use
@@ -1297,7 +1334,7 @@ def vacuum_into_atomic(
             escaped = str(temporary).replace("'", "''")
             connection.execute(f"VACUUM INTO '{escaped}'")
             _fsync_file(temporary)
-            candidate = _validate_sqlite_database(temporary)
+            candidate = _validate_sqlite_database(temporary, include_table_counts=True)
             if candidate["schema"] != original["schema"] or candidate["table_counts"] != original["table_counts"]:
                 temporary.unlink(missing_ok=True)
                 raise StorageMaintenanceError("VACUUM candidate schema or row counts differ")

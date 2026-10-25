@@ -100,6 +100,20 @@ def _managed_link(destination: Path, target: Path) -> str:
     return "migrated" if backup.exists() else "installed"
 
 
+def _check_managed_link(destination: Path, target: Path) -> str:
+    """Validate the publication without creating directories or links."""
+    if destination.is_symlink() and os.readlink(destination) == str(target):
+        return "unchanged"
+    if destination.exists() and not destination.is_symlink():
+        backup = destination.parent.parent / ".eimemory-plugin-backups" / f"{destination.name}.pre-managed"
+        if backup.exists() or backup.is_symlink():
+            raise RuntimeError(f"managed plugin backup already exists: {backup}")
+    temporary = destination.parent / f".{destination.name}.next"
+    if temporary.exists() and temporary.is_dir() and not temporary.is_symlink():
+        raise RuntimeError(f"managed plugin temporary path is a directory: {temporary}")
+    return "prepared"
+
+
 def _write_config(path: Path, payload: dict[str, Any]) -> None:
     yaml = _yaml_module()
 
@@ -178,6 +192,7 @@ def install_hermes_integration(
     hermes_home: str | Path,
     current_root: str | Path = "/opt/eimemory/current",
     allow_provider_only: bool = False,
+    check_only: bool = False,
 ) -> dict[str, Any]:
     yaml = _yaml_module()
 
@@ -188,6 +203,7 @@ def install_hermes_integration(
     expected_version = str(project["project"]["version"])
     handoff = prepare_handoff_directories(home)
     links: dict[str, str] = {}
+    pending_links: list[tuple[str, Path, Path, bool]] = []
     hook_available = (release / PLUGIN_LAYOUT["eimemory_hook"] / "__init__.py").is_file()
     if not hook_available and not allow_provider_only:
         raise RuntimeError("Hermes hook plugin source is incomplete")
@@ -195,16 +211,15 @@ def install_hermes_integration(
         source = release / relative_source
         target = current / relative_source
         if plugin_name == "eimemory_hook" and not hook_available:
-            links[plugin_name] = _remove_release_link(
-                home / "plugins" / plugin_name,
-                target,
-            )
+            pending_links.append((plugin_name, home / "plugins" / plugin_name, target, True))
             continue
         if not source.is_dir() or not (source / "__init__.py").is_file():
             raise RuntimeError(f"Hermes plugin source is incomplete: {source}")
         if _plugin_version(source / "plugin.yaml") != expected_version:
             raise RuntimeError(f"Hermes plugin version mismatch: {plugin_name}")
-        links[plugin_name] = _managed_link(home / "plugins" / plugin_name, target)
+        destination = home / "plugins" / plugin_name
+        links[plugin_name] = _check_managed_link(destination, target)
+        pending_links.append((plugin_name, destination, target, False))
 
     identity = {
         "capability_id": "code.implementation",
@@ -241,7 +256,13 @@ def install_hermes_integration(
         plugins["disabled"] = disabled
     else:
         plugins.pop("disabled", None)
-    _write_config(config_path, config)
+    # Validate the entire candidate before the first live publication. Repeat
+    # these checks during application; preparation never authorizes stale data.
+    if not check_only:
+        for plugin_name, destination, target, remove in pending_links:
+            links[plugin_name] = (_remove_release_link(destination, target) if remove
+                                  else _managed_link(destination, target))
+        _write_config(config_path, config)
     return {
         "ok": True,
         "version": expected_version,
@@ -250,6 +271,7 @@ def install_hermes_integration(
         "handoff_directories": handoff,
         "links": links,
         "code_implementation": identity,
+        "check_only": check_only,
     }
 
 
@@ -259,12 +281,14 @@ def main() -> int:
     parser.add_argument("--hermes-home", required=True)
     parser.add_argument("--current-root", default="/opt/eimemory/current")
     parser.add_argument("--allow-provider-only", action="store_true")
+    parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
     report = install_hermes_integration(
         release_root=args.release_root,
         hermes_home=args.hermes_home,
         current_root=args.current_root,
         allow_provider_only=args.allow_provider_only,
+        check_only=args.check_only,
     )
     print(json.dumps(report, ensure_ascii=True, sort_keys=True))
     return 0

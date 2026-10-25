@@ -571,6 +571,8 @@ _storage_unit_is_active() {
 }
 
 _stop_storage_writers() {
+  if [ -z "${DEPLOY_QUIESCE_STARTED_AT:-}" ]; then DEPLOY_QUIESCE_STARTED_AT=$SECONDS; fi
+  _deployment_timing writers_stop_started
   if _runtime_manager_enabled; then
     _capture_storage_writers || return $?
     STORAGE_WRITERS_STOPPED=1
@@ -1239,6 +1241,7 @@ _prepare_storage_for_release() {
   fi
   _stop_storage_writers
   _update_storage_release_transaction writers_stopped
+  _deployment_timing writers_stopped
   _maybe_fail_stage storage_writer_stop
   _storage_release_action preflight
   _maybe_fail_stage storage_preflight
@@ -1249,6 +1252,7 @@ _prepare_storage_for_release() {
     return 2
   fi
   printf '%s\n' "$snapshot_report"
+  _deployment_timing storage_snapshot_ready
   STORAGE_SNAPSHOT_MANIFEST_SHA256="$(printf '%s' "$snapshot_report" | \
     "$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" -c \
       'import json,re,sys; value=str(json.load(sys.stdin).get("manifest_sha256") or ""); sys.exit(2) if re.fullmatch(r"[0-9a-f]{64}", value) is None else print(value)')"
@@ -1263,11 +1267,13 @@ _prepare_storage_for_release() {
   fi
   _update_storage_release_transaction storage_destructive 1
   _storage_release_action migrate
+  _deployment_timing storage_migration_complete
   _update_storage_release_transaction storage_migrated 1
   _maybe_fail_stage storage_migrate
   local vacuum_report
   vacuum_report="$(_storage_release_action vacuum)"
   printf '%s\n' "$vacuum_report"
+  _deployment_timing storage_vacuum_complete
   STORAGE_VACUUM_BACKUP="$(printf '%s' "$vacuum_report" | \
     "$RELEASE_DIR/.venv/bin/python" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" -c \
       'import json,sys; print(str(json.load(sys.stdin).get("backup_path") or ""))')"
@@ -1311,6 +1317,15 @@ _maybe_fail_stage() {
     return 97
   fi
   return 0
+}
+
+_deployment_timing() {
+  local phase="$1" now=$SECONDS quiesce=0
+  if [ -n "${DEPLOY_QUIESCE_STARTED_AT:-}" ]; then
+    quiesce=$((now - DEPLOY_QUIESCE_STARTED_AT))
+  fi
+  echo "deployment_timing phase=$phase elapsed_seconds=$((now - ${DEPLOY_TIMING_LAST_AT:-$now})) quiesce_elapsed_seconds=$quiesce"
+  DEPLOY_TIMING_LAST_AT=$now
 }
 
 _release_version() {
@@ -1563,6 +1578,39 @@ _preflight_user_control_plane_commits() {
     _refresh_user_control_plane_commit "$runtime_unit" "$COMMIT" "$REPO_DIR" check || return $?
   done <<< "$units"
   echo "user_control_plane_commit_preflight=passed"
+}
+
+_preflight_candidate_runtime_metadata() {
+  # Render in a private temporary tree. No live identity, gateway configuration
+  # or host compatibility source changes while the prior release is serving.
+  local units runtime_unit selected=""
+  if ! _runtime_manager_enabled && [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && \
+     command -v systemctl >/dev/null 2>&1; then
+    units="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" < "$REPO_DIR/deploy/discover_python_runtime_units.sh")" || return $?
+    while IFS= read -r runtime_unit; do
+      [ -n "$runtime_unit" ] || continue
+      if _is_unselected_openclaw_unit "$runtime_unit"; then continue; fi
+      selected+="$runtime_unit"$'\n'
+    done <<< "$units"
+    printf '%s' "$selected" | _run_as_service_user "$PYTHON_BIN" -I -B \
+      -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" "$REPO_DIR/deploy/preflight_runtime_metadata.py" \
+      --controller-root "$REPO_DIR" --release-root "$RELEASE_DIR" --commit "$COMMIT" \
+      --releases-root "$INSTALL_ROOT/releases" --systemd-root "$USER_SYSTEMD_DIR" \
+      --receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE" --owner-uid "$(id -u "$SERVICE_USER")" || return $?
+  fi
+  if _hermes_is_installed; then
+    _run_as_service_user "$HERMES_PYTHON" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" \
+      "$REPO_DIR/deploy/ensure_hermes_sync_snapshot.py" \
+      --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent" || return $?
+    _run_as_service_user "$HERMES_PYTHON" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" \
+      "$REPO_DIR/deploy/ensure_hermes_profile_boundary.py" \
+      --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent" || return $?
+    _run_as_service_user env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME_DIR" \
+      "$HERMES_PYTHON" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" \
+      "$REPO_DIR/deploy/install_hermes_integration.py" \
+      --release-root "$RELEASE_DIR" --hermes-home "$HERMES_HOME_DIR" --check-only || return $?
+  fi
+  echo "candidate_runtime_metadata_preflight=passed live_metadata_changed=0"
 }
 
 _install_current_runtime_metadata() {
@@ -3271,6 +3319,7 @@ cleanup_stage() {
   local exit_code=$?
   trap - EXIT
   set +e
+  _deployment_timing "cleanup_started_exit_$exit_code"
   if [ "$(realpath -e -- "$CURRENT_LINK" 2>/dev/null)" = "$RELEASE_DIR" ]; then
     CURRENT_SWITCHED=1
   fi
@@ -3460,6 +3509,8 @@ _source_checkpoint "$RELEASE_DIR" console_verified
 _preflight_release_readonly
 _preflight_research_review_configuration
 _preflight_user_control_plane_commits
+_preflight_candidate_runtime_metadata
+_deployment_timing candidate_preparation_complete
 
 chmod 0755 "$INSTALL_ROOT" 2>/dev/null || true
 _ensure_runtime_dir "$EIMEMORY_ROOT" 0750
@@ -3482,17 +3533,23 @@ if _openclaw_is_enabled; then
 fi
 
 _observe_pre_switch_l5
+# Recheck mutable live identity immediately before beginning the storage
+# transaction; earlier private rendering never replaces publication checks.
+_preflight_user_control_plane_commits
+_deployment_timing cutover_preflight_complete
 _prepare_storage_for_release
 _retire_system_rpc_unit
 
 ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"
 mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
 CURRENT_SWITCHED=1
+_deployment_timing current_link_switched
 _fsync_install_root
 if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
   _update_storage_release_transaction current_switched 1 "$STORAGE_VACUUM_BACKUP"
 fi
 _install_candidate_runtime_metadata
+_deployment_timing candidate_metadata_published
 _source_checkpoint "$RELEASE_DIR" metadata_installed
 if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
   _update_storage_release_transaction metadata_ready 1 "$STORAGE_VACUUM_BACKUP"
@@ -3503,6 +3560,7 @@ if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
 fi
 _maybe_fail_stage registry
 _restart_current_services
+_deployment_timing core_services_ready
 _source_checkpoint "$RELEASE_DIR" services_started
 _verify_effective_runtime_metadata "$COMMIT"
 _maybe_fail_stage rpc_restart

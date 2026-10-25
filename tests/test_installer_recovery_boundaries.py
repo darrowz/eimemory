@@ -150,7 +150,7 @@ def test_current_rename_then_fsync_failure_restores_code_data_and_journal(tmp_pa
         "_rollback_current_release", "_update_storage_release_transaction", "_clear_storage_release_transaction",
         "_restore_storage_snapshot", "_cleanup_storage_vacuum_backup", "_pause_release_closure_reconcile",
         "_resume_release_closure_reconcile", "_restart_current_services", "_start_managed_runtime_timers",
-        "cleanup_stage",
+        "cleanup_stage", "_deployment_timing",
     ))
     # Exercise the real restore CLI with this checkout on the import path.
     services = "\n".join(f"{name}() {{ :; }}" for name in (

@@ -845,12 +845,12 @@ def test_vacuum_is_dry_run_by_default_and_rolls_back_failed_reopen(tmp_path, mon
     original_validate = maintenance._validate_sqlite_database
     validations = 0
 
-    def fail_after_replace(path):
+    def fail_after_replace(path, **kwargs):
         nonlocal validations
         validations += 1
         if validations >= 2 and Path(path) == db_path:
             raise StorageMaintenanceError("simulated post-replace validation failure")
-        return original_validate(path)
+        return original_validate(path, **kwargs)
 
     monkeypatch.setattr(maintenance, "_validate_sqlite_database", fail_after_replace)
     with pytest.raises(StorageMaintenanceError, match="post-replace"):
@@ -1055,3 +1055,211 @@ def test_restore_failure_after_mutation_rolls_back_and_preserves_journal(tmp_pat
     assert journal["schema"] == "storage_restore_journal.v1"
     assert journal["status"] == "rolled_back_after_failure"
     assert journal["mutation_started"] is True
+
+
+def test_sealed_snapshot_and_restore_each_scan_sqlite_integrity_once(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = _LockedStore(db_path)
+    store.upsert(_large_score())
+    store.close()
+    segments = db_path.parent / "payload_segments"
+    snapshot = tmp_path / "snapshot"
+    binding = {"candidate_commit": "a" * 40, "attempt_id": "bounded-restore"}
+    statements: list[str] = []
+    original_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        connection = original_connect(*args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(maintenance.sqlite3, "connect", traced_connect)
+    created = create_consistent_storage_snapshot(
+        db_path=db_path,
+        segment_root=segments,
+        snapshot_dir=snapshot,
+        offline=True,
+        binding=binding,
+        seal=True,
+    )
+    assert sum("PRAGMA integrity_check" in sql for sql in statements) == 1
+    # SQLite's integrity_check itself counts FTS shadow tables. Those internal
+    # trace statements start with "--" and remain required; only avoid the
+    # application's additional whole-table counting pass.
+    assert not any(
+        "COUNT(*)" in sql.upper() and not sql.lstrip().startswith("--")
+        for sql in statements
+    )
+    statements.clear()
+    original_digest = _digest(db_path)
+
+    def unexpected_source_scan(_path):
+        raise AssertionError("sealed restore must validate the copied database instead")
+
+    monkeypatch.setattr(maintenance, "verify_storage_snapshot", unexpected_source_scan)
+    restored = restore_storage_snapshot(
+        snapshot_dir=snapshot,
+        db_path=db_path,
+        segment_root=segments,
+        offline=True,
+        expected_binding=binding,
+        expected_manifest_sha256=created["manifest_sha256"],
+    )
+
+    assert restored["ok"] is True
+    assert _digest(db_path) == original_digest
+    assert sum("PRAGMA integrity_check" in sql for sql in statements) == 1
+    assert not any(
+        "COUNT(*)" in sql.upper() and not sql.lstrip().startswith("--")
+        for sql in statements
+    )
+
+
+def test_sealed_restore_detects_same_size_and_mtime_corruption_before_live_swap(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = _LockedStore(db_path)
+    store.upsert(_large_score())
+    store.close()
+    segments = db_path.parent / "payload_segments"
+    snapshot = tmp_path / "snapshot"
+    created = create_consistent_storage_snapshot(
+        db_path=db_path,
+        segment_root=segments,
+        snapshot_dir=snapshot,
+        offline=True,
+        seal=True,
+    )
+    original_digest = _digest(db_path)
+    snapshot_db = snapshot / db_path.name
+    metadata = snapshot_db.stat()
+    os.chmod(snapshot_db, 0o600)
+    with snapshot_db.open("r+b") as handle:
+        handle.seek(100)
+        original_byte = handle.read(1)
+        handle.seek(100)
+        handle.write(bytes([original_byte[0] ^ 1]))
+    os.utime(snapshot_db, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    os.chmod(snapshot_db, 0o400)
+
+    with pytest.raises(StorageMaintenanceError, match="staged restore file digest mismatch"):
+        restore_storage_snapshot(
+            snapshot_dir=snapshot,
+            db_path=db_path,
+            segment_root=segments,
+            offline=True,
+            expected_manifest_sha256=created["manifest_sha256"],
+        )
+
+    assert _digest(db_path) == original_digest
+    assert not (db_path.parent / ".storage-restore-journal.json").exists()
+
+
+def test_bound_restore_rejects_unsealed_snapshot_without_downgrading_verification(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = _LockedStore(db_path)
+    store.close()
+    snapshot = tmp_path / "snapshot"
+    created = create_consistent_storage_snapshot(
+        db_path=db_path,
+        segment_root=db_path.parent / "payload_segments",
+        snapshot_dir=snapshot,
+        offline=True,
+    )
+    original_digest = _digest(db_path)
+
+    with pytest.raises(StorageMaintenanceError, match="not sealed"):
+        restore_storage_snapshot(
+            snapshot_dir=snapshot,
+            db_path=db_path,
+            segment_root=db_path.parent / "payload_segments",
+            offline=True,
+            expected_manifest_sha256=created["manifest_sha256"],
+        )
+
+    assert _digest(db_path) == original_digest
+
+
+def test_restore_rejects_substitution_of_the_validated_staging_inode(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = _LockedStore(db_path)
+    store.upsert(_large_score())
+    store.close()
+    segments = db_path.parent / "payload_segments"
+    snapshot = tmp_path / "snapshot"
+    create_consistent_storage_snapshot(
+        db_path=db_path,
+        segment_root=segments,
+        snapshot_dir=snapshot,
+        offline=True,
+    )
+    original_digest = _digest(db_path)
+    replace = os.replace
+    substituted = False
+
+    def substitute_after_publish(source, destination, *args, **kwargs):
+        nonlocal substituted
+        replace(source, destination, *args, **kwargs)
+        source_path = Path(source)
+        if (
+            not substituted
+            and source_path.parent.name.startswith(".storage-restore-")
+            and Path(destination) == db_path
+        ):
+            substituted = True
+            substitute = db_path.parent / "substitute.sqlite"
+            shutil.copy2(db_path, substitute)
+            replace(substitute, db_path)
+
+    monkeypatch.setattr(maintenance.os, "replace", substitute_after_publish)
+    with pytest.raises(StorageMaintenanceError, match="changed after staging validation"):
+        restore_storage_snapshot(
+            snapshot_dir=snapshot,
+            db_path=db_path,
+            segment_root=segments,
+            offline=True,
+        )
+
+    assert substituted is True
+    assert _digest(db_path) == original_digest
+    journal = read_json_strict(db_path.parent / ".storage-restore-journal.json", dict)
+    assert journal["status"] == "rolled_back_after_failure"
+
+
+def test_vacuum_still_rejects_an_integrity_valid_candidate_with_missing_rows(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "state" / "eimemory.sqlite"
+    store = _LockedStore(db_path)
+    store.upsert(_large_score())
+    store.close()
+    original_digest = _digest(db_path)
+    fsync = maintenance._fsync_file
+    damaged_candidate = False
+
+    def drop_candidate_row(path):
+        nonlocal damaged_candidate
+        fsync(path)
+        candidate = Path(path)
+        if not damaged_candidate and candidate.name.startswith(f".{db_path.name}.vacuum-"):
+            damaged_candidate = True
+            connection = sqlite3.connect(candidate)
+            try:
+                connection.execute("DELETE FROM records")
+                connection.commit()
+            finally:
+                connection.close()
+
+    monkeypatch.setattr(maintenance, "_fsync_file", drop_candidate_row)
+    with pytest.raises(StorageMaintenanceError, match="schema or row counts differ"):
+        vacuum_into_atomic(db_path=db_path, offline=True, apply=True)
+
+    assert damaged_candidate is True
+    assert _digest(db_path) == original_digest

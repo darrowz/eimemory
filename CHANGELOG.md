@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.15.32] — 2026-10-25
+
+- Keep the runtime controller and deployment/validation jobs outside application runtime discovery, and validate final identity before stopping services.
+- Prepare candidate runtime metadata and Hermes integration before cutover, keeping the serving release's identity in place during preparation.
+- Remove repeated full-database scans from snapshots and restores while retaining sealed manifest binding, copied-file hashes, SQLite integrity and payload checks, and crash-safe rollback.
+
+
 ## [1.15.31] — 2026-10-25
 
 - Scope final control-plane refresh to owned units, use current controller helper during rollback, and harden atomic metadata publication.
