@@ -364,3 +364,10 @@ _reject_unsupported_system_rpc_owner
     body = function('_user_systemctl')
     assert 'systemctl --user "$@"' in body
     assert '_runtime_manager_job_bound' in function('_runtime_manager_enabled')
+    metadata = function('_install_current_runtime_metadata')
+    ordinary = metadata.split('local target_release=', 1)[1]
+    assert '_refresh_user_control_plane_commit' in ordinary
+    assert ordinary.count('--render-commit "$target_commit"') == 1
+    assert '_refresh_user_control_plane_commit "$runtime_unit" "$target_commit"' in ordinary
+    assert ordinary.index('_refresh_user_control_plane_commit') < ordinary.rindex(
+        '_user_systemctl daemon-reload')

@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.29] — 2026-10-25
+
+- Ordinary user promotion refreshes the final user-control-plane drop-in commit before reload. Earlier drop-ins no longer leave a stale runtime commit in effect.
+
+
 ## [1.15.28] — 2026-10-24
 
 - Align nightly and policy contracts with the current gates: proven adverse incident facts fail aggregation, and the live per-agent force policy is traffic-discovered only.

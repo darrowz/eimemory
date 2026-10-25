@@ -1528,6 +1528,20 @@ _start_code_implementation_owner() {
   echo "code_implementation_owner=ready release=$target_release"
 }
 
+_refresh_user_control_plane_commit() {
+  local runtime_unit="$1"
+  local target_commit="$2"
+  local metadata_release="${3:-$RELEASE_DIR}"
+  local target="$USER_SYSTEMD_DIR/$runtime_unit.d/zzzzzz-eimemory-user-control-plane.conf"
+  if [ ! -f "$target" ]; then
+    echo "user_control_plane_commit=missing unit=$runtime_unit" >&2
+    return 2
+  fi
+  "$PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" \
+    "$metadata_release/deploy/refresh_user_control_plane_commit.py" \
+    --target "$target" --commit "$target_commit"
+}
+
 _install_current_runtime_metadata() {
   if _runtime_manager_enabled; then
     # Root renders only its reviewed templates; the candidate cannot supply a
@@ -1591,6 +1605,10 @@ _install_current_runtime_metadata() {
       --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID" --render-commit "$target_commit" \
       --render-releases-root "$INSTALL_ROOT/releases" \
       --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
+    # The user-control-plane drop-in is lexicographically last and overrides
+    # Environment= values from earlier drop-ins. Refresh only its commit token
+    # before reload; do not rewrite its sandbox or command policy here.
+    _refresh_user_control_plane_commit "$runtime_unit" "$target_commit" "$metadata_release" || return $?
   done
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"
@@ -1704,6 +1722,7 @@ _install_hermes_integration() {
       --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" --render-commit "$target_commit" \
       --render-releases-root "$INSTALL_ROOT/releases" \
       --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
+    _refresh_user_control_plane_commit "$unit" "$target_commit" "$metadata_release" || return $?
   done
   # The common renderer above supplies the complete memory environment.
   # Do not reinstall the retired gateway command wrapper, umask or startup
