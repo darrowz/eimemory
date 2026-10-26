@@ -534,6 +534,23 @@ def test_empty_deliveries_do_not_consume_provider_budget(runtime, monkeypatch):
     assert report['verdict_counts']['relevant'] == 3
 
 
+def test_unrecoverable_render_does_not_starve_provider_on_repeated_scans(runtime, monkeypatch):
+    delivery(runtime, decision_id='recoverable')
+    changed, _ = delivery(runtime, decision_id='unrecoverable')
+    changed.content['text'] = 'changed since delivery'
+    with runtime.store.locked() as db:
+        db.upsert(changed)
+    calls = []
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: calls.append(True) or answer(['relevant']))
+    for _ in range(2):
+        report, _ = monitor.monitor_deliveries(runtime, scope=ScopeRef.from_dict(SCOPE), max_new=1)
+        assert report['deferred_count'] == 0
+        assert report['verdict_counts']['relevant'] == 1
+        assert report['verdict_counts']['unknown'] == 1
+    assert len(calls) == 1
+    assert changed.content['text'] == 'changed since delivery'
+
+
 def test_auto_label_confirmation_uses_shared_budget_and_resumes(runtime, monkeypatch):
     monkeypatch.setenv('EIMEMORY_PRODUCTION_RECALL_AUTO_REVIEW', '1')
     delivery(runtime)
@@ -545,3 +562,26 @@ def test_auto_label_confirmation_uses_shared_budget_and_resumes(runtime, monkeyp
     assert second['provider_calls'] == 1 and second['reused_count'] == 1
     third, _ = monitor.monitor_deliveries(runtime, scope=ScopeRef.from_dict(SCOPE), max_new=1)
     assert third['provider_calls'] == 0 and len(calls) == 2
+
+
+@pytest.mark.parametrize('mutation', ['query', 'render'])
+def test_local_evidence_failure_persists_with_zero_provider_budget(runtime, monkeypatch, mutation):
+    record, _ = delivery(runtime)
+    calls = []
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: calls.append(True) or answer(['relevant']))
+    first, _ = monitor.monitor_deliveries(runtime, scope=ScopeRef.from_dict(SCOPE), max_new=1)
+    assert first['verdict_counts']['relevant'] == 1
+    with runtime.store.locked() as db:
+        if mutation == 'query':
+            db.execute("UPDATE proactive_decisions SET query_text='changed' WHERE decision_id='delivery'")
+            db.conn.commit()
+        else:
+            record.content['text'] = 'changed after review'
+            db.upsert(record)
+    second, findings = monitor.monitor_deliveries(runtime, scope=ScopeRef.from_dict(SCOPE), max_new=0)
+    assert second['provider_calls'] == 0
+    assert second['verdict_counts']['unknown'] == 1
+    assert second['verdict_counts']['relevant'] == 0
+    assert second['deferred_count'] == 0
+    assert not findings
+    assert len(calls) == 1

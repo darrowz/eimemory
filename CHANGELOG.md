@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.41] — 2026-10-26
+
+- Charge semantic delivery review budget at the provider call. Recheck unavailable historical inputs locally without starving valid deliveries, and persist invalidated query/render evidence even when provider budget is exhausted. Preserve unknown outcomes and all scope, source, release and certification gates.
+
 ## [1.15.40] — 2026-10-26
 
 - Share the bounded semantic work budget across delivery, explicit review and repair, rotating roles and stages with the existing atomic scheduling cursor. Review pending replay packets before new captures; retry transport and temporary execution failures without granting repair credit or changing historical evidence gates.

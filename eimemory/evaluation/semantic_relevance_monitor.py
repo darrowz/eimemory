@@ -238,14 +238,7 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
             reasons = counts['skip_reason_counts']
             reasons[reason] = reasons.get(reason, 0) + 1
             continue
-        needs_budget = bool(delivered)
-        if cached is None and needs_budget and budget_used >= max_new:
-            counts['deferred_count'] += 1
-            continue
-        if cached is None:
-            counts['new_count'] += 1
-            budget_used += int(needs_budget)
-        else:
+        if cached is not None:
             counts['reused_count'] += 1
         if eligible:
             try:
@@ -283,6 +276,12 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
                         result = {k: cached[k] for k in ('verdict', 'reason', 'relevance',
                                                         'off_topic', 'duplicates', 'unanswered')}
                     else:
+                        # Missing historical evidence is rechecked locally, without
+                        # reserving provider budget on every scan forever.
+                        if budget_used >= max_new:
+                            counts['deferred_count'] += 1
+                            continue
+                        budget_used += 1
                         counts['provider_calls'] += 1
                         result = _evaluate(query, hydrated_items)
         report = dict(observation, **result)
@@ -291,15 +290,11 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
             # Current query/render validation can invalidate an old verdict.
             # Persist that status so downstream review sees the real failure.
             counts['reused_count'] -= 1
-            if needs_budget and budget_used >= max_new:
-                counts['deferred_count'] += 1
-                continue
-            counts['new_count'] += 1
-            budget_used += int(needs_budget)
             cached = None
         if cached is not None:
             record = cached_record
         else:
+            counts['new_count'] += 1
             record = RecordEnvelope.create(
                 kind='evaluation_packet', title='Semantic relevance observation', summary=result['reason'],
                 content=report, scope=scope, source=SOURCE,
