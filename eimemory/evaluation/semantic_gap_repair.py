@@ -18,6 +18,50 @@ from eimemory.governance.release.evidence_contract import current_release_identi
 CAPTURE_SOURCE = 'eimemory.semantic_relevance_monitor.replay_capture'
 REVIEW_SOURCE = 'eimemory.semantic_relevance_monitor.repair_review'
 SCHEMA = 'semantic_gap_repair.v1'
+REPAIR_REASONS = frozenset({
+    'semantic_repair_budget_deferred',
+    'semantic_repair_canonical_owner_required',
+    'semantic_repair_capture_unavailable',
+    'semantic_repair_confirmation_invalid',
+    'semantic_repair_current_release_unavailable',
+    'semantic_repair_decision_lookup_incomplete',
+    'semantic_repair_decision_unavailable',
+    'semantic_repair_evidence_invalid',
+    'semantic_repair_evidence_unverifiable',
+    'semantic_repair_final_state_mismatch',
+    'semantic_repair_gap_identity_invalid',
+    'semantic_repair_gap_unavailable',
+    'semantic_repair_historical_release_invalid',
+    'semantic_repair_incident_lineage_invalid',
+    'semantic_repair_legacy_evidence_unverifiable',
+    'semantic_repair_lineage_changed',
+    'semantic_repair_not_passed',
+    'semantic_repair_observation_invalid',
+    'semantic_repair_observation_unavailable',
+    'semantic_repair_original_context_unverifiable',
+    'semantic_repair_original_decision_invalid',
+    'semantic_repair_original_delivery_unavailable',
+    'semantic_repair_original_render_unverifiable',
+    'semantic_repair_owner_mismatch',
+    'semantic_repair_packet_invalid',
+    'semantic_repair_packet_unavailable',
+    'semantic_repair_parent_not_current',
+    'semantic_repair_private_result_unavailable',
+    'semantic_repair_references_invalid',
+    'semantic_repair_release_changed',
+    'semantic_repair_replay_input_mismatch',
+    'semantic_repair_result_authority_changed',
+    'semantic_repair_result_boundary_invalid',
+    'semantic_repair_result_identity_invalid',
+    'semantic_repair_retrieval_not_complete',
+    'semantic_repair_review_identity_invalid',
+    'semantic_repair_review_unavailable',
+    'semantic_repair_scan_limit_deferred',
+    'semantic_repair_scope_not_authorized',
+    'semantic_repair_semantic_key_mismatch',
+    'semantic_repair_source_boundary_invalid',
+    'semantic_repair_verdict_invalid',
+})
 RESULT_CONTRACT = 'native_recall_compact.v1'
 
 
@@ -365,6 +409,7 @@ def _audit_unverifiable(runtime, *, scope, reason, policy_fingerprint, gap=None,
     record.meta['semantic_repair_release_digest'] = explicit._digest(body['release_identity'])
     record.meta['semantic_repair_capture_policy_fingerprint'] = policy_fingerprint
     explicit._insert_once(runtime, record)
+    return record.record_id
 
 
 def _incident_cte():
@@ -399,7 +444,11 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
     exact = _exact(scope)
     report = dict(status='observation_only', reviewed_count=0, replay_count=0, provider_calls=0,
                   unresolved_count=0, unverifiable_count=0, deferred_count=0,
-                  reason_counts={}, natural_benchmark_eligible=False)
+                  reason_counts={}, results=[], budget_limit=max(0, min(8, int(max_new))),
+                  incident_scan_limit=33, incident_work_limit=32, packet_scan_limit=64,
+                  incident_rows_observed=0, packet_rows_observed=0,
+                  incident_scan_saturated=False, packet_scan_saturated=False,
+                  natural_benchmark_eligible=False)
     findings = []
     budget = max(0, min(8, int(max_new)))
 
@@ -414,19 +463,28 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
         # or signing fails. Invalid/revoked packets cannot evade this budget.
         report['provider_calls'] += 1
 
+    def trace(status, reason, gap=None, packet=None, audit_ref=None, gap_ref=None):
+        report['reason_counts'][reason] = report['reason_counts'].get(reason, 0) + 1
+        report['results'].append(dict(status=status, reason=reason,
+            gap_ref=gap.record_id if gap is not None else gap_ref,
+            packet_ref=packet.record_id if packet is not None else None, audit_ref=audit_ref))
+
     def failed(error, gap=None, packet=None):
-        reason = str(error) if isinstance(error, ValueError) and str(error).startswith('semantic_repair_') else 'semantic_repair_evidence_invalid'
+        reason = str(error) if isinstance(error, ValueError) and str(error) in REPAIR_REASONS else 'semantic_repair_evidence_invalid'
         if reason == 'semantic_repair_budget_deferred':
             report['deferred_count'] += 1
+            trace('deferred', reason, gap, packet)
             return
         report['unverifiable_count'] += 1
-        report['reason_counts'][reason] = report['reason_counts'].get(reason, 0) + 1
+        audit_ref = None
         if gap is not None or packet is not None:
             try:
-                _audit_unverifiable(runtime, gap=gap, packet=packet, scope=exact, reason=reason,
+                audit_ref = _audit_unverifiable(runtime, gap=gap, packet=packet, scope=exact, reason=reason,
                                     policy_fingerprint=policy_fingerprint)
             except (ValueError, KeyError, TypeError):
                 pass  # unavailable attestation never turns unknown into pass
+        trace('unverifiable', reason, gap, packet, audit_ref,
+              packet.meta.get('semantic_repair_gap_ref') if packet is not None else None)
 
     # Independent configured capture policy supplies authority, never records.
     from eimemory.evaluation.query_input_vault import configured_capture_scopes
@@ -455,8 +513,11 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
             (*owner_params, CAPTURE_SOURCE, 'eimemory.semantic_relevance_monitor.repair_audit',
              policy_fingerprint,
              exact.tenant_id, exact.agent_id, exact.workspace_id, exact.user_id, release_digest)).fetchall()
-    if len(rows) > 32:
-        report['deferred_count'] += len(rows) - 32
+    report['incident_rows_observed'] = len(rows)
+    report['incident_scan_saturated'] = len(rows) == 33
+    for row in rows[32:]:
+        report['deferred_count'] += 1
+        trace('deferred', 'semantic_repair_scan_limit_deferred', gap_ref=row['record_id'])
     for row in rows[:32]:
         gap = runtime.store.get_by_id(row['record_id'], scope=exact)
         if gap is None:
@@ -489,6 +550,8 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
             (*owner_params, CAPTURE_SOURCE, exact.tenant_id, exact.agent_id, exact.workspace_id, exact.user_id,
              release_digest, 'eimemory.semantic_relevance_monitor.repair_audit', policy_fingerprint,
              REVIEW_SOURCE)).fetchall()
+    report['packet_rows_observed'] = len(packet_rows)
+    report['packet_scan_saturated'] = len(packet_rows) == 64
     packets = [runtime.store.get_by_exact_ref(row['record_id'], scope=exact, source_id='default') for row in packet_rows]
     for packet in packets:
         if packet is None or packet.scope != exact or packet.source != CAPTURE_SOURCE:
@@ -498,6 +561,8 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
                 allow_model=spent() < budget, _on_provider_call=judge_called)
             if result['review_ref'] is None:
                 report['deferred_count'] += 1
+                trace('deferred', 'semantic_repair_budget_deferred', packet=packet,
+                      gap_ref=packet.meta.get('semantic_repair_gap_ref'))
                 continue
             report['reviewed_count'] += 1
             try:

@@ -535,3 +535,94 @@ def test_native_sparse_empty_drops_is_a_legitimate_zero_and_can_be_repaired(repl
     report, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
     assert report['replay_count'] == report['provider_calls'] == len(judges) == len(findings) == 1
     assert len(_ingest_verified_findings(runtime, findings=findings, scope=scope)['resolved_record_ids']) == 1
+
+
+def test_repair_trace_survives_final_diagnostics(replay_case):
+    from eimemory.scheduler.result_contract import _semantic_repair_diagnostics
+    runtime, scope, gap, _, _, _, _, options = replay_case
+    options['cascade'] = [dict(summary='PRIVATE legacy evidence')]
+    report, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    final = _semantic_repair_diagnostics(dict(report, by_agent={scope.agent_id: report}))
+    trace = final['by_agent'][scope.agent_id]['results']
+    assert len(trace) == 1
+    assert trace[0]['gap_ref'] == gap.record_id
+    assert trace[0]['reason'] == 'semantic_repair_legacy_evidence_unverifiable'
+    audit = runtime.store.get_by_id(trace[0]['audit_ref'], scope=scope)
+    assert audit.content['gap_ref'] == gap.record_id
+    assert final['by_agent'][scope.agent_id]['budget_limit'] == 2
+    assert 'PRIVATE' not in json.dumps(final)
+
+
+def test_budget_deferred_trace_has_original_gap_and_packet(replay_case):
+    from eimemory.scheduler.result_contract import _semantic_repair_diagnostics
+    runtime, scope, gap, _, _, _, _, _ = replay_case
+    report, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=1)
+    final = _semantic_repair_diagnostics(report)
+    assert final['deferred_count'] == 1
+    assert final['results'][0]['gap_ref'] == gap.record_id
+    assert final['results'][0]['packet_ref'].startswith('srpc_')
+    assert final['results'][0]['reason'] == 'semantic_repair_budget_deferred'
+    assert final['results'][0]['audit_ref'] is None
+
+
+def test_repair_diagnostics_holdout_strips_untrusted_text_and_caps_results():
+    from eimemory.scheduler.result_contract import _semantic_repair_diagnostics
+    bad = dict(status='PRIVATE status', reason='semantic_repair_PRIVATE',
+               gap_ref='ref_PRIVATE', packet_ref='srpc_PRIVATE', audit_ref='srpa_PRIVATE', query='PRIVATE')
+    final = _semantic_repair_diagnostics(dict(results=[bad] * 98,
+        reason_counts={'semantic_repair_PRIVATE': 1, 'semantic_repair_evidence_invalid': 2}))
+    assert len(final['results']) == 97 and final['results_truncated'] is True
+    assert final['reason_counts'] == {'semantic_repair_evidence_invalid': 2, 'reason_not_allowlisted': 1}
+    assert 'PRIVATE' not in json.dumps(final)
+    assert final['results'][0] == dict(status='not_allowlisted', reason='not_allowlisted',
+        gap_ref=None, packet_ref=None, audit_ref=None)
+
+
+def test_repair_trace_persists_in_native_supervisor(replay_case):
+    from eimemory.scheduler.result_contract import nightly_result_diagnostics
+    from eimemory.governance.learning.supervisor import persist_supervisor_summary, supervisor_summary
+    runtime, scope, gap, _, _, _, _, options = replay_case
+    options['cascade'] = [dict(summary='PRIVATE evidence')]
+    raw, _ = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    diagnostics = nightly_result_diagnostics({'semantic_relevance_monitor': {
+        'semantic_gap_repair': dict(raw, by_agent={scope.agent_id: raw})}}, [])
+    summary = supervisor_summary(command='nightly', ok=True, duration_ms=1, memory_peak=0)
+    summary['nightly_diagnostics'] = diagnostics
+    saved = persist_supervisor_summary(runtime, scope=asdict(scope), summary=summary)
+    native = runtime.store.get_by_id(saved.record_id).content['nightly_diagnostics']
+    trace = native['recall_semantic_relevance']['semantic_gap_repair']['by_agent'][scope.agent_id]['results'][0]
+    assert trace['gap_ref'] == gap.record_id
+    assert runtime.store.get_by_id(trace['audit_ref']).content['gap_ref'] == gap.record_id
+    assert 'PRIVATE' not in json.dumps(native)
+
+
+def test_incident_scan_boundary_reports_only_observed_overflow(replay_case):
+    runtime, scope, gap, _, _, calls, judges, _ = replay_case
+    for index in range(34):
+        other = RecordEnvelope.from_dict(gap.to_dict())
+        other.record_id = 'ref_' + f'{index:012x}'
+        key = 'quality-gap:recall_semantic:' + f'{index:064x}' + ':memory.recall'
+        other.content['semantic_key'] = key
+        other.meta['semantic_key'] = key
+        runtime.store.append(other)
+    report, _ = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=0)
+    assert report['incident_rows_observed'] == 33
+    assert report['incident_scan_saturated'] is True
+    overflow = [r for r in report['results'] if r['reason'] == 'semantic_repair_scan_limit_deferred']
+    assert len(overflow) == 1 and overflow[0]['gap_ref']
+    assert report['reason_counts']['semantic_repair_scan_limit_deferred'] == 1
+    assert len(report['results']) == report['unverifiable_count'] + report['deferred_count']
+    assert calls == judges == []
+
+
+def test_default_monitor_retains_aggregate_native_audit_trace(replay_case):
+    from eimemory.scheduler.jobs import _run_semantic_relevance_monitor
+    from eimemory.scheduler.result_contract import _semantic_repair_diagnostics
+    runtime, scope, gap, _, _, _, _, options = replay_case
+    options['cascade'] = [dict(summary='PRIVATE legacy')]
+    raw = _run_semantic_relevance_monitor(runtime, scope=asdict(scope))
+    final = _semantic_repair_diagnostics(raw['semantic_gap_repair'])
+    trace = next(item for item in final['results'] if item['gap_ref'] == gap.record_id)
+    assert trace['audit_ref'].startswith('srpa_')
+    assert final['reason_counts']['semantic_repair_legacy_evidence_unverifiable'] == 1
+    assert 'PRIVATE' not in json.dumps(final)

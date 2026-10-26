@@ -623,7 +623,8 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
         total['profile_inventory'] = profile_inventory
     explicit_total = dict(_explicit_counts(), by_agent={}) if include_explicit else None
     repair_total = dict(reviewed_count=0, provider_calls=0, replay_count=0, unresolved_count=0,
-                        unverifiable_count=0, deferred_count=0, by_agent={}) if include_explicit else None
+                        unverifiable_count=0, deferred_count=0, by_agent={}, results=[],
+                        results_truncated=False, reason_counts={}) if include_explicit else None
     status = 'unavailable'
     for channel, exact, sources in targets.values():
         options = {} if sources is None else {'source_ids': sources}
@@ -651,6 +652,11 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
                     - explicit_total['provider_calls'] - total['provider_calls'] - report.get('provider_calls', 0)))
             findings.extend(repair_findings)
             repair_total['by_agent'][exact.agent_id] = repair
+            room = 97 - len(repair_total['results'])
+            repair_total['results'].extend(repair['results'][:room])
+            repair_total['results_truncated'] |= len(repair['results']) > room
+            for reason, count in repair['reason_counts'].items():
+                repair_total['reason_counts'][reason] = repair_total['reason_counts'].get(reason, 0) + count
             for key in ('reviewed_count', 'provider_calls', 'replay_count', 'unresolved_count', 'unverifiable_count', 'deferred_count'):
                 repair_total[key] += repair[key]
         if report.get('status') == 'unavailable':

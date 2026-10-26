@@ -1037,8 +1037,26 @@ def _semantic_repair_diagnostics(value: object) -> dict:
     value = value if isinstance(value, dict) else {}
     keys = ("reviewed_count", "provider_calls", "replay_count", "unresolved_count",
             "unverifiable_count", "deferred_count")
+    from eimemory.evaluation.semantic_gap_repair import REPAIR_REASONS
     def summary(report: dict) -> dict:
-        return {key: _diagnostic_count(report.get(key)) or 0 for key in keys}
+        results = report.get("results") if isinstance(report.get("results"), list) else []
+        return {
+            **{key: _diagnostic_count(report.get(key)) or 0 for key in keys},
+            **{key: _diagnostic_count(report.get(key)) or 0 for key in (
+                "budget_limit", "incident_scan_limit", "incident_work_limit", "packet_scan_limit",
+                "incident_rows_observed", "packet_rows_observed") if key in report},
+            **{key: report.get(key) is True for key in (
+                "incident_scan_saturated", "packet_scan_saturated") if key in report},
+            "reason_counts": _diagnostic_reason_counts(report.get("reason_counts"), REPAIR_REASONS),
+            "results": [{
+                "status": _diagnostic_code(item.get("status"), frozenset({"deferred", "unverifiable"})),
+                "reason": _diagnostic_code(item.get("reason"), REPAIR_REASONS),
+                "gap_ref": _diagnostic_ref(item.get("gap_ref"), r"ref_[0-9a-f]{12}"),
+                "packet_ref": _diagnostic_ref(item.get("packet_ref"), r"srpc_[0-9a-f]{32}"),
+                "audit_ref": _diagnostic_ref(item.get("audit_ref"), r"srpa_[0-9a-f]{32}"),
+            } for item in results[:97] if isinstance(item, dict)],
+            "results_truncated": report.get("results_truncated") is True or len(results) > 97,
+        }
     agents = value.get("by_agent") if isinstance(value.get("by_agent"), dict) else {}
     return {**summary(value), "natural_benchmark_eligible": False,
             "memory_contribution_certified": False,

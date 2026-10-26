@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.39] — 2026-10-26
+
+- Preserve bounded semantic repair finding, packet and native audit references, allowlisted reasons, work budgets and scan boundaries through durable nightly diagnostics. Keep historical unverifiable evidence and existing repair admission gates unchanged.
+
 ## [1.15.38] — 2026-10-26
 
 - Resume semantic monitoring of captures owned by explicitly configured former agent IDs, using the existing shared rename policy and bounded scan. Preserve original decision/query/render identities and exact user, workspace, source and release checks; unavailable historical renders remain non-passing.
