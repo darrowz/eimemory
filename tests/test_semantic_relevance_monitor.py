@@ -410,13 +410,12 @@ def test_auto_review_reads_real_research_task_observation_in_channel_scope(runti
     assert observed['decision_surface'] == 'research.task'
     assert observed['relevant_refs'] == [record.record_id]
     # Provenance must match the judged decision surface.
-    original = runtime.store.list_records_by_meta_value
+    original = runtime.store.latest_record_by_meta_value_exact_scope
     def forged(**kwargs):
-        records = original(**kwargs)
-        for item in records:
-            item.content.pop('decision_surface', None)
-        return records
-    monkeypatch.setattr(runtime.store, 'list_records_by_meta_value', forged)
+        record = original(**kwargs)
+        record.content.pop('decision_surface', None)
+        return record
+    monkeypatch.setattr(runtime.store, 'latest_record_by_meta_value_exact_scope', forged)
     assert _semantic_observation(runtime, decision, exact)['status'] == 'missing'
 
 

@@ -217,7 +217,7 @@ def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
     channels: set[str] = set()
     channel_counts = {channel: 0 for channel in SUPPORTED_RUNTIME_CHANNELS}
     accepted_label_count = 0
-    label_authority_counts = {"human": 0, "auto_review": 0}
+    label_authority_counts = {"operator": 0, "auto_review": 0, "unknown": 0}
     raw_cases = list(raw.get("cases") or [])
     if len(raw_cases) > 500:
         blocked.append("dataset_case_limit_exceeded")

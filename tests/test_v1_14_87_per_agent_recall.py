@@ -146,10 +146,11 @@ def test_zero_sample_traffic_agents_are_deferred_not_forced():
     assert result["deferred_agents"] == ["hongtai", "hongxin"]
     assert result["agents"]["hongrui"]["force_status"] == "forced"
     assert result["agents"]["hongtai"]["force_status"] == "deferred_awaiting_labeled_samples"
-    assert result["combined"]["ok"] is False
-    assert result["combined"]["blocked_reason"] == "recall_quality_evidence_incomplete"
-    assert result["combined"]["detail"] == "traffic_agents_awaiting_labeled_samples"
-    # Never pass on the labeled agent alone while traffic peers await samples.
+    assert result["combined"]["ok"] is True
+    assert result["combined"]["blocked_reason"] == ""
+    assert result["role_coverage_complete"] is False
+    assert result["agents"]["hongtai"]["evaluation_status"] == "not_evaluated"
+    # Role coverage remains incomplete without blocking the shared mechanism.
     assert "hongrui" not in result["combined"].get("failing_agents", [])
     assert set(result["combined"]["deferred_agents"]) == {"hongtai", "hongxin"}
 

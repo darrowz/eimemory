@@ -1182,8 +1182,8 @@ def build_production_query_dataset(
     seen: set[str] = set()
     skipped_low_signal = 0
     auto_review_enabled = production_recall_auto_review_enabled()
-    by_authority = {"human": 0, "auto_review": 0}
-    labels_by_authority = {"human": 0, "auto_review": 0}
+    by_authority = {"operator": 0, "auto_review": 0, "unknown": 0}
+    labels_by_authority = {"operator": 0, "auto_review": 0, "unknown": 0}
     auto_review_excluded_by_policy = 0
 
     def _case_authority(record: RecordEnvelope) -> str:
@@ -1193,7 +1193,7 @@ def build_production_query_dataset(
             production_real_query_label_authority((label.get("provenance") or {}).get("labeler"))
             for label in case_value.get("labels") or [] if isinstance(label, dict)
         }
-        return "auto_review" if "auto_review" in authorities else "human"
+        return "unknown" if not authorities or "unknown" in authorities else ("auto_review" if "auto_review" in authorities else "operator")
 
     for channel in sorted(SUPPORTED_RUNTIME_CHANNELS):
         exact = ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base)))

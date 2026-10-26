@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.15.34] — 2026-10-26
+
+- Run independent semantic monitoring in each discovered recall role before auto review; use only the latest exact-scope observation and keep transient failures retryable across bounded review cycles.
+- Let a formally accepted role establish the shared recall mechanism while retaining its persisted scope and release authority. Missing role evidence remains unevaluated; known quality, permission and execution failures still veto acceptance. Role coverage and L5 remain separate.
+- Report label provenance as operator, auto_review or unknown without changing label authority or historical labels.
+- Isolate test identity configuration from live installation settings so channel repair fixtures cannot inherit a production agent rename.
+
 ## [1.15.33] — 2026-10-25
 
 - Retain verified aborted transactions from prior releases as historical diagnostics instead of letting them override current L5 readiness. Historical disposition does not establish L5 qualification.

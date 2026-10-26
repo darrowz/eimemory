@@ -1,14 +1,8 @@
 """Per-agent recall-quality scopes.
 
-G2c: only agents (or topology-bound profiles) with natural proactive traffic
-are discovered. After evaluation, only agents with labeled samples
-(``sample_count > 0``) are forced through the absolute thresholds. Traffic
-agents with ``sample_count == 0`` are deferred (awaiting labeled samples):
-they stay in diagnostics and make the combined verdict an evidence wait,
-never a pass on the remaining forced agents alone. Declared profiles without
-traffic remain in roster/diagnostics and do not block. Results are never
-pooled. A forced agent whose only blocker is incomplete evidence also keeps
-the combined verdict as an evidence wait.
+A qualified role can establish the shared mechanism. Roles without labeled
+samples remain unevaluated; known quality, authorization and execution failures
+still block. Role coverage and L5 qualification are separate.
 """
 from __future__ import annotations
 
@@ -159,6 +153,11 @@ def agent_verdict(report: dict[str, Any]) -> dict[str, Any]:
         "evaluation_contract": str(report.get("evaluation_contract") or evidence.get("evaluation_contract") or ""),
         "label_trust_accepted": evidence.get("label_trust_accepted") is True,
     }
+    if verdict["ok"] and verdict["sample_count"] <= 0:
+        verdict.update(ok=False, blocked_reason="recall_quality_evidence_incomplete")
+    if report.get("ok") is False:
+        verdict.update(ok=False, blocked_reason=str(report.get("error")
+                       or report.get("blocked_reason") or "recall_quality_execution_failed"))
     for key in ("false_recall_rate", "recall_at_k", "mrr"):
         value = report.get(key)
         if type(value) in (int, float):
@@ -177,12 +176,20 @@ def run_per_agent(scopes: list[dict], primary_scope: dict, primary_report: dict[
     verdicts: dict[str, dict[str, Any]] = {}
     discovered: dict[str, int] = {}
     scope_verdicts: dict[str, dict[str, Any]] = {}
+    mechanism_report = None
+    unevaluated_scope_count = 0
     for item in scopes:
         scope = {key: item[key] for key in ("tenant_id", "agent_id", "workspace_id", "user_id")}
         discovered[scope["agent_id"]] = discovered.get(scope["agent_id"], 0) + int(item.get("discovered_decisions") or 0)
         same = all(str(primary_scope.get(k) or "") == scope[k] for k in ("tenant_id", "agent_id", "workspace_id", "user_id"))
         report = primary_report if same else evaluate(scope)
         verdict = agent_verdict(report if isinstance(report, dict) else {})
+        if mechanism_report is None and verdict["ok"] and verdict["sample_count"] > 0:
+            from eimemory.scheduler.result_contract import _formal_recall_accepted
+            if _formal_recall_accepted(report, _quality_gate(report)):
+                mechanism_report = report
+        unevaluated_scope_count += int(verdict["sample_count"] <= 0
+                                       and verdict["blocked_reason"] in EVIDENCE_WAIT_REASONS)
         agent = scope["agent_id"]
         if item.get("source") == "trusted_hermes_topology":
             key = item["scope_digest"]
@@ -195,41 +202,34 @@ def run_per_agent(scopes: list[dict], primary_scope: dict, primary_report: dict[
             verdicts[agent] = verdict
         else:
             previous = verdicts[agent]
-            verdicts[agent] = {**(verdict if verdict["ok"] is not True else previous),
-                "ok": previous["ok"] is True and verdict["ok"] is True,
+            # A later evidence wait must not overwrite an observed failure.
+            hard = [v for v in (previous, verdict) if v["ok"] is not True
+                    and v["blocked_reason"] not in EVIDENCE_WAIT_REASONS]
+            evaluated = [v for v in (previous, verdict) if v["sample_count"] > 0 or v in hard]
+            chosen = hard[0] if hard else next((v for v in evaluated if not v["ok"]),
+                                                evaluated[0] if evaluated else previous)
+            verdicts[agent] = {**chosen,
+                "ok": bool(evaluated) and all(v["ok"] for v in evaluated),
                 "sample_count": previous["sample_count"] + verdict["sample_count"]}
-    forced = {agent: verdict for agent, verdict in verdicts.items()
-              if int(verdict.get("sample_count") or 0) > 0}
     deferred = {agent: verdict for agent, verdict in verdicts.items()
-                if int(verdict.get("sample_count") or 0) <= 0}
+                if int(verdict.get("sample_count") or 0) <= 0
+                and verdict.get("blocked_reason") in EVIDENCE_WAIT_REASONS}
+    forced = {agent: verdict for agent, verdict in verdicts.items() if agent not in deferred}
     for agent, verdict in verdicts.items():
-        verdict["force_status"] = (
-            "forced" if agent in forced else "deferred_awaiting_labeled_samples")
-    combined = combine_agent_verdicts(forced)
-    if deferred:
-        hard = (combined.get("ok") is not True
-                and str(combined.get("blocked_reason") or "") not in EVIDENCE_WAIT_REASONS)
-        if not hard:
-            combined = {
-                "ok": False,
-                "blocked_reason": "recall_quality_evidence_incomplete",
-                "detail": "traffic_agents_awaiting_labeled_samples",
-                "failing_agents": sorted(set(combined.get("failing_agents") or []) | set(deferred)),
-                "deferred_agents": sorted(deferred),
-                "forced_agents": sorted(forced),
-            }
-        else:
-            combined = {**combined, "deferred_agents": sorted(deferred),
-                        "forced_agents": sorted(forced)}
-    else:
-        combined = {**combined, "deferred_agents": [], "forced_agents": sorted(forced)}
-    result = {"schema": "recall_quality_per_agent.v1", "rule": "all_discovered_agents_must_pass_separately",
+        verdict["force_status"] = "forced" if agent in forced else "deferred_awaiting_labeled_samples"
+        verdict["evaluation_status"] = "not_evaluated" if agent in deferred else "evaluated"
+    combined = {**combine_agent_verdicts(forced), "deferred_agents": sorted(deferred),
+                "forced_agents": sorted(forced)}
+    result = {"schema": "recall_quality_per_agent.v1", "rule": "shared_mechanism_with_known_failure_veto",
             "discovery": {"source": "EIMEMORY_RECALL_GATE_AGENTS" if any(i.get("source") == "override" for i in scopes)
                           else "proactive_decisions natural traffic", "window_days": DISCOVERY_WINDOW_DAYS,
                           "agents": discovered},
             "agents": verdicts, "combined": combined,
-            "per_agent_force_policy": "g2c_traffic_agents_with_samples.v1",
+            "role_coverage_complete": bool(verdicts) and unevaluated_scope_count == 0,
+            "per_agent_force_policy": "shared_mechanism_with_known_failure_veto.v1",
             "deferred_agents": sorted(deferred), "forced_agents": sorted(forced)}
+    if combined["ok"] and mechanism_report is not None:
+        result["mechanism_report"] = mechanism_report
     from eimemory.evaluation.hermes_profile_coverage import load_topology, roster_summary
     topology = load_topology()
     if topology is not None or scope_verdicts:
@@ -237,9 +237,10 @@ def run_per_agent(scopes: list[dict], primary_scope: dict, primary_report: dict[
                 for item in scopes if item.get("source") == "trusted_hermes_topology"):
             raise ValueError("recall_profile_topology_disappeared")
         roster = roster_summary(topology)
-        result.update(rule="g2c_traffic_agents_must_pass_separately",
-            per_agent_force_policy="g2c_traffic_agents_with_samples.v1",
-            profile_inventory=roster, scope_verdicts=scope_verdicts)
+        result.update(profile_inventory=roster, scope_verdicts=scope_verdicts)
+        result["role_coverage_complete"] = (result["role_coverage_complete"]
+            and len(scope_verdicts) == len(roster["profiles"])
+            and all(row["identity_status"] == "bound" for row in roster["profiles"]))
         result["discovery"]["source"] = "trusted_hermes_topology"
         result['unbound_profiles'] = [dict(profile_name=row['profile_name'], agent_id=row['agent_id'],
             status='business_identity_unbound', business_qualified=False, natural_samples_created=0)

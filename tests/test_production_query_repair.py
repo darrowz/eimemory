@@ -144,6 +144,7 @@ def test_repair_restores_flattened_channel_evidence_and_is_idempotent(tmp_path) 
     # repair leaves no Hongtu identity debt behind for nightly repair.
     assert identity["ok"] is True
     assert identity["blocked_count"] == 0
+    assert identity["repaired_count"] == 0
     assert repair_hongtu_identity(
         runtime, apply=False, scope=ScopeRef.from_dict(BASE_SCOPE)
     )["candidate_count"] == 0

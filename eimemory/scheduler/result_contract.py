@@ -977,7 +977,8 @@ def _auto_review_diagnostics(report: object) -> dict:
         "closed_without_label_count": count(report.get("closed_without_label_count")),
         "rejected_count": count(report.get("rejected_count")),
         "accepted_cases_by_authority": {
-            "human": count(by_authority.get("human")),
+            "operator": count(by_authority.get("operator")),
+            "unknown": count(by_authority.get("unknown")),
             "auto_review": count(by_authority.get("auto_review")),
         },
         "accepted_case_count": count(progress.get("accepted_case_count")),
@@ -1144,7 +1145,7 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
     natural_waits = [name for name in all_waits if name in {"production_recall", "recall_quality_gate"}]
     l5_waits = [name for name in all_waits if name == "native_l5_assessment"]
     business_waits = [name for name in all_waits if name not in l5_waits
-                      and (not historical_accepted or name not in natural_waits)]
+                      and (not (historical_accepted or natural_accepted) or name not in natural_waits)]
     native_l5 = report.get("native_l5_assessment")
     native_l5 = native_l5 if isinstance(native_l5, dict) else {}
     historical_evidence = {
@@ -1251,9 +1252,10 @@ def _per_agent_diagnostics(value: object) -> dict:
         verdict = verdict if isinstance(verdict, dict) else {}
         agents[str(agent)[:64]] = {key: verdict.get(key) for key in (
             "ok", "blocked_reason", "sample_count", "evaluation_contract", "label_trust_accepted",
-            "false_recall_rate", "recall_at_k", "mrr") if key in verdict}
+            "false_recall_rate", "recall_at_k", "mrr", "evaluation_status") if key in verdict}
     result = {"status": "evaluated", "rule": value.get("rule"), "discovery": value.get("discovery"),
-              "agents": agents, "combined": value.get("combined")}
+              "agents": agents, "combined": value.get("combined"),
+              "role_coverage_complete": value.get("role_coverage_complete") is True}
     from eimemory.scheduler.collection_diagnostics import profile_inventory_diagnostics, profile_sampling_diagnostics
     if 'profile_inventory' in value:
         result['profile_inventory'] = profile_inventory_diagnostics(value['profile_inventory'])

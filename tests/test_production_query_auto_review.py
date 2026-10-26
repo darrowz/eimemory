@@ -170,7 +170,7 @@ def test_auto_accepts_only_with_independent_signal_agreement(runtime):
     assert auto_review_receipt_error(receipts[0]) == ""
 
     built = build_production_query_dataset(runtime, scope=BASE_SCOPE)
-    assert built["progress"]["accepted_by_authority"] == {"human": 0, "auto_review": 1}
+    assert built["progress"]["accepted_by_authority"] == {"operator": 0, "auto_review": 1, "unknown": 0}
     assert built["progress"]["auto_review_policy"]["enabled"] is True
     # Idempotent: a second run does not create a second accepted case.
     again = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
@@ -292,7 +292,7 @@ def test_flag_off_disables_review_and_excludes_auto_labels(runtime, monkeypatch)
     built = build_production_query_dataset(runtime, scope=BASE_SCOPE)
     assert built["progress"]["accepted_by_authority"]["auto_review"] == 1
     frozen_on = freeze_production_recall_dataset(built["dataset"])
-    assert frozen_on["eligibility"]["label_authority_counts"] == {"human": 0, "auto_review": 1}
+    assert frozen_on["eligibility"]["label_authority_counts"] == {"operator": 0, "auto_review": 1, "unknown": 0}
 
     monkeypatch.setenv(PRODUCTION_RECALL_AUTO_REVIEW_FLAG, "0")
     off = build_production_query_dataset(runtime, scope=BASE_SCOPE)
@@ -345,9 +345,9 @@ def test_human_label_takes_precedence_and_counts_are_split(runtime):
     report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
     assert report["already_accepted_count"] == 1 and report["accepted_count"] == 1
     built = build_production_query_dataset(runtime, scope=BASE_SCOPE)
-    assert built["progress"]["accepted_by_authority"] == {"human": 1, "auto_review": 1}
+    assert built["progress"]["accepted_by_authority"] == {"operator": 1, "auto_review": 1, "unknown": 0}
     frozen = freeze_production_recall_dataset(built["dataset"])
-    assert frozen["eligibility"]["label_authority_counts"] == {"human": 1, "auto_review": 1}
+    assert frozen["eligibility"]["label_authority_counts"] == {"operator": 1, "auto_review": 1, "unknown": 0}
     # Signed operator labels no longer produce a false scope-repair conflict.
     repair = repair_production_query_channel_scopes(runtime, scope=BASE_SCOPE, complete_scan=True,
                                                     persist_receipt=False)
@@ -371,9 +371,9 @@ def test_missing_receipt_key_blocks_approval_and_records_non_passing_conclusion(
     blocked = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
     assert blocked["ok"] is False and blocked["blocked_reason"] == "auto_review_attestation_key_unavailable"
     assert blocked["not_passed_count"] == 1 and blocked["accepted_count"] == 0
-    assert blocked["pending_count"] == blocked["open_review_count"] == 0
+    assert blocked["pending_count"] == blocked["open_review_count"] == 1
     saved = runtime.store.get_by_id(blocked["review_results"][0]["review_receipt_id"])
-    assert saved.content["review_verdict"] == "fail" and saved.content["review_complete"] is True
+    assert saved.content["review_verdict"] == "pending" and saved.content["review_complete"] is False
     assert saved.content["key_id"] == saved.content["signature"] == ""
     assert auto_review_pending_production_queries(runtime, scope=BASE_SCOPE, dry_run=True)["ok"] is True
 
@@ -393,9 +393,9 @@ def test_nightly_runs_auto_review_before_recall_gate_and_reports_authority_count
     _collect(runtime)
     report = jobs._run_production_recall_auto_review(runtime, scope=BASE_SCOPE)
     assert report["ok"] is True and report["accepted_count"] == 1
-    assert report["dataset_progress"]["accepted_by_authority"] == {"human": 0, "auto_review": 1}
+    assert report["dataset_progress"]["accepted_by_authority"] == {"operator": 0, "auto_review": 1, "unknown": 0}
     diagnostics = nightly_result_diagnostics({"production_recall_auto_review": report}, [])
-    assert diagnostics["recall_label_auto_review"]["accepted_cases_by_authority"] == {"human": 0, "auto_review": 1}
+    assert diagnostics["recall_label_auto_review"]["accepted_cases_by_authority"] == {"operator": 0, "auto_review": 1, "unknown": 0}
     assert diagnostics["recall_label_auto_review"]["enabled"] is True
     source = open(jobs.__file__, encoding="utf-8").read()
     assert source.index('"production_recall_auto_review"') < source.index('"production_recall",')
@@ -473,11 +473,7 @@ def test_semantic_observation_boundary_and_integrity_fail_closed(runtime, tamper
         observation.scope = ScopeRef.from_dict({**asdict(exact), "user_id": "other"})
     else:
         observation.meta["semantic_monitor_digest"] = "0" * 64
-    lister = runtime.store.list_records_by_meta_value
-    def tampered_list(**kwargs):
-        records = lister(**kwargs)
-        return [observation if record.record_id == observation.record_id else record for record in records]
-    monkeypatch.setattr(runtime.store, "list_records_by_meta_value", tampered_list)
+    monkeypatch.setattr(runtime.store, "latest_record_by_meta_value_exact_scope", lambda **kwargs: observation)
     pending = runtime.store.list_records_by_meta_value(
         kinds=["evaluation_packet"], scope=exact, meta_key="report_type",
         meta_value="production_recall_pending_case", status="active", limit=10)[0]
@@ -528,7 +524,7 @@ def test_transient_semantic_failure_has_retryable_non_passing_conclusion(runtime
     _collect(runtime)
     monkeypatch.setattr(review, "_semantic_observation", lambda *args: {"status": "unknown", "reason": reason})
     result = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
-    assert result["open_review_count"] == 0 and result["pending_count"] == 0
+    assert result["open_review_count"] == 1 and result["pending_count"] == 1
     assert result["not_passed_count"] == 1
     assert result["closed_not_evaluable_count"] == 0
     assert result["accepted_count"] == result["rejected_count"] == 0
@@ -596,7 +592,7 @@ def test_real_monitor_provider_failure_then_recovery_never_certifies(runtime, mo
     observed, findings = monitor.monitor_deliveries(runtime, scope=exact)
     assert observed['provider_calls'] == 1 and not findings
     report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
-    assert report['open_review_count'] == 0 and report['closed_not_evaluable_count'] == 0
+    assert report['open_review_count'] == 1 and report['closed_not_evaluable_count'] == 0
     assert report['not_passed_count'] == 1
     assert report['reason_counts']['not_passed']['tool_free_transport_unavailable'] == 1
     assert report['accepted_count'] == report['rejected_count'] == 0

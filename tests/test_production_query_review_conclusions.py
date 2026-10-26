@@ -57,7 +57,7 @@ def test_case_execution_failure_does_not_stop_other_reviews(runtime, monkeypatch
     report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
     assert report["ok"] is False and report["blocked_reason"] == "auto_review_execution_failed"
     assert report["passed_count"] == report["not_passed_count"] == 1
-    assert report["pending_count"] == report["open_review_count"] == 0
+    assert report["pending_count"] == report["open_review_count"] == 1
     assert report["reason_counts"]["not_passed"] == {"auto_review_execution_failed": 1}
     for result in report["review_results"]:
         saved = runtime.store.get_by_id(result["review_receipt_id"])
@@ -109,7 +109,8 @@ def test_acceptance_execution_failure_is_concluded_without_private_errors(runtim
     assert report["ok"] is False and report["accepted_count"] == report["passed_count"] == 0
     result = report["review_results"][0]
     saved = runtime.store.get_by_id(result["review_receipt_id"])
-    assert saved.content["review_verdict"] == "fail"
+    assert saved.content["review_verdict"] == "pending"
+    assert saved.content["review_complete"] is False
     assert saved.content["reasons"] == ["auto_review_execution_failed"]
     assert "private-provider-token" not in json.dumps(report)
 
@@ -124,5 +125,6 @@ def test_unvalidated_acceptance_return_cannot_certify_a_pass(runtime, monkeypatc
     assert report["accepted_count"] == report["passed_count"] == 0
     assert report["not_passed_count"] == 1
     saved = runtime.store.get_by_id(report["review_results"][0]["review_receipt_id"])
-    assert saved.content["review_verdict"] == "fail"
+    assert saved.content["review_verdict"] == "pending"
+    assert saved.content["review_complete"] is False
     assert saved.content["reasons"] == ["auto_accept_failed:accepted_record_invalid"]

@@ -55,7 +55,11 @@ def load_review_batch(runtime: Any, *, scope: ScopeRef, limit: int) -> dict:
                 if bound is None or bound["record_id"] != record_id:
                     after = high = None
                     break
+        open_count = body.get("open_review_count")
+        if type(open_count) is not int or open_count < 0:
+            open_count = None
         if high is None or after is None or after >= high:
+            open_count = 0
             latest = db.execute("SELECT rowid,record_id FROM records WHERE " + where
                                 + " ORDER BY rowid DESC LIMIT 1", params).fetchone()
             high = (int(latest["rowid"]), str(latest["record_id"])) if latest is not None else (0, "")
@@ -68,9 +72,9 @@ def load_review_batch(runtime: Any, *, scope: ScopeRef, limit: int) -> dict:
                                    (*params, last[0], high[0])).fetchone()[0])
         newer = int(db.execute("SELECT COUNT(*) FROM records WHERE " + where
                                + " AND rowid>?", (*params, high[0])).fetchone()[0])
-        return rows, last, high, total, remaining, newer, _stable_digest(saved_body) if saved is not None else None
+        return rows, last, high, total, remaining, newer, _stable_digest(saved_body) if saved is not None else None, open_count
 
-    rows, last, high, total, remaining, newer, expected_digest = runtime.store.read_consistent(read_window)
+    rows, last, high, total, remaining, newer, expected_digest, open_count = runtime.store.read_consistent(read_window)
     records = []
     for row in rows:
         record = runtime.store.get_by_exact_ref(str(row["record_id"]), scope=scope, source_id=str(row["source_id"]))
@@ -80,7 +84,8 @@ def load_review_batch(runtime: Any, *, scope: ScopeRef, limit: int) -> dict:
         records.append(record)
     return {"records": records, "cursor_id": cursor_id,
             "expected_digest": expected_digest,
-            "next": {"schema": SCHEMA, "after": list(last), "high_water": list(high)},
+            "next": {"schema": SCHEMA, "after": list(last), "high_water": list(high),
+                     "open_review_count": open_count},
             "coverage": {"schema": SCHEMA, "boundary": "fixed_high_water_snapshot", "observed_at": observed_at,
                          "total_case_count": total, "batch_case_count": len(records),
                          "batch_uncovered_count": max(0, total - len(records)),

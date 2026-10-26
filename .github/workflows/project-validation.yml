@@ -275,6 +275,7 @@ jobs:
           tests/test_observed_channel_contract.py
           tests/test_production_real_query_gate.py
           tests/test_production_query_auto_review.py
+          tests/test_auto_review_repair_contract.py
           tests/test_production_query_review_conclusions.py
           tests/test_production_query_review_reason_diagnostics.py
           tests/test_proactive_session_dedupe_provenance.py

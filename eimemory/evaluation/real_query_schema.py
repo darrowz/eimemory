@@ -82,9 +82,11 @@ def production_real_query_trusted_labelers() -> frozenset[str]:
 
 
 def production_real_query_label_authority(labeler: object) -> str:
-    """Bucket a labeler for reporting: ``human`` or ``auto_review``."""
+    """Report known operator provenance separately from unknown identity."""
 
-    return "auto_review" if str(labeler or "") == PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER else "human"
+    if labeler == PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER:
+        return "auto_review"
+    return "operator" if isinstance(labeler, str) and labeler in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS else "unknown"
 
 PRODUCTION_REAL_QUERY_TRUSTED_COLLECTORS = frozenset({"production_capture", "proactive_audit_capture"})
 

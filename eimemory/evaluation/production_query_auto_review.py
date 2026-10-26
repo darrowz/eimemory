@@ -16,7 +16,8 @@ needs all three signals, otherwise grade 2. Query features are redacted terms
 derived from the private original-query vault and must pass the same redaction
 and signal checks as operator packets. Nothing else (rank position, retrieval
 membership, task type, empty results) is evidence. Cases that do not meet the
-criteria receive a completed, non-passing review with recorded reasons;
+criteria receive a non-passing conclusion with recorded reasons; transient
+provider or execution failures remain explicitly incomplete and retryable;
 contradicted cases are recorded as rejected. Collection records are unchanged,
 and later evidence can trigger another review. Every auto label is signed,
 carries the criteria version and an inputs digest, and is revocable.
@@ -187,14 +188,16 @@ def _semantic_observation(runtime: Any, decision: dict[str, Any], scope: ScopeRe
         source_ids=decision["source_ids"], query_digest=decision["query_digest"],
         release_identity=decision["release_identity"],
         delivered=[(i["record_id"], i.get("source_id"), i.get("render_digest")) for i in delivered]))
-    records = runtime.store.list_records_by_meta_value(
-        kinds=["evaluation_packet"], scope=scope, meta_key="semantic_monitor_identity",
-        meta_value=identity, status="active", limit=32) or []
+    latest = runtime.store.latest_record_by_meta_value_exact_scope(
+        kind="evaluation_packet", source=SOURCE, scope=scope, status=None,
+        meta_key="semantic_monitor_identity", meta_value=identity)
+    records = [latest] if latest is not None else []
     unknown = None
     for record in records:
         report = record.content if isinstance(record.content, dict) else {}
         fields = ("relevance", "off_topic", "duplicates", "unanswered")
         if (record.source != SOURCE or not same_scope(record.scope, scope)
+                or record.status != "active" or record.source_id != "default"
                 or record.meta.get("report_type") != VERSION
                 or record.meta.get("semantic_monitor_digest") != _digest(report)
                 or report.get("evaluation_identity") != identity
@@ -362,6 +365,13 @@ _STRUCTURAL_CLOSE = {
     "original_host_query_digest_mismatch": "not_evaluable",
     "pending_capture_decision_missing": "not_evaluable",
 }
+_RETRY_REASONS = frozenset({
+    "completion_unavailable", "tool_free_transport_unavailable", "malformed_verdict",
+    "pending_capture_authority_unavailable", "auto_review_attestation_key_unavailable",
+    "auto_review_execution_failed",
+})
+
+
 TERMINAL_SOURCE = "eimemory.production_recall.evaluation_terminal"
 
 
@@ -443,8 +453,9 @@ def _write_receipt(runtime: Any, *, scope: ScopeRef, source_id: str, assessment:
         "semantic_quality": assessment.get("semantic_quality", {"status": "not_evaluable", "certified": False}),
         "accepted_record_id": accepted_record_id,
         "review_contract": REVIEW_CONTRACT,
-        "review_verdict": "pass" if assessment["disposition"] == "accepted" else "fail",
-        "review_complete": True,
+        "review_verdict": ("pending" if assessment["disposition"] == "pending" else
+                           "pass" if assessment["disposition"] == "accepted" else "fail"),
+        "review_complete": assessment["disposition"] != "pending",
     }
     record_id = "prar_" + _stable_digest(body)[:32]
     if runtime.store.get_by_id(record_id, scope=scope) is not None:
@@ -453,7 +464,8 @@ def _write_receipt(runtime: Any, *, scope: ScopeRef, source_id: str, assessment:
         kind="evaluation_packet",
         title=f"Production recall auto-review {assessment['disposition']}",
         summary="Deterministic auto-review verdict for one pending production-query case.",
-        content=_signed_content({**body, "reviewed_at": now_iso()}),
+        content=_signed_content({**body, "reviewed_at": now_iso()},
+                                required=assessment["disposition"] != "pending"),
         source=RECEIPT_SOURCE,
         source_id=source_id,
         scope=scope,
@@ -508,7 +520,7 @@ def auto_review_pending_production_queries(
         "open_review_count": 0, "closed_not_evaluable_count": 0, "closed_without_label_count": 0,
         "already_accepted_count": 0, "accepted_record_ids": [], "would_accept_pending_ids": [],
         "receipt_ids": [], "reason_counts": {"not_passed": {}, "rejected": {}, "pending": {}},
-        "signal_counts": {}, "existing_accepted_by_authority": {"human": 0, "auto_review": 0},
+        "signal_counts": {}, "existing_accepted_by_authority": {"operator": 0, "auto_review": 0, "unknown": 0},
         "by_channel": {}, "scope_resolution": scope_resolution,
         "review_contract": REVIEW_CONTRACT, "reviewed_count": 0,
         "passed_count": 0, "not_passed_count": 0, "review_results": [],
@@ -531,7 +543,7 @@ def auto_review_pending_production_queries(
             case = record.content.get("case") if isinstance(record.content.get("case"), dict) else {}
             authorities = {production_real_query_label_authority((label.get("provenance") or {}).get("labeler"))
                            for label in case.get("labels") or [] if isinstance(label, dict)}
-            authority = "auto_review" if "auto_review" in authorities else "human"
+            authority = "unknown" if not authorities or "unknown" in authorities else ("auto_review" if "auto_review" in authorities else "operator")
             report["existing_accepted_by_authority"][authority] += 1
             if record.evidence:
                 accepted_by_pending.setdefault(str(record.evidence[0]), record.record_id)
@@ -616,8 +628,22 @@ def auto_review_pending_production_queries(
                         bucket[reason] = int(bucket.get(reason) or 0) + 1
             else:
                 report["passed_count"] += 1
+            retryable = disposition == "pending" and any(
+                reason in _RETRY_REASONS or reason.startswith("auto_accept_failed:")
+                for reason in assessment["reasons"])
             close_reason = _structural_close_reason(assessment.get("reasons") or [])
-            if disposition == "pending":
+            if retryable:
+                report["open_review_count"] += 1
+                report["pending_count"] += 1
+                channel_counts["pending"] += 1
+                for reason in assessment["reasons"]:
+                    bucket = report["reason_counts"]["pending"]
+                    bucket[reason] = int(bucket.get(reason) or 0) + 1
+                if not dry_run:
+                    review_receipt_id = _write_receipt(
+                        runtime, scope=exact, source_id=pending.source_id, assessment=assessment)
+                    report["receipt_ids"].append(review_receipt_id)
+            elif disposition == "pending":
                 report["closed_not_evaluable_count" if close_reason else "closed_without_label_count"] += 1
                 close_reason = close_reason or str(assessment["reasons"][0])
                 if not dry_run:
@@ -634,8 +660,8 @@ def auto_review_pending_production_queries(
                     accepted_record_id=accepted_record_id)
                 report["receipt_ids"].append(review_receipt_id)
             report["review_results"].append({"pending_record_id": pending.record_id, "channel": selected,
-                                             "review_verdict": "pass" if disposition == "accepted" else "fail",
-                                             "review_complete": True, "reasons": list(assessment["reasons"]),
+                                             "review_verdict": "pending" if retryable else "pass" if disposition == "accepted" else "fail",
+                                             "review_complete": not retryable, "reasons": list(assessment["reasons"]),
                                              "inputs_digest": assessment["inputs_digest"],
                                              "review_receipt_id": review_receipt_id,
                                              "accepted_record_id": accepted_record_id,
@@ -646,6 +672,10 @@ def auto_review_pending_production_queries(
                                              "semantic_quality": assessment.get("semantic_quality")})
         report["by_channel"][selected] = channel_counts
         coverage = batch["coverage"]
+        prior_open = batch["next"]["open_review_count"]
+        batch["next"]["open_review_count"] = (
+            prior_open + channel_counts["pending"] if prior_open is not None else None)
+        coverage["open_review_count"] = batch["next"]["open_review_count"]
         if not dry_run:
             coverage["cursor_persisted"] = complete_review_batch(runtime, scope=exact, batch=batch)
             coverage["cursor_conflict"] = not coverage["cursor_persisted"]
@@ -666,7 +696,11 @@ def auto_review_pending_production_queries(
         report["pending_count"] = None
         if report["status"] == "completed":
             report["status"] = "dry_run" if dry_run else "partial"
-    for disposition in ("not_passed", "rejected"):
+    elif all(item["open_review_count"] is not None for item in covered):
+        report["open_review_count"] = report["pending_count"] = sum(item["open_review_count"] for item in covered)
+    else:
+        report["open_review_count"] = report["pending_count"] = None
+    for disposition in ("not_passed", "rejected", "pending"):
         report["reason_counts"][disposition] = dict(sorted(report["reason_counts"][disposition].items()))
     report["receipt_count"] = len(report.pop("receipt_ids"))
     return report

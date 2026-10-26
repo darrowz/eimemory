@@ -147,6 +147,11 @@ def isolate_eimemory_config_environment(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("CONTROL_PYCACHE_PREFIX", "/var/lib/eimemory-manager/empty-pycache")
     monkeypatch.delenv("EIMEMORY_CONFIG_DIR", raising=False)
     monkeypatch.delenv("EIMEMORY_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("EIMEMORY_SYSTEM_SETTINGS_PATH", str(tmp_path / "absent-system-settings.json"))
+    monkeypatch.delenv("EIMEMORY_LEGACY_AGENT_IDS", raising=False)
+    # Identity constants may have loaded during collection, before isolation.
+    from eimemory import identity
+    monkeypatch.setattr(identity, "HONGTU_AGENT_ID", "hongtu")
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "eimemory-root"))
     monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path / "openclaw-loop"))
     # A deployment may intentionally enable the protected production policy.
@@ -156,6 +161,11 @@ def isolate_eimemory_config_environment(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv(controlled_production_acceptance.POLICY_ENV, raising=False)
     monkeypatch.setattr(controlled_production_acceptance, "DEFAULT_POLICY",
                         str(tmp_path / "isolated-controlled-policy" / "policy.json"))
+    monkeypatch.delenv("EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE", raising=False)
+    monkeypatch.delenv("EIMEMORY_DEPLOY_SCOPE_USER", raising=False)
+    # A test process must never inherit the live registered profile roster.
+    from eimemory.contracts import hermes_topology
+    monkeypatch.setattr(hermes_topology, "_authority", lambda: None)
     # Explicit trust anchors for code-evolution tests (never source-level author defaults).
     monkeypatch.setenv("EIMEMORY_TRUSTED_REPOSITORY_ROOT", "/dev-project/eimemory")
     monkeypatch.setenv("EIMEMORY_TRUSTED_REMOTE", "origin")

@@ -313,6 +313,16 @@ def run_nightly_jobs(
                 stable_before=recall_stable_before,
             ),
         )
+        # Keep the selected report's own scope and persisted authority intact.
+        if (isinstance(recall_per_agent_report, dict)
+                and recall_per_agent_report.get("combined", {}).get("ok") is True
+                and isinstance(recall_per_agent_report.get("mechanism_report"), dict)
+                and production_recall_report.get("ok") is not False
+                and not production_recall_report.get("error")
+                and production_recall_report.get("sample_count", 0) == 0
+                and (production_recall_report.get("quality_gate") or {}).get("blocked_reason")
+                    == "recall_quality_evidence_incomplete"):
+            production_recall_report = recall_per_agent_report.pop("mechanism_report")
         # An operator may explicitly approve existing-memory controls for
         # production operation. Natural traffic and its quality verdict remain
         # independently collected above; this is a separate signed receipt.
@@ -976,12 +986,17 @@ def _run_recall_quality_per_agent(
     primary_report: dict[str, Any],
     stable_before: str | None = None,
 ) -> dict[str, Any]:
-    """Collect, auto-review and gate each discovered agent scope separately."""
+    """Collect, judge, auto-review and gate each discovered scope separately."""
     from eimemory.evaluation.recall_agent_scopes import recall_agent_scopes, run_per_agent
 
     def evaluate(agent_scope: dict) -> dict[str, Any]:
-        _run_production_recall_collection(runtime, scope=agent_scope)
-        _run_production_recall_auto_review(runtime, scope=agent_scope)
+        for producer in (_run_production_recall_collection, _run_semantic_relevance_monitor,
+                         _run_production_recall_auto_review):
+            result = producer(runtime, scope=agent_scope)
+            if result.get("ok") is False:
+                return {**result, "sample_count": 0, "quality_gate": {
+                    "ok": False, "blocked_reason": result.get("blocked_reason")
+                    or result.get("error") or "recall_quality_producer_failed"}}
         return _run_production_recall_eval(runtime, scope=agent_scope, stable_before=stable_before)
 
     try:
@@ -1003,9 +1018,9 @@ def _run_recall_quality_per_agent(
 def _per_agent_bounded_gate(primary_gate: dict, per_agent: object) -> dict:
     """The primary gate, made strictly stricter by the per-agent rule.
 
-    The primary gate object is returned unchanged only when every discovered
-    agent passes separately; otherwise ``ok`` is false with the per-agent
-    reason. This never turns a failing primary gate into a pass.
+    Missing role samples do not veto the shared mechanism. Known failures in
+    evaluated roles still bound the selected report's own authoritative gate.
+    This function never turns a failing gate into a pass.
     """
     per_agent = per_agent if isinstance(per_agent, dict) else {}
     combined = per_agent.get("combined") if isinstance(per_agent.get("combined"), dict) else None
