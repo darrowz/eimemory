@@ -297,3 +297,115 @@ def test_native_new_case_to_review_to_durable_summary_survives_restart(tmp_path)
         assert persisted['production_recall_collection'] == result
         assert runtime.store.get_by_id(case['review_receipt_id']).content['pending_record_id'] == pending_id
         assert runtime.store.get_by_id(pending_id).content['capture_ref'] == decision_id
+
+
+def test_per_scope_producers_survive_final_diagnostics_and_restart(tmp_path, monkeypatch):
+    import eimemory.evaluation.recall_agent_scopes as agents
+    import eimemory.evaluation.hermes_profile_coverage as profiles
+    scopes = [{**BASE_SCOPE, 'user_id': user} for user in ('first', 'second')]
+    monkeypatch.setattr(agents, 'recall_agent_scopes', lambda *_: scopes)
+    monkeypatch.setattr(profiles, 'load_topology', lambda: None)
+    calls = []
+    def produce(stage, scope):
+        index = 1 if scope['user_id'] == 'first' else 2
+        calls.append((scope['user_id'], stage))
+        return {'collection': _collection(_case(index)),
+                'monitor': {'ok': True, 'new_count': index},
+                'auto_review': {'ok': True, 'review_results': [_review(index)],
+                                'coverage': {'schema': 'production_recall_review_progress.v1',
+                                             'cycle_remaining_count': index}},
+                'eval': {'ok': True, 'sample_count': 0, 'quality_gate': {
+                    'ok': False, 'blocked_reason': 'recall_quality_evidence_incomplete'}}}[stage]
+    for stage, name in [('collection', '_run_production_recall_collection'),
+                        ('monitor', '_run_semantic_relevance_monitor'),
+                        ('auto_review', '_run_production_recall_auto_review'),
+                        ('eval', '_run_production_recall_eval')]:
+        monkeypatch.setattr(jobs, name, lambda *a, _stage=stage, **kw: produce(_stage, kw['scope']))
+    with Runtime.create(root=tmp_path) as runtime:
+        per_agent = jobs._run_recall_quality_per_agent(runtime, scope=BASE_SCOPE, primary_report={})
+        assert calls == [(user, stage) for user in ('first', 'second')
+                         for stage in ('collection', 'monitor', 'auto_review', 'eval')]
+        report = {'recall_quality_per_agent': per_agent,
+                  'production_recall_collection': _collection(),
+                  'production_recall_auto_review': {'coverage': {
+                      'schema': 'production_recall_review_progress.v1', 'cycle_remaining_count': 27}}}
+        diagnostics = nightly_result_diagnostics(report, [])
+        rows = diagnostics['natural_recall_quality_per_agent']['producer_reports']
+        assert len(rows) == 2
+        for index, row in enumerate(rows, 1):
+            assert row['scope'] == scopes[index - 1]
+            assert row['snapshot'] == 'after_primary_batch'
+            assert row['production_recall_collection']['new_count'] == 1
+            assert row['production_recall_collection']['new_case_reviews'][0]['review_receipt_id'] == _review(index)['review_receipt_id']
+            assert row['recall_semantic_relevance']['new_count'] == index
+            assert row['recall_label_auto_review']['coverage']['cycle_remaining_count'] == index
+        assert diagnostics['production_recall_collection']['new_count'] == 0
+        assert diagnostics['recall_label_auto_review']['coverage']['cycle_remaining_count'] == 27
+        assert diagnostics['recall_producer_coverage']['primary_snapshot'] == 'before_per_agent_producers'
+        summary = supervisor_summary(command='nightly', ok=True, duration_ms=1, memory_peak=0)
+        summary['nightly_diagnostics'] = diagnostics
+        saved = persist_supervisor_summary(runtime, scope=BASE_SCOPE, summary=summary).record_id
+    with Runtime.create(root=tmp_path) as runtime:
+        assert runtime.store.get_by_id(saved).content['nightly_diagnostics'] == diagnostics
+        assert build_supervisor_contract(runtime, scope=BASE_SCOPE)['runs']['nightly']['nightly_diagnostics'] == diagnostics
+
+
+def test_native_per_agent_collection_review_and_durable_diagnostics(tmp_path, monkeypatch):
+    import eimemory.evaluation.recall_agent_scopes as agents
+    import eimemory.evaluation.hermes_profile_coverage as profiles
+    monkeypatch.setattr(agents, 'recall_agent_scopes', lambda *_: [BASE_SCOPE])
+    monkeypatch.setattr(profiles, 'load_topology', lambda: None)
+    monkeypatch.setattr(jobs, '_run_semantic_relevance_monitor', lambda *a, **kw: {'ok': True})
+    monkeypatch.setattr(jobs, '_run_production_recall_eval', lambda *a, **kw: {
+        'ok': True, 'sample_count': 0, 'quality_gate': {
+            'ok': False, 'blocked_reason': 'recall_quality_evidence_incomplete'}})
+    with Runtime.create(root=tmp_path) as runtime:
+        primary_collection = jobs._run_production_recall_collection(runtime, scope=BASE_SCOPE)
+        primary_review = jobs._run_production_recall_auto_review(runtime, scope=BASE_SCOPE)
+        _, decision_id = _seed(runtime, 1800, state='not_used', proof=False)
+        result = jobs._run_recall_quality_per_agent(runtime,
+            scope={**BASE_SCOPE, 'agent_id': 'scheduler'}, primary_report={})
+        report = {'production_recall_collection': primary_collection,
+                  'production_recall_auto_review': primary_review, 'recall_quality_per_agent': result}
+        diagnostics = nightly_result_diagnostics(report, [])
+        row = diagnostics['natural_recall_quality_per_agent']['producer_reports'][0]
+        case = row['production_recall_collection']['new_case_reviews'][0]
+        assert case['capture_ref'] == decision_id
+        assert case['review_status'] == 'fail'
+        assert case['reasons'] == ['independent_signal_agreement_missing']
+        receipt_id = case['review_receipt_id']
+        assert runtime.store.get_by_id(receipt_id).content['pending_record_id'] == case['pending_record_id']
+        summary = supervisor_summary(command='nightly', ok=True, duration_ms=1, memory_peak=0)
+        summary['nightly_diagnostics'] = diagnostics
+        saved = persist_supervisor_summary(runtime, scope=BASE_SCOPE, summary=summary).record_id
+    with Runtime.create(root=tmp_path) as runtime:
+        assert runtime.store.get_by_id(saved).content['nightly_diagnostics'] == diagnostics
+        assert runtime.store.get_by_id(receipt_id).content['pending_record_id'] == case['pending_record_id']
+
+
+def test_later_scope_exception_retains_earlier_producer_diagnostics_and_veto(monkeypatch):
+    import eimemory.evaluation.recall_agent_scopes as agents
+    import eimemory.evaluation.hermes_profile_coverage as profiles
+    scopes = [{**BASE_SCOPE, 'user_id': user} for user in ('first', 'second')]
+    monkeypatch.setattr(agents, 'recall_agent_scopes', lambda *_: scopes)
+    monkeypatch.setattr(profiles, 'load_topology', lambda: None)
+    monkeypatch.setattr(jobs, '_run_production_recall_collection', lambda *a, **kw: _collection(_case(1)))
+    def monitor(*a, **kw):
+        if kw['scope']['user_id'] == 'second':
+            raise RuntimeError('fixture failure')
+        return {'ok': True}
+    monkeypatch.setattr(jobs, '_run_semantic_relevance_monitor', monitor)
+    monkeypatch.setattr(jobs, '_run_production_recall_auto_review', lambda *a, **kw: {
+        'ok': True, 'review_results': [_review(1)]})
+    monkeypatch.setattr(jobs, '_run_production_recall_eval', lambda *a, **kw: {
+        'ok': True, 'sample_count': 3, 'quality_gate': {'ok': True}})
+    result = jobs._run_recall_quality_per_agent(object(), scope=BASE_SCOPE, primary_report={})
+    assert result['ok'] is False
+    assert jobs._per_agent_bounded_gate({'ok': True}, result)['ok'] is False
+    diagnostics = nightly_result_diagnostics({'recall_quality_per_agent': result}, [])
+    assert diagnostics['natural_recall_quality_per_agent']['status'] == 'blocked'
+    rows = diagnostics['natural_recall_quality_per_agent']['producer_reports']
+    assert len(rows) == 2
+    assert rows[0]['production_recall_collection']['new_case_reviews'][0]['review_status'] == 'fail'
+    assert rows[1]['production_recall_collection']['new_case_reviews'][0]['review_status'] == 'not_reported'
+    assert rows[1]['recall_label_auto_review']['status'] == 'not_run'

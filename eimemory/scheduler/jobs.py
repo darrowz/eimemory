@@ -989,10 +989,16 @@ def _run_recall_quality_per_agent(
     """Collect, judge, auto-review and gate each discovered scope separately."""
     from eimemory.evaluation.recall_agent_scopes import recall_agent_scopes, run_per_agent
 
+    producer_reports = []
+
     def evaluate(agent_scope: dict) -> dict[str, Any]:
-        for producer in (_run_production_recall_collection, _run_semantic_relevance_monitor,
-                         _run_production_recall_auto_review):
+        reports = {"scope": dict(agent_scope), "snapshot": "after_primary_batch"}
+        producer_reports.append(reports)
+        for name, producer in (("production_recall_collection", _run_production_recall_collection),
+                               ("semantic_relevance_monitor", _run_semantic_relevance_monitor),
+                               ("production_recall_auto_review", _run_production_recall_auto_review)):
             result = producer(runtime, scope=agent_scope)
+            reports[name] = result
             if result.get("ok") is False:
                 return {**result, "sample_count": 0, "quality_gate": {
                     "ok": False, "blocked_reason": result.get("blocked_reason")
@@ -1002,6 +1008,7 @@ def _run_recall_quality_per_agent(
     try:
         scopes = recall_agent_scopes(runtime, scope)
         result = run_per_agent(scopes, scope, primary_report, evaluate)
+        result["producer_reports"] = producer_reports
         from eimemory.evaluation.hermes_profile_coverage import load_topology, profile_sampling_diagnostics
         topology = load_topology()
         if topology is not None:
@@ -1010,7 +1017,8 @@ def _run_recall_quality_per_agent(
             result['profile_sampling'] = profile_sampling_diagnostics(runtime, topology,
                 tenant_id=str(scope.get('tenant_id') or 'default'))
     except Exception as exc:
-        return {"ok": False, "status": "blocked", "blocked_reason": f"per_agent_recall_failed:{type(exc).__name__}"}
+        return {"ok": False, "status": "blocked", "producer_reports": producer_reports,
+                "blocked_reason": f"per_agent_recall_failed:{type(exc).__name__}"}
     # Execution succeeded; the quality verdict is carried by the bounded gate.
     return _json_safe({"ok": True, "status": "completed", **result})
 

@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.36] — 2026-10-26
+
+- Retain each later per-agent collection, semantic monitor and auto-review result in nightly reports and durable diagnostics, including exact new-case receipt associations and scope-specific review coverage. Mark the primary batch snapshot explicitly; scope counters remain separate and known execution failures still veto acceptance.
+
 ## [1.15.35] — 2026-10-26
 
 - Include the real deployment timing helper in the extracted installer receipt fixture so receipt failure and maintenance ordering checks reach their intended boundaries. Safety assertions and production installer behavior remain unchanged.

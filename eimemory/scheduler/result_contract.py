@@ -1200,6 +1200,11 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         "recall_quality_per_agent": _historical_business_per_agent_diagnostics(business)
             if historical_accepted else natural_agents,
         "natural_recall_quality_per_agent": natural_agents,
+        "recall_producer_coverage": {
+            "primary_snapshot": "before_per_agent_producers",
+            "final_scope_reports": "natural_recall_quality_per_agent.producer_reports",
+            "counts_semantics": "separate_scope_snapshots_not_additive",
+        },
         **({'hermes_profile_sampling': natural_agents['profile_sampling']}
            if 'profile_sampling' in natural_agents else {}),
         "release_acceptance": "not_evaluated_by_scheduler",
@@ -1245,17 +1250,31 @@ def _historical_business_per_agent_diagnostics(business: dict) -> dict:
 
 
 def _per_agent_diagnostics(value: object) -> dict:
-    if not isinstance(value, dict) or not isinstance(value.get("agents"), dict):
+    if (not isinstance(value, dict) or (not isinstance(value.get("agents"), dict)
+            and not isinstance(value.get("producer_reports"), list))):
         return {"status": "not_run"}
     agents = {}
-    for agent, verdict in sorted(value["agents"].items()):
+    for agent, verdict in sorted((value.get("agents") or {}).items()):
         verdict = verdict if isinstance(verdict, dict) else {}
         agents[str(agent)[:64]] = {key: verdict.get(key) for key in (
             "ok", "blocked_reason", "sample_count", "evaluation_contract", "label_trust_accepted",
             "false_recall_rate", "recall_at_k", "mrr", "evaluation_status") if key in verdict}
-    result = {"status": "evaluated", "rule": value.get("rule"), "discovery": value.get("discovery"),
+    result = {"status": "blocked" if value.get("ok") is False else "evaluated",
+              "rule": value.get("rule"), "discovery": value.get("discovery"),
               "agents": agents, "combined": value.get("combined"),
               "role_coverage_complete": value.get("role_coverage_complete") is True}
+    from eimemory.scheduler.collection_diagnostics import production_collection_diagnostics
+    if isinstance(value.get('producer_reports'), list):
+        result['producer_reports'] = [{
+            'scope': {key: row['scope'].get(key) for key in (
+                'tenant_id', 'agent_id', 'workspace_id', 'user_id')},
+            'snapshot': 'after_primary_batch',
+            'production_recall_collection': production_collection_diagnostics(
+                row.get('production_recall_collection'), row.get('production_recall_auto_review')),
+            'recall_label_auto_review': _auto_review_diagnostics(row.get('production_recall_auto_review')),
+            'recall_semantic_relevance': _semantic_monitor_diagnostics(row.get('semantic_relevance_monitor')),
+        } for row in value['producer_reports'][:4096]
+            if isinstance(row, dict) and isinstance(row.get('scope'), dict)]
     from eimemory.scheduler.collection_diagnostics import profile_inventory_diagnostics, profile_sampling_diagnostics
     if 'profile_inventory' in value:
         result['profile_inventory'] = profile_inventory_diagnostics(value['profile_inventory'])
