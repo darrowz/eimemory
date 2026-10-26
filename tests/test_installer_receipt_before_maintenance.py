@@ -377,7 +377,7 @@ def test_actual_main_receipt_failure_cannot_resume_candidate_or_clear_transactio
              "_acquire_candidate_validation_lock", "_maybe_fail_stage", "_restart_current_services",
              "_verify_effective_runtime_metadata", "_inspect_openclaw_plugin_runtime", "_verify_hermes_integration",
              "_start_code_implementation_owner", "_verify_release_health", "_run_openclaw_loop_deploy_verify"]
-    body = "\n".join(name + "() { :; }" for name in noops) + r'''
+    body = _function("_deployment_timing") + "\n".join(name + "() { :; }" for name in noops) + r'''
 trap 'echo "exit_committed:$COMMITTED" >> "$TRACE"' EXIT
 _update_storage_release_transaction() { echo "phase:$1" >> "$TRACE"; }
 _clear_storage_release_transaction() { echo clear >> "$TRACE"; }

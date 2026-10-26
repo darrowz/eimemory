@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.35] — 2026-10-26
+
+- Include the real deployment timing helper in the extracted installer receipt fixture so receipt failure and maintenance ordering checks reach their intended boundaries. Safety assertions and production installer behavior remain unchanged.
+
 ## [1.15.34] — 2026-10-26
 
 - Run independent semantic monitoring in each discovered recall role before auto review; use only the latest exact-scope observation and keep transient failures retryable across bounded review cycles.
