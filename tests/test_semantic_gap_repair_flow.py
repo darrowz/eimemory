@@ -204,7 +204,7 @@ def test_same_release_capture_policy_recovery_resolves_once_without_rewriting_ol
     assert 'PRIVATE' not in json.dumps(signed)
     assert len(fingerprint) == 64 and set(fingerprint) <= set('0123456789abcdef')
     second, repeated = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
-    assert not repeated and second['unverifiable_count'] == 0
+    assert not repeated and second['unverifiable_count'] == 1
     assert calls == judges == []
 
     monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '1')
@@ -236,7 +236,7 @@ def test_legacy_audit_without_policy_fingerprint_allows_one_retry_and_is_preserv
     assert not repeated and again['replay_count'] == again['provider_calls'] == 0
 
 
-def test_scope_order_and_duplicate_entries_do_not_invalidate_negative_policy_cache(replay_case, monkeypatch):
+def test_scope_order_and_duplicate_entries_preserve_audit_identity(replay_case, monkeypatch):
     from eimemory.evaluation.query_input_vault import configured_capture_scopes
     runtime, scope, _, _, _, calls, judges, _ = replay_case
     monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '0')
@@ -246,7 +246,7 @@ def test_scope_order_and_duplicate_entries_do_not_invalidate_negative_policy_cac
     monkeypatch.setenv('EIMEMORY_CAPTURE_QUERY_SCOPES', json.dumps([*reversed(allowed), allowed[0]]))
     assert repair._capture_policy_fingerprint(configured_capture_scopes()) == first_fingerprint
     report, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
-    assert not findings and report['unverifiable_count'] == 0
+    assert not findings and report['unverifiable_count'] == 1
     assert len(_audits(runtime, scope)) == 1 and calls == judges == []
 
 
@@ -281,10 +281,9 @@ def test_packet_failure_audit_retries_after_policy_recovery_without_recalling(re
     before = audit.to_dict()
     monkeypatch.setattr(repair, '_load_replay', native)
     second, repeated = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
-    assert not repeated and second['provider_calls'] == 0 and judges == []
-    monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '0')
-    recovered, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
-    assert recovered['replay_count'] == 0 and recovered['provider_calls'] == len(judges) == 1
+    assert len(repeated) == second['provider_calls'] == len(judges) == 1
+    findings = repeated
+    assert second['replay_count'] == 0
     assert len(calls) == 1
     assert len(_ingest_verified_findings(runtime, findings=findings, scope=scope)['resolved_record_ids']) == 1
     assert before == runtime.store.get_by_id(audit.record_id, scope=scope).to_dict()
@@ -746,3 +745,207 @@ def test_review_signing_failure_keeps_packet_retryable_and_counts_attempt(replay
     second, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=1)
     assert second['replay_count'] == 0 and second['provider_calls'] == 1
     assert len(findings) == len(calls) == 1 and len(judges) == 2
+
+
+def test_recovered_packet_evidence_retries_under_unchanged_policy(replay_case, monkeypatch):
+    runtime, scope, gap, _, _, calls, judges, _ = replay_case
+    repair.capture_semantic_gap_replay(runtime, gap_id=gap.record_id, scope=scope)
+    native = repair._load_replay
+    def unavailable(*args, **kwargs):
+        raise ValueError('semantic_repair_evidence_invalid')
+    monkeypatch.setattr(repair, '_load_replay', unavailable)
+    first, _ = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=1)
+    assert first['unverifiable_count'] == 1
+    monkeypatch.setattr(repair, '_load_replay', native)
+    second, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=1)
+    assert second['provider_calls'] == len(judges) == len(findings) == 1
+    assert second['replay_count'] == 0 and len(calls) == 1
+
+
+def test_transport_failure_does_not_starve_other_durable_packets(replay_case, monkeypatch):
+    runtime, scope, gap, _, _, _, _, _ = replay_case
+    packets = [repair.capture_semantic_gap_replay(runtime, gap_id=gap.record_id, scope=scope,
+                                               attempt_id=str(i))['packet_ref'] for i in range(2)]
+    native = repair.review_semantic_gap_replay
+    attempted = []
+    def review(runtime, *, packet_ref, **kwargs):
+        attempted.append(packet_ref)
+        return native(runtime, packet_ref=packet_ref, **kwargs)
+    monkeypatch.setattr(repair, 'review_semantic_gap_replay', review)
+    monkeypatch.setattr(semantic, '_evaluate', lambda *_: dict(verdict='unknown',
+        reason='completion_unavailable', relevance=[], off_topic=False,
+        duplicates=False, unanswered='unknown'))
+    for _ in range(2):
+        repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=1)
+    # Deferred reads do not count as attempts; inspect durable retry receipts.
+    with runtime.store.locked() as db:
+        reviewed = {r[0] for r in db.execute("SELECT json_extract(meta_json,'$.semantic_repair_packet_ref') FROM records WHERE source=?", (repair.REVIEW_SOURCE,))}
+    assert set(packets) <= reviewed
+
+
+def test_each_new_replay_gets_available_review_before_more_replays(replay_case, monkeypatch):
+    runtime, scope, gap, _, _, calls, judges, _ = replay_case
+    extra = RecordEnvelope.from_dict(gap.to_dict())
+    extra.record_id = 'ref_' + 'f' * 12
+    extra.meta['semantic_key'] = extra.content['semantic_key'] = 'quality-gap:recall_semantic:pressure:memory.recall'
+    runtime.store.append(extra)
+    native = repair.capture_semantic_gap_replay
+    def capture(runtime, *, gap_id, _allow_recall=True, _on_recall=None, **kwargs):
+        if gap_id == extra.record_id:
+            if not _allow_recall:
+                raise ValueError('semantic_repair_budget_deferred')
+            _on_recall()
+            return {}
+        return native(runtime, gap_id=gap_id, _allow_recall=_allow_recall,
+                      _on_recall=_on_recall, **kwargs)
+    monkeypatch.setattr(repair, 'capture_semantic_gap_replay', capture)
+    result, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert result['replay_count'] == result['provider_calls'] == len(findings) == 1
+    assert len(calls) == len(judges) == 1
+
+
+def test_cross_release_rounds_review_original_cases_with_two_units(replay_case, monkeypatch):
+    runtime, scope, gap, old, _, calls, judges, _ = replay_case
+    # Keep the incident open with a true nonpassing judgment across releases.
+    def evaluate(*args):
+        judges.append(args)
+        return verdict('unrelated')
+    monkeypatch.setattr(semantic, '_evaluate', evaluate)
+    baseline = [r.to_dict() for r in (gap, old)]
+    for commit in ('a', 'c', 'd'):
+        if commit != 'a':
+            previous = repair._current(runtime, scope)
+            receipt = runtime.store.get_by_id(previous['deployment_receipt_id'], scope=scope)
+            newer = RecordEnvelope.from_dict(json.loads(json.dumps(receipt.to_dict()).replace(
+                previous['release_commit'], commit * 40)))
+            newer.record_id = 'rec_' + commit * 12
+            runtime.store.append(newer)
+            runtime._test_runtime_commit = commit * 40
+        result, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+        assert result['replay_count'] == result['provider_calls'] == result['reviewed_count'] == 1
+        assert not findings and result['unresolved_count'] == 1
+    assert len(calls) == len(judges) == 3
+    assert baseline == [runtime.store.get_by_id(r.record_id, scope=scope).to_dict() for r in (gap, old)]
+
+
+@pytest.mark.parametrize('operation', ['capture', 'review'])
+def test_concurrent_real_work_is_deduplicated_before_call(replay_case, monkeypatch, operation):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    runtime, scope, gap, _, _, calls, judges, _ = replay_case
+    entered, release = Event(), Event()
+    if operation == 'capture':
+        native = runtime.memory.recall
+        def slow(**kwargs):
+            entered.set()
+            assert release.wait(5)
+            return native(**kwargs)
+        monkeypatch.setattr(runtime.memory, 'recall', slow)
+        def work():
+            return repair.capture_semantic_gap_replay(runtime, gap_id=gap.record_id, scope=scope)
+    else:
+        packet = repair.capture_semantic_gap_replay(runtime, gap_id=gap.record_id, scope=scope)
+        native = semantic._evaluate
+        def slow(*args):
+            entered.set()
+            assert release.wait(5)
+            return native(*args)
+        monkeypatch.setattr(semantic, '_evaluate', slow)
+        def work():
+            return repair.review_semantic_gap_replay(runtime, packet_ref=packet['packet_ref'], scope=scope)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(work)
+        assert entered.wait(5)
+        second = pool.submit(work)
+        Event().wait(.1)  # Give the concurrent caller time to reach the work boundary.
+        release.set()
+        results = [first.result(), second.result()]
+    assert len(calls) == 1
+    assert len(judges) == (1 if operation == 'review' else 0)
+    key = 'packet_ref' if operation == 'capture' else 'review_ref'
+    assert results[0][key] == results[1][key]
+    assert sorted(r['reused'] for r in results) == [False, True]
+
+
+def test_invalid_tail_cannot_move_cursor_past_budget_deferred_packet(replay_case, monkeypatch):
+    from eimemory.storage.runtime_store import RuntimeStore
+    from eimemory.scheduler.result_contract import _semantic_repair_diagnostics
+    runtime, scope, gap, _, _, _, _, _ = replay_case
+    packets = sorted(repair.capture_semantic_gap_replay(runtime, gap_id=gap.record_id, scope=scope,
+        attempt_id=str(i))['packet_ref'] for i in range(3))
+    native = repair._load_replay
+    def load(runtime, packet_ref, *args, **kwargs):
+        if packet_ref == packets[-1]:
+            raise ValueError('semantic_repair_evidence_invalid')
+        return native(runtime, packet_ref, *args, **kwargs)
+    monkeypatch.setattr(repair, '_load_replay', load)
+    monkeypatch.setattr(semantic, '_evaluate', lambda *_: dict(verdict='unknown',
+        reason='completion_unavailable', relevance=[], off_topic=False,
+        duplicates=False, unanswered='unknown'))
+    first, _ = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=1)
+    assert first['scheduling_cursor_persisted'] is True
+    assert _semantic_repair_diagnostics(first)['scheduling_cursor_persisted'] is True
+    cursor_id = 'srsc_' + explicit._digest(asdict(scope))[:32]
+    reopened = RuntimeStore(runtime.store.root)
+    try:
+        saved = reopened.get_by_exact_ref(cursor_id, scope=scope, source_id='review_progress')
+        assert saved.content['packet_after'] == packets[0]
+    finally:
+        reopened.close()
+    second, _ = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=1)
+    assert second['provider_calls'] == 1
+    with runtime.store.locked() as db:
+        reviewed = {r[0] for r in db.execute("SELECT json_extract(meta_json,'$.semantic_repair_packet_ref') FROM records WHERE source=?", (repair.REVIEW_SOURCE,))}
+    assert set(packets[:2]) <= reviewed
+
+
+def test_persistent_failed_review_cannot_starve_incident_admission(replay_case, monkeypatch):
+    runtime, scope, gap, _, _, _, _, _ = replay_case
+    repair.capture_semantic_gap_replay(runtime, gap_id=gap.record_id, scope=scope)
+    extra = RecordEnvelope.from_dict(gap.to_dict())
+    extra.record_id = 'ref_' + 'f' * 12
+    extra.meta['semantic_key'] = extra.content['semantic_key'] = 'quality-gap:recall_semantic:pressure:memory.recall'
+    runtime.store.append(extra)
+    admitted = []
+    def capture(runtime, *, gap_id, _allow_recall=True, _on_recall=None, **kwargs):
+        if not _allow_recall:
+            raise ValueError('semantic_repair_budget_deferred')
+        admitted.append(gap_id)
+        _on_recall()
+        raise RuntimeError('retryable capture failure')
+    monkeypatch.setattr(repair, 'capture_semantic_gap_replay', capture)
+    monkeypatch.setattr(semantic, '_evaluate', lambda *_: dict(verdict='unknown',
+        reason='completion_unavailable', relevance=[], off_topic=False,
+        duplicates=False, unanswered='unknown'))
+    first, _ = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=1)
+    second, _ = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=1)
+    assert first['provider_calls'] == 1 and first['replay_count'] == 0
+    assert second['provider_calls'] == 0 and second['replay_count'] == 1
+    assert admitted == [extra.record_id]
+
+
+@pytest.mark.parametrize('failure', ['incomplete', 'changed_result'])
+def test_same_release_recovers_by_new_attested_attempt_and_preserves_old_truth(replay_case, monkeypatch, failure):
+    runtime, scope, gap, _, current, calls, judges, options = replay_case
+    if failure == 'incomplete':
+        options['complete'] = False
+    else:
+        monkeypatch.setattr(semantic, '_evaluate', lambda *_: verdict('unrelated'))
+    first, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert not findings
+    packets = runtime.store.list_records_by_meta_value(kinds=['evaluation_packet'], scope=scope,
+        meta_key='report_type', meta_value='semantic_gap_replay_capture', limit=10)
+    original = packets[0].to_dict()
+    options['complete'] = True
+    if failure == 'changed_result':
+        current.summary = 'PRIVATE authorized corrected answer'
+        runtime.store.rewrite(current, previous_scope=scope)
+    monkeypatch.setattr(semantic, '_evaluate', lambda *_: judges.append(True) or verdict())
+    second, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert second['replay_count'] == second['provider_calls'] == len(findings) == 1, json.dumps(second, sort_keys=True)
+    assert len(calls) == 2
+    assert runtime.store.get_by_id(original['record_id'], scope=scope).to_dict() == original
+    assert findings[0]['_semantic_repair']['packet_ref'] != original['record_id']
+    assert _ingest_verified_findings(runtime, findings=findings, scope=scope)['resolved_record_ids']
+    again, repeated = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert again['replay_count'] == again['provider_calls'] == 0 and not repeated

@@ -1046,7 +1046,7 @@ def _semantic_repair_diagnostics(value: object) -> dict:
                 "budget_limit", "incident_scan_limit", "incident_work_limit", "packet_scan_limit",
                 "incident_rows_observed", "packet_rows_observed") if key in report},
             **{key: report.get(key) is True for key in (
-                "incident_scan_saturated", "packet_scan_saturated") if key in report},
+                "incident_scan_saturated", "packet_scan_saturated", "scheduling_cursor_persisted") if key in report},
             "reason_counts": _diagnostic_reason_counts(report.get("reason_counts"), REPAIR_REASONS),
             "results": [{
                 "status": _diagnostic_code(item.get("status"), frozenset({"deferred", "unverifiable"})),

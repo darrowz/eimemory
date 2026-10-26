@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.42] — 2026-10-27
+
+- Complete bounded semantic replay and review one case at a time. Persist independent incident and packet scan positions across releases so failed reviews cannot monopolize later work. Retry recovered evidence and incomplete or changed results through linked signed attempts without treating negative audits as permanent coverage, and serialize real replay/review calls before immutable receipt deduplication. Preserve original failures, current release validation, authority gates and the shared work budget.
+
 ## [1.15.41] — 2026-10-26
 
 - Charge semantic delivery review budget at the provider call. Recheck unavailable historical inputs locally without starving valid deliveries, and persist invalidated query/render evidence even when provider budget is exhausted. Preserve unknown outcomes and all scope, source, release and certification gates.

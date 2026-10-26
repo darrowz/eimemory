@@ -4,6 +4,7 @@ This is neither natural-sample production nor label authority. Old reports,
 queries and renders retain their original identities, including renamed agents.
 """
 from copy import deepcopy
+from functools import wraps
 from dataclasses import asdict
 from hashlib import sha256
 import json
@@ -145,7 +146,22 @@ def _replay_retrieval_state(bundle):
                 recall_budget_exhausted=recall if type(recall) is int and recall >= 0 else None)
 
 
-def capture_semantic_gap_replay(runtime, *, gap_id, scope, attempt_id='', _allow_recall=True, _on_recall=None):
+def _serialized_work(function):
+    @wraps(function)
+    def run(runtime, **kwargs):
+        from eimemory.storage.atomic_file import interprocess_lock
+        identity = dict(operation=function.__name__, scope=asdict(_exact(kwargs['scope'])),
+                        gap_id=kwargs.get('gap_id'), packet_ref=kwargs.get('packet_ref'))
+        path = runtime.store.root / 'state' / ('semantic-repair-' + explicit._digest(identity) + '.lock')
+        # Cover the real call, not just its eventual immutable receipt insert.
+        with interprocess_lock(path):
+            return function(runtime, **kwargs)
+    return run
+
+
+@_serialized_work
+def capture_semantic_gap_replay(runtime, *, gap_id, scope, attempt_id='', _allow_recall=True, _on_recall=None,
+                                _retry_of_packet_ref=''):
     """Run one faithful engine rerun and attest its native compact result.
 
     The authorized nightly collector invokes this within its shared work budget.
@@ -162,6 +178,15 @@ def capture_semantic_gap_replay(runtime, *, gap_id, scope, attempt_id='', _allow
     identity = dict(gap_id=gap_id, original_input_digest=inputs['input_digest'],
                     original_context_digest=explicit._digest(context),
                     release_identity=prepared['current_release_identity'], attempt_id=attempt_id)
+    if _retry_of_packet_ref:
+        parent = runtime.store.get_by_exact_ref(_retry_of_packet_ref, scope=exact, source_id='default')
+        if parent is None:
+            raise ValueError('semantic_repair_packet_unavailable')
+        parent_body = explicit._verify(parent, CAPTURE_SOURCE, exact)
+        if (parent_body.get('lineage') != prepared
+                or parent_body.get('release_identity') != prepared['current_release_identity']):
+            raise ValueError('semantic_repair_lineage_changed')
+        identity['retry_of_packet_ref'] = _retry_of_packet_ref
     packet_id = 'srpc_' + explicit._digest(identity)[:32]
     prior = runtime.store.get_by_exact_ref(packet_id, scope=exact, source_id='default')
     if prior is not None:
@@ -208,6 +233,7 @@ def capture_semantic_gap_replay(runtime, *, gap_id, scope, attempt_id='', _allow
         if commitment.get('status') != 'captured':
             raise ValueError('semantic_repair_private_result_unavailable')
         body = dict(schema=SCHEMA, report_type='semantic_gap_replay_capture', created_at=now_iso(),
+                    retry_of_packet_ref=_retry_of_packet_ref,
                     result_contract=RESULT_CONTRACT, host_delivery_certified=False,
                     lineage=prepared, request=request, request_digest=explicit._digest(request),
                     original_context_digest=explicit._digest(inputs['task_context']),
@@ -221,6 +247,7 @@ def capture_semantic_gap_replay(runtime, *, gap_id, scope, attempt_id='', _allow
         packet = explicit._record(CAPTURE_SOURCE, packet_id, exact, body)
         packet.meta['report_type'] = 'semantic_gap_replay_capture'
         packet.meta['semantic_repair_gap_ref'] = gap_id
+        packet.meta['semantic_repair_retry_of_packet_ref'] = _retry_of_packet_ref
         packet.meta['semantic_repair_release_digest'] = explicit._digest(prepared['current_release_identity'])
         sqlite.upsert(packet, commit=False)
         return (packet, True), [packet], []
@@ -327,6 +354,7 @@ def verify_repair_review(runtime, *, review_ref, scope):
     return review, packet, prepared
 
 
+@_serialized_work
 def review_semantic_gap_replay(runtime, *, packet_ref, scope, allow_model=True, _on_provider_call=None):
     """Independently judge one verified actual result; never fabricate a pass."""
     exact = _exact(scope)
@@ -431,6 +459,7 @@ def _incident_cte():
     ) """
 
 
+@_serialized_work
 def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
     """Bounded nightly owner: exact current incidents -> maintenance -> review.
 
@@ -444,7 +473,7 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
                   reason_counts={}, results=[], budget_limit=max(0, min(8, int(max_new))),
                   incident_scan_limit=33, incident_work_limit=32, packet_scan_limit=64,
                   incident_rows_observed=0, packet_rows_observed=0,
-                  incident_scan_saturated=False, packet_scan_saturated=False,
+                  incident_scan_saturated=False, packet_scan_saturated=False, scheduling_cursor_persisted=False,
                   natural_benchmark_eligible=False)
     findings = []
     budget = max(0, min(8, int(max_new)))
@@ -497,26 +526,35 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
     except ValueError as error:
         failed(error)
         return report, findings
+    from eimemory.evaluation.review_progress import complete_review_batch
+    cursor_id = 'srsc_' + explicit._digest(asdict(exact))[:32]
+    saved = runtime.store.get_by_exact_ref(cursor_id, scope=exact, source_id='review_progress')
+    previous = saved.content if saved is not None else None
+    progress = dict(previous) if isinstance(previous, dict) else {}
+    def after(name):
+        value = progress.get(name)
+        return value if isinstance(value, str) else ''
+
     with runtime.store.locked() as db:
         rows = db.execute(_incident_cte() + """
             SELECT incident.record_id FROM current_incidents incident
             WHERE NOT EXISTS (SELECT 1 FROM records coverage
-                WHERE (coverage.source=? OR (coverage.source=?
-                    AND json_extract(coverage.meta_json,'$.semantic_repair_capture_policy_fingerprint')=?))
+                WHERE coverage.source=?
                   AND coverage.tenant_id=? AND coverage.agent_id=?
                   AND coverage.workspace_id=? AND coverage.user_id=?
                   AND json_extract(coverage.meta_json,'$.semantic_repair_gap_ref')=incident.record_id
                   AND json_extract(coverage.meta_json,'$.semantic_repair_release_digest')=?)
-            ORDER BY incident.updated_at ASC,incident.record_id ASC LIMIT 33""",
-            (*owner_params, CAPTURE_SOURCE, 'eimemory.semantic_relevance_monitor.repair_audit',
-             policy_fingerprint,
-             exact.tenant_id, exact.agent_id, exact.workspace_id, exact.user_id, release_digest)).fetchall()
+            ORDER BY CASE WHEN incident.record_id>? THEN 0 ELSE 1 END,incident.record_id ASC LIMIT 33""",
+            (*owner_params, CAPTURE_SOURCE,
+             exact.tenant_id, exact.agent_id, exact.workspace_id, exact.user_id, release_digest, after('incident_after'))).fetchall()
     report['incident_rows_observed'] = len(rows)
     report['incident_scan_saturated'] = len(rows) == 33
     for row in rows[32:]:
         report['deferred_count'] += 1
         trace('deferred', 'semantic_repair_scan_limit_deferred', gap_ref=row['record_id'])
     seen = set()
+    fresh_packets = set()
+    retried_gaps = set()
 
     def review_pending():
         if len(seen) >= 64:
@@ -529,20 +567,18 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
                   AND packet.tenant_id=? AND packet.agent_id=? AND packet.workspace_id=? AND packet.user_id=?
                   AND json_extract(packet.meta_json,'$.semantic_repair_release_digest')=?
                   AND json_extract(packet.meta_json,'$.semantic_repair_gap_ref') IN (SELECT record_id FROM current_incidents)
-                  AND NOT EXISTS (SELECT 1 FROM records completed
-                      WHERE completed.tenant_id=packet.tenant_id AND completed.agent_id=packet.agent_id
-                        AND completed.workspace_id=packet.workspace_id AND completed.user_id=packet.user_id
-                        AND json_extract(completed.meta_json,'$.semantic_repair_packet_ref')=packet.record_id
-                        AND ((completed.source=?
-                            AND json_extract(completed.meta_json,'$.semantic_repair_capture_policy_fingerprint')=?)
-                          OR (completed.source=?
-                            AND json_extract(completed.meta_json,'$.semantic_repair_verdict') IN ('unknown','off_topic','mixed')
-                            AND COALESCE(json_extract(completed.meta_json,'$.semantic_repair_reason'),
-                                json_extract(completed.payload_json,'$.content.reason'))='evaluated')))
-                """ + unseen + " ORDER BY packet.updated_at ASC,packet.record_id ASC LIMIT ?",
+                  AND NOT EXISTS (SELECT 1 FROM records successor
+                      WHERE successor.source=packet.source AND successor.status='active'
+                        AND successor.tenant_id=packet.tenant_id AND successor.agent_id=packet.agent_id
+                        AND successor.workspace_id=packet.workspace_id AND successor.user_id=packet.user_id
+                        AND json_extract(successor.meta_json,'$.semantic_repair_gap_ref')=
+                            json_extract(packet.meta_json,'$.semantic_repair_gap_ref')
+                        AND json_extract(successor.meta_json,'$.semantic_repair_release_digest')=
+                            json_extract(packet.meta_json,'$.semantic_repair_release_digest')
+                        AND json_extract(successor.meta_json,'$.semantic_repair_retry_of_packet_ref')=packet.record_id)
+                """ + unseen + " ORDER BY CASE WHEN packet.record_id>? THEN 0 ELSE 1 END,packet.record_id ASC LIMIT ?",
                 (*owner_params, CAPTURE_SOURCE, exact.tenant_id, exact.agent_id, exact.workspace_id, exact.user_id,
-                 release_digest, 'eimemory.semantic_relevance_monitor.repair_audit', policy_fingerprint,
-                 REVIEW_SOURCE, *seen, 64 - len(seen))).fetchall()
+                 release_digest, *seen, after('packet_after'), 64 - len(seen))).fetchall()
         seen.update(row['record_id'] for row in packet_rows)
         report['packet_rows_observed'] = len(seen)
         report['packet_scan_saturated'] = len(seen) == 64
@@ -550,6 +586,7 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
         for packet in packets:
             if packet is None or packet.scope != exact or packet.source != CAPTURE_SOURCE:
                 continue
+            available = spent() < budget
             try:
                 result = review_semantic_gap_replay(runtime, packet_ref=packet.record_id, scope=exact,
                     allow_model=spent() < budget, _on_provider_call=judge_called)
@@ -558,6 +595,8 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
                     trace('deferred', 'semantic_repair_budget_deferred', packet=packet,
                           gap_ref=packet.meta.get('semantic_repair_gap_ref'))
                     continue
+                if available:
+                    progress['packet_after'] = packet.record_id
                 report['reviewed_count'] += 1
                 if result.get('reason') != 'evaluated':
                     report['unresolved_count'] += 1
@@ -569,10 +608,27 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
                         raise
                     report['unresolved_count'] += 1
             except (ValueError, KeyError, TypeError, RuntimeError, OSError) as error:
+                if available:
+                    progress['packet_after'] = packet.record_id
                 failed(error, packet=packet)
+                gap_ref = packet.meta.get('semantic_repair_gap_ref')
+                if (str(error) in {'semantic_repair_retrieval_not_complete',
+                                   'semantic_repair_result_authority_changed'}
+                        and packet.record_id not in fresh_packets and gap_ref not in retried_gaps
+                        and spent() < budget):
+                    retried_gaps.add(gap_ref)
+                    try:
+                        retry = capture_semantic_gap_replay(runtime, gap_id=gap_ref, scope=exact,
+                            attempt_id=packet.record_id, _retry_of_packet_ref=packet.record_id,
+                            _on_recall=recall_called)
+                        fresh_packets.add(retry['packet_ref'])
+                    except (ValueError, KeyError, TypeError, RuntimeError, OSError) as retry_error:
+                        failed(retry_error, packet=packet)
 
-    # Finish durable packets before admitting more replay work.
-    review_pending()
+    # Alternate admission with durable review so endless retries cannot starve either.
+    capture_first = progress.get('next_stage') == 'capture'
+    if not capture_first:
+        review_pending()
     for row in rows[:32]:
         gap = runtime.store.get_by_id(row['record_id'], scope=exact)
         if gap is None:
@@ -580,11 +636,26 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
         latest = _latest_gap(runtime, scope=exact, semantic_key=str(gap.meta.get('semantic_key') or ''))
         if latest is None or latest.record_id != gap.record_id:
             continue
+        available = spent() < budget
         try:
-            capture_semantic_gap_replay(runtime, gap_id=gap.record_id, scope=exact,
+            captured = capture_semantic_gap_replay(runtime, gap_id=gap.record_id, scope=exact,
                 _allow_recall=spent() < budget, _on_recall=recall_called)
+            if captured and captured.get('packet_ref'):
+                fresh_packets.add(captured['packet_ref'])
+            if available:
+                progress['incident_after'] = gap.record_id
+            review_pending()
         except (ValueError, KeyError, TypeError, RuntimeError, OSError) as error:
+            if available and str(error) != 'semantic_repair_budget_deferred':
+                progress['incident_after'] = gap.record_id
             failed(error, gap)
 
     review_pending()
+    review_pending()  # A retry created by the last scan can still use remaining review budget.
+    if budget:
+        progress['next_stage'] = 'review' if capture_first else 'capture'
+    if progress != (previous or {}):
+        report['scheduling_cursor_persisted'] = complete_review_batch(runtime, scope=exact, batch=dict(cursor_id=cursor_id,
+            expected_digest=explicit._digest(previous) if saved is not None else None,
+            next=dict(progress, schema='semantic_repair_scan_progress.v1')))
     return report, findings

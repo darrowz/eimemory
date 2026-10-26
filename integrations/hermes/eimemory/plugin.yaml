@@ -1,4 +1,4 @@
 name: eimemory
-version: 1.15.41
+version: 1.15.42
 description: Scoped local-first memory provider for Hermes Agent through authenticated eimemory RPC.
 kind: exclusive
