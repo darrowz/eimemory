@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.38] — 2026-10-26
+
+- Resume semantic monitoring of captures owned by explicitly configured former agent IDs, using the existing shared rename policy and bounded scan. Preserve original decision/query/render identities and exact user, workspace, source and release checks; unavailable historical renders remain non-passing.
+
 ## [1.15.37] — 2026-10-26
 
 - Separate delivered relevance labels from host usage and answer proof: bounded independent blind confirmation can support grade 2 auto-review labels. Preserve real delivery, exact capture/release/source authorization, original query integrity, revocation and signing; grade 3 still requires verified proof and host usage.

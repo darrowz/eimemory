@@ -141,6 +141,7 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
     from eimemory.retrieval.proactive import ProactiveRecallService
     from eimemory.governance.learning.quality_gap_intake import _quality_finding
     from eimemory.evaluation.query_input_vault import load_query_input
+    from eimemory.evaluation.production_query_dataset import _decision_agent_ids, _alias_equivalent_scope
 
     findings = []
     counts = dict(new_count=0, reused_count=0, deferred_count=0, skipped_count=0,
@@ -157,13 +158,16 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
         source_filter = (' AND json_array_length(source_ids_json)=1'
                          " AND json_extract(source_ids_json, '$[0]') IN ("
                          + ','.join('?' for _ in source_params) + ')')
+    # Read authorized renamed agents without changing historical capture identities.
+    agent_ids = _decision_agent_ids(scope.agent_id)
+    agent_slots = ','.join('?' for _ in agent_ids)
     # ponytail: reuse the 512-decision retention window, no new job or queue.
     with runtime.store.locked() as db:
         rows = db.execute(
             'SELECT decision_id,query_text FROM proactive_decisions WHERE channel=? AND tenant_id=? '
-            'AND agent_id=? AND workspace_id=? AND user_id=?' + source_filter
+            'AND agent_id IN (' + agent_slots + ') AND workspace_id=? AND user_id=?' + source_filter
             + ' ORDER BY created_at DESC LIMIT 512',
-            (runtime_channel_from_scope(scope) or 'openclaw', scope.tenant_id, scope.agent_id,
+            (runtime_channel_from_scope(scope) or 'openclaw', scope.tenant_id, *agent_ids,
              scope.workspace_id, scope.user_id) + source_params,
         ).fetchall()
         decisions = [(db.load_proactive_decision(row['decision_id']), row['query_text']) for row in rows]
@@ -193,7 +197,8 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
                            channel=runtime_channel_from_scope(scope) or 'openclaw')
         result = dict(verdict='unknown', reason='unverified_delivery', relevance=[],
                       off_topic=False, duplicates=False, unanswered='unknown')
-        eligible = (decision['scope'] == asdict(scope) and decision['release_bound']
+        scope_matches = _alias_equivalent_scope(decision['scope'], scope)
+        eligible = (scope_matches and decision['release_bound']
                     and not decision['control_cohort'] and decision['acceptance_generated'] is False
                     and surface in ELIGIBLE_TASK_TYPES
                     and len(sources) == 1 and sources[0] not in ('', '*') and len(sources[0]) <= 160)
@@ -222,7 +227,7 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
             counts['skipped_count'] += 1
             # Report the first failed authority gate, never infer a transport
             # failure from zero calls or expose receipt IDs/private inputs.
-            reason = ('scope_mismatch' if decision['scope'] != asdict(scope) else
+            reason = ('scope_mismatch' if not scope_matches else
                       'release_unbound' if not decision['release_bound'] else
                       'control_cohort' if decision['control_cohort'] else
                       'maintenance_capture' if decision['acceptance_generated'] is not False else
@@ -245,7 +250,7 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
         if eligible:
             try:
                 query = load_query_input(
-                    runtime, decision_id=decision['decision_id'], scope=scope,
+                    runtime, decision_id=decision['decision_id'], scope=decision['scope'],
                     channel=runtime_channel_from_scope(scope) or 'openclaw',
                     source_id=sources[0])['query']
             except Exception as exc:

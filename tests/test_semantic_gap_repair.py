@@ -75,6 +75,58 @@ def incident(tmp_path, monkeypatch):
     runtime.close()
 
 
+def test_monitor_revisits_renamed_decision_without_inventing_delivery(incident):
+    runtime, scope, gap, old, record, _ = incident
+    before = [runtime.store.get_by_id(item.record_id).to_dict() for item in (gap, old, record)]
+    report, findings = monitor.monitor_deliveries(runtime, scope=scope, max_new=1)
+    assert report['new_count'] == 1
+    assert report['provider_calls'] == 0
+    assert findings == []
+    latest = runtime.store.latest_record_by_meta_value_exact_scope(
+        kind='evaluation_packet', source=monitor.SOURCE, scope=scope, status=None,
+        meta_key='semantic_monitor_identity', meta_value=old.content['evaluation_identity'])
+    assert latest.content['reason'] == 'unverified_delivery'
+    assert latest.content['evaluation_identity'] == old.content['evaluation_identity']
+    assert before == [runtime.store.get_by_id(item.record_id).to_dict() for item in (gap, old, record)]
+
+
+@pytest.mark.parametrize('boundary', ['alias_removed', 'user', 'tenant', 'workspace', 'channel', 'source'])
+def test_monitor_alias_scan_keeps_other_authority_boundaries(incident, monkeypatch, boundary):
+    runtime, scope, _, _, _, _ = incident
+    options = {}
+    if boundary == 'alias_removed':
+        monkeypatch.setenv('EIMEMORY_LEGACY_AGENT_IDS', 'unrelated-agent')
+    elif boundary == 'user':
+        scope = ScopeRef.from_dict(dict(asdict(scope), user_id='other-owner'))
+    elif boundary in {'tenant', 'workspace', 'channel'}:
+        key = 'tenant_id' if boundary == 'tenant' else 'workspace_id'
+        value = 'workspace::channel::openclaw' if boundary == 'channel' else 'foreign'
+        scope = ScopeRef.from_dict(dict(asdict(scope), **{key: value}))
+    else:
+        options['source_ids'] = {'other-source'}
+    report, findings = monitor.monitor_deliveries(runtime, scope=scope, max_new=1, **options)
+    assert report['new_count'] == report['provider_calls'] == 0
+    assert not findings
+
+
+def test_monitor_alias_scan_judges_only_original_exact_render(incident, monkeypatch):
+    runtime, scope, _, old, record, _ = incident
+    original = ScopeRef.from_dict(old.content['scope'])
+    record.scope = original
+    runtime.store.rewrite(record, previous_scope=scope)
+    calls = []
+    def evaluate(query, items):
+        calls.append((query, len(items)))
+        return monitor._parse_result(json.dumps(dict(relevance=['relevant'],
+            off_topic=False, duplicates=False, unanswered=False)), 1)
+    monkeypatch.setattr(monitor, '_evaluate', evaluate)
+    monkeypatch.setenv('EIMEMORY_PRODUCTION_RECALL_AUTO_REVIEW', '0')
+    report, findings = monitor.monitor_deliveries(runtime, scope=scope, max_new=1)
+    assert report['provider_calls'] == 1
+    assert calls == [('PRIVATE original user question', 1)]
+    assert not findings
+
+
 def test_renamed_agent_original_input_and_physical_render_prepare_without_mutation(incident):
     runtime, scope, gap, old, record, _ = incident
     before = [runtime.store.get_by_id(item.record_id).to_dict() for item in (gap, old, record)]
