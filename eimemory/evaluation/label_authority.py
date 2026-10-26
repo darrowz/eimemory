@@ -20,7 +20,13 @@ def label_authority_error(evidence, *, scope, source_id, pending_id, record_ref,
         return "label_evidence_boundary_invalid"
     content = evidence.content
     identity = dict(pending_record_id=pending_id, record_ref=record_ref, grade=grade, labeler=labeler)
-    digest = sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True,
+    packet = content.get('auto_review_packet') or {}
+    binding = dict(identity)
+    if (labeler == PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER
+            and packet.get('criteria_version') == 'production-recall-auto-review.v2'):
+        from .real_query_schema import _stable_digest
+        binding['packet_digest'] = _stable_digest(packet)
+    digest = sha256(json.dumps(binding, ensure_ascii=False, sort_keys=True,
                                separators=(",", ":")).encode()).hexdigest()
     if (labeler not in production_real_query_trusted_labelers()
             or isinstance(grade, bool) or not isinstance(grade, int) or not 1 <= grade <= 3
@@ -143,7 +149,7 @@ def verify_operator_label(content, *, scope, source_id) -> str:
 AUTO_REVIEW_LABEL_SCHEMA = "production_recall_auto_review_label.v1"
 AUTO_REVIEW_PACKET_SCHEMA = "production_recall_auto_review_packet.v1"
 AUTO_REVIEW_EVIDENCE_CLASS = "auto_review_relevance_label"
-AUTO_REVIEW_CRITERIA_VERSIONS = frozenset({"production-recall-auto-review.v1"})
+AUTO_REVIEW_CRITERIA_VERSIONS = frozenset({"production-recall-auto-review.v1", "production-recall-auto-review.v2"})
 _AUTO_REVIEW_PACKET_FIELDS = frozenset({
     "schema", "criteria_version", "reviewer", "pending_record_id", "inputs_digest",
     "signals", "query_features_origin", "reviewed_at",
@@ -166,13 +172,17 @@ def auto_review_packet_error(packet, *, pending_id="") -> str:
             or not isinstance(packet.get("query_features_origin"), str)
             or not isinstance(packet.get("reviewed_at"), str)):
         return "auto_review_packet_invalid"
+    v2 = packet['criteria_version'] == 'production-recall-auto-review.v2'
     for ref, signal in packet["signals"].items():
         if (not isinstance(ref, str) or not isinstance(signal, dict)
-                or set(signal) != {"semantic_relevant", "verified_proof", "host_used"}
+                or set(signal) != ({"semantic_relevant", "verified_proof", "host_used"}
+                                   | ({"semantic_confirmed"} if v2 else set()))
                 or signal.get("semantic_relevant") is not True
                 or type(signal.get("verified_proof")) is not bool
                 or type(signal.get("host_used")) is not bool
-                or not (signal["verified_proof"] or signal["host_used"])):
+                or (v2 and type(signal.get("semantic_confirmed")) is not bool)
+                or not (signal["verified_proof"] or signal["host_used"]
+                        or (v2 and signal["semantic_confirmed"]))):
             return "auto_review_packet_signals_invalid"
     return ""
 

@@ -15,7 +15,9 @@ from eimemory.governance.self_model import build_self_model
 
 
 @pytest.fixture
-def runtime(tmp_path):
+def runtime(tmp_path, monkeypatch):
+    # Existing tests isolate the monitor's issue detection without label review.
+    monkeypatch.setenv('EIMEMORY_PRODUCTION_RECALL_AUTO_REVIEW', '0')
     value = Runtime.create(root=tmp_path)
     yield value
     value.close()
@@ -530,3 +532,16 @@ def test_empty_deliveries_do_not_consume_provider_budget(runtime, monkeypatch):
     assert report['not_applicable_counts'] == {'empty_delivery': 10}
     assert report['verdict_counts']['unknown'] == 0
     assert report['verdict_counts']['relevant'] == 3
+
+
+def test_auto_label_confirmation_uses_shared_budget_and_resumes(runtime, monkeypatch):
+    monkeypatch.setenv('EIMEMORY_PRODUCTION_RECALL_AUTO_REVIEW', '1')
+    delivery(runtime)
+    calls = []
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: calls.append(True) or answer(['relevant']))
+    first, _ = monitor.monitor_deliveries(runtime, scope=ScopeRef.from_dict(SCOPE), max_new=1)
+    assert first['provider_calls'] == 1 and first['new_count'] == 1 and first['deferred_count'] == 1
+    second, _ = monitor.monitor_deliveries(runtime, scope=ScopeRef.from_dict(SCOPE), max_new=1)
+    assert second['provider_calls'] == 1 and second['reused_count'] == 1
+    third, _ = monitor.monitor_deliveries(runtime, scope=ScopeRef.from_dict(SCOPE), max_new=1)
+    assert third['provider_calls'] == 0 and len(calls) == 2

@@ -318,7 +318,11 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
         if len({item['record_id'] for item in delivered}) != len(delivered):
             kinds.discard('semantic_redundancy')
         confirmation = None
-        if kinds & MODERATE_KINDS:
+        from .real_query_schema import production_recall_auto_review_enabled
+        needs_confirmation = (production_recall_auto_review_enabled()
+                              and result['verdict'] in {'relevant', 'mixed'}
+                              and 'relevant' in result['relevance'])
+        if kinds & MODERATE_KINDS or needs_confirmation:
             confirmation = cached_confirmation(runtime, record, scope)
             if confirmation is None and budget_used < max_new:
                 budget_used += 1

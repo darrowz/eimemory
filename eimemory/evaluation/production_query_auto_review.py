@@ -11,8 +11,10 @@ signals already recorded by the system agree:
   evidence (``verified-parent-span.v1``) whose record digest is still current;
 * S_used: the host explicitly reported the delivered item as ``used``.
 
-A candidate becomes a label only with S_sem AND (S_proof OR S_used). Grade 3
-needs all three signals, otherwise grade 2. Query features are redacted terms
+A candidate becomes a relevance label with S_sem AND (S_proof OR S_used OR
+a second independent blind semantic confirmation of the same delivered item).
+Grade 3 still needs proof AND host usage; confirmation alone grants grade 2.
+Relevance labels do not attest host usage or answer correctness. Query features are redacted terms
 derived from the private original-query vault and must pass the same redaction
 and signal checks as operator packets. Nothing else (rank position, retrieval
 membership, task type, empty results) is evidence. Cases that do not meet the
@@ -55,7 +57,7 @@ from .real_query_schema import (
     production_recall_auto_review_enabled,
 )
 
-CRITERIA_VERSION = "production-recall-auto-review.v1"
+CRITERIA_VERSION = "production-recall-auto-review.v2"
 RECEIPT_SCHEMA = "production_recall_auto_review.v1"
 RUN_SCHEMA = "production_recall_auto_review_run.v1"
 REVIEW_CONTRACT = "production_recall_review_conclusion.v1"
@@ -222,8 +224,25 @@ def _semantic_observation(runtime: Any, decision: dict[str, Any], scope: ScopeRe
         parsed = _parse_result(json.dumps({key: report.get(key) for key in fields}), len(delivered))
         if parsed.get("reason") != "evaluated" or parsed.get("verdict") != report.get("verdict"):
             continue
-        return {"status": "evaluated", "verdict": parsed["verdict"], "record_id": record.record_id,
-                "decision_surface": surface,
+        from .semantic_quality_confirmation import cached_confirmation
+        confirmation = cached_confirmation(runtime, record, scope)
+        confirmed_refs = []
+        if (confirmation is not None and parsed['verdict'] != 'unknown'
+                and parsed['unanswered'] is False
+                and confirmation.content['result'].get('unanswered') is False
+                and confirmation.content['result'].get('verdict') != 'unknown'):
+            from eimemory.retrieval.proactive import ProactiveRecallService
+            hydrated = ProactiveRecallService(runtime)._rehydrate_persisted_items(
+                dict(decision, items=delivered), cache_key='')
+            if len(hydrated) == len(delivered):
+                confirmed_refs = [item['record_id'] for item, first, second in zip(
+                    delivered, parsed['relevance'], confirmation.content['result']['relevance'])
+                    if first == second == 'relevant']
+        return {"confirmed_refs": confirmed_refs,
+                "confirmation_ref": confirmation.record_id if confirmation else '',
+                "confirmation_digest": confirmation.meta.get('confirmation_digest') if confirmation else '',
+                "status": "evaluated", "verdict": parsed["verdict"], "record_id": record.record_id,
+                "decision_surface": surface, "unanswered": parsed["unanswered"],
                 "digest": record.meta.get("semantic_monitor_digest"),
                 "relevant_refs": [item["record_id"] for item, label in zip(delivered, parsed["relevance"])
                                   if label == "relevant"]}
@@ -242,7 +261,7 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
                               "recall_status": "not_evaluable",
                               "semantic_quality": {"status": "not_evaluable", "certified": False},
                               "signal_counts": {"candidates": 0, "delivered": 0, "semantic_relevant": 0,
-                                                "verified_proof": 0, "host_used": 0, "host_rejected": 0}}
+                                                "verified_proof": 0, "host_used": 0, "host_rejected": 0, "semantic_confirmed": 0}}
     inputs: dict[str, Any] = {"criteria_version": CRITERIA_VERSION, "pending": _stable_digest(pending.to_dict())}
 
     def finish(disposition: str, reasons: list[str]) -> dict[str, Any]:
@@ -279,7 +298,8 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
     semantic = _semantic_observation(runtime, decision, exact_scope)
     result["semantic_quality"] = {**semantic, "certified": False}
     inputs["semantic"] = {key: semantic.get(key)
-                          for key in ("status", "record_id", "digest", "verdict", "decision_surface")}
+                          for key in ("status", "record_id", "digest", "verdict", "decision_surface",
+                                      "confirmation_ref", "confirmation_digest", "confirmed_refs")}
     if semantic.get("status") == "evaluated" and semantic.get("verdict") == "off_topic":
         return finish("rejected", ["semantic_off_topic"])
     if refs and all(str((items.get(ref) or {}).get("state") or "") == "rejected" for ref in refs):
@@ -309,7 +329,9 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
             continue
         evidence = item.get("render_evidence") if isinstance(item.get("render_evidence"), dict) else {}
         signal = {
-            "semantic_relevant": delivered and ref in relevant,
+            "semantic_relevant": delivered and ref in relevant and semantic.get("verdict") != "unknown"
+                                 and semantic.get("unanswered") is False,
+            "semantic_confirmed": delivered and ref in set(semantic.get("confirmed_refs") or []),
             "verified_proof": (evidence.get("format") == "verified-parent-span.v1"
                                and evidence.get("record_id") == ref
                                and evidence.get("record_digest") == current_digest),
@@ -317,7 +339,8 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
         }
         for key, value in signal.items():
             counts[key] += int(value)
-        if signal["semantic_relevant"] and (signal["verified_proof"] or signal["host_used"]):
+        if signal["semantic_relevant"] and (signal["verified_proof"] or signal["host_used"]
+                                             or signal["semantic_confirmed"]):
             result["signals"][ref] = signal
             result["labels"].append({"record_ref": ref,
                                      "grade": 3 if signal["verified_proof"] and signal["host_used"] else 2})
@@ -349,6 +372,22 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
     result["query_features"] = features
     inputs["query_features"] = features
     return finish("accepted", [])
+
+
+def current_auto_review_evidence_error(runtime, *, pending, scope, channel, packet, labels, query_features):
+    """Revalidate v2 labels at signing, accepted readback and dataset activation."""
+    if packet.get('criteria_version') != 'production-recall-auto-review.v2':
+        return ''
+    if auto_review_revocation_reason(runtime, pending_id=pending.record_id, scope=scope):
+        return 'auto_review_label_revoked'
+    current = assess_pending_case(runtime, pending, exact_scope=scope, channel=channel)
+    expected_labels = [{'record_ref': label.get('record_ref'), 'grade': label.get('grade')} for label in labels]
+    if (current['disposition'] != 'accepted'
+            or current['inputs_digest'] != packet.get('inputs_digest')
+            or current['signals'] != packet.get('signals')
+            or current['labels'] != expected_labels or current['query_features'] != query_features):
+        return 'auto_review_current_evidence_mismatch'
+    return ''
 
 
 _STRUCTURAL_CLOSE = {

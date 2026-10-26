@@ -44,6 +44,13 @@ def validate_case_authority(runtime, case):
             exact_scope=scope, channel=case.get("channel"))
         if reason:
             return reason
+        if label.get('provenance', {}).get('labeler') == 'auto_review':
+            from .production_query_auto_review import current_auto_review_evidence_error
+            reason = current_auto_review_evidence_error(runtime, pending=pending, scope=scope,
+                channel=case.get('channel'), packet=evidence.content.get('auto_review_packet') or {},
+                labels=case.get('labels') or [], query_features=case.get('query_features'))
+            if reason:
+                return reason
         record = runtime.store.get_by_id(label.get("record_ref", ""), scope=scope)
         if record is None or record.status != "active" or record.source_id != source_id or asdict(record.scope) != asdict(scope):
             return "accepted_candidate_boundary_invalid"

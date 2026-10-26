@@ -83,6 +83,22 @@ class _ExactAuthorityStore:
             raise _PreflightBlocked("authority_reference_boundary_invalid")
         return _checked_exact_record(self._sqlite, record, self._scope)
 
+    def get_by_exact_ref(self, record_id, *, scope, source_id):
+        if source_id != self._source_id or not same_scope(ScopeRef.from_dict(scope) if isinstance(scope, dict) else scope, self._scope):
+            raise _PreflightBlocked('authority_reference_boundary_invalid')
+        return self.get_by_id(record_id, scope=self._scope)
+
+    def latest_record_by_meta_value_exact_scope(self, *, scope, source, **kwargs):
+        if (not same_scope(scope, self._scope) or source not in {
+                'eimemory.semantic_relevance_monitor', 'eimemory.semantic_quality_confirmation'}):
+            raise _PreflightBlocked('authority_reference_boundary_invalid')
+        record = self._sqlite.latest_record_by_meta_value_exact_scope(scope=scope, source=source, **kwargs)
+        if record is None:
+            return None
+        if record.source_id != 'default' or not same_scope(record.scope, self._scope):
+            raise _PreflightBlocked('authority_reference_boundary_invalid')
+        return _checked_exact_record(self._sqlite, record, self._scope)
+
     @contextmanager
     def locked(self):
         # Existing capture validation issues exact-boundary SELECTs only.
@@ -670,7 +686,9 @@ def _validate_auto_review_label(
     if candidate is None or candidate.status != "active" or candidate.source_id != record.source_id:
         return None, "label_candidate_boundary_invalid"
     expected_id = "prle_" + _stable_digest(
-        {"pending_record_id": pending_id, "record_ref": record_ref, "grade": grade, "labeler": labeler}
+        {"pending_record_id": pending_id, "record_ref": record_ref, "grade": grade, "labeler": labeler,
+         **({'packet_digest': _stable_digest(payload.get('auto_review_packet'))}
+            if (payload.get('auto_review_packet') or {}).get('criteria_version') == 'production-recall-auto-review.v2' else {})}
     )[:32]
     if record.record_id != expected_id:
         return None, "label_record_identity_invalid"

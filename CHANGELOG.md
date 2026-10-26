@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.37] — 2026-10-26
+
+- Separate delivered relevance labels from host usage and answer proof: bounded independent blind confirmation can support grade 2 auto-review labels. Preserve real delivery, exact capture/release/source authorization, original query integrity, revocation and signing; grade 3 still requires verified proof and host usage.
+- Revalidate v2 evidence at signing and accepted-case readback; bind immutable label identities to each reviewed input packet so newer valid evidence can be reviewed after a failed or invalidated attempt. Keep historical operator and v1 authority intact.
+
 ## [1.15.36] — 2026-10-26
 
 - Retain each later per-agent collection, semantic monitor and auto-review result in nightly reports and durable diagnostics, including exact new-case receipt associations and scope-specific review coverage. Mark the primary batch snapshot explicitly; scope counters remain separate and known execution failures still veto acceptance.

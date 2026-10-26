@@ -160,7 +160,7 @@ def test_auto_accepts_only_with_independent_signal_agreement(runtime):
     assert evidence.content["evidence_class"] == "auto_review_relevance_label"
     packet = evidence.content["auto_review_packet"]
     assert packet["criteria_version"] == CRITERIA_VERSION and len(packet["inputs_digest"]) == 64
-    assert packet["signals"][record.record_id] == {"semantic_relevant": True, "verified_proof": True, "host_used": True}
+    assert packet["signals"][record.record_id] == {"semantic_relevant": True, "verified_proof": True, "host_used": True, "semantic_confirmed": False}
     assert evidence.content["auto_review_authority"]["signature"]
     assert "operator_packet_evidence" not in evidence.content
 
@@ -192,7 +192,7 @@ def test_auto_label_signature_tamper_is_rejected(runtime):
     evidence.meta["auto_review_packet_digest"] = __import__(
         "eimemory.evaluation.real_query_schema", fromlist=["_stable_digest"])._stable_digest(
         evidence.content["auto_review_packet"])
-    assert label_authority_error(evidence, **kwargs) == "auto_review_label_identity_mismatch"
+    assert label_authority_error(evidence, **kwargs) == "label_evidence_identity_invalid"
 
 
 @pytest.mark.parametrize("seed_kwargs, close_reason", [
@@ -571,7 +571,7 @@ def test_recovered_semantic_result_supersedes_transient_observation(runtime, mon
     assert result['status'] == 'evaluated' and result['verdict'] == 'relevant'
 
 
-def test_real_monitor_provider_failure_then_recovery_never_certifies(runtime, monkeypatch):
+def test_real_monitor_provider_failure_then_recovery_confirms_relevance(runtime, monkeypatch):
     from eimemory.evaluation import semantic_relevance_monitor as monitor
     from eimemory.governance.release import evidence_contract
     from eimemory.retrieval.proactive import ProactiveRecallService
@@ -599,8 +599,195 @@ def test_real_monitor_provider_failure_then_recovery_never_certifies(runtime, mo
     monkeypatch.setattr(monitor, '_complete_tool_free', lambda *args: json.dumps({
         'relevance': ['relevant'], 'off_topic': False, 'duplicates': False, 'unanswered': False}))
     recovered, findings = monitor.monitor_deliveries(runtime, scope=exact)
-    assert recovered['provider_calls'] == 1 and recovered['verdict_counts']['relevant'] == 1
+    assert recovered['provider_calls'] == 2 and recovered['verdict_counts']['relevant'] == 1
     assert not findings
     report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
-    assert report['open_review_count'] == 0 and report['closed_without_label_count'] == 1
-    assert report['accepted_count'] == report['rejected_count'] == 0
+    assert report['open_review_count'] == 0 and report['closed_without_label_count'] == 0
+    assert report['accepted_count'] == 1 and report['rejected_count'] == 0
+
+
+def _blind_confirmation(runtime, monkeypatch, index=1200, result=None):
+    from eimemory.evaluation.semantic_quality_confirmation import confirm
+    from eimemory.retrieval.proactive import ProactiveRecallService
+    record, decision_id = _seed(runtime, index, proof=False, state='not_used')
+    # Use the native rendering contract, rather than the older ID-only fixture.
+    digest = ProactiveRecallService._render_snapshot_digest(record.title, ProactiveRecallService._record_text(record))
+    with runtime.store.locked() as db:
+        db.execute('UPDATE proactive_decision_items SET render_digest=? WHERE decision_id=?', (digest, decision_id))
+        db.conn.commit()
+    # The observation identity includes the actual rendered delivery.
+    old = runtime.store.list_records(kinds=['evaluation_packet'], scope=record.scope, limit=100)
+    observation = next(r for r in old if r.source == SEM_SOURCE)
+    with runtime.store.locked() as db:
+        decision = db.load_proactive_decision(decision_id)
+    body = dict(observation.content)
+    body.update(release_identity=decision['release_identity'], release_digest=_digest(decision['release_identity']),
+                query_digest=decision['query_digest'], source_digests=[_digest(record.source_id)])
+    body['evaluation_identity'] = _digest(dict(version=SEM_VERSION, decision_id=decision_id,
+        scope=decision['scope'], source_ids=decision['source_ids'], query_digest=decision['query_digest'],
+        release_identity=decision['release_identity'], delivered=[(record.record_id, record.source_id, digest)]))
+    observation.content = body
+    observation.meta.update(semantic_monitor_identity=body['evaluation_identity'], semantic_monitor_digest=_digest(body))
+    runtime.store.append(observation)
+    monkeypatch.setattr('eimemory.evaluation.semantic_relevance_monitor._complete_tool_free',
+        lambda *args: json.dumps(result or dict(relevance=['relevant'], off_topic=False, duplicates=False, unanswered=False)))
+    confirmation = confirm(runtime, observation=observation, scope=record.scope,
+        query='kubernetes ingress certificate rotation schedule', items=[dict(title=record.title, text=record.summary)])
+    return record, observation, confirmation
+
+
+def test_blind_semantic_agreement_accepts_relevance_without_fabricating_usage(runtime, monkeypatch):
+    record, observation, confirmation = _blind_confirmation(runtime, monkeypatch)
+    _collect(runtime)
+    report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert report['accepted_count'] == 1
+    accepted = runtime.store.get_by_id(report['accepted_record_ids'][0], scope=record.scope)
+    assert accepted.content['case']['labels'][0]['grade'] == 2
+    assert accepted_production_query_validation_error(runtime, accepted, exact_scope=record.scope, channel=CHANNEL) == ''
+    assert report['signal_counts']['host_used'] == report['signal_counts']['verified_proof'] == 0
+    assert report['signal_counts']['semantic_confirmed'] == 1
+
+
+@pytest.mark.parametrize('change', ['unknown', 'unanswered', 'no_answer', 'tamper', 'revoked', 'scope', 'source', 'render', 'record', 'release', 'rejected'])
+def test_blind_confirmation_fails_closed_at_live_boundaries(runtime, monkeypatch, change):
+    record, observation, confirmation = _blind_confirmation(runtime, monkeypatch)
+    _collect(runtime)
+    accepted_report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    accepted = runtime.store.get_by_id(accepted_report['accepted_record_ids'][0], scope=record.scope)
+    from eimemory.evaluation.dataset_authority import validate_case_authority, dataset_authority_manifest
+    dataset_authority_manifest(runtime, {'cases': [accepted.content['case']]})
+    assert validate_case_authority(runtime, accepted.content['case']) == ''
+    if change in {'unknown', 'unanswered', 'no_answer', 'tamper', 'revoked', 'scope', 'source'}:
+        newer = RecordEnvelope.from_dict(confirmation.to_dict())
+        newer.record_id += '_latest'
+        if change == 'unknown':
+            newer.content['result'].update(relevance=['unknown'], verdict='unknown')
+        elif change == 'unanswered':
+            newer.content['result'].update(unanswered='unknown', verdict='unknown')
+        elif change == 'no_answer':
+            newer.content['result'].update(unanswered=True)
+        elif change == 'tamper':
+            newer.content['result']['relevance'] = ['unrelated']
+        elif change == 'revoked':
+            newer.status = 'revoked'
+        elif change == 'scope':
+            # An out-of-scope positive cannot replace an invalid local latest.
+            confirmation.status = 'revoked'
+            runtime.store.append(confirmation)
+            newer.scope = ScopeRef.from_dict({**asdict(record.scope), 'user_id': 'someone_else'})
+        elif change == 'source':
+            newer.source_id = 'other'
+        if change != 'tamper':
+            newer.meta['confirmation_digest'] = _digest(newer.content)
+        runtime.store.append(newer)
+    elif change == 'record':
+        record.summary = 'changed after delivery'
+        runtime.store.append(record)
+    else:
+        with runtime.store.locked() as db:
+            if change == 'release':
+                db.execute("UPDATE proactive_decisions SET release_commit=?", ('f' * 40,))
+            elif change == 'render':
+                db.execute("UPDATE proactive_decision_items SET render_digest=?", ('f' * 64,))
+            else:
+                db.execute("UPDATE proactive_decision_items SET state='rejected'")
+            db.conn.commit()
+    assert accepted_production_query_validation_error(runtime, accepted, exact_scope=record.scope, channel=CHANNEL)
+    assert validate_case_authority(runtime, accepted.content['case'])
+    with pytest.raises(ValueError, match='dataset_authority_stale'):
+        dataset_authority_manifest(runtime, {'cases': [accepted.content['case']]})
+    report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert report['accepted_count'] == report['already_accepted_count'] == 0
+
+
+def test_newer_primary_unknown_masks_positive_confirmation(runtime, monkeypatch):
+    record, observation, confirmation = _blind_confirmation(runtime, monkeypatch)
+    _collect(runtime)
+    newer = RecordEnvelope.from_dict(observation.to_dict())
+    newer.record_id += '_latest'
+    newer.content.update(relevance=['unknown'], verdict='unknown', unanswered='unknown')
+    newer.meta['semantic_monitor_digest'] = _digest(newer.content)
+    runtime.store.append(newer)
+    assert auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)['accepted_count'] == 0
+
+
+def test_writer_cannot_sign_forged_v2_confirmation_or_grade(runtime, monkeypatch):
+    from eimemory.evaluation.production_query_auto_review import assess_pending_case, REVIEWER, QUERY_FEATURES_ORIGIN
+    from eimemory.evaluation.production_query_dataset import accept_auto_reviewed_production_query
+    record, observation, confirmation = _blind_confirmation(runtime, monkeypatch)
+    pending = runtime.store.get_by_id(_collect(runtime)[0], scope=record.scope)
+    assessment = assess_pending_case(runtime, pending, exact_scope=record.scope, channel=CHANNEL)
+    packet = dict(schema='production_recall_auto_review_packet.v1', criteria_version=CRITERIA_VERSION,
+        reviewer=REVIEWER, pending_record_id=pending.record_id, inputs_digest=assessment['inputs_digest'],
+        signals=assessment['signals'], query_features_origin=QUERY_FEATURES_ORIGIN, reviewed_at='2026-10-26T00:00:00Z')
+    kwargs = dict(pending_record_id=pending.record_id, query_features=assessment['query_features'], auto_review_packet=packet)
+    with pytest.raises(ValueError, match='current_evidence_mismatch'):
+        accept_auto_reviewed_production_query(runtime, labels=[dict(record_ref=record.record_id, grade=3)], **kwargs)
+    confirmation.status = 'revoked'
+    runtime.store.append(confirmation)
+    with pytest.raises(ValueError, match='current_evidence_mismatch'):
+        accept_auto_reviewed_production_query(runtime, labels=assessment['labels'], **kwargs)
+
+
+def test_confirmation_exception_retries_within_shared_monitor_budget(runtime, monkeypatch):
+    from eimemory.evaluation import semantic_relevance_monitor as monitor
+    from eimemory.governance.release import evidence_contract
+    record, observation, confirmation = _blind_confirmation(runtime, monkeypatch)
+    confirmation.status = 'revoked'
+    runtime.store.append(confirmation)
+    _collect(runtime)
+    with runtime.store.locked() as db:
+        decision = db.execute('SELECT decision_id FROM proactive_decisions').fetchone()[0]
+        release = db.load_proactive_decision(decision)['release_identity']
+    monkeypatch.setattr(evidence_contract, 'deployment_receipt_for_scope', lambda *args: object())
+    monkeypatch.setattr(evidence_contract, 'verified_deployment_receipt_identity', lambda *args: object())
+    monkeypatch.setattr(evidence_contract, 'release_identity_payload', lambda *args: release)
+    def fail(*args):
+        raise monitor.ToolFreeUnavailable('fixture-only')
+    monkeypatch.setattr(monitor, '_complete_tool_free', fail)
+    first, _ = monitor.monitor_deliveries(runtime, scope=record.scope, max_new=1)
+    assert first['provider_calls'] == 1 and first['reused_count'] == 1
+    assert auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)['accepted_count'] == 0
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *args: json.dumps(dict(
+        relevance=['relevant'], off_topic=False, duplicates=False, unanswered=False)))
+    second, _ = monitor.monitor_deliveries(runtime, scope=record.scope, max_new=1)
+    assert second['provider_calls'] == 1 and second['reused_count'] == 1
+    assert auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)['accepted_count'] == 1
+
+
+@pytest.mark.parametrize('agree', [True, False])
+def test_blind_confirmation_maps_same_candidate_after_reverse(runtime, monkeypatch, agree):
+    from eimemory.evaluation.semantic_quality_confirmation import confirm
+    from eimemory.retrieval.proactive import ProactiveRecallService
+    record, observation, _ = _blind_confirmation(runtime, monkeypatch)
+    second = RecordEnvelope.create(kind='memory', title='different ingress note', summary='different certificate details',
+        source=record.source, source_id=record.source_id, scope=record.scope, meta={'force_capture': True})
+    runtime.store.append(second)
+    render = ProactiveRecallService._render_snapshot_digest(second.title, ProactiveRecallService._record_text(second))
+    with runtime.store.locked() as db:
+        first = dict(db.execute('SELECT * FROM proactive_decision_items').fetchone())
+        first.update(citation='M2', record_id=second.record_id, item_order=1, render_digest=render)
+        columns = list(first)
+        db.execute('INSERT INTO proactive_decision_items (' + ','.join(columns) + ') VALUES (' + ','.join('?' for _ in columns) + ')', tuple(first.values()))
+        db.conn.commit()
+        decision = db.load_proactive_decision(first['decision_id'])
+    body = observation.content
+    body.update(relevance=['relevant', 'unrelated'], verdict='mixed', record_digests=[_digest(i['record_id']) for i in decision['items']])
+    body['evaluation_identity'] = _digest(dict(version=SEM_VERSION, decision_id=decision['decision_id'], scope=decision['scope'],
+        source_ids=decision['source_ids'], query_digest=decision['query_digest'], release_identity=decision['release_identity'],
+        delivered=[(i['record_id'], i['source_id'], i['render_digest']) for i in decision['items']]))
+    observation.meta.update(semantic_monitor_identity=body['evaluation_identity'], semantic_monitor_digest=_digest(body))
+    runtime.store.append(observation)
+    def complete(system, user):
+        assert [item['title'] for item in json.loads(user)['items']] == [second.title, record.title]
+        return json.dumps(dict(relevance=['unrelated', 'relevant'] if agree else ['relevant', 'unrelated'],
+                               off_topic=False, duplicates=False, unanswered=False))
+    monkeypatch.setattr('eimemory.evaluation.semantic_relevance_monitor._complete_tool_free', complete)
+    confirm(runtime, observation=observation, scope=record.scope, query='certificate rotation',
+            items=[dict(title=r.title, text=r.summary) for r in (record, second)])
+    _collect(runtime)
+    report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert report['accepted_count'] == int(agree)
+    if agree:
+        accepted = runtime.store.get_by_id(report['accepted_record_ids'][0], scope=record.scope)
+        assert [l['record_ref'] for l in accepted.content['case']['labels']] == [record.record_id]

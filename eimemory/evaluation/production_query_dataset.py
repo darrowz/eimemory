@@ -692,6 +692,11 @@ def accept_auto_reviewed_production_query(
         raise ValueError("auto_review labels count invalid")
     packet = dict(auto_review_packet)
     packet_digest = _stable_digest(packet)
+    from .production_query_auto_review import current_auto_review_evidence_error
+    current_error = current_auto_review_evidence_error(runtime, pending=pending, scope=exact_scope,
+        channel=channel, packet=packet, labels=labels, query_features=bounded_features)
+    if current_error:
+        raise ValueError(current_error)
     normalized_labels: list[dict[str, Any]] = []
     prepared_evidence = []
     seen: set[str] = set()
@@ -709,7 +714,8 @@ def accept_auto_reviewed_production_query(
             raise ValueError("auto_review label boundary mismatch")
         seen.add(ref)
         evidence_id = "prle_" + _stable_digest(
-            {"pending_record_id": pending.record_id, "record_ref": ref, "grade": grade, "labeler": labeler_id}
+            {"pending_record_id": pending.record_id, "record_ref": ref, "grade": grade, "labeler": labeler_id,
+             **({'packet_digest': packet_digest} if packet['criteria_version'] == 'production-recall-auto-review.v2' else {})}
         )[:32]
         label_identity = {
             "pending_record_id": pending.record_id,
@@ -1101,8 +1107,17 @@ def accepted_production_query_validation_error(
         evidence_payload = evidence.content if isinstance(evidence.content, dict) else {}
         if labeler == PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER:
             from .production_query_auto_review import auto_review_revocation_reason
+            packet = evidence_payload.get('auto_review_packet') or {}
+            v2 = packet.get('criteria_version') == 'production-recall-auto-review.v2'
+            if v2:
+                from .production_query_auto_review import current_auto_review_evidence_error
+                current_error = current_auto_review_evidence_error(runtime, pending=pending, scope=exact_scope,
+                    channel=channel, packet=packet, labels=labels, query_features=features)
+                if current_error:
+                    return current_error
             expected_evidence_id = "prle_" + _stable_digest(
-                {"pending_record_id": pending_id, "record_ref": record_ref, "grade": grade, "labeler": labeler}
+                {"pending_record_id": pending_id, "record_ref": record_ref, "grade": grade, "labeler": labeler,
+                 **({'packet_digest': _stable_digest(packet)} if v2 else {})}
             )[:32]
             if (
                 evidence.record_id != expected_evidence_id
