@@ -626,13 +626,34 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
                         unverifiable_count=0, deferred_count=0, by_agent={}, results=[],
                         results_truncated=False, reason_counts={}) if include_explicit else None
     status = 'unavailable'
-    for channel, exact, sources in targets.values():
+    budget = max(0, min(MAX_NEW, int(max_new)))
+    lanes = [(stage, channel, exact, sources) for channel, exact, sources in targets.values()
+             for stage in (('delivery', 'explicit', 'repair') if include_explicit else ('delivery',))]
+    cursor = None
+    start = 0
+    if include_explicit and budget and lanes:
+        from eimemory.evaluation.review_progress import complete_review_batch
+        cursor_id = 'smrc_' + _digest(asdict(resolved))[:32]
+        saved = runtime.store.get_by_exact_ref(cursor_id, scope=resolved, source_id='review_progress')
+        body = saved.content if saved is not None else None
+        roster = _digest([(stage, channel, asdict(exact)) for stage, channel, exact, _ in lanes])
+        if (isinstance(body, dict) and body.get('roster') == roster
+                and type(body.get('next_lane')) is int):
+            start = body['next_lane'] % len(lanes)
+        cursor = dict(cursor_id=cursor_id, expected_digest=_digest(body) if saved is not None else None,
+                      next=dict(schema='semantic_monitor_progress.v1', roster=roster,
+                                next_lane=(start + 1) % len(lanes)))
+
+    def remaining():
+        spent = total['provider_calls']
+        if include_explicit:
+            spent += explicit_total['provider_calls'] + repair_total['provider_calls'] + repair_total['replay_count']
+        return max(0, budget - spent)
+
+    for stage, channel, exact, sources in lanes[start:] + lanes[:start]:
         options = {} if sources is None else {'source_ids': sources}
-        report, channel_findings = monitor_deliveries(runtime, scope=exact, max_new=max_new, **options)
-        findings.extend(channel_findings)
-        if explicit_total is not None:
-            explicit_report = monitor_explicit_recalls(
-                runtime, scope=exact, max_new=max(0, max_new - explicit_total['provider_calls']), **options)
+        if stage == 'explicit':
+            explicit_report = monitor_explicit_recalls(runtime, scope=exact, max_new=remaining(), **options)
             agent = explicit_total['by_agent'].setdefault(exact.agent_id, _explicit_counts())
             for target in (explicit_total, agent):
                 for key in ('new_count', 'reused_count', 'deferred_count', 'excluded_count', 'provider_calls'):
@@ -645,11 +666,9 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
                 target['review_results_truncated'] |= (
                     explicit_report['review_results_truncated']
                     or len(explicit_report['review_results']) > room)
-        if repair_total is not None:
+        elif stage == 'repair':
             from eimemory.evaluation.semantic_gap_repair import collect_semantic_gap_repair_findings
-            repair, repair_findings = collect_semantic_gap_repair_findings(
-                runtime, scope=exact, max_new=max(0, max_new - repair_total['provider_calls'] - repair_total['replay_count']
-                    - explicit_total['provider_calls'] - total['provider_calls'] - report.get('provider_calls', 0)))
+            repair, repair_findings = collect_semantic_gap_repair_findings(runtime, scope=exact, max_new=remaining())
             findings.extend(repair_findings)
             repair_total['by_agent'][exact.agent_id] = repair
             room = 97 - len(repair_total['results'])
@@ -659,22 +678,27 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
                 repair_total['reason_counts'][reason] = repair_total['reason_counts'].get(reason, 0) + count
             for key in ('reviewed_count', 'provider_calls', 'replay_count', 'unresolved_count', 'unverifiable_count', 'deferred_count'):
                 repair_total[key] += repair[key]
-        if report.get('status') == 'unavailable':
-            continue
-        status = report.get('status') or status
-        for key in ('new_count', 'reused_count', 'deferred_count', 'skipped_count', 'provider_calls'):
-            total[key] += int(report.get(key) or 0)
-        for key, value in (report.get('verdict_counts') or {}).items():
-            total['verdict_counts'][key] = int(total['verdict_counts'].get(key) or 0) + int(value or 0)
-        for key, value in (report.get('by_surface') or {}).items():
-            total['by_surface'][key] = int(total['by_surface'].get(key) or 0) + int(value or 0)
-        for key, value in (report.get('skip_reason_counts') or {}).items():
-            total['skip_reason_counts'][key] = total['skip_reason_counts'].get(key, 0) + int(value or 0)
-        for key, value in (report.get('not_applicable_counts') or {}).items():
-            total['not_applicable_counts'][key] = total['not_applicable_counts'].get(key, 0) + int(value or 0)
-        observed = sum(int(v or 0) for v in (report.get('verdict_counts') or {}).values())
-        if observed:
-            total['by_channel'][channel] = total['by_channel'].get(channel, 0) + observed
+        else:
+            report, channel_findings = monitor_deliveries(runtime, scope=exact, max_new=remaining(), **options)
+            findings.extend(channel_findings)
+            if report.get('status') == 'unavailable':
+                continue
+            status = report.get('status') or status
+            for key in ('new_count', 'reused_count', 'deferred_count', 'skipped_count', 'provider_calls'):
+                total[key] += int(report.get(key) or 0)
+            for key, value in (report.get('verdict_counts') or {}).items():
+                total['verdict_counts'][key] = int(total['verdict_counts'].get(key) or 0) + int(value or 0)
+            for key, value in (report.get('by_surface') or {}).items():
+                total['by_surface'][key] = int(total['by_surface'].get(key) or 0) + int(value or 0)
+            for key, value in (report.get('skip_reason_counts') or {}).items():
+                total['skip_reason_counts'][key] = total['skip_reason_counts'].get(key, 0) + int(value or 0)
+            for key, value in (report.get('not_applicable_counts') or {}).items():
+                total['not_applicable_counts'][key] = total['not_applicable_counts'].get(key, 0) + int(value or 0)
+            observed = sum(int(v or 0) for v in (report.get('verdict_counts') or {}).values())
+            if observed:
+                total['by_channel'][channel] = total['by_channel'].get(channel, 0) + observed
+    if cursor is not None:
+        total['scheduling_cursor_persisted'] = complete_review_batch(runtime, scope=resolved, batch=cursor)
     if status == 'unavailable':
         return dict(total, status='unavailable', **({'explicit': explicit_total, 'semantic_gap_repair': repair_total} if include_explicit else {})), findings
     return dict(total, status='observation_only', automatic_promotion=False,

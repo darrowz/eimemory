@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.40] — 2026-10-26
+
+- Share the bounded semantic work budget across delivery, explicit review and repair, rotating roles and stages with the existing atomic scheduling cursor. Review pending replay packets before new captures; retry transport and temporary execution failures without granting repair credit or changing historical evidence gates.
+
 ## [1.15.39] — 2026-10-26
 
 - Preserve bounded semantic repair finding, packet and native audit references, allowlisted reasons, work budgets and scan boundaries through durable nightly diagnostics. Keep historical unverifiable evidence and existing repair admission gates unchanged.

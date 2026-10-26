@@ -626,3 +626,123 @@ def test_default_monitor_retains_aggregate_native_audit_trace(replay_case):
     assert trace['audit_ref'].startswith('srpa_')
     assert final['reason_counts']['semantic_repair_legacy_evidence_unverifiable'] == 1
     assert 'PRIVATE' not in json.dumps(final)
+
+
+def test_pending_review_precedes_more_replay_work(replay_case, monkeypatch):
+    runtime, scope, gap, _, _, calls, judges, _ = replay_case
+    repair.capture_semantic_gap_replay(runtime, gap_id=gap.record_id, scope=scope)
+    # An additional incident supplies capture pressure; only the original
+    # signed packet can receive passing credit in this scheduling test.
+    extra = RecordEnvelope.from_dict(gap.to_dict())
+    extra.record_id = 'ref_' + 'e' * 12
+    extra.meta['semantic_key'] = extra.content['semantic_key'] = 'quality-gap:recall_semantic:pressure:memory.recall'
+    runtime.store.append(extra)
+    def capture(*args, _allow_recall=True, _on_recall=None, **kwargs):
+        if _allow_recall:
+            _on_recall()
+        else:
+            raise ValueError('semantic_repair_budget_deferred')
+    monkeypatch.setattr(repair, 'capture_semantic_gap_replay', capture)
+    report, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=1)
+    assert report['provider_calls'] == 1
+    assert report['replay_count'] == 0
+    assert len(findings) == len(judges) == 1
+
+
+def test_transport_failure_is_retried_without_replaying(replay_case, monkeypatch):
+    runtime, scope, _, _, _, calls, _, _ = replay_case
+    monkeypatch.setattr(semantic, '_evaluate', lambda *_: dict(verdict='unknown',
+        reason='completion_unavailable', relevance=[], off_topic=False,
+        duplicates=False, unanswered='unknown'))
+    first, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert first['provider_calls'] == 1 and not findings
+    monkeypatch.setattr(semantic, '_evaluate', lambda *_: verdict())
+    second, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=1)
+    assert second['replay_count'] == 0 and second['provider_calls'] == 1
+    assert len(findings) == len(calls) == 1
+
+
+@pytest.mark.parametrize('budget', [1, 2, 8, 40])
+def test_shared_budget_rotates_roles_and_stages_with_one_unit(replay_case, monkeypatch, budget):
+    from eimemory.adapters.runtime import channel as channels
+    from eimemory.evaluation import query_input_vault as vault
+    from eimemory.models.records import ScopeRef
+    runtime, scope, _, _, _, _, _, _ = replay_case
+    other = ScopeRef(scope.tenant_id, 'other-agent', scope.workspace_id, scope.user_id)
+    monkeypatch.setattr(channels, 'SUPPORTED_RUNTIME_CHANNELS', ('hermes',))
+    monkeypatch.setattr(channels, 'base_scope_from_channel', lambda _, value: value)
+    monkeypatch.setattr(channels, 'resolve_channel_scope', lambda _, value: asdict(value))
+    monkeypatch.setattr(vault, 'configured_capture_scopes', lambda: [
+        dict(asdict(s), channel='hermes', source_id='hermes') for s in (scope, other)])
+    seen = []
+    def delivery(runtime, *, scope, max_new, **kw):
+        if max_new:
+            seen.append((scope.agent_id, 'delivery'))
+        return dict(status='observation_only', provider_calls=int(max_new > 0)), []
+    def explicit_monitor(runtime, *, scope, max_new, **kw):
+        if max_new:
+            seen.append((scope.agent_id, 'explicit'))
+        return dict(semantic._explicit_counts(), provider_calls=int(max_new > 0))
+    def repair_monitor(runtime, *, scope, max_new, **kw):
+        if max_new:
+            seen.append((scope.agent_id, 'repair'))
+        return dict(reviewed_count=0, provider_calls=0, replay_count=int(max_new > 0),
+            unresolved_count=0, unverifiable_count=0, deferred_count=0, results=[], reason_counts={}), []
+    monkeypatch.setattr(semantic, 'monitor_deliveries', delivery)
+    monkeypatch.setattr(semantic, 'monitor_explicit_recalls', explicit_monitor)
+    monkeypatch.setattr(repair, 'collect_semantic_gap_repair_findings', repair_monitor)
+    for _ in range(6):
+        result, _ = semantic.monitor_channel_deliveries(runtime, scope=scope, max_new=budget,
+            include_capture_scopes=True, include_explicit=True)
+        r = result['semantic_gap_repair']
+        assert result['provider_calls'] + result['explicit']['provider_calls'] + r['provider_calls'] + r['replay_count'] <= min(8, budget)
+    assert set(seen) == {(s.agent_id, stage) for s in (scope, other)
+                         for stage in ('delivery', 'explicit', 'repair')}
+
+    # A saved scheduling position cannot retain revoked cross-scope authority.
+    monkeypatch.setattr(vault, 'configured_capture_scopes', lambda: [
+        dict(asdict(scope), channel='hermes', source_id='hermes')])
+    seen.clear()
+    for _ in range(3):
+        semantic.monitor_channel_deliveries(runtime, scope=scope, max_new=budget,
+            include_capture_scopes=True, include_explicit=True)
+    assert {agent for agent, _ in seen} == {scope.agent_id}
+
+
+def test_one_unit_rounds_finish_native_replay_review_despite_busy_other_stages(replay_case, monkeypatch):
+    from eimemory.adapters.runtime import channel as channels
+    runtime, scope, _, _, _, recalls, judges, _ = replay_case
+    monkeypatch.setattr(channels, 'SUPPORTED_RUNTIME_CHANNELS', ('hermes',))
+    monkeypatch.setattr(channels, 'base_scope_from_channel', lambda _, value: value)
+    monkeypatch.setattr(channels, 'resolve_channel_scope', lambda _, value: asdict(value))
+    def delivery(runtime, *, max_new, **kw):
+        return dict(status='observation_only', provider_calls=int(max_new > 0)), []
+    def explicit_monitor(runtime, *, max_new, **kw):
+        return dict(semantic._explicit_counts(), provider_calls=int(max_new > 0))
+    monkeypatch.setattr(semantic, 'monitor_deliveries', delivery)
+    monkeypatch.setattr(semantic, 'monitor_explicit_recalls', explicit_monitor)
+    findings = []
+    for _ in range(6):
+        report, found = semantic.monitor_channel_deliveries(runtime, scope=scope,
+            max_new=1, include_explicit=True)
+        repairs = report['semantic_gap_repair']
+        assert report['provider_calls'] + report['explicit']['provider_calls'] + repairs['replay_count'] + repairs['provider_calls'] <= 1
+        findings.extend(found)
+    assert findings and len(recalls) == len(judges) == 1
+    assert _ingest_verified_findings(runtime, findings=findings, scope=scope)['resolved_record_ids']
+
+
+def test_review_signing_failure_keeps_packet_retryable_and_counts_attempt(replay_case, monkeypatch):
+    runtime, scope, _, _, _, calls, judges, _ = replay_case
+    native = explicit._record
+    def sign(source, *args, **kwargs):
+        if source == repair.REVIEW_SOURCE:
+            raise RuntimeError('temporary signer failure')
+        return native(source, *args, **kwargs)
+    monkeypatch.setattr(explicit, '_record', sign)
+    first, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
+    assert first['replay_count'] == first['provider_calls'] == 1 and not findings
+    monkeypatch.setattr(explicit, '_record', native)
+    second, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=1)
+    assert second['replay_count'] == 0 and second['provider_calls'] == 1
+    assert len(findings) == len(calls) == 1 and len(judges) == 2
