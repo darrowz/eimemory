@@ -44,7 +44,9 @@ def _run_system_code_maintenance(
         )
         return {**_not_run_report("system_detection_disabled"), **recovery,
                 "code_evolution": recovery, "execution_ok": recovery.get("ok") is True,
-                "system_detection_enabled": False, "repair_complete": False}
+                "system_detection_enabled": False, "repair_complete": False,
+                **({"status": "deferred", "reason": "existing_lease_busy"}
+                   if recovery.get("ok") is True and _recovery_deferred(recovery) else {})}
     from eimemory.ops.runtime_identity_drift import (
         inspect_live_runtime_identity,
         validate_runtime_identity_drift_report,
@@ -126,8 +128,9 @@ def _run_system_code_maintenance(
     )
     execution_ok = bool(detector_valid and policy_owner.get("ok") is True and route.get("ok") is True
                         and failure_valid and recovery.get("ok") is True)
+    recovery_deferred = _recovery_deferred(recovery)
     status = "blocked" if not execution_ok else (
-        "deferred" if route.get("status") == "deferred" else (
+        "deferred" if recovery_deferred or route.get("status") == "deferred" else (
         "processed" if route.get("processed") or recovery.get("resumed_count", 0) else (
             "observed" if detector.get("incident_record_id") or failure.get("incident_record_id") else "idle")))
     observed_ids = list(dict.fromkeys(value for value in
@@ -138,7 +141,8 @@ def _run_system_code_maintenance(
         "ok": execution_ok, "execution_ok": execution_ok, "status": status,
         "system_detection_enabled": True,
         "repair_complete": False, "detected_at": detected_at,
-        "reason": ("manual_policy_preserved" if status == "deferred" else "")
+        "reason": ("existing_lease_busy" if recovery_deferred else
+                   "manual_policy_preserved" if status == "deferred" else "")
                   if execution_ok else "system_maintenance_incomplete",
         "runtime_identity": detector, "system_code_repair": route,
         "native_policy_owner": policy_owner,
@@ -149,6 +153,12 @@ def _run_system_code_maintenance(
         "incident_coverage": {"diagnostic_only": True, "checkpoint": ingress_checkpoint,
                               "observations": ingress_observations, "qualifies_for_product_completion": False},
     }
+
+
+def _recovery_deferred(recovery: Mapping[str, Any]) -> bool:
+    return any(isinstance(item, dict) and item.get("status") == "in_progress"
+               and item.get("reason") == "existing_lease_busy" and item.get("repair_complete") is False
+               for item in recovery.get("reports", []))
 
 
 def _skipped() -> dict[str, Any]:

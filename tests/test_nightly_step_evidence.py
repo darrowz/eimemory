@@ -276,3 +276,30 @@ def test_safe_diagnostics_never_reflect_arbitrary_provider_payload(value):
     assert "private" not in json.dumps(step_evidence_diagnostics(value))
     if isinstance(value, dict):
         assert "private" not in json.dumps(native_l5_failure_diagnostics(value))
+
+
+@pytest.mark.parametrize('reason', ['private diagnostic text', 'controlled_acceptance_private_detail', [], None])
+def test_lineage_public_diagnostics_never_export_unknown_verifier_text(reason):
+    from eimemory.contracts.nightly_step_evidence import native_l5_failure_diagnostics
+    value = {'controlled_release_lineage': {'reason': 'current_controlled_recall_evidence_invalid',
+                                           'verifier_reason': reason}}
+    assert native_l5_failure_diagnostics(value) == {
+        'controlled_recall_verifier_reason': 'controlled_acceptance_verification_failed'}
+
+
+def test_existing_lease_busy_survives_exact_archive_and_public_nightly(runtime):
+    from eimemory.scheduler.result_contract import nightly_result_diagnostics
+    from eimemory.scheduler.result_contract import _nightly_step
+    original = report('deferred')
+    original['reason'] = 'existing_lease_busy'
+    original['code_evolution']['reports'] = [{'ok': True, 'transaction_id': 'busy-fixture',
+        'status': 'in_progress', 'reason': 'existing_lease_busy', 'repair_complete': False}]
+    reference = archive(runtime, original)
+    assert read(runtime, reference).content['step_report'] == original
+    original['evidence_archive'] = reference
+    steps = []
+    _nightly_step(steps, 'code_evolution', lambda: original)
+    diagnostics = nightly_result_diagnostics({'code_evolution': original}, steps)
+    assert diagnostics['execution_ok'] is True
+    assert diagnostics['code_maintenance_evidence']['report_status'] == 'deferred'
+    assert diagnostics['code_maintenance_evidence']['repair_complete'] is False

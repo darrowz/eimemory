@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.48] — 2026-10-27
+
+- Report a competing recovery against an existing active transaction lease as in progress and deferred maintenance, without repair credit; retain fail-closed authorization, CAS, terminal and unknown-error behavior.
+- Preserve fixed controlled-acceptance verifier reasons in archived lineage failures and public nightly diagnostics without exposing arbitrary exception text or changing evidence gates.
+
 ## [1.15.47] — 2026-10-27
 
 - Preserve deferred repair and observed incident status through scope maintenance and registered-owner aggregation; keep manual policy ownership and repair completion gates intact.

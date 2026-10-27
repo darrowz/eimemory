@@ -116,6 +116,7 @@ def test_native_lineage_refresh_requires_established_closure_and_current_attempt
     assert not run(setup)['accepted']
     result = module.refresh_current_controlled_release_lineage(setup.runtime, scope=OWNER, release=current)
     assert not result['ok'] and result['reason'] == 'current_controlled_recall_evidence_invalid'
+    assert result['verifier_reason'] == 'controlled_acceptance_agent_evidence_invalid'
 
 
 @pytest.mark.parametrize('body', [None, {}, {'current_release': {'release_commit': 'f' * 40}}])
@@ -211,3 +212,19 @@ def test_finalizer_requires_exact_native_gate_set_and_readback(monkeypatch, dama
         replay=replay, live=live(), channel_reference='actual-channel')
     assert not result.get('compatible')
     if damage in {'missing', 'duplicate'}: assert not calls
+
+
+@pytest.mark.parametrize('reason,expected', [
+    ('controlled_acceptance_source_version_changed', 'controlled_acceptance_source_version_changed'),
+    ('controlled_acceptance_report_expired', 'controlled_acceptance_report_expired'),
+    ('controlled_acceptance_secret_detail', 'controlled_acceptance_verification_failed'),
+    ('private provider message', 'controlled_acceptance_verification_failed'),
+])
+def test_lineage_persists_only_fixed_verifier_reasons(setup, monkeypatch, reason, expected):
+    from test_release_lineage import _receipt
+    current = _receipt(setup.runtime, OWNER, RELEASE['release_commit'], RELEASE['release_version'])
+    monkeypatch.setattr(cpa, 'verify_controlled_production_acceptance', lambda *a, **k:
+        dict(accepted=False, blocked_reason=reason))
+    result = module.refresh_current_controlled_release_lineage(setup.runtime, scope=OWNER, release=current)
+    assert result['ok'] is False
+    assert result['verifier_reason'] == expected

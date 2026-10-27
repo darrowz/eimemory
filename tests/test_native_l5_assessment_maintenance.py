@@ -283,12 +283,17 @@ def test_current_controlled_lineage_failure_is_archived_as_failure_without_runni
     monkeypatch.setattr(native, 'current_release_identity', lambda *args: current)
     monkeypatch.setattr('eimemory.governance.release.evidence_contract.current_release_identity', lambda *args: current)
     monkeypatch.setattr('eimemory.governance.release.controlled_release_lineage.refresh_current_controlled_release_lineage',
-        lambda *_a, **_k: dict(ok=False, status='blocked', reason='current_controlled_recall_evidence_invalid'))
+        lambda *_a, **_k: dict(ok=False, status='blocked', reason='current_controlled_recall_evidence_invalid',
+                              verifier_reason='controlled_acceptance_source_version_changed'))
     result = native.run_native_l5_assessment(producer, scope=asdict(SCOPE), loop_id='fixture-current-lineage-failed')
     assert result['error'] == 'native_l5_controlled_lineage_revalidation_failed'
     assert result['failure_stage'] == 'controlled_release_lineage'
     assert not result['execution_ok'] and not result['awaiting_evidence'] and not producer.calls
     assert result['failure_evidence']['archive_verified']
+    receipt = producer.store.get_by_id(result['failure_evidence']['record_id'], scope=SCOPE)
+    assert receipt.content['step_report']['controlled_release_lineage']['verifier_reason'] == 'controlled_acceptance_source_version_changed'
+    from eimemory.contracts.nightly_step_evidence import native_l5_failure_diagnostics
+    assert native_l5_failure_diagnostics(result)['controlled_recall_verifier_reason'] == 'controlled_acceptance_source_version_changed'
     steps = []
     _nightly_step(steps, 'native_l5_assessment', lambda: result)
     assert not steps[0]['ok'] and not _aggregate_nightly_ok({'native_l5_assessment': result}, steps)

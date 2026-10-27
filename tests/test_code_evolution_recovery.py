@@ -43,14 +43,14 @@ def isolated_native_observation_clock(monkeypatch):
     monkeypatch.setattr(native_watch, 'native_observation_clock', lambda: dict(clock))
 
 
-def _observing_manager(runtime_store: RuntimeStore, transaction_id: str, *, state="OBSERVING") -> CodeEvolutionTransactionManager:
+def _observing_manager(runtime_store: RuntimeStore, transaction_id: str, *, state="OBSERVING", repository_root="/repo") -> CodeEvolutionTransactionManager:
     manager = CodeEvolutionTransactionManager(runtime_store, owner_id="watch-test")
     manager.create_detected({
         "transaction_id": transaction_id,
         "idempotency_key": f"idem-{transaction_id}",
         "scope": {"tenant_id": "tenant", "agent_id": "agent", "workspace_id": "workspace", "user_id": "user"},
         "incident": {"incident_id": f"incident-{transaction_id}", "incident_class": "code"},
-        "repository": {"root": "/repo", "remote": "origin", "ref": "master", "base_commit": "a" * 40},
+        "repository": {"root": repository_root, "remote": "origin", "ref": "master", "base_commit": "a" * 40},
     })
     for target in ("DIAGNOSED", "PROVIDER_RESOLVED", "PATCH_PROPOSED", "PATCH_VALIDATED", "CANDIDATE_MATERIALIZED", "FOCUSED_VERIFIED", "REGRESSION_VERIFIED", "FULL_SUITE_VERIFIED", "POLICY_AUTHORIZED", "COMMIT_INTENT", "COMMITTED", "PUSH_INTENT", "PUSHED", "DEPLOY_INTENT", "DEPLOYED_VERIFIED", "HEALTHY", "OBSERVING"):
         manager.transition(transaction_id, target)
@@ -236,7 +236,9 @@ def test_failed_worker_recovery_respects_another_sql_owner(failed_managed_observ
     other.acquire_lease(f["transaction_id"])
     try:
         report = resume_code_evolution_transactions(f["store"], scope=f["owner"])
-        assert report["ok"] is False
+        assert report["ok"] is True
+        assert report['reports'][0]['status'] == 'in_progress'
+        assert report['reports'][0]['repair_complete'] is False
         assert f["manager"].store.get_transaction(f["transaction_id"])["current_state"] == "OBSERVING"
         assert f["manager"].store.list_step_events(f["transaction_id"]) == []
     finally:
@@ -893,3 +895,112 @@ def test_sedimentation_resumes_after_crash_with_atomic_intent(tmp_path, monkeypa
         assert manager.store.get_transaction("tx-atomic-sedimentation")["current_state"] == "SUCCEEDED_SEDIMENTED"
     finally:
         runtime_store.close()
+
+
+def test_forward_recovery_keeps_live_owner_conflict_in_report(tmp_path, monkeypatch):
+    """A router-owned verification must not escape the bounded recovery report."""
+    from contextlib import closing
+
+    with closing(RuntimeStore(tmp_path / 'runtime')) as store:
+        manager = _observing_manager(store, 'live-router', state='REGRESSION_VERIFIED')
+        manager.acquire_lease('live-router')
+        before = manager.store.get_transaction('live-router')
+        events = manager.store.list_step_events('live-router')
+        monkeypatch.setattr(
+            'eimemory.governance.evolution.code_evolution_transaction.effect_execution_authorized',
+            lambda transaction: True,
+        )
+        result = resume_code_evolution_transactions(store, scope={
+            'tenant_id': 'tenant', 'agent_id': 'agent',
+            'workspace_id': 'workspace', 'user_id': 'user',
+        })
+        assert result['ok'] is True
+        assert result['reports'] == [{
+            'ok': True, 'transaction_id': 'live-router', 'status': 'in_progress',
+            'reason': 'existing_lease_busy', 'repair_complete': False,
+        }]
+        assert manager.store.get_transaction('live-router') == before
+        assert manager.store.list_step_events('live-router') == events
+        assert manager.store.get_terminal_receipt('live-router') is None
+
+
+@pytest.mark.parametrize('error', ['cas', 'unknown'])
+def test_forward_recovery_other_errors_fail_closed(tmp_path, monkeypatch, error):
+    from contextlib import closing
+    from eimemory.storage.code_evolution_store import CodeEvolutionConflict
+    with closing(RuntimeStore(tmp_path / 'runtime')) as store:
+        _observing_manager(store, 'failed-router', state='REGRESSION_VERIFIED')
+        monkeypatch.setattr('eimemory.governance.evolution.code_evolution_transaction.effect_execution_authorized', lambda _: True)
+        def fail(*args, **kwargs):
+            raise CodeEvolutionConflict('transaction CAS failed') if error == 'cas' else RuntimeError('private detail')
+        monkeypatch.setattr('eimemory.governance.evolution.code_evolution_effects.execute_code_evolution_effects', fail)
+        result = resume_code_evolution_transactions(store, scope={'tenant_id': 'tenant', 'agent_id': 'agent', 'workspace_id': 'workspace', 'user_id': 'user'})
+        assert result['ok'] is False
+        assert result['reports'][0]['status'] == 'recovery_error'
+        assert 'private detail' not in str(result)
+
+
+@pytest.mark.parametrize('case', ['expired', 'terminal', 'missing'])
+def test_only_existing_active_foreign_lease_is_busy(tmp_path, case):
+    from contextlib import closing
+    from eimemory.storage import code_evolution_store as module
+    with closing(RuntimeStore(tmp_path / 'runtime')) as store:
+        manager = _observing_manager(store, 'lease-negative', state='REGRESSION_VERIFIED')
+        ledger = manager.store
+        ledger.acquire_lease('lease-negative', owner='original', now='2026-01-01T00:00:00+00:00')
+        if case == 'expired':
+            assert ledger.acquire_lease('lease-negative', owner='next', now='2026-01-01T00:06:00+00:00')['lease_owner'] == 'next'
+        else:
+            if case == 'terminal':
+                manager.terminalize('lease-negative', {
+                    'outcome': 'recovery_quarantined',
+                    'incident_digest': ledger.get_transaction('lease-negative')['incident_digest'],
+                    'provider_digest': '', 'policy_digest': '', 'authorization_digest': '',
+                    'base_commit': ledger.get_transaction('lease-negative')['base_commit'],
+                    'evidence_digest': 'a' * 64,
+                }, terminal_state='RECOVERY_QUARANTINED')
+            with pytest.raises(module.CodeEvolutionConflict) as caught:
+                ledger.acquire_lease('absent' if case == 'missing' else 'lease-negative', owner='next', now='2026-01-01T00:00:01+00:00')
+            assert not isinstance(caught.value, module.CodeEvolutionLeaseBusy)
+
+
+def test_busy_forward_owner_does_not_stop_other_observations(tmp_path, monkeypatch):
+    from contextlib import closing
+    with closing(RuntimeStore(tmp_path / 'runtime')) as store:
+        manager = _observing_manager(store, 'busy-forward', state='REGRESSION_VERIFIED')
+        manager.acquire_lease('busy-forward')
+        _observing_manager(store, 'observing-other', repository_root='/other-repository')
+        monkeypatch.setattr('eimemory.governance.evolution.code_evolution_transaction.effect_execution_authorized', lambda _: True)
+        calls = []
+        def sample(runtime, *, transaction):
+            calls.append(transaction['transaction_id'])
+            return {'ok': True, 'duplicate_phase': True, 'sample_key': 'existing-phase'}
+        monkeypatch.setattr('eimemory.governance.evolution.code_evolution_effects.sample_code_evolution_observation', sample)
+        result = resume_code_evolution_transactions(store, scope={
+            'tenant_id': 'tenant', 'agent_id': 'agent', 'workspace_id': 'workspace', 'user_id': 'user'})
+        assert result['ok'] is True and calls == ['observing-other']
+        assert {item['status'] for item in result['reports']} == {'in_progress', 'duplicate'}
+
+
+def test_live_lease_does_not_hide_missing_execution_authorization(tmp_path):
+    from contextlib import closing
+    with closing(RuntimeStore(tmp_path / 'runtime')) as store:
+        manager = _observing_manager(store, 'unauthorized-forward', state='REGRESSION_VERIFIED')
+        manager.acquire_lease('unauthorized-forward')
+        result = resume_code_evolution_transactions(store, scope={
+            'tenant_id': 'tenant', 'agent_id': 'agent', 'workspace_id': 'workspace', 'user_id': 'user'})
+        assert result['ok'] is False
+        assert result['reports'][0]['status'] == 'effect_execution_not_authorized'
+
+
+def test_observation_existing_owner_is_in_progress_without_mutating_sample(tmp_path):
+    from contextlib import closing
+    with closing(RuntimeStore(tmp_path / 'runtime')) as store:
+        manager = _observing_manager(store, 'busy-observation')
+        manager.acquire_lease('busy-observation')
+        before = manager.store.get_transaction('busy-observation')
+        result = observe_code_evolution_transaction(store, transaction_id='busy-observation',
+            owner_id='competing-observer', sample=_sample('phase', observed_at='2026-01-01T00:00:00+00:00', health_ok=True))
+        assert result == {'ok': True, 'transaction_id': 'busy-observation', 'status': 'in_progress',
+                          'reason': 'existing_lease_busy', 'repair_complete': False}
+        assert manager.store.get_transaction('busy-observation') == before

@@ -48,6 +48,26 @@ if user_mode():
 _SCOPE = {'tenant_id', 'agent_id', 'workspace_id', 'user_id'}
 
 
+# Fixed diagnostic vocabulary; arbitrary exception text is never receipt evidence.
+VERIFICATION_FAILURE_REASONS = frozenset(
+    "controlled_acceptance_" + code for code in """
+    agent_evidence_invalid authority_changed_during_run authority_changed_during_verification business_origin_changed business_qualification_invalid
+    business_origin_invalid business_origin_parent_invalid business_policy_invalid business_source_changed business_source_not_authorized
+    business_sources_invalid hermes_business_scope_inventory_mismatch
+    candidate_readiness_unverified cascade_evidence_authority_unavailable cascade_evidence_invalid cascade_evidence_parent_invalid cascade_evidence_projection_changed
+    cascade_evidence_summary_changed case_evidence_invalid compact_result_boundary_invalid compact_result_projection_failed compact_result_size_exceeded
+    compact_result_status_invalid compact_result_structure_invalid current_release_unavailable current_report_missing engine_changed_during_run
+    engine_identity_unavailable exact_scope_required high_water_changed high_water_invalid index_contract_unavailable
+    insufficient_existing_records not_configured persist_invalid policy_agents_invalid policy_cutoff_in_future
+    policy_engine_contract_invalid policy_invalid policy_limits_invalid policy_owner_scopes_invalid policy_path_invalid
+    policy_untrusted production_engine_contract_mismatch release_mismatch release_receipt_invalid report_authority_invalid
+    report_expired report_not_accepted retrieval_incomplete returned_boundary_invalid returned_evidence_invalid
+    source_authority_unavailable source_boundary_invalid source_cutoff_invalid source_query_material_empty source_version_changed
+    source_version_unavailable timestamp_invalid traffic_agent_not_authorized traffic_discovery_unavailable verification_failed
+    """.split()
+)
+
+
 class ControlledAcceptanceError(ValueError):
     pass
 

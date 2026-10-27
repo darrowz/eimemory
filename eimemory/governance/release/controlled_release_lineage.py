@@ -127,7 +127,7 @@ def refresh_current_controlled_release_lineage(runtime: Any, *, scope: ScopeRef,
     This creates no business query, replay, live case or replacement failure.
     """
     from eimemory.evaluation.controlled_production_acceptance import (
-        load_controlled_policy, verify_controlled_production_acceptance,
+        load_controlled_policy, verify_controlled_production_acceptance, VERIFICATION_FAILURE_REASONS,
     )
     from eimemory.governance.release import release_lineage as native
     from eimemory.governance.release.evidence_contract import (
@@ -145,7 +145,10 @@ def refresh_current_controlled_release_lineage(runtime: Any, *, scope: ScopeRef,
         return dict(ok=True, status='not_applicable', reason='controlled_lineage_not_configured')
     checked = verify_controlled_production_acceptance(runtime, scope=asdict(owner), release=release, limit=500)
     if checked.get('accepted') is not True or not checked.get('record_id'):
-        return dict(ok=False, status='blocked', reason='current_controlled_recall_evidence_invalid')
+        reason = checked.get('blocked_reason')
+        return dict(ok=False, status='blocked', reason='current_controlled_recall_evidence_invalid',
+                    verifier_reason=reason if isinstance(reason, str) and reason in VERIFICATION_FAILURE_REASONS
+                    else 'controlled_acceptance_verification_failed')
     selected = None
     for record in native._release_lineage_records(runtime, scope=owner, before_rowid=None):
         content = record.content if isinstance(record.content, dict) else {}

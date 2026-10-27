@@ -49,6 +49,10 @@ class CodeEvolutionConflict(CodeEvolutionStoreError):
     """An idempotency key or compare-and-swap identity conflicted."""
 
 
+class CodeEvolutionLeaseBusy(CodeEvolutionConflict):
+    """Another owner holds a live lease on an existing nonterminal transaction."""
+
+
 def canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
@@ -879,6 +883,13 @@ class CodeEvolutionStore:
                 (owner, expires, checked_at, tx_id, owner, checked_at),
             )
             if cursor.rowcount != 1:
+                current = self.conn.execute(
+                    "SELECT terminal,lease_owner,lease_expires_at FROM code_evolution_transactions WHERE transaction_id=?",
+                    (tx_id,),
+                ).fetchone()
+                if (current is not None and not current['terminal'] and current['lease_owner']
+                        and current['lease_owner'] != owner and current['lease_expires_at'] > checked_at):
+                    raise CodeEvolutionLeaseBusy("transaction lease is held by an active owner")
                 raise CodeEvolutionConflict("transaction lease is held or terminal")
             return _transaction_row_dict(self.conn.execute("SELECT * FROM code_evolution_transactions WHERE transaction_id=?", (tx_id,)).fetchone()) or {}
 

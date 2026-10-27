@@ -435,3 +435,13 @@ def test_existing_ledger_adds_the_recovery_index_without_changing_transaction_ev
         assert manager.store.get_terminal_receipt("existing-evidence") is None
     finally:
         runtime_store.close()
+
+
+@pytest.mark.parametrize('detect_and_route', [True, False])
+def test_live_owner_recovery_is_deferred_without_claiming_repair(owners, detect_and_route):
+    owners.recovery.update(reports=[{'ok': True, 'transaction_id': 'live-owner',
+        'status': 'in_progress', 'reason': 'existing_lease_busy', 'repair_complete': False}])
+    result = run(owners, detect_and_route=detect_and_route)
+    assert result['ok'] is True and result['execution_ok'] is True
+    assert result['status'] == 'deferred' and result['reason'] == 'existing_lease_busy'
+    assert result['repair_complete'] is False

@@ -207,7 +207,7 @@ def _record_code_evolution_observation_sample(
     from eimemory.governance.evolution.code_evolution_transaction import (
         CodeEvolutionTransactionManager,
     )
-    from eimemory.storage.code_evolution_store import CodeEvolutionConflict, digest_json, utc_now
+    from eimemory.storage.code_evolution_store import CodeEvolutionConflict, CodeEvolutionLeaseBusy, digest_json, utc_now
 
     if not isinstance(sample, dict):
         return {"ok": False, "status": "blocked", "reason": "observation_sample_invalid"}
@@ -570,6 +570,9 @@ def _record_code_evolution_observation_sample(
             "window_restarted": can_restart,
             "recovery_reason": restart_reason,
         }
+    except CodeEvolutionLeaseBusy:
+        return {"ok": True, "transaction_id": transaction_id, "status": "in_progress",
+                "reason": "existing_lease_busy", "repair_complete": False}
     except CodeEvolutionConflict:
         return {"ok": False, "status": "lease_or_sample_conflict", "transaction_id": transaction_id}
     finally:
@@ -716,7 +719,7 @@ def _recover_failed_managed_observation(runtime, *, manager, transaction):
     from eimemory.contracts import runtime_manager as contract
     from eimemory.core import runtime_manager as native_manager
     from eimemory.governance.evolution import code_deployment_job as jobs
-    from eimemory.storage.code_evolution_store import CodeEvolutionConflict, digest_json
+    from eimemory.storage.code_evolution_store import CodeEvolutionConflict, CodeEvolutionLeaseBusy, digest_json
 
     transaction_id = str(transaction.get("transaction_id") or "")
     if not ((transaction.get("payload") or {}).get("managed_deployment_jobs") or {}).get("deploy"):
@@ -878,6 +881,9 @@ def _recover_failed_managed_observation(runtime, *, manager, transaction):
         return {"ok": True, "status": "rollback_required", "transaction_id": transaction_id,
             "reason": reason, "transaction": changed,
             "autonomous_repair_credit": False}
+    except CodeEvolutionLeaseBusy:
+        return {"ok": True, "transaction_id": transaction_id, "status": "in_progress",
+                "reason": "existing_lease_busy", "repair_complete": False}
     except (OSError, RuntimeError, ValueError, KeyError, TypeError):
         return {"ok": False, "status": "managed_failed_job_recovery_unverified", "transaction_id": transaction_id}
     finally:
@@ -904,6 +910,8 @@ def resume_code_evolution_transactions(
         reconcile_rollback,
         recover_transaction,
     )
+
+    from eimemory.storage.code_evolution_store import CodeEvolutionLeaseBusy
 
     run_owner_id = f"{owner_id or 'learn-watch:reconciler'}:{uuid4().hex}"
     manager = CodeEvolutionTransactionManager(runtime, owner_id=run_owner_id)
@@ -936,13 +944,19 @@ def resume_code_evolution_transactions(
                 continue
             from eimemory.governance.evolution.code_evolution_effects import execute_code_evolution_effects
 
-            reports.append(
-                execute_code_evolution_effects(
-                    runtime,
-                    transaction_id=transaction_id,
-                    owner_id=run_owner_id,
+            try:
+                reports.append(
+                    execute_code_evolution_effects(
+                        runtime,
+                        transaction_id=transaction_id,
+                        owner_id=run_owner_id,
+                    )
                 )
-            )
+            except CodeEvolutionLeaseBusy:
+                reports.append({"ok": True, "transaction_id": transaction_id, "status": "in_progress",
+                                "reason": "existing_lease_busy", "repair_complete": False})
+            except Exception as exc:
+                reports.append({"transaction_id": transaction_id, "status": "recovery_error", "error": type(exc).__name__})
             continue
         if state not in {"COMMIT_INTENT", "PUSH_INTENT", "DEPLOY_INTENT", "ROLLBACK_INTENT", "OBSERVING"}:
             reports.append({"transaction_id": transaction_id, "status": "no_external_intent", "state": state})
@@ -994,6 +1008,9 @@ def resume_code_evolution_transactions(
                     from eimemory.governance.evolution.code_evolution_effects import execute_code_evolution_rollback
 
                     reports.append(execute_code_evolution_rollback(runtime, transaction_id=transaction_id, owner_id=run_owner_id))
+            except CodeEvolutionLeaseBusy:
+                reports.append({"ok": True, "transaction_id": transaction_id, "status": "in_progress",
+                                "reason": "existing_lease_busy", "repair_complete": False})
             except Exception as exc:
                 reports.append({"transaction_id": transaction_id, "status": "recovery_error", "error": type(exc).__name__})
             continue
@@ -1006,6 +1023,9 @@ def resume_code_evolution_transactions(
                 reports.append(execute_code_evolution_effects(runtime, transaction_id=transaction_id, owner_id=run_owner_id))
             else:
                 reports.append(recovered)
+        except CodeEvolutionLeaseBusy:
+            reports.append({"ok": True, "transaction_id": transaction_id, "status": "in_progress",
+                            "reason": "existing_lease_busy", "repair_complete": False})
         except Exception as exc:
             reports.append({"transaction_id": transaction_id, "status": "recovery_error", "error": type(exc).__name__})
     return {"ok": all(

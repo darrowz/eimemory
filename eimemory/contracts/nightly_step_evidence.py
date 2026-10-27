@@ -69,6 +69,12 @@ def native_l5_failure_diagnostics(value: dict[str, Any]) -> dict[str, Any]:
     error_type = value.get("error_type")
     if isinstance(error_type, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", error_type):
         result["error_type"] = error_type
+    lineage = value.get("controlled_release_lineage")
+    if isinstance(lineage, dict) and lineage.get("reason") == "current_controlled_recall_evidence_invalid":
+        from eimemory.evaluation.controlled_production_acceptance import VERIFICATION_FAILURE_REASONS
+        reason = lineage.get("verifier_reason")
+        result["controlled_recall_verifier_reason"] = (
+            reason if isinstance(reason, str) and reason in VERIFICATION_FAILURE_REASONS else "controlled_acceptance_verification_failed")
     if "failure_evidence" in value:
         result["failure_evidence"] = step_evidence_diagnostics(value["failure_evidence"])
     return result
