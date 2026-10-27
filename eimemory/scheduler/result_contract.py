@@ -1049,7 +1049,7 @@ def _semantic_repair_diagnostics(value: object) -> dict:
                 "incident_scan_saturated", "packet_scan_saturated", "scheduling_cursor_persisted") if key in report},
             "reason_counts": _diagnostic_reason_counts(report.get("reason_counts"), REPAIR_REASONS),
             "results": [{
-                "status": _diagnostic_code(item.get("status"), frozenset({"deferred", "unverifiable"})),
+                "status": _diagnostic_code(item.get("status"), frozenset({"deferred", "unverifiable", "unresolved"})),
                 "reason": _diagnostic_code(item.get("reason"), REPAIR_REASONS),
                 "gap_ref": _diagnostic_ref(item.get("gap_ref"), r"ref_[0-9a-f]{12}"),
                 "packet_ref": _diagnostic_ref(item.get("packet_ref"), r"srpc_[0-9a-f]{32}"),

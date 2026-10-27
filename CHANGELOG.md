@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.43] — 2026-10-27
+
+- Keep completed empty semantic replays unresolved without treating them as retryable retrieval outages. Preserve the original packet and all repair authority gates; explicit linked attempts remain available after an actual corpus repair. Retain numeric candidate and selector stage counts in new signed replay packets, with missing counters kept unknown.
+
 ## [1.15.42] — 2026-10-27
 
 - Complete bounded semantic replay and review one case at a time. Persist independent incident and packet scan positions across releases so failed reviews cannot monopolize later work. Retry recovered evidence and incomplete or changed results through linked signed attempts without treating negative audits as permanent coverage, and serialize real replay/review calls before immutable receipt deduplication. Preserve original failures, current release validation, authority gates and the shared work budget.

@@ -37,6 +37,7 @@ REPAIR_REASONS = frozenset({
     'semantic_repair_legacy_evidence_unverifiable',
     'semantic_repair_lineage_changed',
     'semantic_repair_not_passed',
+    'semantic_repair_no_evidence',
     'semantic_repair_observation_invalid',
     'semantic_repair_observation_unavailable',
     'semantic_repair_original_context_unverifiable',
@@ -138,7 +139,12 @@ def _replay_retrieval_state(bundle):
             # Native engine emits a sparse Counter truncated to eight entries.
             # Only an untruncated absent key proves a genuine zero.
             recall = 0
-    return dict(collection_complete=selector.get('collection_complete')
+    counts = {name: value if type(value) is int and value >= 0 else None
+              for name, value in (('candidate_count', engine.get('candidate_count')),
+                                  ('selector_input_count', selector.get('input_count')),
+                                  ('selector_selected_count', selector.get('selected_count')),
+                                  ('selector_dropped_count', selector.get('dropped_count')))}
+    return dict(**counts, collection_complete=selector.get('collection_complete')
                 if type(selector.get('collection_complete')) is bool else None,
                 status=selector.get('status') if selector.get('status') in
                     ('evidence_found', 'no_evidence', 'unavailable', 'ambiguous', 'degraded') else 'unknown',
@@ -322,7 +328,17 @@ def _load_replay(runtime, packet_ref, scope, *, require_complete=True):
             or type(state.get('source_budget_exhausted')) is not int
             or type(state.get('recall_budget_exhausted')) is not int
             or state['source_budget_exhausted'] != 0 or state['recall_budget_exhausted'] != 0):
-        raise ValueError('semantic_repair_retrieval_not_complete')
+        # A complete empty result is a real negative outcome, not an outage.
+        # Keep the repair gate closed without creating identical retry chains.
+        empty_complete = (not items and state.get('collection_complete') is True
+            and all(state.get(key) == 'no_evidence' for key in (
+                'status', 'retrieval_status', 'final_output_status', 'final_admission_status'))
+            and all(type(state.get(key)) is int and state[key] == 0 for key in (
+                'source_budget_exhausted', 'recall_budget_exhausted'))
+            and diagnostics.get('source_budget_exhausted', 0) == 0
+            and (diagnostics.get('engine_drops') or {}).get('recall_budget_exhausted', 0) == 0)
+        raise ValueError('semantic_repair_no_evidence' if empty_complete
+                         else 'semantic_repair_retrieval_not_complete')
     return packet, prepared, inputs, items
 
 
@@ -419,7 +435,8 @@ def verified_repair_finding(runtime, *, review_ref, scope):
 
 
 def _audit_unverifiable(runtime, *, scope, reason, policy_fingerprint, gap=None, packet=None):
-    body = dict(schema=SCHEMA, status='unverifiable', reason=reason,
+    body = dict(schema=SCHEMA, status=('unresolved' if reason == 'semantic_repair_no_evidence'
+                                     else 'unverifiable'), reason=reason,
                 capture_policy_fingerprint=policy_fingerprint,
                 release_identity=_current(runtime, scope),
                 gap_ref=gap.record_id if gap is not None else '',
@@ -501,7 +518,8 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
             report['deferred_count'] += 1
             trace('deferred', reason, gap, packet)
             return
-        report['unverifiable_count'] += 1
+        status = 'unresolved' if reason == 'semantic_repair_no_evidence' else 'unverifiable'
+        report['unresolved_count' if status == 'unresolved' else 'unverifiable_count'] += 1
         audit_ref = None
         # Temporary execution/signing failures must not become terminal coverage.
         if isinstance(error, ValueError) and (gap is not None or packet is not None):
@@ -510,7 +528,7 @@ def collect_semantic_gap_repair_findings(runtime, *, scope, max_new=8):
                                     policy_fingerprint=policy_fingerprint)
             except (ValueError, KeyError, TypeError):
                 pass  # unavailable attestation never turns unknown into pass
-        trace('unverifiable', reason, gap, packet, audit_ref,
+        trace(status, reason, gap, packet, audit_ref,
               packet.meta.get('semantic_repair_gap_ref') if packet is not None else None)
 
     # Independent configured capture policy supplies authority, never records.
