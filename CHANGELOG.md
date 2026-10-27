@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.44] — 2026-10-27
+
+- Route registered incident owners through their own exact standing authority before maintenance; retain separate main/final lane call diagnostics and deduplicate identical final snapshots.
+
 ## [1.15.43] — 2026-10-27
 
 - Keep completed empty semantic replays unresolved without treating them as retryable retrieval outages. Preserve the original packet and all repair authority gates; explicit linked attempts remain available after an actual corpus repair. Retain numeric candidate and selector stage counts in new signed replay packets, with missing counters kept unknown.

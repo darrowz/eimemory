@@ -975,7 +975,7 @@ def test_native_policy_actual_socket_catalog_activation_profile_and_sqlite(nativ
                              for item in request['allowed_files']],
             'rationale': 'isolated static provider fixture', 'assumptions': []})
     real_client = provider.CodeImplementationSocketClient
-    with tempfile.TemporaryDirectory(prefix='eim-own-', dir='/tmp') as socket_dir:
+    with tempfile.TemporaryDirectory(prefix='eim-own-') as socket_dir:
         socket_path = Path(socket_dir)/'p.sock'
         class FixtureSocketClient(real_client):
             # Keep the real transport's type contract: the bridge recognizes

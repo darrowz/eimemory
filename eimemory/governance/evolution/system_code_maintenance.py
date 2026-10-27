@@ -9,7 +9,7 @@ from typing import Any
 from eimemory.models.records import ScopeRef
 
 
-def run_system_code_maintenance(
+def _run_system_code_maintenance(
     runtime: Any,
     *,
     scope: ScopeRef | Mapping[str, Any],
@@ -30,6 +30,7 @@ def run_system_code_maintenance(
         raise ValueError("maintenance limit must be an integer from 0 to 100")
     if apply is not True:
         return {
+            "schema": "system_code_maintenance.v1", "report_type": "code_evolution_maintenance",
             "ok": True, "execution_ok": True, "status": "skipped",
             "reason": "apply_disabled", "repair_complete": False,
             "runtime_identity": _skipped(), "system_code_repair": _skipped(),
@@ -41,7 +42,8 @@ def run_system_code_maintenance(
             lambda: runtime.resume_code_evolution_transactions(scope=scope_ref, owner_id=owner_id, limit=limit),
             "transaction_recovery",
         )
-        return {**recovery, "execution_ok": recovery.get("ok") is True,
+        return {**_not_run_report("system_detection_disabled"), **recovery,
+                "code_evolution": recovery, "execution_ok": recovery.get("ok") is True,
                 "system_detection_enabled": False, "repair_complete": False}
     from eimemory.ops.runtime_identity_drift import (
         inspect_live_runtime_identity,
@@ -151,6 +153,17 @@ def _skipped() -> dict[str, Any]:
     return {"ok": True, "status": "skipped", "reason": "apply_disabled"}
 
 
+def _not_run_report(reason: str) -> dict[str, Any]:
+    return {
+        "schema": "system_code_maintenance.v1", "report_type": "code_evolution_maintenance",
+        "ok": False, "execution_ok": False, "status": "blocked", "reason": reason,
+        "repair_complete": False, "system_detection_enabled": False,
+        **{stage: {"ok": False, "status": "not_run", "reason": reason}
+           for stage in ("runtime_identity", "native_policy_owner", "system_code_repair",
+                         "system_code_repair_failure", "code_evolution")},
+    }
+
+
 def _call(callback: Any, stage: str) -> dict[str, Any]:
     try:
         value = callback()
@@ -163,3 +176,66 @@ def _call(callback: Any, stage: str) -> dict[str, Any]:
         return report
     except Exception as exc:
         return {"ok": False, "status": "blocked", "reason": f"{stage}_error:{type(exc).__name__}"}
+
+
+def run_system_code_maintenance(
+    runtime: Any, *, scope: ScopeRef | Mapping[str, Any], owner_id: str,
+    limit: int = 100, apply: bool = True, repo_root: Any = None,
+    detect_and_route: bool = True, include_registered_owners: bool = False,
+) -> dict[str, Any]:
+    """Discover registered owners; each owner retains its own standing authority."""
+    from dataclasses import asdict
+    from pathlib import Path
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope))
+    kwargs = dict(owner_id=owner_id, limit=limit, apply=apply,
+                  repo_root=repo_root, detect_and_route=detect_and_route)
+    if apply is not True or detect_and_route is not True or include_registered_owners is not True:
+        return _run_system_code_maintenance(runtime, scope=scope_ref, **kwargs)
+    reports = []
+    primary = None
+    candidates = []
+    try:
+        from .code_evolution_provider_authority import _secure_delegations
+        from .code_automation_policy_owner import _grant, _verify_profile, _resolve_repo_root
+
+        def verify(entry):
+            target = ScopeRef.from_dict(entry['owner_scope'])
+            grant = _grant(target, Path(_resolve_repo_root(repo_root)), datetime.now(timezone.utc))
+            if (grant['profile_key'], grant['profile_digest']) != (entry['profile_key'], entry['profile_digest']):
+                raise ValueError('standing_grant_delegation_profile_mismatch')
+            _verify_profile(runtime, target, grant)
+            return target
+
+        registry = _secure_delegations()
+        for entry in (registry or {}).get('delegations', []):
+            candidate = entry['owner_scope']
+            if (entry['provider_scope'] != asdict(scope_ref) or candidate == asdict(scope_ref)
+                    or any(candidate[k] != getattr(scope_ref, k) for k in ('tenant_id', 'agent_id'))):
+                continue
+            verify(entry)
+            candidates.append(entry)
+        # Preflight prevents known admission failures before any maintenance.
+        # Execution is sequential, not atomic: later failures never undo earlier effects.
+        primary = _run_system_code_maintenance(runtime, scope=scope_ref, **kwargs)
+        if primary.get('ok') is not True:
+            return {**primary, 'primary_report': primary, 'owner_scope_reports': [],
+                    'owner_routing_reason': 'primary_maintenance_failed'}
+        for entry in candidates:
+            target = verify(entry)  # Authority can change after preflight or primary execution.
+            report = _run_system_code_maintenance(runtime, scope=target, **kwargs)
+            reports.append({'scope': asdict(target), 'report': report})
+            if report.get('ok') is not True:
+                break
+    except Exception as exc:
+        reason = 'owner_scope_authority_error:' + type(exc).__name__
+        return {**_not_run_report(reason), **(primary or {}),
+                'ok': False, 'execution_ok': False, 'status': 'blocked',
+                'primary_report': primary, 'owner_scope_reports': reports,
+                'owner_routing_reason': reason}
+    if not reports:
+        return primary
+    ok = all(row['report'].get('ok') is True for row in reports)
+    return {**primary, 'ok': ok, 'execution_ok': ok, 'primary_report': primary,
+            'owner_scope_reports': reports,
+            'status': ('processed' if any(row['report'].get('status') == 'processed' for row in reports)
+                       else primary.get('status')) if ok else 'blocked'}

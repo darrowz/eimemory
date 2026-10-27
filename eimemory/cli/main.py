@@ -1921,6 +1921,7 @@ def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         )
         maintenance = run_system_code_maintenance(
             runtime, scope=scope, owner_id="learn-watch:code-evolution",
+            include_registered_owners=True,
             limit=100, apply=bool(parsed.apply),
         )
         report = {

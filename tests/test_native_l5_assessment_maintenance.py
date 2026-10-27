@@ -398,7 +398,7 @@ def test_nightly_system_maintenance_uses_the_shared_owner(monkeypatch, enabled, 
     monkeypatch.setattr(shared, "run_system_code_maintenance", lambda runtime, **kw: calls.append(kw) or {"ok": True})
     assert jobs._run_code_evolution_maintenance(object(), scope=asdict(SCOPE))["ok"]
     assert calls == [{"scope": asdict(SCOPE), "owner_id": "nightly:code-evolution", "limit": 100,
-                      "apply": True, "detect_and_route": enabled and apply}]
+                      "apply": True, "detect_and_route": enabled and apply, "include_registered_owners": True}]
 
 
 def test_native_assessment_persists_in_same_authorized_registry_as_snapshots(tmp_path, monkeypatch):

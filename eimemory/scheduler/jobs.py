@@ -479,6 +479,7 @@ def run_nightly_jobs(
         storage_maintenance_report = _dict(storage_maintenance_report)
         promotion_watch_orphans_report = _dict(promotion_watch_orphans_report)
         report = {
+            "scope": dict(scope),
             "ok": True,  # replaced below via aggregate
             "step_reports": list(step_reports),
             "active_rule_count": len(active_rules),
@@ -704,6 +705,7 @@ def _run_code_evolution_maintenance(runtime: Runtime, *, scope: dict[str, Any]) 
         return run_system_code_maintenance(runtime,
             scope=scope,
             owner_id="nightly:code-evolution",
+            include_registered_owners=True,
             limit=100,
             apply=True,
             detect_and_route=(_env_bool("EIMEMORY_L5_LOOP_ENABLED", default=False)

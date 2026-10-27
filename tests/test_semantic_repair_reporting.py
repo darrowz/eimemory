@@ -41,3 +41,51 @@ def test_repair_diagnostics_only_expose_bounded_counts_and_native_resolution_ref
     assert safe['semantic_gap_repair']['provider_calls'] == 0
     assert safe['semantic_gap_repair']['by_agent']['hongtai']['replay_count'] == 1
     assert 'PRIVATE' not in json.dumps(safe)
+
+
+def test_main_calls_survive_zero_final_global_snapshots():
+    scope = dict(tenant_id='t', agent_id='a', workspace_id='w', user_id='u')
+    main = {'provider_calls': 0, 'explicit': {'provider_calls': 0},
+            'semantic_gap_repair': {'provider_calls': 3, 'replay_count': 5}}
+    final = {'provider_calls': 0, 'semantic_gap_repair': {'provider_calls': 0, 'replay_count': 2}}
+    raw = {'semantic_relevance_monitor': main, 'recall_quality_per_agent': {
+        'producer_reports': [{'scope': {**scope, 'user_id': str(i)},
+                              'semantic_relevance_monitor': final} for i in range(4)]}}
+    evidence = nightly_result_diagnostics(raw, [])['known_lane_call_evidence']
+    assert evidence['coverage'] == 'reported_lanes_only'
+    assert evidence['main']['phase'] == 'main'
+    assert evidence['main']['scope'] is None
+    assert evidence['main']['lanes']['repair_judge'] == 3
+    assert evidence['main']['lanes']['repair_recall'] == 5
+    assert len(evidence['final']) == 1
+    assert evidence['final'][0]['phase'] == 'final'
+    assert len(evidence['final'][0]['scopes']) == 4
+    assert evidence['final'][0]['lanes']['repair_judge'] == 0
+    assert 'system_total' not in evidence
+
+
+def test_lane_evidence_keeps_missing_calls_unknown_and_main_scope():
+    scope = dict(tenant_id='t', agent_id='a', workspace_id='w', user_id='logical')
+    evidence = nightly_result_diagnostics({'scope': scope, 'semantic_relevance_monitor': {
+        'provider_calls': True, 'semantic_gap_repair': {'provider_calls': 3}}}, [])['known_lane_call_evidence']
+    assert evidence['main']['scope'] == scope
+    assert evidence['main']['lanes'] == {'repair_judge': 3}
+    assert evidence['final'] == []
+
+
+import pytest
+
+
+@pytest.mark.parametrize('unknown', [{'semantic_gap_repair': {}}, {'provider_calls': True, 'semantic_gap_repair': {'provider_calls': True}}], ids=['missing', 'bool'])
+@pytest.mark.parametrize('reverse', [False, True], ids=['unknown-zero', 'zero-unknown'])
+def test_final_groups_require_equal_strict_lane_evidence(unknown, reverse):
+    zero = {'provider_calls': 0, 'semantic_gap_repair': {'provider_calls': 0}}
+    monitors = [unknown, zero][:: -1 if reverse else 1]
+    rows = [{'scope': dict(tenant_id='t', agent_id='a', workspace_id='w', user_id=str(i)),
+             'semantic_relevance_monitor': monitor} for i, monitor in enumerate(monitors)]
+    groups = nightly_result_diagnostics({'recall_quality_per_agent': {'producer_reports': rows}}, [])['known_lane_call_evidence']['final']
+    assert len(groups) == 2
+    assert groups[0]['snapshot'] == groups[1]['snapshot']
+    expected = [{}, {'delivery_and_confirmation': 0, 'repair_judge': 0}][:: -1 if reverse else 1]
+    assert [group['lanes'] for group in groups] == expected
+    assert [group['scopes'] for group in groups] == [[rows[0]['scope']], [rows[1]['scope']]]

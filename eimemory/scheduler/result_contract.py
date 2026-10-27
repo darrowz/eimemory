@@ -1126,6 +1126,41 @@ def _external_collection_diagnostics(report: object) -> dict:
     return {"error_codes": counts}
 
 
+def _known_lane_call_evidence(report: dict) -> dict:
+    """Keep phases separate: final global snapshots never replace main calls."""
+    def lanes(value):
+        value = value if isinstance(value, dict) else {}
+        repair = value.get('semantic_gap_repair') or {}
+        explicit = value.get('explicit') or {}
+        return {name: count for name, source, key in (
+            ('delivery_and_confirmation', value, 'provider_calls'),
+            ('explicit_monitor', explicit, 'provider_calls'),
+            ('repair_judge', repair, 'provider_calls'),
+            ('repair_recall', repair, 'replay_count'))
+            if isinstance(source, dict) and type(count := source.get(key)) is int and 0 <= count <= 1_000_000}
+    final = []
+    per_agent = report.get('recall_quality_per_agent') or {}
+    rows = per_agent.get('producer_reports', []) if isinstance(per_agent, dict) else []
+    for row in rows[:4096] if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or not isinstance(row.get('scope'), dict):
+            continue
+        monitor = row.get('semantic_relevance_monitor')
+        snapshot = _semantic_monitor_diagnostics(monitor)
+        scope = {key: row['scope'].get(key) for key in ('tenant_id', 'agent_id', 'workspace_id', 'user_id')}
+        # Equal diagnostic snapshots share display; this does not identify call events.
+        strict_lanes = lanes(monitor)
+        existing = next((item for item in final
+                         if item['snapshot'] == snapshot and item['lanes'] == strict_lanes), None)
+        if existing is None:
+            final.append(dict(phase='final', scopes=[scope], lanes=strict_lanes, snapshot=snapshot))
+        elif scope not in existing['scopes']:
+            existing['scopes'].append(scope)
+    return dict(coverage='reported_lanes_only', counts_semantics='separate_phases_not_additive',
+                main=dict(phase='main', scope={key: report['scope'].get(key) for key in (
+                    'tenant_id', 'agent_id', 'workspace_id', 'user_id')} if isinstance(report.get('scope'), dict) else None,
+                          lanes=lanes(report.get('semantic_relevance_monitor'))), final=final)
+
+
 def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
     from eimemory.contracts.nightly_step_evidence import native_l5_failure_diagnostics, step_evidence_diagnostics
     from .collection_diagnostics import production_collection_diagnostics
@@ -1176,6 +1211,7 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
     } if historical_accepted else None
     return {
         "schema": "nightly_execution_diagnostics.v1",
+        "known_lane_call_evidence": _known_lane_call_evidence(report),
         "execution_ok": execution_ok,
         "first_failed_step": failures[0] if failures else "",
         "failed_steps": failures,
