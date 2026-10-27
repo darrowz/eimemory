@@ -1,5 +1,6 @@
 """A native repair must appear as a resolution in the nightly result."""
 import json
+from hashlib import sha256
 from dataclasses import asdict
 
 from eimemory.evaluation import semantic_gap_repair as repair
@@ -64,11 +65,16 @@ def test_main_calls_survive_zero_final_global_snapshots():
     assert 'system_total' not in evidence
 
 
+def scope_reference(scope):
+    encoded = json.dumps(scope, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    return {"scope_digest": sha256(encoded).hexdigest()}
+
+
 def test_lane_evidence_keeps_missing_calls_unknown_and_main_scope():
     scope = dict(tenant_id='t', agent_id='a', workspace_id='w', user_id='logical')
     evidence = nightly_result_diagnostics({'scope': scope, 'semantic_relevance_monitor': {
         'provider_calls': True, 'semantic_gap_repair': {'provider_calls': 3}}}, [])['known_lane_call_evidence']
-    assert evidence['main']['scope'] == scope
+    assert evidence['main']['scope'] == scope_reference(scope)
     assert evidence['main']['lanes'] == {'repair_judge': 3}
     assert evidence['final'] == []
 
@@ -88,4 +94,43 @@ def test_final_groups_require_equal_strict_lane_evidence(unknown, reverse):
     assert groups[0]['snapshot'] == groups[1]['snapshot']
     expected = [{}, {'delivery_and_confirmation': 0, 'repair_judge': 0}][:: -1 if reverse else 1]
     assert [group['lanes'] for group in groups] == expected
-    assert [group['scopes'] for group in groups] == [[rows[0]['scope']], [rows[1]['scope']]]
+    assert [group['scopes'] for group in groups] == [[scope_reference(rows[0]['scope'])], [scope_reference(rows[1]['scope'])]]
+
+
+@pytest.mark.parametrize('identity_field', ['tenant_id', 'agent_id', 'workspace_id', 'user_id'])
+def test_lane_scope_references_hide_identities_without_losing_phases_or_counts(identity_field):
+    scope = dict(tenant_id='PRIVATE-tenant', agent_id='PRIVATE-agent',
+                 workspace_id='PRIVATE-host', user_id='host-user')
+    other = {**scope, identity_field: 'PRIVATE-other'}
+    monitor = {'provider_calls': 2, 'explicit': {'provider_calls': 0},
+               'semantic_gap_repair': {'provider_calls': 3, 'replay_count': 5}}
+    raw = {'scope': scope, 'semantic_relevance_monitor': monitor,
+           'recall_quality_per_agent': {'producer_reports': [
+               {'scope': item, 'semantic_relevance_monitor': monitor}
+               for item in [scope, other, scope]]}}
+    evidence = nightly_result_diagnostics(raw, [])['known_lane_call_evidence']
+    assert evidence['main']['scope'] == scope_reference(scope)
+    assert evidence['main']['phase'] == 'main'
+    assert evidence['final'][0]['phase'] == 'final'
+    assert evidence['final'][0]['scopes'] == [scope_reference(scope), scope_reference(other)]
+    assert evidence['main']['lanes'] == evidence['final'][0]['lanes'] == {
+        'delivery_and_confirmation': 2, 'explicit_monitor': 0,
+        'repair_judge': 3, 'repair_recall': 5}
+    serialized = json.dumps(evidence)
+    assert 'PRIVATE' not in serialized and 'host-user' not in serialized
+    assert evidence['counts_semantics'] == 'separate_phases_not_additive'
+
+
+@pytest.mark.parametrize('scope', [None, {}, {'user_id': {'private': 'host-user'}},
+    dict(tenant_id='t', agent_id='a', workspace_id='w', user_id=['host-user'])])
+def test_lane_scope_references_fail_closed_for_malformed_identity(scope):
+    raw = {'scope': scope, 'semantic_relevance_monitor': {'provider_calls': 1},
+           'recall_quality_per_agent': {'producer_reports': [
+               {'scope': scope, 'semantic_relevance_monitor': {'provider_calls': 0}}]}}
+    evidence = nightly_result_diagnostics(raw, [])['known_lane_call_evidence']
+    assert evidence['main']['scope'] is None
+    assert evidence['main']['lanes'] == {'delivery_and_confirmation': 1}
+    assert 'host-user' not in json.dumps(evidence)
+    if isinstance(scope, dict):
+        assert evidence['final'][0]['scopes'] == [None]
+        assert evidence['final'][0]['lanes'] == {'delivery_and_confirmation': 0}

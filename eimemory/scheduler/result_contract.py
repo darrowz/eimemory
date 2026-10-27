@@ -1128,6 +1128,16 @@ def _external_collection_diagnostics(report: object) -> dict:
 
 def _known_lane_call_evidence(report: dict) -> dict:
     """Keep phases separate: final global snapshots never replace main calls."""
+    from eimemory.evaluation.hermes_profile_coverage import SCOPE_FIELDS, _digest
+
+    def scope_reference(value):
+        if not isinstance(value, dict):
+            return None
+        scope = {key: value.get(key) for key in SCOPE_FIELDS}
+        if any(not isinstance(item, str) for item in scope.values()):
+            return None
+        return {"scope_digest": _digest(scope)}
+
     def lanes(value):
         value = value if isinstance(value, dict) else {}
         repair = value.get('semantic_gap_repair') or {}
@@ -1146,7 +1156,7 @@ def _known_lane_call_evidence(report: dict) -> dict:
             continue
         monitor = row.get('semantic_relevance_monitor')
         snapshot = _semantic_monitor_diagnostics(monitor)
-        scope = {key: row['scope'].get(key) for key in ('tenant_id', 'agent_id', 'workspace_id', 'user_id')}
+        scope = scope_reference(row['scope'])
         # Equal diagnostic snapshots share display; this does not identify call events.
         strict_lanes = lanes(monitor)
         existing = next((item for item in final
@@ -1156,8 +1166,7 @@ def _known_lane_call_evidence(report: dict) -> dict:
         elif scope not in existing['scopes']:
             existing['scopes'].append(scope)
     return dict(coverage='reported_lanes_only', counts_semantics='separate_phases_not_additive',
-                main=dict(phase='main', scope={key: report['scope'].get(key) for key in (
-                    'tenant_id', 'agent_id', 'workspace_id', 'user_id')} if isinstance(report.get('scope'), dict) else None,
+                main=dict(phase='main', scope=scope_reference(report.get('scope')),
                           lanes=lanes(report.get('semantic_relevance_monitor'))), final=final)
 
 
