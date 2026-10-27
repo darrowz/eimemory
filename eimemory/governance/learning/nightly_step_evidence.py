@@ -20,7 +20,7 @@ SCHEMA = "nightly_step_evidence.v1"
 REFERENCE_SCHEMA = "nightly_step_evidence_reference.v1"
 SOURCE = "eimemory.scheduler.step_evidence"
 RELEASE_FIELDS = ("release_commit", "release_version", "deployment_receipt_id", "release_session_id")
-_STATES = frozenset({"idle", "processed", "observed", "blocked", "skipped", "completed", "unavailable",
+_STATES = frozenset({"deferred", "idle", "processed", "observed", "blocked", "skipped", "completed", "unavailable",
                      "failed", "incomplete", "complete"})
 
 

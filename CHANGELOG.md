@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.47] — 2026-10-27
+
+- Preserve deferred repair and observed incident status through scope maintenance and registered-owner aggregation; keep manual policy ownership and repair completion gates intact.
+
 ## [1.15.46] — 2026-10-27
 
 - Preserve exact provider authority through root-to-user control-plane migration after fresh registry and profile verification; retain bounded owner preflight reasons and independent authorization observations after primary failure.

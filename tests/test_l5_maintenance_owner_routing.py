@@ -390,3 +390,44 @@ def test_owner_authority_reason_is_exact_allowlist(monkeypatch, message, expecte
     assert result['owner_authority_reason'] == expected
     assert result['ok'] is False and result['primary_report'] is None
     assert 'secret' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('primary_status,owner_status,expected', [
+    ('idle', 'deferred', 'deferred'), ('deferred', 'idle', 'deferred'),
+    ('processed', 'deferred', 'deferred'), ('idle', 'observed', 'observed'),
+    ('observed', 'idle', 'observed'), ('idle', 'processed', 'processed'),
+    ('processed', 'idle', 'processed'), ('idle', 'idle', 'idle'),
+])
+@pytest.mark.parametrize('entrypoint', ['direct', 'watch', 'nightly'])
+def test_registered_owner_status_is_not_hidden_by_primary(monkeypatch, capsys, primary_status, owner_status, expected, entrypoint):
+    monkeypatch.setattr(providers, '_secure_delegations', lambda: {'delegations': [
+        dict(owner_scope=OWNER, provider_scope=PROVIDER, profile_key='code', profile_digest='a'*64)]})
+    monkeypatch.setattr(owner, '_resolve_repo_root', lambda _: Path('/repo'))
+    monkeypatch.setattr(owner, '_grant', lambda *args: dict(profile_key='code', profile_digest='a'*64))
+    monkeypatch.setattr(owner, '_verify_profile', lambda *args: None)
+    def run(runtime, **kw):
+        status = primary_status if asdict(kw['scope']) == PROVIDER else owner_status
+        return dict(ok=True, execution_ok=True, status=status, repair_complete=False,
+                    reason='manual_policy_preserved' if status == 'deferred' else '',
+                    **{stage: dict(ok=True, status='idle') for stage in
+                       ('runtime_identity', 'system_code_repair', 'system_code_repair_failure', 'code_evolution')})
+    monkeypatch.setattr(maintenance, '_run_system_code_maintenance', run)
+    if entrypoint == 'direct':
+        report = maintenance.run_system_code_maintenance(object(), scope=PROVIDER, owner_id='watch', include_registered_owners=True)
+    elif entrypoint == 'nightly':
+        from eimemory.scheduler import jobs
+        monkeypatch.setenv('EIMEMORY_L5_LOOP_ENABLED', '1')
+        monkeypatch.setenv('EIMEMORY_L5_LOOP_APPLY', '1')
+        report = jobs._run_code_evolution_maintenance(object(), scope=PROVIDER)
+    else:
+        from eimemory.cli import main as cli
+        monkeypatch.setattr('eimemory.governance.world_watchers.collect_world_signals', lambda *a, **kw: {'ok': True})
+        monkeypatch.setattr('eimemory.governance.world_watchers.default_watches', lambda: [])
+        args = cli._build_parser().parse_args(['learn', 'watch', '--apply'])
+        assert cli._cmd_learn(args, runtime=object(), scope=PROVIDER) == 0
+        report = json.loads(capsys.readouterr().out)['system_code_maintenance']
+    assert report['status'] == expected
+    assert report['ok'] is True and report['repair_complete'] is False
+    assert report['primary_report']['status'] == primary_status
+    assert report['owner_scope_reports'][0]['report']['status'] == owner_status
+    assert report['reason'] == ('owner_maintenance_deferred' if expected == 'deferred' else '')

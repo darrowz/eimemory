@@ -127,8 +127,9 @@ def _run_system_code_maintenance(
     execution_ok = bool(detector_valid and policy_owner.get("ok") is True and route.get("ok") is True
                         and failure_valid and recovery.get("ok") is True)
     status = "blocked" if not execution_ok else (
+        "deferred" if route.get("status") == "deferred" else (
         "processed" if route.get("processed") or recovery.get("resumed_count", 0) else (
-            "observed" if detector.get("incident_record_id") or failure.get("incident_record_id") else "idle"))
+            "observed" if detector.get("incident_record_id") or failure.get("incident_record_id") else "idle")))
     observed_ids = list(dict.fromkeys(value for value in
         (detector.get('incident_record_id'), failure.get('incident_record_id')) if value))
     ingress_observations = [observe_native_incident(runtime, scope=scope_ref, record_id=value) for value in observed_ids]
@@ -137,7 +138,8 @@ def _run_system_code_maintenance(
         "ok": execution_ok, "execution_ok": execution_ok, "status": status,
         "system_detection_enabled": True,
         "repair_complete": False, "detected_at": detected_at,
-        "reason": "" if execution_ok else "system_maintenance_incomplete",
+        "reason": ("manual_policy_preserved" if status == "deferred" else "")
+                  if execution_ok else "system_maintenance_incomplete",
         "runtime_identity": detector, "system_code_repair": route,
         "native_policy_owner": policy_owner,
         "managed_knowledge_checkpoint":managed_checkpoint,
@@ -297,7 +299,10 @@ def run_system_code_maintenance(
     if not reports:
         return primary
     ok = primary.get('ok') is True and all(row['report'].get('ok') is True for row in reports)
+    statuses = {report.get('status') for report in [primary, *(row['report'] for row in reports)]}
+    status = next((value for value in ('deferred', 'processed', 'observed') if value in statuses),
+                  primary.get('status')) if ok else 'blocked'
     return {**primary, 'ok': ok, 'execution_ok': ok, 'primary_report': primary,
             'owner_scope_reports': reports,
-            'status': ('processed' if any(row['report'].get('status') == 'processed' for row in reports)
-                       else primary.get('status')) if ok else 'blocked'}
+            'status': status,
+            'reason': 'owner_maintenance_deferred' if status == 'deferred' else primary.get('reason', '')}

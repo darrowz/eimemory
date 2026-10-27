@@ -56,7 +56,7 @@ def read(runtime, reference, *, run=RUN, scope=SCOPE, step="code_evolution", rel
         expected_release=release_identity_payload(RELEASE) if release is None else release)
 
 
-@pytest.mark.parametrize("status,ok", [("idle", True), ("processed", True), ("blocked", False)])
+@pytest.mark.parametrize("status,ok", [("idle", True), ("processed", True), ("deferred", True), ("blocked", False)])
 def test_complete_original_roundtrip_preserves_unknown_and_private_body_only_in_archive(runtime, status, ok):
     original = report(status, ok=ok)
     original["code_evolution"]["reports"] = [{"ok": ok, "status": status, "private_context": "private-body-" * 8000}]

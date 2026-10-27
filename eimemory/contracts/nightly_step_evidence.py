@@ -25,7 +25,7 @@ _REFERENCE_FIELDS = frozenset({
     "release_version", "deployment_receipt_id", "release_session_id", "report_ok",
     "report_execution_ok", "report_status", "repair_complete",
 })
-_STATES = frozenset({"idle", "processed", "observed", "blocked", "skipped", "completed",
+_STATES = frozenset({"deferred", "idle", "processed", "observed", "blocked", "skipped", "completed",
                      "unavailable", "failed", "incomplete", "complete", "not_reported"})
 
 

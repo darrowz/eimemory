@@ -201,6 +201,8 @@ def test_manual_policy_preserved_defers_router_without_hard_fail(owners, monkeyp
     report = run(owners)
     assert report["execution_ok"] is True
     assert report["native_policy_owner"]["status"] == "manual_policy_preserved"
+    assert report["status"] == "deferred"
+    assert report["reason"] == "manual_policy_preserved"
     assert report["system_code_repair"] == {
         "ok": True, "status": "deferred", "reason": "manual_policy_preserved", "processed": []}
     assert [name for name, _ in owners.calls] == ["detector", "failure", "recovery"]
