@@ -673,6 +673,7 @@ def test_native_standing_grant_pins_explicit_provider_authority_without_moving_i
     from eimemory.governance.evolution import code_evolution_provider_authority as authority_api
     from eimemory.governance.evolution.code_automation_policy_grant import prepare_standing_grant
     f = native_policy_fixture
+    monkeypatch.setattr(authority_api, 'user_mode', lambda: False)
     exact = asdict(f.scope)
     target = {**exact, 'workspace_id': 'fixture-product-workspace', 'user_id': 'fixture-product-operator'}
     delegation = {'owner_scope': exact, 'provider_scope': target, 'capability_id': 'code.implementation',

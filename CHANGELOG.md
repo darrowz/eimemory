@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.46] — 2026-10-27
+
+- Preserve exact provider authority through root-to-user control-plane migration after fresh registry and profile verification; retain bounded owner preflight reasons and independent authorization observations after primary failure.
+
 ## [1.15.45] — 2026-10-27
 
 - Synchronize the hidden Codex plugin release version and replace main/final lane scope identities with opaque diagnostic references while preserving phase counts and strict snapshot grouping.

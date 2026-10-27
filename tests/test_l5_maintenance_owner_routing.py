@@ -88,7 +88,7 @@ def test_all_candidates_preflight_before_primary_or_owner_effects(monkeypatch, f
     assert result['primary_report'] is None
 
 
-def test_primary_failure_stops_registered_owners_and_preserves_result(monkeypatch):
+def test_primary_failure_retains_authorized_owner_observation_and_preserves_result(monkeypatch):
     monkeypatch.setattr(providers, '_secure_delegations', lambda: {'delegations': [
         dict(owner_scope=OWNER, provider_scope=PROVIDER, profile_key='code', profile_digest='a'*64)]})
     events = []
@@ -98,10 +98,14 @@ def test_primary_failure_stops_registered_owners_and_preserves_result(monkeypatc
     primary = dict(ok=False, execution_ok=False, status='blocked', reason='real_primary_failure', detector={'processed': 1})
     monkeypatch.setattr(maintenance, '_run_system_code_maintenance', lambda *args, **kw: events.append(asdict(kw['scope'])) or primary)
     result = maintenance.run_system_code_maintenance(object(), scope=PROVIDER, owner_id='watch', include_registered_owners=True)
-    assert events == ['grant', 'profile', PROVIDER]
+    assert events == ['grant', 'profile', PROVIDER, 'grant', 'profile']
     assert result['primary_report'] == primary
     assert result['reason'] == 'real_primary_failure'
-    assert result['owner_scope_reports'] == []
+    assert result['ok'] is False
+    assert len(result['owner_scope_reports']) == 1
+    observed = result['owner_scope_reports'][0]['report']
+    assert observed['standing_authority'] == {'status': 'verified', 'effects_exercised': False}
+    assert observed['runtime_identity']['status'] == 'not_run'
 
 
 from copy import deepcopy
@@ -157,15 +161,15 @@ def routing_security_fixture(native_policy_fixture, monkeypatch):
     return f
 
 
-@pytest.mark.parametrize('damage', ['', 'snapshot_valid', 'delegated_snapshot_valid', 'expired', 'revoked', 'exact_owner', 'profile', 'snapshot_changed', 'provider_unavailable'])
+@pytest.mark.parametrize('damage', ['', 'snapshot_valid', 'delegated_snapshot_valid', 'migrated_snapshot_valid', 'expired', 'revoked', 'exact_owner', 'profile', 'snapshot_changed', 'provider_unavailable'])
 def test_wrapper_real_grant_profile_security_chain(routing_security_fixture, monkeypatch, damage):
     f = routing_security_fixture
-    if damage in ('snapshot_valid', 'delegated_snapshot_valid', 'snapshot_changed', 'provider_unavailable'):
+    if damage in ('snapshot_valid', 'delegated_snapshot_valid', 'migrated_snapshot_valid', 'snapshot_changed', 'provider_unavailable'):
         # Snapshot is selected and verified by the real authority code against real profiles.
         monkeypatch.setattr(providers, 'configured_provider_scope', lambda _: asdict(f.scope))
         f.grant['capability_authority'] = providers.select_provider_authority(
             f.runtime, owner_scope=f.scope, profile_key=f.grant['profile_key'])
-        if damage in ('delegated_snapshot_valid', 'snapshot_changed'):
+        if damage in ('delegated_snapshot_valid', 'migrated_snapshot_valid', 'snapshot_changed'):
             # A new valid delegation target changes the snapshot (profile is available).
             from eimemory.capabilities import CapabilityDefinition
             from eimemory.capabilities.registry import CapabilityRegistry
@@ -186,6 +190,10 @@ def test_wrapper_real_grant_profile_security_chain(routing_security_fixture, mon
             f.write()
             f.grant['capability_authority'] = providers.select_provider_authority(
                 f.runtime, owner_scope=f.scope, profile_key=f.grant['profile_key'])
+            if damage == 'migrated_snapshot_valid':
+                snapshot = f.grant['capability_authority']
+                snapshot['authorization_basis'] = 'root_code_provider_delegation'
+                snapshot['digest'] = providers._digest({k: v for k, v in snapshot.items() if k != 'digest'})
             if damage == 'snapshot_changed':
                 monkeypatch.setattr(providers, 'configured_provider_scope', lambda _: asdict(f.scope))
         elif damage == 'provider_unavailable':
@@ -206,7 +214,7 @@ def test_wrapper_real_grant_profile_security_chain(routing_security_fixture, mon
         with pytest.raises((ValueError, RuntimeError), match=expected_errors[damage]):
             grant = owner._grant(f.scope, f.repo, datetime.now(timezone.utc))
             owner._verify_profile(f.runtime, f.scope, grant)
-    if damage in ('', 'snapshot_valid', 'delegated_snapshot_valid'):
+    if damage in ('', 'snapshot_valid', 'delegated_snapshot_valid', 'migrated_snapshot_valid'):
         grant = owner._grant(f.scope, f.repo, datetime.now(timezone.utc))
         owner._verify_profile(f.runtime, f.scope, grant)
     calls = []
@@ -214,7 +222,7 @@ def test_wrapper_real_grant_profile_security_chain(routing_security_fixture, mon
         calls.append(asdict(kw['scope'])) or dict(ok=True, execution_ok=True, status='idle'))
     result = maintenance.run_system_code_maintenance(f.runtime, scope=f.provider_scope, owner_id='fixture',
         repo_root=f.repo, include_registered_owners=True)
-    allowed = damage in ('', 'snapshot_valid', 'delegated_snapshot_valid')
+    allowed = damage in ('', 'snapshot_valid', 'delegated_snapshot_valid', 'migrated_snapshot_valid')
     if allowed:
         assert providers._secure_delegations() == f.registry
         assert Path(owner._resolve_repo_root(f.repo)) == f.repo
@@ -294,7 +302,7 @@ def test_real_admission_precedes_primary_and_owner_failure_stops_following(routi
         repo_root=f.repo, include_registered_owners=True)
     assert calls == [asdict(f.provider_scope)] + ([asdict(f.scope)] if primary_ok else [])
     assert result['ok'] is False and result['primary_report'] == primary
-    assert len(result['owner_scope_reports']) == int(primary_ok)
+    assert len(result['owner_scope_reports']) == (1 if primary_ok else 2)
 
 
 @pytest.mark.parametrize('failure', ['registry', 'grant'])
@@ -333,6 +341,8 @@ def test_public_preflight_failure_is_json_fail_closed(monkeypatch, capsys, failu
     assert report['status'] == 'blocked' and report['repair_complete'] is False
     assert report['primary_report'] is None and report['owner_scope_reports'] == []
     assert report['owner_routing_reason'] == 'owner_scope_authority_error:ValueError'
+    assert report['owner_authority_reason'] == ('standing_grant_revoked_or_killed' if failure == 'grant'
+                                               else 'authority_check_unclassified')
     for stage in ('runtime_identity', 'native_policy_owner', 'system_code_repair', 'system_code_repair_failure', 'code_evolution'):
         assert report[stage] == {'ok': False, 'status': 'not_run', 'reason': 'owner_scope_authority_error:ValueError'}
 
@@ -363,3 +373,20 @@ def test_dry_run_contract_is_json_without_native_effects(monkeypatch):
     assert report['status'] == 'skipped' and report['repair_complete'] is False
     for stage in ('runtime_identity', 'native_policy_owner', 'system_code_repair', 'system_code_repair_failure', 'code_evolution'):
         assert report[stage] == {'ok': True, 'status': 'skipped', 'reason': 'apply_disabled'}
+
+
+@pytest.mark.parametrize('message,expected', [
+    ('code_provider_authority_changed', 'code_provider_authority_changed'),
+    ('standing_grant_revoked_or_killed', 'standing_grant_revoked_or_killed'),
+    ('private credential scope secret', 'authority_check_unclassified'),
+    ('code_provider_authority_changed:secret', 'authority_check_unclassified'),
+])
+def test_owner_authority_reason_is_exact_allowlist(monkeypatch, message, expected):
+    def reject():
+        raise ValueError(message)
+    monkeypatch.setattr(providers, '_secure_delegations', reject)
+    monkeypatch.setattr(maintenance, '_run_system_code_maintenance', lambda *a, **kw: pytest.fail('effects'))
+    result = maintenance.run_system_code_maintenance(object(), scope=PROVIDER, owner_id='watch', include_registered_owners=True)
+    assert result['owner_authority_reason'] == expected
+    assert result['ok'] is False and result['primary_report'] is None
+    assert 'secret' not in json.dumps(result)

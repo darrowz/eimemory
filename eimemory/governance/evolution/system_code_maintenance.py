@@ -178,6 +178,61 @@ def _call(callback: Any, stage: str) -> dict[str, Any]:
         return {"ok": False, "status": "blocked", "reason": f"{stage}_error:{type(exc).__name__}"}
 
 
+_OWNER_AUTHORITY_REASONS = frozenset({
+    'code_provider_authority_capability_scope_invalid',
+    'code_provider_authority_changed',
+    'code_provider_authority_digest_invalid',
+    'code_provider_authority_owner_mismatch',
+    'code_provider_authority_profile_key_mismatch',
+    'code_provider_authority_projection_mismatch',
+    'code_provider_authority_snapshot_invalid',
+    'code_provider_authority_snapshot_missing',
+    'code_provider_delegation_ambiguous',
+    'code_provider_delegation_changed_during_read',
+    'code_provider_delegation_contract_invalid',
+    'code_provider_delegation_entry_invalid',
+    'code_provider_delegation_file_not_root_controlled',
+    'code_provider_delegation_owner_mismatch',
+    'code_provider_delegation_parent_not_root_controlled',
+    'code_provider_delegation_path_invalid',
+    'code_provider_delegation_profile_mismatch',
+    'code_provider_exact_scope_required',
+    'code_provider_profile_requires_exact_code_implementation',
+    'code_provider_scope_not_authorized',
+    'standing_grant_capability_profile_digest_mismatch',
+    'standing_grant_changed_during_read',
+    'standing_grant_contract_invalid',
+    'standing_grant_delegation_profile_mismatch',
+    'standing_grant_exact_scope_required',
+    'standing_grant_expired_or_not_yet_valid',
+    'standing_grant_file_not_root_controlled',
+    'standing_grant_incident_not_authorized',
+    'standing_grant_missing_or_unsafe',
+    'standing_grant_object_required',
+    'standing_grant_owner_check_unsupported',
+    'standing_grant_parent_not_root_controlled',
+    'standing_grant_profile_digest_mismatch',
+    'standing_grant_repository_mismatch',
+    'standing_grant_revoked_or_killed',
+    'standing_grant_route_mismatch',
+    'standing_grant_routes_invalid',
+    'standing_grant_time_invalid',
+    'user_control_plane_account_invalid',
+    'user_control_plane_directory_changed',
+    'user_control_plane_directory_invalid',
+    'user_control_plane_directory_owner_invalid',
+    'user_control_plane_directory_untrusted',
+    'user_control_plane_file_changed',
+    'user_control_plane_file_untrusted',
+    'user_control_plane_mode_invalid',
+    'user_control_plane_namespace_not_readonly',
+    'user_control_plane_namespace_unverified',
+    'user_control_plane_native_consumer_unverified',
+    'user_control_plane_nonroot_identity_required',
+    'user_control_plane_posix_identity_required',
+})
+
+
 def run_system_code_maintenance(
     runtime: Any, *, scope: ScopeRef | Mapping[str, Any], owner_id: str,
     limit: int = 100, apply: bool = True, repo_root: Any = None,
@@ -217,11 +272,16 @@ def run_system_code_maintenance(
         # Preflight prevents known admission failures before any maintenance.
         # Execution is sequential, not atomic: later failures never undo earlier effects.
         primary = _run_system_code_maintenance(runtime, scope=scope_ref, **kwargs)
-        if primary.get('ok') is not True:
-            return {**primary, 'primary_report': primary, 'owner_scope_reports': [],
-                    'owner_routing_reason': 'primary_maintenance_failed'}
         for entry in candidates:
             target = verify(entry)  # Authority can change after preflight or primary execution.
+            if primary.get('ok') is not True:
+                # Independent authorization observation is safe after failure;
+                # maintenance effects still require the primary gate to pass.
+                reports.append({'scope': asdict(target), 'report': {
+                    **_not_run_report('primary_maintenance_failed'),
+                    'standing_authority': {'status': 'verified', 'effects_exercised': False},
+                }})
+                continue
             report = _run_system_code_maintenance(runtime, scope=target, **kwargs)
             reports.append({'scope': asdict(target), 'report': report})
             if report.get('ok') is not True:
@@ -231,10 +291,12 @@ def run_system_code_maintenance(
         return {**_not_run_report(reason), **(primary or {}),
                 'ok': False, 'execution_ok': False, 'status': 'blocked',
                 'primary_report': primary, 'owner_scope_reports': reports,
-                'owner_routing_reason': reason}
+                'owner_routing_reason': reason,
+                'owner_authority_reason': str(exc) if isinstance(exc, ValueError) and str(exc) in _OWNER_AUTHORITY_REASONS
+                                          else 'authority_check_unclassified'}
     if not reports:
         return primary
-    ok = all(row['report'].get('ok') is True for row in reports)
+    ok = primary.get('ok') is True and all(row['report'].get('ok') is True for row in reports)
     return {**primary, 'ok': ok, 'execution_ok': ok, 'primary_report': primary,
             'owner_scope_reports': reports,
             'status': ('processed' if any(row['report'].get('status') == 'processed' for row in reports)

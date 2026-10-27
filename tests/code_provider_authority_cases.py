@@ -19,6 +19,7 @@ from eimemory.storage.code_evolution_store import CodeEvolutionStore, CodeEvolut
 
 @pytest.fixture
 def provider_authority_fixture(tmp_path, monkeypatch):
+    monkeypatch.setattr(authority, 'user_mode', lambda: False)
     owner = ScopeRef('fixture-tenant','fixture-agent','fixture-base::channel::hermes','fixture-business-openid')
     provider = ScopeRef('fixture-tenant','fixture-agent','fixture-base','fixture-operator')
     monkeypatch.setenv('EIMEMORY_AGENT_ID',provider.agent_id)
@@ -383,5 +384,39 @@ def test_code_provider_root_mapping_filesystem_boundary(tmp_path,monkeypatch,dam
     else:
         with pytest.raises(ValueError):authority._secure_delegations()
 
+
+@pytest.mark.parametrize('damage', ['', 'revoked', 'profile', 'target', 'reverse', 'snapshot_digest', 'snapshot_owner', 'delegation_digest'])
+def test_migrated_root_snapshot_requires_same_current_user_delegation(provider_authority_fixture, monkeypatch, damage):
+    f = provider_authority_fixture
+    # Historical root snapshot remains immutable; current user custody is fresh.
+    snapshot = deepcopy(f.snapshot)
+    snapshot['authorization_basis'] = 'root_code_provider_delegation'
+    snapshot['digest'] = authority._digest({k: v for k, v in snapshot.items() if k != 'digest'})
+    original = deepcopy(snapshot)
+    monkeypatch.setattr(authority, 'user_mode', lambda: True)
+    if damage == 'revoked':
+        f.mapping['delegations'] = []
+    elif damage == 'profile':
+        f.entry['profile_digest'] = '7' * 64
+    elif damage == 'target':
+        monkeypatch.setenv('EIMEMORY_WORKSPACE_ID', 'other-product')
+    elif damage == 'snapshot_digest':
+        snapshot['digest'] = '0' * 64
+    elif damage == 'snapshot_owner':
+        snapshot['owner_scope']['user_id'] = 'other-owner'
+        snapshot['digest'] = authority._digest({k: v for k, v in snapshot.items() if k != 'digest'})
+    elif damage == 'delegation_digest':
+        snapshot['delegation_digest'] = '0' * 64
+        snapshot['digest'] = authority._digest({k: v for k, v in snapshot.items() if k != 'digest'})
+    elif damage == 'reverse':
+        snapshot['authorization_basis'] = 'user_code_provider_delegation'
+        snapshot['digest'] = authority._digest({k: v for k, v in snapshot.items() if k != 'digest'})
+        monkeypatch.setattr(authority, 'user_mode', lambda: False)
+    if damage:
+        with pytest.raises((ValueError, RuntimeError)):
+            authority.verify_provider_authority(f.runtime, snapshot, owner_scope=f.owner)
+    else:
+        assert authority.verify_provider_authority(f.runtime, snapshot, owner_scope=f.owner) == snapshot
+        assert snapshot == original
 
 __all__=['provider_authority_fixture']+[name for name in globals() if name.startswith('test_')]

@@ -153,6 +153,12 @@ def verify_provider_authority(runtime: Any, snapshot: Any, *, owner_scope: Scope
     if profile_key and value['profile_key'] != profile_key:
         raise ValueError('code_provider_authority_profile_key_mismatch')
     actual = select_provider_authority(runtime, owner_scope=owner_scope, profile_key=value['profile_key'])
+    if (user_mode() and value['authorization_basis'] == 'root_code_provider_delegation'
+            and actual['authorization_basis'] == 'user_code_provider_delegation'):
+        # Retain historical provenance across custody migration, after fresh
+        # exact registry/Profile admission; every business binding must match.
+        actual = {**actual, 'authorization_basis': value['authorization_basis']}
+        actual['digest'] = _digest({key: item for key, item in actual.items() if key != 'digest'})
     if actual != value:
         raise ValueError('code_provider_authority_changed')
     return value
