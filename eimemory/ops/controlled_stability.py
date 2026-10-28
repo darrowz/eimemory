@@ -730,13 +730,19 @@ def _collect_controlled_stability_sample(*, expected_commit: str, database_path:
                 else:
                     if background_held:
                         # verify_background_quiet allows inactive or failed oneshots.
+                        # After `systemctl reset-failed`, Result becomes success while
+                        # ExecMainStatus may keep the prior exit code; trust Result when quiet.
                         ok = state["LoadState"] == "loaded" and state["ActiveState"] in ("inactive", "failed")
                         if state["ActiveState"] != "failed":
-                            ok = ok and state["Result"] in ("", "success") and state["ExecMainStatus"] == "0"
+                            ok = ok and state["Result"] in ("", "success")
                     else:
+                        # Restored inventory: oneshots must be quiet (not failed).
+                        # Trust Result after reset-failed; stale ExecMainStatus must not
+                        # permanently block post-deploy stability / business closure.
                         ok = (state["LoadState"] == "loaded" and state["Result"] in ("", "success")
-                              and state["ActiveState"] in ("active", "inactive", "activating")
-                              and state["ExecMainStatus"] == "0")
+                              and state["ActiveState"] in ("active", "inactive", "activating"))
+                        if ok and state["ActiveState"] in ("active", "activating"):
+                            ok = state["ExecMainStatus"] == "0"
                 counter = state.get("NRestarts", "")
                 restarts = int(counter) if counter.isdigit() else None
                 units.append({"unit": unit, "ok": bool(ok), "active_state": state["ActiveState"],

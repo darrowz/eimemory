@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.58] — 2026-10-28
+
+- Treat quiet oneshot units after `systemctl reset-failed` as ready for controlled stability: inactive + Result=success no longer requires ExecMainStatus=0, so a sticky prior nightly/timer-monitor failure cannot permanently block post-deploy stability / business closure. Active/activating oneshots still require ExecMainStatus=0; failed oneshots remain rejected after resume.
+
 ## [1.15.57] — 2026-10-28
 
 - Persist bounded empty_reason on zero-candidate production-recall pendings; exclude session_deduped_prior_delivery from new_empty_count (new_session_deduped_count); auto-review closes those cases as session_deduped_prior_delivery rather than no_recall. Session-dedupe policy unchanged.
