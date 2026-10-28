@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.53] — 2026-10-28
+
+- Exclude host notifications from completed-turn entity context and authorized history rehydration, preventing worker-command entities from contaminating subsequent natural queries. Preserve normal conversation context and existing authorization and admission rules.
+
 ## [1.15.52] — 2026-10-28
 
 - Complete private fault injection in the remaining drop-in parent-open rejection tests and preserve process-owner rejection with correctly rebound private Path fixtures.

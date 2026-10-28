@@ -238,6 +238,8 @@ class ProactiveRecallService:
         normalized_turn = _bounded_text(turn_id, 500)
         if not normalized_turn:
             raise ValueError("turn_id is required")
+        if _is_host_notification(user_summary):
+            return
         summary = _bounded_text(
             f"User: {_bounded_text(user_summary, _MAX_TURN_SUMMARY_CHARS // 2)} "
             f"Assistant: {_bounded_text(assistant_summary, _MAX_TURN_SUMMARY_CHARS // 2)}",
@@ -1256,7 +1258,11 @@ class ProactiveRecallService:
                 source_ids=source_ids,
             ):
                 continue
-            terms = self._entities(f"{record.title} {self._record_text(record)}")
+            text = self._record_text(record)
+            # Archived gateway notices are no more conversational than new ones.
+            if _is_host_notification(text.removeprefix("User:").lstrip()):
+                continue
+            terms = self._entities(f"{record.title} {text}")
             if not any(
                 sha256(term.encode("utf-8", errors="replace")).hexdigest() in entity_digests
                 for term in terms
