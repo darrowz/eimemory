@@ -14,6 +14,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 
 from eimemory.core.strict_json import loads
 from eimemory.governance.evolution import code_automation_policy as policy_api
@@ -144,7 +145,12 @@ def _validate_grant(grant: dict, scope: ScopeRef, root: Path, now: datetime, *, 
     from eimemory.config.trusted import trusted_repository_root, trusted_remote, trusted_branch_allowed
     git_read = git_runner or _git
     remote = trusted_remote()
-    branch = git_read(root, 'symbolic-ref', '--short', 'HEAD')
+    try:
+        branch = git_read(root, 'symbolic-ref', '--short', 'HEAD')
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        # Detached HEAD cannot satisfy grant.repository.branch; classify instead of
+        # bubbling CalledProcessError into authority_check_unclassified.
+        raise ValueError('standing_grant_detached_head') from exc
     actual = {'root': str(root), 'remote': remote, 'branch': branch,
               'remote_url_digest': remote_url_digest(git_read(root, 'remote', 'get-url', remote))}
     if (root != Path(trusted_repository_root()).resolve() or not trusted_branch_allowed(branch)

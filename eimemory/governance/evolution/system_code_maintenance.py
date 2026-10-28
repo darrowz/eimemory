@@ -214,6 +214,7 @@ _OWNER_AUTHORITY_REASONS = frozenset({
     'standing_grant_capability_profile_digest_mismatch',
     'standing_grant_changed_during_read',
     'standing_grant_contract_invalid',
+    'standing_grant_detached_head',
     'standing_grant_delegation_profile_mismatch',
     'standing_grant_exact_scope_required',
     'standing_grant_expired_or_not_yet_valid',

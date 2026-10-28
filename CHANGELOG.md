@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.59] — 2026-10-29
+
+- Deploy worker: after verifying HEAD equals origin/master tip, refuse non-master branches and reattach detached HEAD to `master` (check reports `checkout_reattach_master_required`). Prevents ops `git checkout <sha>` from breaking standing-grant verify / learn-watch / code_evolution (`standing_grant_detached_head` replaces unclassified CalledProcessError).
+
 ## [1.15.58] — 2026-10-28
 
 - Treat quiet oneshot units after `systemctl reset-failed` as ready for controlled stability: inactive + Result=success no longer requires ExecMainStatus=0, so a sticky prior nightly/timer-monitor failure cannot permanently block post-deploy stability / business closure. Active/activating oneshots still require ExecMainStatus=0; failed oneshots remain rejected after resume.

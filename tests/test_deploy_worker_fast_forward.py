@@ -119,3 +119,24 @@ def test_diverged_checkout_is_refused_with_fix(tmp_path, deploy_worker_environme
     assert result.returncode == 65
     assert "not an ancestor" in result.stderr
     assert _git(repo, "rev-parse", "HEAD") == local
+
+def test_detached_tip_reports_reattach_on_check_and_reattaches_on_deploy(tmp_path, deploy_worker_environment) -> None:
+    """Ops checkout of a bare tip SHA must not leave standing-grant verify broken."""
+    repo, target, worker, env, state = _setup(tmp_path, deploy_worker_environment)
+    # Advance local master to tip via normal FF first, then detach at tip.
+    assert subprocess.run([str(worker), "deploy", target], env=env, capture_output=True, text=True, timeout=60).returncode == 0
+    _git(repo, "checkout", "--detach", target)
+    assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+
+    check = subprocess.run([str(worker), "check", target], env=env, capture_output=True, text=True, timeout=60)
+    assert check.returncode == 0, check.stderr
+    assert '"checkout_reattach_master_required":true' in check.stdout
+    assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+
+    deploy = subprocess.run([str(worker), "deploy", target], env=env, capture_output=True, text=True, timeout=60)
+    assert deploy.returncode == 0, deploy.stderr
+    assert f"checkout_reattach_master={target}" in deploy.stderr
+    assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD") == "master"
+    assert _git(repo, "rev-parse", "HEAD") == target
+    assert json.loads((state / f"{target}.json").read_text())["ok"] is True
+

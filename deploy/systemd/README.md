@@ -136,8 +136,13 @@ The service templates also point to these runtime configuration paths:
 /etc/eimemory
 ```
 
-`REPO_DIR` is the git checkout you deploy from. Runtime
-services should not import or execute code from it. Promote a release with:
+`REPO_DIR` is the git checkout you deploy from. Keep it attached to
+`master` at the verified tip (`origin/master`). Never `git checkout <sha>`
+there: detached HEAD breaks standing-grant verify (`git symbolic-ref`) and
+fails learn-watch / code_evolution with `standing_grant_detached_head`.
+The deploy worker fast-forwards with `merge --ff-only` and reattaches
+`master` when it finds a detached tip. Runtime services should not import or
+execute code from `REPO_DIR`. Promote a release with:
 
 ```bash
 ${REPO_DIR}/deploy/install_immutable_release.sh

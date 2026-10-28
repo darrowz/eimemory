@@ -56,6 +56,35 @@ if [[ "$head" != "$COMMIT" ]]; then
   fi
 fi
 test "$(git rev-parse HEAD)" = "$COMMIT"
+# Standing-grant / learn-watch / code_evolution call `git symbolic-ref --short HEAD`.
+# Ops `git checkout <40-hex>` leaves detached HEAD even when tip matches origin/master;
+# merge --ff-only is skipped when already at tip, so reattach must be unconditional.
+if ! branch="$(git symbolic-ref -q --short HEAD)"; then
+  if [[ "$MODE" == "check" ]]; then
+    printf '{"ok":true,"mode":"check","commit":"%s","checkout_reattach_master_required":true}\n' "$COMMIT"
+    exit 0
+  fi
+  if git show-ref --verify --quiet refs/heads/master; then
+    master="$(git rev-parse master)"
+    if [[ "$master" == "$COMMIT" ]]; then
+      git checkout -q master
+    elif git merge-base --is-ancestor master "$COMMIT"; then
+      git checkout -q -B master "$COMMIT"
+    else
+      echo "detached at $COMMIT but master $master has diverged; refuse" >&2
+      exit 65
+    fi
+  else
+    git checkout -q -B master "$COMMIT"
+  fi
+  echo "checkout_reattach_master=$COMMIT" >&2
+  branch="$(git symbolic-ref --short HEAD)"
+elif [[ "$branch" != "master" ]]; then
+  echo "checkout on branch $branch; standing grants require master at tip" >&2
+  exit 65
+fi
+test "$branch" = "master"
+test "$(git rev-parse HEAD)" = "$COMMIT"
 test -x "$INSTALLER"
 test -f "$COLLECTOR"
 
