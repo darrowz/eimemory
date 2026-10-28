@@ -171,8 +171,8 @@ def test_real_parallel_empty_policy_lock_initializes_only_after_acquisition(tmp_
         monkeypatch.setattr(fcntl, 'flock', checked_lock)
     else:
         pytest.skip('No supported native file-lock platform')
-    monkeypatch.setattr(os, 'fstat', checked_fstat)
-    monkeypatch.setattr(os, 'write', checked_write)
+    monkeypatch.setattr(product.os, 'fstat', checked_fstat)
+    monkeypatch.setattr(product.os, 'write', checked_write)
     path = tmp_path / 'real-empty-owner.lock'
     def owner():
         try:

@@ -40,6 +40,7 @@ jobs:
       - name: Run Linux deployment and filesystem contracts
         run: >-
           python -B -m pytest -q --strict-markers
+          tests/test_ci_stdlib_isolation.py
           tests/test_deployment_tools.py
           tests/test_deployment_receipt.py
           tests/test_hermes_gateway_restart_boundary.py

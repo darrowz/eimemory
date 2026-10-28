@@ -1,3 +1,4 @@
+from stdlib_isolation import isolate_stdlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,7 +16,8 @@ from eimemory.ops import runtime_identity_drift as drift
 ])
 def test_native_owner_context_does_not_select_a_healthy_shadow(monkeypatch, group, expected):
     monkeypatch.delenv('EIMEMORY_RUNTIME_TRANSITION_JOB', raising=False)
-    monkeypatch.setattr(Path, 'read_text', lambda self: group)
+    isolate_stdlib(observation, monkeypatch)
+    monkeypatch.setattr(observation.Path, 'read_text', lambda self: group)
     assert observation.registered_runtime_context() is expected
 
 

@@ -33,7 +33,7 @@ def test_registered_backup_reads_store_without_application_or_schema_bootstrap(t
         record=RecordEnvelope.create(kind='memory',title='Native store snapshot',scope=ScopeRef())
         runtime.store.append(record)
     original=Path.read_text
-    monkeypatch.setattr(Path,'read_text',lambda p,*a,**kw:'0::/system.slice/eimemory-backup.service\n'
+    monkeypatch.setattr(module.Path,'read_text',lambda p,*a,**kw:'0::/system.slice/eimemory-backup.service\n'
         if p==Path('/proc/self/cgroup') else original(p,*a,**kw))
     monkeypatch.setattr(module.os,'getuid',lambda:1001);monkeypatch.setattr(module.os,'geteuid',lambda:1001)
     monkeypatch.setattr(Runtime,'create',lambda **_:pytest.fail('backup must not bootstrap Runtime'))

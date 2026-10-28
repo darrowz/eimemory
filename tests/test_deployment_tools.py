@@ -1953,6 +1953,8 @@ def test_managed_systemd_dropin_initial_parent_open_propagates_non_symlink_error
     tmp_path, monkeypatch, error_code: int
 ) -> None:
     helper = _load_managed_systemd_dropin_installer()
+    from stdlib_isolation import isolate_stdlib
+    isolate_stdlib(helper, monkeypatch)
     root = tmp_path / "systemd"
     root.mkdir()
     monkeypatch.setattr(helper, "_open_directory_without_symlinks", lambda _path: 51)

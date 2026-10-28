@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.51] — 2026-10-28
+
+- Isolate Linux filesystem fault injection through private module references, including public imports, so pytest retains real OS functions while all security and cleanup assertions remain enforced.
+
 ## [1.15.50] — 2026-10-28
 
 - Isolate snapshot filesystem fault injection from the process-wide OS module so pytest capture and cleanup retain real descriptors. Keep ancestor replacement rejection and descriptor cleanup assertions intact.

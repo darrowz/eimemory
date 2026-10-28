@@ -2353,6 +2353,8 @@ def test_durable_guard_sync_fsyncs_file_and_every_parent_and_propagates_failure(
         resolved = Path(path) if dir_fd is None else opened[int(dir_fd)] / str(path)
         return metadata(resolved)
 
+    from stdlib_isolation import isolate_stdlib
+    isolate_stdlib(transaction, monkeypatch)
     monkeypatch.setattr(transaction.os, "open", fake_open)
     monkeypatch.setattr(transaction.os, "close", lambda _fd: None)
     monkeypatch.setattr(transaction.os, "stat", fake_stat)

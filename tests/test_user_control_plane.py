@@ -168,7 +168,7 @@ def test_unmapped_system_ancestors_need_exact_native_user_mapping(monkeypatch,ma
     monkeypatch.setattr(authority,'account',lambda:SimpleNamespace(pw_dir='/home/operator',pw_uid=1001))
     def read(path,*a,**kw):
         return '65534\n' if str(path).endswith('overflowuid') else mapping
-    monkeypatch.setattr(Path,'read_text',read)
+    monkeypatch.setattr(authority.Path,'read_text',read)
     metadata=SimpleNamespace(st_uid=65534)
     assert authority._system_owner(metadata,Path('/home'),1001) is expected
     assert not authority._system_owner(metadata,Path('/home/foreign/authority'),1001)
@@ -278,7 +278,7 @@ def test_user_install_preserves_missing_or_unverified_original_authority(tmp_pat
     # original-key and ledger authentication and all publication code stay real.
     monkeypatch.setattr(module,'directory',lambda *a,**kw:None)
     real_resolve=Path.resolve
-    monkeypatch.setattr(Path,'resolve',lambda path,*a,**kw:
+    monkeypatch.setattr(module.Path,'resolve',lambda path,*a,**kw:
         Path('/opt/eimemory/releases')/('b'*40) if str(path)=='/opt/eimemory/current' else real_resolve(path,*a,**kw))
     prior={'schema':'managed_code_incident_manifest.v1','release_commit':'b'*40,'scopes':[]}
     prior_path=authority/'managed-code-incident-manifest.v1.json'
@@ -323,7 +323,7 @@ def test_nested_namespace_system_ancestor_needs_kernel_isolation(monkeypatch, da
         if str(path).endswith('uid_map'):return '1001 0 2' if damage=='wide_mapping' else '1001 0 1'
         return ('NoNewPrivs: '+('0' if damage=='privileges' else '1')+'\n'
                 +'CapEff: '+('1' if damage=='capabilities' else '0')+'\nCapPrm: 0\nCapAmb: 0\n')
-    monkeypatch.setattr(Path,'read_text',read)
+    monkeypatch.setattr(authority.Path,'read_text',read)
     native=authority.os
     monkeypatch.setattr(authority,'os',SimpleNamespace(**{**vars(native),
         'stat':lambda _:SimpleNamespace(st_uid=1001 if damage=='root_mapped' else 65534),

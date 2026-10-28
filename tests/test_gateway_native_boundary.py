@@ -99,7 +99,7 @@ def test_only_owned_native_consumers_require_readonly_mounts(tmp_path, monkeypat
         if str(path) == '/proc/self/cgroup':return '0::/system.slice/' + unit + '\n'
         if str(path) == '/proc/self/status':return 'NoNewPrivs: ' + nnp + '\n'
         return original(path, *args, **kwargs)
-    monkeypatch.setattr(Path, 'read_text', proc)
+    monkeypatch.setattr(control.Path, 'read_text', proc)
     from eimemory.contracts import runtime_manager as native_contract
     monkeypatch.setattr(native_contract, 'fixed_system_unit_cgroup', lambda group, candidate: group == '/system.slice/' + candidate)
     native = control.os

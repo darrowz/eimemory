@@ -1,3 +1,4 @@
+from stdlib_isolation import isolate_stdlib
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +26,8 @@ def test_host_observes_only_the_original_runtime_owned_process(tmp_path,monkeypa
     marker='0'*64 if fault=='unapplied' else token
     (process/'environ').write_bytes(b'CAPTURE=1\0PATH=/usr/bin\0EIMEMORY_RUNTIME_SETTINGS_APPLIED='+marker.encode()+b'\0'+(b'CAPTURE=2\0' if fault=='duplicate' else b''))
     original=Path.stat
+    bridge.proc=m.Path(bridge.proc)
+    isolate_stdlib(m, monkeypatch)
     monkeypatch.setattr(m.Path,'stat',lambda p,**kw:SimpleNamespace(st_uid=9 if fault=='owner' else 1001) if p==process else original(p,**kw))
     state=dict(Id='eimemory-rpc.service',LoadState='loaded',ActiveState='inactive' if fault=='inactive' else 'active',
         MainPID='123',InvocationID='a'*32,ControlGroup=group)

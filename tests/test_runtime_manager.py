@@ -1359,6 +1359,7 @@ def test_fused_stop_hook_does_not_reenter_deployment_lifecycle_lock(monkeypatch,
     monkeypatch.setattr(m,'root_contract',lambda:c)
     monkeypatch.setattr(m.os,'getuid',lambda:1001,raising=False);monkeypatch.setattr(m.os,'geteuid',lambda:1001,raising=False)
     monkeypatch.setattr(m,'read_root',lambda path:registry() if Path(path)==m.REGISTRY else pointer)
+    monkeypatch.setattr(m,'REGISTRY',m.Path(m.REGISTRY))
     monkeypatch.setattr(m.Path,'exists',lambda _:True)
     monkeypatch.setattr(m.socket,'socket',lambda *_args:pytest.fail('must not call a locked bridge for a nonpending fused context'))
     m.recover_fused()

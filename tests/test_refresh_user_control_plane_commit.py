@@ -1,3 +1,4 @@
+from deploy import refresh_user_control_plane_commit as refresh_module
 from pathlib import Path
 
 from deploy.refresh_user_control_plane_commit import RefreshError, refresh_commit
@@ -56,7 +57,7 @@ def test_check_only_validates_without_creating_or_replacing_files(tmp_path, monk
         assert not flags & os.O_CREAT, 'preflight must never stage a replacement'
         return original_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(os, 'open', no_creating_open)
+    monkeypatch.setattr(refresh_module.os, 'open', no_creating_open)
     write_refresh(target, 'b' * 40, check_only=True)
 
     after = target.stat()
@@ -266,7 +267,7 @@ def test_refresh_rejects_concurrent_replacement(tmp_path, monkeypatch):
         other = tmp_path / 'other'
         other.write_bytes(replacement)
         other.replace(target)
-    monkeypatch.setattr(os, 'fsync', racing_fsync)
+    monkeypatch.setattr(refresh_module.os, 'fsync', racing_fsync)
     with pytest.raises(RefreshError, match='changed'):
         write_refresh(target, 'b'*40)
     assert target.read_bytes() == replacement
