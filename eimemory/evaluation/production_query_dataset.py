@@ -267,11 +267,7 @@ def collect_pending_production_queries(
                 empty_result_count += 1
                 empty_reason_counts[empty_reason] = empty_reason_counts.get(empty_reason, 0) + 1
         record_id = "prqp_" + _stable_digest({"schema": PENDING_QUERY_SCHEMA, "decision_id": decision_id, "query_digest": query_digest})[:32]
-        pending = RecordEnvelope.create(
-            kind="evaluation_packet",
-            title=f"Pending production recall label {channel}",
-            summary="Digest-only real proactive query awaiting operator relevance labels.",
-            content={
+        content = {
                 "schema": PENDING_QUERY_SCHEMA,
                 "case_id": "real-" + _stable_digest({"decision_id": decision_id, "query_digest": query_digest})[:24],
                 "channel": channel,
@@ -288,7 +284,16 @@ def collect_pending_production_queries(
                 "collector": "proactive_audit_capture",
                 "acceptance_generated": (None if first.get("acceptance_generated") is None else
                                          bool(first["acceptance_generated"])),
-            },
+            }
+        if empty_reason:
+            # Bounded diagnostic code only (never query text). Lets auto-review
+            # distinguish session-dedupe empties from true no-recall.
+            content["empty_reason"] = empty_reason
+        pending = RecordEnvelope.create(
+            kind="evaluation_packet",
+            title=f"Pending production recall label {channel}",
+            summary="Digest-only real proactive query awaiting operator relevance labels.",
+            content=content,
             source=PENDING_SOURCE,
             source_id=source_id,
             scope=exact_scope,
@@ -308,21 +313,30 @@ def collect_pending_production_queries(
             runtime.store.append(pending)
             created.append(record_id)
             new_ids.append(record_id)
-            new_case_refs.append({"pending_record_id": record_id, "capture_ref": decision_id,
-                                  "candidate_count": len(refs)})
+            case_ref = {"pending_record_id": record_id, "capture_ref": decision_id,
+                        "candidate_count": len(refs)}
+            if empty_reason:
+                case_ref["empty_reason"] = empty_reason
+            new_case_refs.append(case_ref)
             pin_ids.append(decision_id)
         else:
             created.append(record_id)
             if getattr(existing, "status", "") == "active":
                 pin_ids.append(decision_id)
     retention_pins = _pin_case_decisions(runtime, base=base, channels=channels, pending_decision_ids=pin_ids)
+    new_session_deduped_count = sum(
+        case.get("empty_reason") == "session_deduped_prior_delivery" for case in new_case_refs)
     return {
         "ok": True,
         "new_count": len(new_ids),
         "existing_count": len(created) - len(new_ids),
         "new_pending_record_ids": sorted(new_ids),
         "new_nonempty_count": sum(case["candidate_count"] > 0 for case in new_case_refs),
-        "new_empty_count": sum(case["candidate_count"] == 0 for case in new_case_refs),
+        # Zero-candidate session-dedupe cases are observable but not empty recalls.
+        "new_empty_count": sum(
+            case["candidate_count"] == 0 and case.get("empty_reason") != "session_deduped_prior_delivery"
+            for case in new_case_refs),
+        "new_session_deduped_count": new_session_deduped_count,
         "new_case_refs": sorted(new_case_refs, key=lambda case: (
             case["candidate_count"] == 0, case["pending_record_id"])),
         "retention_pins": retention_pins,

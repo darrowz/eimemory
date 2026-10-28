@@ -53,16 +53,20 @@ def test_delivered_not_used_witness_survives_restart_and_empty_review(tmp_path, 
         assert collected['new_count'] == 1
         # 1.14.80: observable, but counted as session-deduped rather than an empty recall.
         assert collected['session_deduped_count'] == 1 and collected['empty_result_count'] == 0
+        assert collected['new_empty_count'] == 0 and collected['new_session_deduped_count'] == 1
         pending_id = collected['new_pending_record_ids'][0]
         pending = runtime.store.get_by_id(pending_id)
         assert pending.content['candidate_refs'] == [] and pending.evidence == []
+        assert pending.content.get('empty_reason') == 'session_deduped_prior_delivery'
         review = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE, channel=channel)
         assert review['accepted_count'] == 0 and review['open_review_count'] == 0
-        assert review['review_results'][0]['reasons'] == ['no_candidate_refs']
+        assert review['review_results'][0]['reasons'] == ['session_deduped_prior_delivery']
         terminal_id = review['review_results'][0]['review_receipt_id']
         terminal = runtime.store.get_by_id(terminal_id).content
-        assert terminal['disposition'] == 'not_evaluable' and terminal['close_reason'] == 'no_recall'
-        assert terminal['reasons'] == ['no_candidate_refs']
+        assert terminal['disposition'] == 'not_evaluable'
+        assert terminal['close_reason'] == 'session_deduped_prior_delivery'
+        assert terminal['reasons'] == ['session_deduped_prior_delivery']
+        assert terminal['recall_status'] == 'not_evaluable'
         assert terminal['review_complete'] is True and terminal['does_not_certify_answer'] is True
     finally:
         runtime.close()

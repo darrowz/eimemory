@@ -47,6 +47,7 @@ SIGNAL_REASONS = frozenset({
     "independent_signal_agreement_missing", "semantic_off_topic",
     "host_rejected_all_candidates", "host_rejected_candidate",
     "no_candidate_refs", "no_candidate_delivered", "candidate_unavailable",
+    "session_deduped_prior_delivery",
 })
 
 # Native acceptance can fail after assessment, including during idempotent

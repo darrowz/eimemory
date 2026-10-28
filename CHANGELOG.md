@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.57] — 2026-10-28
+
+- Persist bounded empty_reason on zero-candidate production-recall pendings; exclude session_deduped_prior_delivery from new_empty_count (new_session_deduped_count); auto-review closes those cases as session_deduped_prior_delivery rather than no_recall. Session-dedupe policy unchanged.
+
 ## [1.15.56] — 2026-10-28
 
 - Soft-skip contract-invalid newest production-recall high-water tips and fall back to an older active qualified baseline; deliberate not-qualified attempts still supersede. Persist controlled production acceptance under deployment receipt / policy primary owner scope when receipt.scope is present so L5 lineage refresh sees the same high-water.

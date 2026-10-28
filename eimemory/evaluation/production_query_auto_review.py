@@ -45,6 +45,7 @@ from .production_query_dataset import (
     accepted_production_query_validation_error,
     pending_production_query_capture_validation_error,
     resolve_bound_logical_scope,
+    _empty_decision_reason,
 )
 from .real_query_schema import (
     PRODUCTION_RECALL_AUTO_REVIEW_FLAG,
@@ -282,6 +283,20 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
     result["signal_counts"]["candidates"] = len(refs)
     result["recall_status"] = "recalled" if refs else "no_recall"
     if not refs:
+        # Prefer the collector's bounded empty_reason; fall back to re-reading
+        # decision diagnostics so already-collected session-dedupe pendings are
+        # not mis-closed as no_recall.
+        empty_reason = str(payload.get("empty_reason") or "")
+        if empty_reason != "session_deduped_prior_delivery":
+            with runtime.store.locked() as db:
+                decision = db.load_proactive_decision(str(payload.get("capture_ref") or ""))
+            if decision is not None:
+                import json as _json
+                empty_reason = _empty_decision_reason(
+                    _json.dumps(decision.get("retrieval_diagnostics") or {}, ensure_ascii=True))
+        if empty_reason == "session_deduped_prior_delivery":
+            result["recall_status"] = "not_evaluable"
+            return finish("pending", ["session_deduped_prior_delivery"])
         # An empty result is never certified as a true no-answer automatically.
         return finish("pending", ["no_candidate_refs"])
     with runtime.store.locked() as db:
@@ -397,6 +412,7 @@ _STRUCTURAL_CLOSE = {
     "empty_delivery": "not_delivered",
     "delivery_too_large": "not_evaluable",
     "no_candidate_refs": "no_recall",
+    "session_deduped_prior_delivery": "session_deduped_prior_delivery",
     "no_candidate_delivered": "not_delivered",
     "original_query_input_unavailable": "not_evaluable",
     "original_query_input_boundary_mismatch": "not_evaluable",

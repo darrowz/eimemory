@@ -277,3 +277,32 @@ def test_complete_recorder_output_cannot_replace_committed_native_authority(tmp_
     assert result.returncode == 1 and calls == 1
     assert "current_deployment_receipt_unavailable" in result.stderr
     assert (tmp_path / "native-readback").is_file()
+
+
+def test_session_deduped_empty_reason_is_allowlisted_review_code() -> None:
+    from eimemory.evaluation.production_query_review_reasons import PRODUCTION_REVIEW_REASON_CODES
+    from eimemory.evaluation.production_query_auto_review import _STRUCTURAL_CLOSE
+
+    assert "session_deduped_prior_delivery" in PRODUCTION_REVIEW_REASON_CODES
+    assert _STRUCTURAL_CLOSE["session_deduped_prior_delivery"] == "session_deduped_prior_delivery"
+
+
+def test_collection_diagnostics_forwards_new_session_deduped_count() -> None:
+    from eimemory.scheduler.collection_diagnostics import production_collection_diagnostics
+
+    out = production_collection_diagnostics({
+        "schema": "ignored",
+        "status": "completed",
+        "decision_count": 2,
+        "new_count": 2,
+        "existing_count": 0,
+        "empty_result_count": 0,
+        "new_nonempty_count": 0,
+        "new_empty_count": 0,
+        "new_session_deduped_count": 2,
+        "session_deduped_count": 2,
+        "new_pending_record_ids": [],
+        "policy": {"enabled": True},
+    }, {})
+    assert out["new_session_deduped_count"] == 2
+    assert out["new_empty_count"] == 0

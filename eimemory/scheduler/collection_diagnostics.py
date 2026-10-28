@@ -99,7 +99,7 @@ def production_collection_diagnostics(collection, reviews):
                            and source['blocked_reason'].startswith('collection_failed:') else
                            _code(source.get('blocked_reason'), {'proactive_audit_store_unavailable', 'collection_failed'})),
         **{key: _count(source.get(key)) for key in ('decision_count', 'new_count', 'existing_count',
-            'empty_result_count', 'new_nonempty_count', 'new_empty_count', 'session_deduped_count')},
+            'empty_result_count', 'new_nonempty_count', 'new_empty_count', 'new_session_deduped_count', 'session_deduped_count')},
         'skipped_reason_counts': skip_counts if isinstance(skipped, dict) else None,
         'empty_reason_counts': _empty_reason_counts(source.get('empty_reason_counts')),
         'skipped_reasons_truncated': len(skipped) > 100 if isinstance(skipped, dict) else None,
