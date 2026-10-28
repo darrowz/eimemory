@@ -638,6 +638,7 @@ def _public(body, *, persisted=False):
         schema=body.get('schema', SCHEMA), mode=MODE, evidence_class=EVIDENCE_CLASS,
         acceptance_purpose=body.get('acceptance_purpose', 'operational'), business_qualification=qualification,
         policy_digest=body.get('policy_digest', ''), release_identity=body.get('release_identity', {}),
+        scope=deepcopy(body.get('scope', {})),
         record_id=body.get('record_id', '') if persisted else '', persisted=persisted,
         certifies_natural_queries=False, certifies_no_answer=False, host_delivery_certified=False,
         memory_contribution_certified=False, natural_samples_created=0, agents=agents,
@@ -648,6 +649,31 @@ def _public(body, *, persisted=False):
 
 def _unavailable(reason):
     return {**_public({}), 'status': 'unavailable', 'blocked_reason': reason}
+
+
+
+def _report_owner_scope(owner, policy, receipt):
+    """Persist under deployment receipt / policy primary owner when known.
+
+    L5 controlled lineage refresh reads CPA high-water under ``receipt.scope``.
+    Nightly may call as an additional owner (for example darrow/embodied) while
+    the deployment receipt lives on the policy primary (ou_/hermes). Binding the
+    signed body and store envelope to that receipt owner keeps lineage and the
+    acceptance high-water in the same partition. Callers without a receipt scope
+    (fixtures) keep the historical per-caller envelope so dual-owner tests stay
+    byte-compatible.
+    """
+    raw = receipt.get("scope") if isinstance(receipt, dict) else None
+    if not isinstance(raw, dict):
+        return owner
+    try:
+        receipt_owner = ScopeRef.from_dict(raw)
+        primary = ScopeRef.from_dict(policy["owner_scope"])
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return owner
+    if receipt_owner != primary:
+        return owner
+    return receipt_owner
 
 
 def run_controlled_production_acceptance(runtime, *, scope, persist=True, stable_before=''):
@@ -728,8 +754,9 @@ def _run_controlled_production_acceptance_locked(runtime, *, owner, policy, pers
             _error('engine_changed_during_run')
         accepted = all(entry['accepted'] for entry in agents)
         report_schema = _schema_for_policy(policy)
+        persist_owner = _report_owner_scope(owner, policy, receipt)
         body = dict(schema=report_schema, mode=MODE, evidence_class=EVIDENCE_CLASS, source=SOURCE,
-            record_id='cpa_' + uuid4().hex, scope=asdict(owner), policy_digest=digest(policy),
+            record_id='cpa_' + uuid4().hex, scope=asdict(persist_owner), policy_digest=digest(policy),
             request_digest=policy['request_digest'], release_identity=release, release_reference=receipt,
             engine_identity=engine, started_at=started, completed_at=now_iso(), stable_before=cutoff,
             candidate_readiness_barrier=barrier,
@@ -746,7 +773,7 @@ def _run_controlled_production_acceptance_locked(runtime, *, owner, policy, pers
                        else 'Controlled existing-memory operational acceptance'),
                 summary=('Existing real business memories qualified by native controlled recall.' if policy.get('purpose') == historical.PURPOSE
                          else 'Operator-authorized known-item retrieval; natural evidence remains separate.'),
-                content=content, scope=owner, source=SOURCE, source_id='default',
+                content=content, scope=persist_owner, source=SOURCE, source_id='default',
                 meta={'report_type': report_schema, 'release_key': digest(release), 'policy_digest': digest(policy),
                       'report_digest': digest(content)})
             record.record_id = body['record_id']

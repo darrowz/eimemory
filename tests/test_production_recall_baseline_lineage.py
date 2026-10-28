@@ -236,3 +236,57 @@ def test_same_id_cached_mutation_cannot_change_the_loaded_authority(lineage, mon
     baseline, reason = _resolve(lineage)
     assert baseline is None
     assert reason == "baseline_high_water_changed"
+
+
+def _corrupt_contract_invalid_high_water(runtime, tip):
+    """Append a newer active HW tip with half-present engine fields (contract_invalid)."""
+    corrupt = deepcopy(tip)
+    corrupt.record_id = "prga_contract_invalid_" + tip.record_id[-12:]
+    report = deepcopy(tip.content["report"])
+    report["attempt_id"] = corrupt.record_id
+    report["report_id"] = "prg_contract_invalid_" + tip.record_id[-12:]
+    # Half-present engine identity: present keys that fail digest/flag checks.
+    report["engine_identity_valid"] = False
+    report["engine_digest"] = "0" * 64
+    report["engine_identity"] = {"broken": True}
+    corrupt.content = {"report": report}
+    corrupt.meta = dict(tip.meta)
+    corrupt.meta["report_payload_digest"] = gate._stable_digest(report)
+    corrupt.status = "active"
+    runtime.store.append(corrupt)
+    return corrupt
+
+
+def test_contract_invalid_newest_high_water_falls_back_to_older_qualified(lineage):
+    runtime = lineage["runtime"]
+    tip = lineage["nodes"][-1]
+    corrupt = _corrupt_contract_invalid_high_water(runtime, tip)
+    assert runtime.store.latest_record_by_meta_value_exact_scope(
+        kind="reflection",
+        source="eimemory.evaluation.production_recall",
+        status="active",
+        scope=ScopeRef.from_dict(BASE_SCOPE),
+        meta_key="baseline_high_water_key",
+        meta_value=tip.meta["baseline_high_water_key"],
+    ).record_id == corrupt.record_id
+    baseline, reason = _resolve(lineage)
+    assert reason == ""
+    assert baseline is not None
+    assert baseline["persisted_record_id"] == tip.record_id
+
+
+def test_contract_invalid_tip_without_pointed_id_still_falls_back(lineage):
+    runtime = lineage["runtime"]
+    tip = lineage["nodes"][-1]
+    _corrupt_contract_invalid_high_water(runtime, tip)
+    baseline, reason = gate._resolve_trusted_baseline(
+        runtime,
+        scope=ScopeRef.from_dict(BASE_SCOPE),
+        report_id="",
+        dataset_digest=lineage["frozen"]["dataset_digest"],
+        current_release=lineage["current"],
+        dataset_evidence=lineage["frozen"]["secure_dataset_evidence"],
+    )
+    assert reason == ""
+    assert baseline is not None
+    assert baseline["persisted_record_id"] == tip.record_id

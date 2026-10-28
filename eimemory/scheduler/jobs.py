@@ -64,8 +64,11 @@ def _run_controlled_production_acceptance(runtime: Runtime, *, scope: dict,
                 return {"ok": False, "error": "controlled_production_report_invalid"}
             if report.get("ok") is not True or report.get("accepted") is not True:
                 return report
+            # Persisted envelope follows deployment receipt / policy primary owner
+            # when receipt.scope is present; re-verify under that partition.
+            verify_scope = report.get("scope") if isinstance(report.get("scope"), dict) else scope
             verification = verify_controlled_production_acceptance(
-                runtime, scope=scope, record_id=str(report.get("record_id") or ""))
+                runtime, scope=verify_scope, record_id=str(report.get("record_id") or ""))
             verified = (isinstance(verification, dict) and verification.get("ok") is True
                         and verification.get("accepted") is True
                         and verification.get("record_id") == report.get("record_id"))
@@ -1197,7 +1200,7 @@ def _run_production_recall_collection(runtime: Runtime, *, scope: dict) -> dict[
             "report_type": "production_recall_collection",
             "policy": {"flag": PRODUCTION_RECALL_AUTO_COLLECT_FLAG, "enabled": True},
             **{key: report.get(key) for key in ("decision_count", "new_count", "existing_count",
-                "empty_result_count", "new_nonempty_count", "new_empty_count", "empty_reason_counts", "session_deduped_count")},
+                "empty_result_count", "new_nonempty_count", "new_empty_count", "new_session_deduped_count", "empty_reason_counts", "session_deduped_count")},
             "skipped": report.get("skipped"),
             "new_pending_record_ids": new_ids[:_COLLECTION_REPORT_ID_LIMIT] if isinstance(new_ids, list) else None,
             "new_pending_record_ids_truncated": (len(new_ids) > _COLLECTION_REPORT_ID_LIMIT

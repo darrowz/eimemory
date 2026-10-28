@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.56] — 2026-10-28
+
+- Soft-skip contract-invalid newest production-recall high-water tips and fall back to an older active qualified baseline; deliberate not-qualified attempts still supersede. Persist controlled production acceptance under deployment receipt / policy primary owner scope when receipt.scope is present so L5 lineage refresh sees the same high-water.
+
 ## [1.15.55] — 2026-10-28
 
 - Isolate the runtime-only incident-coverage fixture from host provider delegation files, preserving real maintenance/archive checks and strict production authority validation.

@@ -1325,23 +1325,19 @@ def _resolve_trusted_baseline(
 
     # A concurrent failed/new attempt must still supersede an older accepted
     # ancestor. Check every high-water pointer, not just the current report.
+    # Contract-invalid newest tips may be soft-skipped to an older qualified
+    # active record; deliberate not-qualified failures still supersede.
     for node in chain:
-        latest = runtime.store.latest_record_by_meta_value_exact_scope(
-            kind="reflection", source="eimemory.evaluation.production_recall", status="active",
-            scope=scope, meta_key="baseline_high_water_key",
-            meta_value=_baseline_high_water_key(node["identity"].commit, dataset_digest),
-        )
-        latest_report = latest.content.get("report") if latest is not None and isinstance(latest.content, dict) else None
-        if (latest is None or latest.record_id != node["summary"]["persisted_record_id"]
-                or latest.kind != "reflection"
-                or latest.source != "eimemory.evaluation.production_recall"
-                or latest.source_id != "default" or latest.status != "active"
-                or not same_scope(latest.scope, scope)
-                or latest.meta.get("baseline_high_water_key")
-                != _baseline_high_water_key(node["identity"].commit, dataset_digest)
-                or not isinstance(latest_report, dict)
-                or not _record_payload_digest_valid(latest, latest_report)
-                or _stable_digest(latest_report) != node["report_digest"]):
+        high_water_key = _baseline_high_water_key(node["identity"].commit, dataset_digest)
+        selected_id = node["summary"]["persisted_record_id"]
+        if not _baseline_high_water_selection_stable(
+            runtime,
+            scope=scope,
+            high_water_key=high_water_key,
+            selected_id=selected_id,
+            selected_digest=node["report_digest"],
+            prior_commit=node["identity"].commit,
+        ):
             return None, "baseline_high_water_changed"
     return chain[0]["summary"], ""
 
@@ -1355,7 +1351,16 @@ def _load_trusted_baseline_node(
     current_release: ReleaseIdentity,
     dataset_evidence: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
-    """Validate one persisted predecessor using the unchanged native contracts."""
+    """Validate one persisted predecessor using the unchanged native contracts.
+
+    Newest active high-water tips that fail report contract validation (for
+    example half-present engine fields) are soft-skipped so an older active
+    qualified record for the same key can still anchor the chain. Deliberate
+    not-qualified failed attempts continue to supersede older accepted tips.
+    Absent high-water remains distinct from an invalid tip. Envelope / partition
+    forgeries on the tip still fail closed and do not fall through to a list
+    copy of the same id.
+    """
     current_receipt = deployment_receipt_for_scope(runtime, current_release.receipt_id, scope)
     if current_receipt is None or not same_release_authority(
         verified_deployment_receipt_identity(current_receipt),
@@ -1363,12 +1368,16 @@ def _load_trusted_baseline_node(
     ):
         return None, "current_deployment_receipt_invalid"
     side_effect = current_receipt.content.get("side_effect") if isinstance(current_receipt.content, dict) else {}
-    verification = side_effect.get("verification") if isinstance(side_effect, dict) and isinstance(side_effect.get("verification"), dict) else {}
+    verification = (
+        side_effect.get("verification")
+        if isinstance(side_effect, dict) and isinstance(side_effect.get("verification"), dict)
+        else {}
+    )
     prior_commit = str(verification.get("prior_commit") or "").strip().lower()
     if len(prior_commit) != 40 or prior_commit == current_release.commit:
         return None, "verified_prior_release_unavailable"
     high_water_key = _baseline_high_water_key(prior_commit, dataset_digest)
-    record = runtime.store.latest_record_by_meta_value_exact_scope(
+    tip = runtime.store.latest_record_by_meta_value_exact_scope(
         kind="reflection",
         source="eimemory.evaluation.production_recall",
         status="active",
@@ -1376,10 +1385,197 @@ def _load_trusted_baseline_node(
         meta_key="baseline_high_water_key",
         meta_value=high_water_key,
     )
-    if record is None:
+    if tip is None:
         return None, "prior_release_baseline_high_water_missing"
-    if report_id and report_id != record.record_id:
-        return None, "baseline_report_not_latest_prior_high_water"
+
+    tip_node, tip_reason = _validate_trusted_baseline_record(
+        runtime,
+        record=tip,
+        scope=scope,
+        high_water_key=high_water_key,
+        prior_commit=prior_commit,
+        current_release=current_release,
+        dataset_digest=dataset_digest,
+        dataset_evidence=dataset_evidence,
+    )
+    if report_id and report_id != tip.record_id:
+        # Tip is newer than the pointed identity. Only contract-invalid tips
+        # are soft-skipped; a formed not-qualified attempt still means the
+        # pointed report is no longer high-water.
+        if tip_node is not None or tip_reason != "baseline_report_contract_invalid":
+            return None, "baseline_report_not_latest_prior_high_water"
+    else:
+        if tip_node is not None:
+            return tip_node, ""
+        if tip_reason != "baseline_report_contract_invalid":
+            return None, tip_reason
+
+    soft_reason = "baseline_report_contract_invalid"
+    for record in _baseline_older_high_water_candidates(
+        runtime, scope=scope, high_water_key=high_water_key, tip_id=tip.record_id
+    ):
+        if report_id and report_id != record.record_id:
+            probe_node, probe_reason = _validate_trusted_baseline_record(
+                runtime,
+                record=record,
+                scope=scope,
+                high_water_key=high_water_key,
+                prior_commit=prior_commit,
+                current_release=current_release,
+                dataset_digest=dataset_digest,
+                dataset_evidence=dataset_evidence,
+            )
+            if probe_node is not None or probe_reason != "baseline_report_contract_invalid":
+                return None, "baseline_report_not_latest_prior_high_water"
+            continue
+        node, reason = _validate_trusted_baseline_record(
+            runtime,
+            record=record,
+            scope=scope,
+            high_water_key=high_water_key,
+            prior_commit=prior_commit,
+            current_release=current_release,
+            dataset_digest=dataset_digest,
+            dataset_evidence=dataset_evidence,
+        )
+        if node is not None:
+            return node, ""
+        if reason == "baseline_report_contract_invalid":
+            soft_reason = reason
+            continue
+        return None, reason
+    return None, soft_reason
+
+
+def _baseline_older_high_water_candidates(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    high_water_key: str,
+    tip_id: str,
+) -> list[Any]:
+    """Older active exact-scope HW rows, tip excluded, newest-first."""
+
+    def _list_exact(sqlite):
+        return sqlite.list_records_by_meta_value(
+            kinds=["reflection"],
+            scope=scope,
+            meta_key="baseline_high_water_key",
+            meta_value=high_water_key,
+            status="active",
+            exact_scope=True,
+            limit=64,
+        ) or []
+
+    listed = runtime.store.read_consistent(_list_exact) or []
+    ordered: list[Any] = []
+    seen: set[str] = set()
+    for record in listed:
+        if record is None or record.record_id in seen or record.record_id == tip_id:
+            continue
+        if (
+            record.kind != "reflection"
+            or record.source != "eimemory.evaluation.production_recall"
+            or record.source_id != "default"
+            or record.status != "active"
+            or not same_scope(record.scope, scope)
+            or record.meta.get("baseline_high_water_key") != high_water_key
+        ):
+            continue
+        seen.add(record.record_id)
+        ordered.append(record)
+    return ordered
+
+
+def _baseline_high_water_selection_stable(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    high_water_key: str,
+    selected_id: str,
+    selected_digest: str,
+    prior_commit: str,
+) -> bool:
+    """True when selected remains effective HW after soft-skipping invalid tips."""
+    latest = runtime.store.latest_record_by_meta_value_exact_scope(
+        kind="reflection",
+        source="eimemory.evaluation.production_recall",
+        status="active",
+        scope=scope,
+        meta_key="baseline_high_water_key",
+        meta_value=high_water_key,
+    )
+    if latest is None:
+        return False
+    latest_report = (
+        deepcopy(latest.content.get("report"))
+        if isinstance(latest.content, dict) and isinstance(latest.content.get("report"), dict)
+        else {}
+    )
+    envelope_ok = (
+        latest.kind == "reflection"
+        and latest.source == "eimemory.evaluation.production_recall"
+        and latest.source_id == "default"
+        and latest.status == "active"
+        and same_scope(latest.scope, scope)
+        and latest.meta.get("baseline_high_water_key") == high_water_key
+        and _record_payload_digest_valid(latest, latest_report)
+    )
+    if latest.record_id == selected_id:
+        return envelope_ok and _stable_digest(latest_report) == selected_digest
+    if not envelope_ok:
+        return False
+    identity = _release_from_payload(latest_report.get("release_identity"))
+    if (
+        str(latest_report.get("attempt_id") or "") != latest.record_id
+        or not same_scope(latest_report.get("scope") or {}, scope)
+        or identity is None
+        or identity.commit != prior_commit
+    ):
+        return False
+    receipt = deployment_receipt_for_scope(runtime, identity.receipt_id, scope)
+    if receipt is None or not same_release_authority(
+        verified_deployment_receipt_identity(receipt),
+        identity,
+    ):
+        return False
+    if _validate_persisted_real_query_report(
+        latest_report,
+        expected_release=identity,
+        allow_legacy_exact_ranking=True,
+    ):
+        # Structurally valid newer tip — even if not qualified — supersedes.
+        return False
+    # contract_invalid tip: selected must still be an older active row.
+    for record in _baseline_older_high_water_candidates(
+        runtime, scope=scope, high_water_key=high_water_key, tip_id=latest.record_id
+    ):
+        if record.record_id != selected_id:
+            continue
+        report = (
+            deepcopy(record.content.get("report"))
+            if isinstance(record.content, dict) and isinstance(record.content.get("report"), dict)
+            else {}
+        )
+        return (
+            _record_payload_digest_valid(record, report)
+            and _stable_digest(report) == selected_digest
+        )
+    return False
+
+
+def _validate_trusted_baseline_record(
+    runtime: Any,
+    *,
+    record: Any,
+    scope: ScopeRef,
+    high_water_key: str,
+    prior_commit: str,
+    current_release: ReleaseIdentity,
+    dataset_digest: str,
+    dataset_evidence: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, str]:
+    """Apply native baseline contracts to one high-water candidate record."""
     if (
         record.kind != "reflection"
         or record.source != "eimemory.evaluation.production_recall"

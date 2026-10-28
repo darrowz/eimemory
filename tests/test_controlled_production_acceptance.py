@@ -632,6 +632,42 @@ def test_one_protected_policy_creates_and_verifies_separate_native_receipts_for_
     assert setup.policy['additional_owner_scopes'] == [asdict(nightly)]
 
 
+def test_additional_owner_persists_under_deployment_receipt_scope(setup):
+    """When receipt.scope names the policy primary, CPA high-water lands there.
+
+    L5 lineage refresh reads under deployment receipt.scope; nightly may call as
+    an additional owner. Fixtures without receipt.scope keep per-caller envelopes.
+    """
+    primary, nightly = two_owner_policy(setup)
+    receipt = {
+        "record_ref": "receipt-fixture",
+        "record_digest": "c" * 64,
+        "scope": asdict(primary),
+        "source": "eimemory.governance.release.deployment_receipt",
+        "source_id": "default",
+    }
+    setup.monkeypatch.setattr(
+        cpa, "_release", lambda runtime, scope: (deepcopy(RELEASE), deepcopy(receipt))
+    )
+    result = cpa.run_controlled_production_acceptance(setup.runtime, scope=asdict(nightly))
+    assert result["accepted"] and result["record_id"] and result["scope"] == asdict(primary), result
+    record = setup.runtime.store.get_by_exact_ref(
+        result["record_id"], scope=primary, source_id="default"
+    )
+    assert record is not None and record.scope == primary
+    assert record.content["scope"] == asdict(primary)
+    assert cpa.verify(record.content, cpa.SCHEMA)
+    assert setup.runtime.store.get_by_exact_ref(
+        result["record_id"], scope=nightly, source_id="default"
+    ) is None
+    # Nightly caller must not leave a per-caller high-water that L5 would miss.
+    assert setup.runtime.store.count_records(kinds=["evaluation_packet"]) == 1
+    verified = cpa.verify_controlled_production_acceptance(
+        setup.runtime, scope=asdict(primary), record_id=result["record_id"]
+    )
+    assert verified["accepted"] and verified["record_id"] == result["record_id"]
+
+
 @pytest.mark.parametrize('defect', ['empty', 'too_many', 'not_list', 'not_object', 'partial',
     'extra_field', 'wildcard', 'question_wildcard', 'bracket_wildcard', 'whitespace', 'duplicate', 'duplicate_primary', 'foreign_tenant', 'foreign_agent'])
 def test_additional_owner_allowlist_is_complete_bounded_and_unambiguous_before_recall(setup, defect):
