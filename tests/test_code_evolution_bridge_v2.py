@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from functools import partial
 from contextlib import closing
 import inspect
 from pathlib import Path
@@ -64,8 +65,10 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
     base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path,
                           check=True, capture_output=True, text=True).stdout.strip()
     tree_digest = sha256(canonical_json([{"path": path.as_posix(), "sha256": sha256(content).hexdigest()}]).encode()).hexdigest()
+    requests = []
     class WiringProvider(_TestProvider):
         def propose_patch_v2(self, request):
+            requests.append(request)
             envelope = super().propose_patch_v2(request)
             if wiring != "unchanged":
                 response = envelope["response"]
@@ -93,7 +96,7 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
             "catalog_snapshot_digest": "d" * 64,
         },
     )
-    report = propose_code_patch_v2(
+    invoke = partial(propose_code_patch_v2,
         object(),
         transaction_id="tx-bridge",
         request_id="request-bridge",
@@ -119,6 +122,7 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
             'known_before_detection': None, 'prior_user_reported': None, 'manual_bootstrap': None}
            if unknown_source_facts else {}),
     )
+    report = invoke()
     if oversized:
         assert report["ok"] is False and report["reason"] == "allowed_file_content_invalid"
         assert source.read_bytes() == content
@@ -131,7 +135,11 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
         assert source.read_bytes() == content
         assert subprocess.run(["git", "status", "--porcelain"], cwd=tmp_path,
                               check=True, capture_output=True, text=True).stdout == ""
-        return
+        # Same request identity must reach the provider again after rejection.
+        wiring = "wired"
+        report = invoke()
+        assert len(requests) == 2
+        assert requests[0] == requests[1]
     assert report["ok"] is True, report.get("reason")
     assert report["proposal_only"] is True
     assert report["qualifying"] is True

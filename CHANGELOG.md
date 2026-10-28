@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.54] — 2026-10-28
+
+- Fairly distribute the unchanged semantic-monitor call budget across remaining lanes using actual consumption; retain cursor rotation, replay accounting and strict wiring validation.
+
 ## [1.15.53] — 2026-10-28
 
 - Exclude host notifications from completed-turn entity context and authorized history rehydration, preventing worker-command entities from contaminating subsequent natural queries. Preserve normal conversation context and existing authorization and admission rules.

@@ -387,11 +387,13 @@ def test_changed_current_authority_is_rejected_before_judge(replay_case, mutatio
 
 
 def test_legacy_cascade_evidence_is_unverifiable_instead_of_hidden_before_judge(replay_case):
-    runtime, scope, gap, _, _, _, judges, options = replay_case
+    runtime, scope, gap, _, _, calls, judges, options = replay_case
     options['cascade'] = [dict(summary='PRIVATE off-topic legacy cascade')]
     report, findings = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
     assert not findings and judges == []
     assert report['reason_counts']['semantic_repair_legacy_evidence_unverifiable'] == 1
+    assert report['replay_count'] == len(calls) == 1
+    assert report['provider_calls'] == 0
 
 
 def test_default_monitor_connection_consumes_replay_and_native_ingestion(replay_case):
@@ -949,3 +951,42 @@ def test_same_release_recovers_by_new_attested_attempt_and_preserves_old_truth(r
     assert _ingest_verified_findings(runtime, findings=findings, scope=scope)['resolved_record_ids']
     again, repeated = repair.collect_semantic_gap_repair_findings(runtime, scope=scope, max_new=2)
     assert again['replay_count'] == again['provider_calls'] == 0 and not repeated
+
+
+@pytest.mark.parametrize('idle_first', [False, True])
+def test_shared_budget_busy_lane_leaves_fair_share_and_returns_unused_allowance(replay_case, monkeypatch, idle_first):
+    from eimemory.adapters.runtime import channel as channels
+    from eimemory.evaluation import query_input_vault as vault
+    from eimemory.models.records import ScopeRef
+    runtime, scope, _, _, _, _, _, _ = replay_case
+    other = ScopeRef(scope.tenant_id, 'other-agent', scope.workspace_id, scope.user_id)
+    monkeypatch.setattr(channels, 'SUPPORTED_RUNTIME_CHANNELS', ('hermes',))
+    monkeypatch.setattr(channels, 'base_scope_from_channel', lambda _, value: value)
+    monkeypatch.setattr(channels, 'resolve_channel_scope', lambda _, value: asdict(value))
+    monkeypatch.setattr(vault, 'configured_capture_scopes', lambda: [
+        dict(asdict(s), channel='hermes', source_id='hermes') for s in (scope, other)])
+    calls = []
+    def spent(scope, stage, allowance):
+        used = 0 if idle_first and not calls else allowance
+        calls.append((scope.agent_id, stage, allowance, used))
+        return used
+    def delivery(runtime, *, scope, max_new, **kw):
+        return dict(status='observation_only', provider_calls=spent(scope, 'delivery', max_new)), []
+    def explicit_monitor(runtime, *, scope, max_new, **kw):
+        return dict(semantic._explicit_counts(), provider_calls=spent(scope, 'explicit', max_new))
+    def repair_monitor(runtime, *, scope, max_new, **kw):
+        return dict(reviewed_count=0, provider_calls=0, replay_count=spent(scope, 'repair', max_new),
+            unresolved_count=0, unverifiable_count=0, deferred_count=0, results=[], reason_counts={}), []
+    monkeypatch.setattr(semantic, 'monitor_deliveries', delivery)
+    monkeypatch.setattr(semantic, 'monitor_explicit_recalls', explicit_monitor)
+    monkeypatch.setattr(repair, 'collect_semantic_gap_repair_findings', repair_monitor)
+    result, _ = semantic.monitor_channel_deliveries(runtime, scope=scope, max_new=8,
+        include_capture_scopes=True, include_explicit=True)
+    assert all(allowance > 0 for _, _, allowance, _ in calls), calls
+    assert sum(used for _, _, _, used in calls) == 8
+    assert result['provider_calls'] + result['explicit']['provider_calls'] + result['semantic_gap_repair']['replay_count'] == 8
+    # Persistent rotation also survives lanes which consume their full allowance.
+    calls.clear()
+    semantic.monitor_channel_deliveries(runtime, scope=scope, max_new=1,
+        include_capture_scopes=True, include_explicit=True)
+    assert calls[0][:2] == (scope.agent_id, 'explicit')

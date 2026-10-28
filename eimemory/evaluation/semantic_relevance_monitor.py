@@ -645,10 +645,14 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
             spent += explicit_total['provider_calls'] + repair_total['provider_calls'] + repair_total['replay_count']
         return max(0, budget - spent)
 
-    for stage, channel, exact, sources in lanes[start:] + lanes[:start]:
+    ordered_lanes = lanes[start:] + lanes[:start]
+    for index, (stage, channel, exact, sources) in enumerate(ordered_lanes):
+        # Share actual remaining work; unused allowances flow to later lanes.
+        left = len(ordered_lanes) - index
+        allowance = (remaining() + left - 1) // left if include_explicit else remaining()
         options = {} if sources is None else {'source_ids': sources}
         if stage == 'explicit':
-            explicit_report = monitor_explicit_recalls(runtime, scope=exact, max_new=remaining(), **options)
+            explicit_report = monitor_explicit_recalls(runtime, scope=exact, max_new=allowance, **options)
             agent = explicit_total['by_agent'].setdefault(exact.agent_id, _explicit_counts())
             for target in (explicit_total, agent):
                 for key in ('new_count', 'reused_count', 'deferred_count', 'excluded_count', 'provider_calls'):
@@ -663,7 +667,7 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
                     or len(explicit_report['review_results']) > room)
         elif stage == 'repair':
             from eimemory.evaluation.semantic_gap_repair import collect_semantic_gap_repair_findings
-            repair, repair_findings = collect_semantic_gap_repair_findings(runtime, scope=exact, max_new=remaining())
+            repair, repair_findings = collect_semantic_gap_repair_findings(runtime, scope=exact, max_new=allowance)
             findings.extend(repair_findings)
             repair_total['by_agent'][exact.agent_id] = repair
             room = 97 - len(repair_total['results'])
@@ -674,7 +678,7 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
             for key in ('reviewed_count', 'provider_calls', 'replay_count', 'unresolved_count', 'unverifiable_count', 'deferred_count'):
                 repair_total[key] += repair[key]
         else:
-            report, channel_findings = monitor_deliveries(runtime, scope=exact, max_new=remaining(), **options)
+            report, channel_findings = monitor_deliveries(runtime, scope=exact, max_new=allowance, **options)
             findings.extend(channel_findings)
             if report.get('status') == 'unavailable':
                 continue
