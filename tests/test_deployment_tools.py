@@ -1982,6 +1982,8 @@ def test_managed_systemd_dropin_initial_parent_eloop_is_a_symlink_error(
     tmp_path, monkeypatch
 ) -> None:
     helper = _load_managed_systemd_dropin_installer()
+    from stdlib_isolation import isolate_stdlib
+    isolate_stdlib(helper, monkeypatch)
     root = tmp_path / "systemd"
     root.mkdir()
     monkeypatch.setattr(helper, "_open_directory_without_symlinks", lambda _path: 53)
@@ -2008,6 +2010,8 @@ def test_managed_systemd_dropin_second_parent_open_failure_removes_new_directory
     tmp_path, monkeypatch
 ) -> None:
     helper = _load_managed_systemd_dropin_installer()
+    from stdlib_isolation import isolate_stdlib
+    isolate_stdlib(helper, monkeypatch)
     root = tmp_path / "systemd"
     root.mkdir()
     opens = 0
@@ -2047,6 +2051,8 @@ def test_managed_systemd_dropin_second_parent_eloop_removes_directory_and_conver
     tmp_path, monkeypatch
 ) -> None:
     helper = _load_managed_systemd_dropin_installer()
+    from stdlib_isolation import isolate_stdlib
+    isolate_stdlib(helper, monkeypatch)
     root = tmp_path / "systemd"
     root.mkdir()
     opens = 0

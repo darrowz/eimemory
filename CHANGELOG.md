@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.52] — 2026-10-28
+
+- Complete private fault injection in the remaining drop-in parent-open rejection tests and preserve process-owner rejection with correctly rebound private Path fixtures.
+
 ## [1.15.51] — 2026-10-28
 
 - Isolate Linux filesystem fault injection through private module references, including public imports, so pytest retains real OS functions while all security and cleanup assertions remain enforced.
