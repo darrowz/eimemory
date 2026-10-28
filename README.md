@@ -31,7 +31,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.15.49" src="https://img.shields.io/badge/version-1.15.49-blue">
+  <img alt="Package version 1.15.50" src="https://img.shields.io/badge/version-1.15.50-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -285,9 +285,9 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.15.49, source package)
+## Current package status (1.15.50, source package)
 
-See the [1.15.49 release notes](docs/releases/v1.15.49.md) for the cumulative
+See the [1.15.50 release notes](docs/releases/v1.15.50.md) for the cumulative
 source changes, installation options and current recall policy. The dated
 production observations below retain their original version and evidence scope.
 

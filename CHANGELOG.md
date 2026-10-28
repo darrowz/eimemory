@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.50] — 2026-10-28
+
+- Isolate snapshot filesystem fault injection from the process-wide OS module so pytest capture and cleanup retain real descriptors. Keep ancestor replacement rejection and descriptor cleanup assertions intact.
+
 ## [1.15.49] — 2026-10-28
 
 - Permit target tracing of faithful exact single-source requests without adding a target-source override to the saved query context; multi-source ambiguity remains unobserved.

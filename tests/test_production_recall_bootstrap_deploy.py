@@ -865,6 +865,8 @@ def test_snapshot_loader_rejects_symlinked_install_root_ancestor(tmp_path, monke
 
 
 def test_snapshot_directory_chain_revalidation_rejects_replaced_ancestor_entry(monkeypatch) -> None:
+    # Fault injection must not replace the OS functions used by pytest capture.
+    monkeypatch.setattr(bootstrap_deploy, "os", SimpleNamespace(**vars(os)))
     directories = {
         10: SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_dev=1, st_ino=10),
         11: SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_dev=1, st_ino=11),
@@ -902,6 +904,7 @@ def test_snapshot_loader_uses_root_anchored_openat_only_for_secure_path_decision
 
 @pytest.mark.parametrize("failure", ["fstat", "stat"])
 def test_snapshot_directory_chain_closes_unregistered_fd_on_validation_error(monkeypatch, failure: str) -> None:
+    monkeypatch.setattr(bootstrap_deploy, "os", SimpleNamespace(**vars(os)))
     install_root = Path("C:/trusted/install") if os.name == "nt" else Path("/trusted/install")
     opened: list[int] = []
     closed: list[int] = []
