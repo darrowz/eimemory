@@ -2,7 +2,6 @@
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 
 
@@ -27,6 +26,11 @@ def deployment_receipt_id(text: str, commit: str) -> str:
     return next(iter(receipt_ids))
 
 
+def already_current_deploy_log(text: str) -> bool:
+    """Cheap same-tip installer path prints already_current=1 and skips a new receipt."""
+    return any(line.strip() == 'already_current=1' for line in text.splitlines())
+
+
 def rpc_process_environment(commit: str) -> dict[str, str]:
     from eimemory.ops.runtime_service_observation import service_state
     from eimemory.ops.controlled_stability import _process_environment
@@ -36,6 +40,22 @@ def rpc_process_environment(commit: str) -> dict[str, str]:
     if values.get('EIMEMORY_RUNTIME_COMMIT')!=commit:
         raise ValueError('rpc_process_release_mismatch')
     return values
+
+
+def resolve_receipt_id(text: str, commit: str, runtime) -> tuple[str, str]:
+    """Prefer the unique receipt in this attempt log; on cheap same-tip reuse live identity."""
+    try:
+        return deployment_receipt_id(text, commit), 'deploy_log'
+    except ValueError:
+        if not already_current_deploy_log(text):
+            raise
+        from eimemory.governance.release.evidence_contract import current_release_identity
+
+        identity = current_release_identity(runtime, None)
+        if (identity is None or identity.commit != commit
+                or not isinstance(identity.receipt_id, str) or not identity.receipt_id):
+            raise ValueError('unique_deployment_receipt_required') from None
+        return identity.receipt_id, 'already_current_runtime'
 
 
 def main():
@@ -52,14 +72,21 @@ def main():
     for key, value in values.items():
         if key.startswith('EIMEMORY_'):
             os.environ[key] = value
-    receipt_id = deployment_receipt_id(Path(log_path).read_text(), commit)
+    log_text = Path(log_path).read_text()
     sys.path.insert(0, str(live))
     from eimemory.api.runtime import Runtime
     from eimemory.governance.release_binding_refresh import refresh_bindings
     runtime = Runtime.create(root=Path('/var/lib/eimemory'),bootstrap_schema=False)
     try:
+        receipt_id, source = resolve_receipt_id(log_text, commit, runtime)
         count = refresh_bindings(runtime, Path(binding), receipt_id)
-        print(json.dumps({'binding_refresh': 'verified', 'scope_count': count, 'commit': commit}))
+        print(json.dumps({
+            'binding_refresh': 'verified',
+            'scope_count': count,
+            'commit': commit,
+            'receipt_id': receipt_id,
+            'receipt_source': source,
+        }))
     finally:
         runtime.close()
 

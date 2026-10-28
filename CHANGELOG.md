@@ -14,6 +14,7 @@ AIGC:
 ## [1.15.59] — 2026-10-29
 
 - Deploy worker: after verifying HEAD equals origin/master tip, refuse non-master branches and reattach detached HEAD to `master` (check reports `checkout_reattach_master_required`). Prevents ops `git checkout <sha>` from breaking standing-grant verify / learn-watch / code_evolution (`standing_grant_detached_head` replaces unclassified CalledProcessError).
+- Binding refresh: cheap same-tip redeploy (`already_current=1`) no longer fails with `unique_deployment_receipt_required`. When the attempt log has no new deployment receipt, reuse `current_release_identity` for the live commit (`receipt_source=already_current_runtime`) and refresh scope pins to that receipt.
 
 ## [1.15.58] — 2026-10-28
 
