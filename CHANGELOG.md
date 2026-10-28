@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.55] — 2026-10-28
+
+- Isolate the runtime-only incident-coverage fixture from host provider delegation files, preserving real maintenance/archive checks and strict production authority validation.
+
 ## [1.15.54] — 2026-10-28
 
 - Fairly distribute the unchanged semantic-monitor call budget across remaining lanes using actual consumption; retain cursor rotation, replay accounting and strict wiring validation.

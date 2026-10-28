@@ -31,6 +31,9 @@ COMMIT = 'a' * 40
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
     monkeypatch.setenv('EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY', 'coverage-fixture-key-' + 'a' * 64)
+    # Runtime-only coverage fixtures have no authorized provider roster.
+    monkeypatch.setattr('eimemory.governance.evolution.code_evolution_provider_authority.DELEGATION_PATH',
+                        tmp_path / 'absent-authority' / 'code-provider-delegations.v1.json')
     store = RuntimeStore(tmp_path / 'runtime')
     try:
         yield SimpleNamespace(store=store)
