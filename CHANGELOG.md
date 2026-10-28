@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.49] — 2026-10-28
+
+- Permit target tracing of faithful exact single-source requests without adding a target-source override to the saved query context; multi-source ambiguity remains unobserved.
+- Reject provider proposals that introduce unwired public Python functions before transaction verification, using the existing wiring audit against tracked sources and in-memory replacements. Final verification and authorization gates remain unchanged.
+
 ## [1.15.48] — 2026-10-27
 
 - Report a competing recovery against an existing active transaction lease as in progress and deferred maintenance, without repair credit; retain fail-closed authorization, CAS, terminal and unknown-error behavior.

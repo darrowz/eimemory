@@ -30,6 +30,14 @@ SELECTED_NAMES = {
 # shape (pre-fix, post-fix) is pinned once per dump format. The 3.13+ digests
 # were computed from the same two sources (fd5cb5fc^ and fd5cb5fc).
 REVIEWED_AST_HASHES = {
+    # 1549 review fix: shared private directory-component filter (Python 3.11).
+    'b8ef4b141c5483a640014fbf9cb11845abcb2d4408439ebf35f7bac84a35aea2',
+    'd1ef1bf08c02781af4f78644bb94ce425b24f14709434babc94a0ca57b75dbe1',  # Python 3.14 reviewed source
+    'cfe614fa80d748897b3eb14116e272b65a3d95e46e1141a21a315626d67c531f',  # 1549, Python 3.13+ reviewed source overlay
+
+    # 1549: same call-graph rules, with an explicit in-memory source overlay.
+    'cd87ddb22a0d4de21e97149d9a429d23a682a8ab5ee4c31f5cc91c2d8e10e911',
+
     # Python 3.11 lacks FunctionDef.type_params. Same reviewed 3c08400d
     # source (verified byte-identical); no selected helper changed.
     "6870dbd934811eb8bf144fa429ad987b401875dea2aa4f2373deb7170710e812",
@@ -49,9 +57,13 @@ REVIEWED_AST_HASHES = {
 
 def load_preinspected_helpers():
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"), filename=str(SOURCE))
+    selected_names = SELECTED_NAMES | {
+        node.name for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == '_is_skipped_path'
+    }
     selected = []
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name in SELECTED_NAMES:
+        if isinstance(node, ast.FunctionDef) and node.name in selected_names:
             selected.append(node)
         elif (
             isinstance(node, ast.Assign) and len(node.targets) == 1
@@ -59,7 +71,7 @@ def load_preinspected_helpers():
             and node.targets[0].id in SELECTED_NAMES
         ):
             selected.append(node)
-    if len(selected) != len(SELECTED_NAMES):
+    if len(selected) != len(selected_names):
         raise AssertionError("Missing or duplicated reviewed helper/constant")
     module = ast.Module(body=selected, type_ignores=[])
     digest = hashlib.sha256(ast.dump(module, include_attributes=False).encode()).hexdigest()

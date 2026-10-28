@@ -158,7 +158,8 @@ class _TargetTrace:
                 and self.target.scope == request.scope and request.source_ids is not None
                 and self.source_ids is not None and request.source_ids == self.source_ids
                 and self.target.source_id in request.source_ids
-                and request.target_source_id == self.target.source_id
+                and (request.target_source_id == self.target.source_id
+                     or (request.target_source_id is None and request.source_ids == (self.target.source_id,)))
                 and (context.get("exact_scope_only") is True or context.get("scope_strategy") == "exact")
                 and sha256(request.query.encode("utf-8")).digest() == self.query_digest)
 

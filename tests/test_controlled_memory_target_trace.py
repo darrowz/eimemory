@@ -364,3 +364,25 @@ def test_optional_arm_preparation_failure_keeps_recall_result(tmp_path, monkeypa
         sample = run(runtime, dataset)["samples"][0]
         assert sample["passed"] is True and source.calls == 1
         assert sample["retrieval_diagnostics"]["target_trace"]["status"] == "not_observed"
+
+
+@pytest.mark.parametrize('sources,expected', [(['hermes'], 'completed'),
+    (['hermes', 'other'], 'binding_mismatch')])
+def test_faithful_single_source_recall_does_not_need_target_context_override(tmp_path, sources, expected):
+    with Runtime.create(root=tmp_path) as runtime:
+        target = memory(runtime, 'Synthetic current notebook location')
+        engine = install(runtime, NativeCandidates(runtime.store, (target,)))
+        context = {'exact_scope_only': True, 'source_ids': sources, 'runtime_channel': 'proactive'}
+        before = deepcopy(context)
+        with target_trace_scope(engine, target_ref(target), query=target.title,
+                                source_ids=sources) as trace:
+            bundle = runtime.memory.recall(query=target.title, scope=asdict(SCOPE),
+                                           task_context=context, limit=5)
+        assert context == before
+        assert trace.report()['status'] == expected
+        if expected == 'completed':
+            rows = stages(trace.report())
+            assert rows['provider_returned']['target_presence'] == 'present'
+            assert rows['final_items']['target_presence'] == (
+                'present' if target.record_id in [r.record_id for r in bundle.items]
+                else 'absent_in_observed_window')

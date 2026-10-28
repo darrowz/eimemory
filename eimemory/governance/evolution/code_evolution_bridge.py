@@ -235,6 +235,9 @@ def propose_code_patch_v2(
         }
     except Exception as exc:
         return {**base_report, "status": "blocked", "reason": f"provider_response_invalid:{type(exc).__name__}"}
+    wiring_error = _proposal_wiring_error(root, normalized_response["file_updates"])
+    if wiring_error:
+        return {**base_report, "status": "blocked", "reason": f"provider_response_invalid:{wiring_error}"}
     proposal_digest = sha256(canonical_json(normalized_response).encode("utf-8")).hexdigest()
     repository_root = str(Path(_resolve_repo_root(repo_root)).expanduser().resolve())
     try:
@@ -307,6 +310,31 @@ def propose_code_patch_v2(
         "test_plan": {"id": str(test_plan_id), "digest": str(test_plan_digest)},
         "patch_digest": proposal_digest,
     }
+
+
+def _proposal_wiring_error(root: Path, file_updates: Sequence[Mapping[str, Any]]) -> str:
+    from eimemory.core.wiring_audit import _is_skipped_path, unwired_public_functions
+
+    # Only this checkout's tracked sources can wire a proposal; scratch and
+    # sibling worktrees must not supply callers. No candidate code is executed.
+    try:
+        paths = subprocess.run(["git", "ls-files", "-z", "--", "*.py"], cwd=root,
+                               check=True, capture_output=True).stdout.decode("utf-8").split("\0")
+        sources = {}
+        for relative in filter(None, paths):
+            if _is_skipped_path(Path(relative)):
+                continue
+            path = root / relative
+            if _has_symlink_component(root, relative):
+                return "proposal_wiring_source_unavailable"
+            sources[relative] = path.read_text(encoding="utf-8")
+        baseline = unwired_public_functions(root, sources=sources)
+        sources.update({item["path"]: item["content"] for item in file_updates if item["path"].endswith(".py")})
+        if unwired_public_functions(root, sources=sources) - baseline:
+            return "proposal_unwired_public_functions"
+    except (OSError, UnicodeError, SyntaxError, subprocess.CalledProcessError):
+        return "proposal_wiring_source_unavailable"
+    return ""
 
 
 def propose_code_patch(

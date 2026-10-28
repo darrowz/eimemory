@@ -44,9 +44,10 @@ class _TestProvider:
         }
 
 
+@pytest.mark.parametrize("wiring", ["unchanged", "unwired", "wired"])
 @pytest.mark.parametrize("oversized", [False, True])
 @pytest.mark.parametrize('unknown_source_facts', [False, True])
-def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monkeypatch, tmp_path, oversized, unknown_source_facts) -> None:
+def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monkeypatch, tmp_path, oversized, unknown_source_facts, wiring) -> None:
     monkeypatch.delenv("EIMEMORY_L5_V3_PROFILE", raising=False)
     path = Path("eimemory/governance/l5/l5_reader.py")
     # A real checkout's reader can exceed the fixed provider file limit.
@@ -63,7 +64,19 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
     base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path,
                           check=True, capture_output=True, text=True).stdout.strip()
     tree_digest = sha256(canonical_json([{"path": path.as_posix(), "sha256": sha256(content).hexdigest()}]).encode()).hexdigest()
-    provider = _TestProvider()
+    class WiringProvider(_TestProvider):
+        def propose_patch_v2(self, request):
+            envelope = super().propose_patch_v2(request)
+            if wiring != "unchanged":
+                response = envelope["response"]
+                response["file_updates"][0]["content"] += "\ndef proposal_revalidation():\n    return True\n"
+                if wiring == "wired":
+                    response["file_updates"][0]["content"] += "\nproposal_revalidation()\n"
+                envelope["attestation"] = build_attestation(
+                    request, response, completed_at="2026-08-23T00:00:00Z", nonce=request["nonce"])
+            return envelope
+
+    provider = WiringProvider()
     monkeypatch.setattr(provider_module, "CodeImplementationSocketClient", _TestProvider)
     monkeypatch.setattr(
         provider_module,
@@ -108,6 +121,13 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
     )
     if oversized:
         assert report["ok"] is False and report["reason"] == "allowed_file_content_invalid"
+        assert source.read_bytes() == content
+        assert subprocess.run(["git", "status", "--porcelain"], cwd=tmp_path,
+                              check=True, capture_output=True, text=True).stdout == ""
+        return
+    if wiring == "unwired":
+        assert report["ok"] is False
+        assert report["reason"] == "provider_response_invalid:proposal_unwired_public_functions"
         assert source.read_bytes() == content
         assert subprocess.run(["git", "status", "--porcelain"], cwd=tmp_path,
                               check=True, capture_output=True, text=True).stdout == ""
@@ -226,3 +246,52 @@ def build_release_lineage_gate_evidence(*, receipt_record_id, live_record_ids, *
     assert report["reason"] == (
         "provider_response_invalid:release_closure_receipt_must_be_authoritative_input"
     )
+
+
+def test_proposal_wiring_ignores_untracked_callers_and_rejects_removed_callers(tmp_path):
+    from eimemory.governance.evolution.code_evolution_bridge import _proposal_wiring_error
+    package = tmp_path / 'eimemory'
+    package.mkdir()
+    source = package / 'api.py'
+    source.write_text('def active_api():\n    return 1\n')
+    caller = package / 'caller.py'
+    caller.write_text('from .api import active_api\nactive_api()\n')
+    subprocess.run(['git', 'init', '--quiet'], cwd=tmp_path, check=True)
+    subprocess.run(['git', 'add', '.'], cwd=tmp_path, check=True)
+    assert _proposal_wiring_error(tmp_path, []) == ''
+    assert _proposal_wiring_error(tmp_path, [{'path': 'eimemory/caller.py', 'content': ''}]) == (
+        'proposal_unwired_public_functions')
+    (tmp_path / 'scratch.py').write_text('candidate_orphan()\n')
+    update = {'path': 'eimemory/api.py', 'content': source.read_text() +
+              '\ndef candidate_orphan():\n    return True\n'}
+    assert _proposal_wiring_error(tmp_path, [update]) == 'proposal_unwired_public_functions'
+    assert _proposal_wiring_error(tmp_path, [update, {'path': 'eimemory/caller.py',
+        'content': caller.read_text() + '\nfrom .api import candidate_orphan\ncandidate_orphan()\n'}]) == ''
+    caller.unlink()
+    assert _proposal_wiring_error(tmp_path, []) == 'proposal_wiring_source_unavailable'
+
+
+@pytest.mark.parametrize('directory', ['.worktrees', '.venv', 'build'])
+def test_proposal_wiring_skips_tracked_directory_callers_before_reading(tmp_path, directory):
+    from eimemory.governance.evolution.code_evolution_bridge import _proposal_wiring_error
+    (tmp_path / 'eimemory').mkdir()
+    (tmp_path / 'eimemory/api.py').write_text('')
+    caller = tmp_path / 'nested' / directory / 'caller.py'
+    caller.parent.mkdir(parents=True)
+    caller.write_text('candidate_orphan()\n')
+    subprocess.run(['git', 'init', '--quiet'], cwd=tmp_path, check=True)
+    subprocess.run(['git', 'add', '-f', '.'], cwd=tmp_path, check=True)
+    update = {'path': 'eimemory/api.py', 'content': 'def candidate_orphan():\n    return 1\n'}
+    assert _proposal_wiring_error(tmp_path, [update]) == 'proposal_unwired_public_functions'
+    caller.unlink()
+    assert _proposal_wiring_error(tmp_path, [update]) == 'proposal_unwired_public_functions'
+
+
+def test_proposal_wiring_fails_closed_on_symlink_source(tmp_path):
+    from eimemory.governance.evolution.code_evolution_bridge import _proposal_wiring_error
+    (tmp_path / 'eimemory').mkdir()
+    (tmp_path / 'outside.txt').write_text('candidate_orphan()\n')
+    (tmp_path / 'eimemory' / 'caller.py').symlink_to(tmp_path / 'outside.txt')
+    subprocess.run(['git', 'init', '--quiet'], cwd=tmp_path, check=True)
+    subprocess.run(['git', 'add', '.'], cwd=tmp_path, check=True)
+    assert _proposal_wiring_error(tmp_path, []) == 'proposal_wiring_source_unavailable'

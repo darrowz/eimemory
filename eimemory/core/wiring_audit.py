@@ -55,10 +55,14 @@ def _is_entry(fn: ast.AST) -> bool:
     return any(_decorator_name(item) in _ENTRY_DECORATORS for item in getattr(fn, "decorator_list", ()))
 
 
+def _is_skipped_path(relative: Path) -> bool:
+    return any(part in _SKIP_DIRS for part in relative.parts)
+
+
 def _python_files(root: Path) -> list[Path]:
     files: list[Path] = []
     for path in root.rglob("*.py"):
-        if any(part in _SKIP_DIRS for part in path.relative_to(root).parts):
+        if _is_skipped_path(path.relative_to(root)):
             continue
         files.append(path)
     return files
@@ -78,7 +82,7 @@ def _references(tree: ast.AST) -> list[tuple[str, int]]:
     return found
 
 
-def unwired_public_functions(root: Path) -> set[str]:
+def unwired_public_functions(root: Path, *, sources: dict[str, str] | None = None) -> set[str]:
     """Return ``relative/path.py:function`` for public module functions with no caller.
 
     A load of the name outside the function body counts as a caller. Shared names
@@ -88,20 +92,23 @@ def unwired_public_functions(root: Path) -> set[str]:
 
     definitions: list[tuple[str, str, int, int]] = []
     references: dict[str, list[tuple[str, int]]] = {}
-    for path in _python_files(root):
-        try:
-            source = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            if relative_in_package(path, root):
-                raise
+    if sources is None:
+        sources = {}
+        for path in _python_files(root):
+            try:
+                sources[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                if relative_in_package(path, root):
+                    raise
+    for relative, source in sources.items():
+        if _is_skipped_path(Path(relative)):
             continue
         try:
-            tree = ast.parse(source)
+            tree = ast.parse(source, filename=relative)
         except SyntaxError:
-            if relative_in_package(path, root):
+            if relative.startswith("eimemory/"):
                 raise
             continue
-        relative = path.relative_to(root).as_posix()
         in_package = relative.startswith("eimemory/")
         for node in tree.body:
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
