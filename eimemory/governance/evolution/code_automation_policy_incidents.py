@@ -203,6 +203,41 @@ def _repository_identity(root: Path) -> dict[str, Any]:
 
 
 
+
+def _drop_resolved_allowlisted_unit_incidents(current, *, runtime, expected_commit: str):
+    """Drop release.closure incidents whose only live defect was sticky failed oneshots.
+
+    Hermes cannot code-repair ``allowlisted_unit_not_ready``; after JOB_UNITS are
+    quiet again the capture may still name the old incident until the next
+    successful closure. Re-observe units read-only and stop auto-routing.
+    """
+    if not current:
+        return current
+    kept = []
+    live = None
+    for record, incident in current:
+        if not str(incident.get("incident_class") or "").startswith("release.closure_"):
+            kept.append((record, incident))
+            continue
+        report = getattr(record, "content", {}).get("detector_report") or {}
+        reason = str(report.get("blocked_reason") or "")
+        identity = report.get("identity") if isinstance(report.get("identity"), dict) else {}
+        hard = identity.get("hard_errors") if isinstance(identity, dict) else None
+        codes = []
+        if isinstance(hard, list):
+            codes = [str(item.get("code") or "") for item in hard if isinstance(item, dict)]
+        if reason != "allowlisted_unit_not_ready" and "allowlisted_unit_not_ready" not in codes:
+            kept.append((record, incident))
+            continue
+        if live is None:
+            from eimemory.ops.controlled_stability import allowlisted_job_units_restored_ready
+            live = allowlisted_job_units_restored_ready()
+        if live.get("ok") is True:
+            continue  # stale: units quiet; do not keep auto-repairing
+        kept.append((record, incident))
+    return kept
+
+
 def select_current_system_incidents(runtime: Any, *, scope: ScopeRef, root: Path, repository: Mapping[str, Any] | None = None) -> dict[str, Any]:
     from eimemory.governance.release.evidence_contract import current_release_identity
     scope_ref = scope
@@ -285,6 +320,8 @@ def select_current_system_incidents(runtime: Any, *, scope: ScopeRef, root: Path
             current = [(r, i) for r, i in current if not i['incident_class'].startswith('release.closure_')
                        or r.record_id == latest]
             diagnosis = [r for r in diagnosis if r == latest]
+        current = _drop_resolved_allowlisted_unit_incidents(current, runtime=runtime,
+                                                            expected_commit=repository["base_commit"])
     if not current:
         if diagnosis:
             return {"ok": False, "status": "diagnosis_required", "processed": [],

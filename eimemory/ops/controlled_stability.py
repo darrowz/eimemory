@@ -640,6 +640,71 @@ def _journal() -> dict[str, Any]:
             'native_database_counters_available': False, 'observed_error_counts': counts}
 
 
+
+def reset_failed_allowlisted_job_units() -> dict[str, Any]:
+    """Clear sticky oneshot ``Result=failed`` before restored stability observation.
+
+    Companion to the Result-after-reset-failed trust rule in the sample collector.
+    Does not start or stop units. Best-effort: per-unit failures are recorded and
+    never raised so a single reset miss cannot abort release closure.
+    """
+    reset: list[str] = []
+    errors: dict[str, str] = {}
+    for unit in JOB_UNITS:
+        try:
+            completed = subprocess.run(
+                ["systemctl", "--user", "reset-failed", unit],
+                check=False, capture_output=True, text=True, timeout=30,
+                env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
+            )
+            if completed.returncode == 0:
+                reset.append(unit)
+            else:
+                errors[unit] = f"exit:{completed.returncode}"
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors[unit] = type(exc).__name__
+    return {
+        "ok": not errors,
+        "action": "systemctl_user_reset_failed",
+        "units": list(JOB_UNITS),
+        "reset": reset,
+        "errors": errors,
+    }
+
+
+def allowlisted_job_units_restored_ready() -> dict[str, Any]:
+    """Read-only: whether allowlisted oneshot JOB_UNITS are quiet (not failed).
+
+    Used to drop stale ``allowlisted_unit_not_ready`` release-closure incidents
+    after operators (or release closure) cleared sticky failed Result bits.
+    """
+    from eimemory.ops.runtime_service_observation import service_state
+    units: list[dict[str, Any]] = []
+    ready = True
+    for unit in JOB_UNITS:
+        try:
+            state = service_state(
+                unit, ("LoadState", "ActiveState", "SubState", "Result", "ExecMainStatus"))
+        except Exception as exc:  # observation miss fails closed for this helper
+            units.append({"unit": unit, "ok": False, "error_type": type(exc).__name__})
+            ready = False
+            continue
+        load = str(state.get("LoadState") or "")
+        active = str(state.get("ActiveState") or "")
+        result = str(state.get("Result") or "")
+        exec_status = str(state.get("ExecMainStatus") or "")
+        ok = (load == "loaded" and result in ("", "success")
+              and active in ("active", "inactive", "activating"))
+        if ok and active in ("active", "activating"):
+            ok = exec_status == "0"
+        units.append({
+            "unit": unit, "ok": bool(ok), "active_state": active, "result": result,
+            "exec_main_status": exec_status,
+        })
+        ready = ready and bool(ok)
+    return {"ok": ready, "units": units, "read_only": True}
+
+
 def collect_controlled_stability_sample(*, expected_commit: str, database_path: str | Path,
                                         background_held: bool = False) -> dict[str, Any]:
     """Freeze the registered identity inventory for this complete measurement.
@@ -953,7 +1018,7 @@ def assess_controlled_stability(samples: list[dict[str, Any]], *, expected_commi
     return result
 
 
-__all__ = ["collect_controlled_endpoint_identity", "collect_controlled_stability_sample", "assess_controlled_stability"]
+__all__ = ["collect_controlled_endpoint_identity", "collect_controlled_stability_sample", "assess_controlled_stability", "reset_failed_allowlisted_job_units", "allowlisted_job_units_restored_ready"]
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.62] — 2026-10-29
+
+- Release closure: reset-failed allowlisted oneshot JOB_UNITS before restored stability sampling so sticky nightly/timer-monitor failures cannot reopen allowlisted_unit_not_ready.
+- Code evolution: drop stale release.closure incidents whose blocked_reason was allowlisted_unit_not_ready once live JOB_UNITS are quiet again (Hermes cannot code-repair ops sticky state; avoids proposal_unwired_public_functions thrash).
+
 ## [1.15.61] — 2026-10-29
 
 - Align controlled acceptance producer, verifier, and high-water lookup with explicitly authorized deployment receipt owners; preserve caller authorization and fail-closed evidence checks.

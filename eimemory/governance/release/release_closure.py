@@ -665,6 +665,11 @@ def _run_controlled_operational_closure_locked(
         return _blocked(report, "projection_acceptance_restore",
                         _failure_reason(projection_before_stability,
                                         "projection_acceptance_restore_failed"))
+    # Sticky oneshot Result=failed from a prior nightly/monitor exit must not
+    # permanently block restored stability / business closure (see 5aa2c14).
+    if background_held_observation is not True:
+        from eimemory.ops.controlled_stability import reset_failed_allowlisted_job_units
+        report["job_unit_reset_failed"] = reset_failed_allowlisted_job_units()
     first_sample = collect_controlled_stability_sample(
         expected_commit=release.commit, database_path=database_path,
         background_held=background_held_observation,

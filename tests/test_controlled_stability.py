@@ -816,3 +816,63 @@ def test_restored_observation_accepts_reset_failed_oneshot_stale_exec_status(mon
         expected_commit=COMMIT, database_path=path, background_held=True)
     # Timers are active, so hold mode still blocks; jobs alone must not.
     assert all(row["ok"] for row in held["units"] if row["unit"] in probe.JOB_UNITS)
+
+
+def test_reset_failed_allowlisted_job_units_best_effort(monkeypatch):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(probe.subprocess, "run", fake_run)
+    report = probe.reset_failed_allowlisted_job_units()
+    assert report["action"] == "systemctl_user_reset_failed"
+    assert report["ok"] is True
+    assert set(report["reset"]) == set(probe.JOB_UNITS)
+    assert all(c[:3] == ["systemctl", "--user", "reset-failed"] for c in calls)
+
+
+def test_allowlisted_job_units_restored_ready_false_when_failed(monkeypatch):
+    def fake_state(unit, properties):
+        if unit == probe.JOB_UNITS[0]:
+            return {"LoadState": "loaded", "ActiveState": "failed", "SubState": "failed",
+                    "Result": "exit-code", "ExecMainStatus": "1"}
+        return {"LoadState": "loaded", "ActiveState": "inactive", "SubState": "dead",
+                "Result": "success", "ExecMainStatus": "0"}
+
+    monkeypatch.setattr("eimemory.ops.runtime_service_observation.service_state", fake_state)
+    report = probe.allowlisted_job_units_restored_ready()
+    assert report["ok"] is False
+    assert report["read_only"] is True
+
+
+def test_drop_resolved_allowlisted_unit_incidents_when_quiet(monkeypatch):
+    from eimemory.governance.evolution import code_automation_policy_incidents as incidents
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "eimemory.ops.controlled_stability.allowlisted_job_units_restored_ready",
+        lambda: {"ok": True, "units": [], "read_only": True},
+    )
+    stale = SimpleNamespace(content={
+        "detector_report": {"blocked_reason": "allowlisted_unit_not_ready", "identity": {}},
+    })
+    other = SimpleNamespace(content={
+        "detector_report": {"blocked_reason": "controlled_rpc_probe_failed", "identity": {}},
+    })
+    current = [
+        (stale, {"incident_class": "release.closure_internal_failure"}),
+        (other, {"incident_class": "release.closure_internal_failure"}),
+        (SimpleNamespace(content={}), {"incident_class": "deployment.runtime_commit_drift"}),
+    ]
+    kept = incidents._drop_resolved_allowlisted_unit_incidents(
+        current, runtime=None, expected_commit="a" * 40)
+    assert len(kept) == 2
+    assert kept[0][1]["incident_class"] == "release.closure_internal_failure"
+    assert kept[0][0] is other
+    assert kept[1][1]["incident_class"] == "deployment.runtime_commit_drift"
