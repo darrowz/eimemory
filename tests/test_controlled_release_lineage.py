@@ -9,6 +9,7 @@ from eimemory.governance.release import controlled_release_lineage as module
 from eimemory.governance.release import release_lineage
 from eimemory.governance.release.evidence_contract import ReleaseIdentity
 from test_controlled_production_acceptance import setup, run, cpa, OWNER, RELEASE
+from test_controlled_production_acceptance import receipt_scoped_setup, SCOPES
 from test_controlled_production_release_closure import pipeline, complete_report
 
 
@@ -119,6 +120,28 @@ def test_native_lineage_refresh_requires_established_closure_and_current_attempt
     assert result['verifier_reason'] == 'controlled_acceptance_agent_evidence_invalid'
 
 
+def test_nightly_primary_attempt_supersedes_previous_release_at_additional_receipt_owner(receipt_scoped_setup):
+    from test_release_lineage import _receipt
+    setup = receipt_scoped_setup
+    owner = setup.receipt_owner
+    previous = cpa.run_controlled_production_acceptance(setup.runtime, scope=asdict(owner))
+    assert previous['accepted']
+    original = setup.runtime.store.get_by_exact_ref(previous['record_id'], scope=owner, source_id='default').to_dict()
+    current = _receipt(setup.runtime, owner, 'b' * 40, '1.15.60')
+    setup.monkeypatch.setattr(cpa, '_release', lambda *args, **kwargs:
+        (release_identity_payload(current), deepcopy(setup.receipt)))
+    latest = run(setup)
+    assert latest['accepted'] and latest['record_id'] != previous['record_id']
+    refreshed = module.refresh_current_controlled_release_lineage(setup.runtime, scope=owner, release=current)
+    assert refreshed['ok'] and refreshed['status'] == 'awaiting_initial_closure', refreshed
+    assert not module.controlled_recall_gate_error(setup.runtime,
+        scope=owner, release=current, references=[latest['record_id']])
+    assert module.controlled_recall_gate_error(setup.runtime,
+        scope=owner, release=current, references=[previous['record_id']])
+    assert setup.runtime.store.get_by_exact_ref(previous['record_id'], scope=owner, source_id='default').to_dict() == original
+    assert len(setup.calls) == 24
+
+
 @pytest.mark.parametrize('body', [None, {}, {'current_release': {'release_commit': 'f' * 40}}])
 def test_refresh_never_falls_back_past_malformed_latest_current_release(setup, monkeypatch, body):
     from eimemory.models.records import RecordEnvelope
@@ -136,23 +159,30 @@ def test_refresh_never_falls_back_past_malformed_latest_current_release(setup, m
 
 
 @pytest.mark.parametrize('failed_replay', [False, True])
-def test_refresh_rebinds_only_actual_latest_acceptance_without_replaying_queries(setup, monkeypatch, tmp_path, failed_replay):
+@pytest.mark.parametrize('receipt_is_additional', [False, True])
+def test_refresh_rebinds_only_actual_latest_acceptance_without_replaying_queries(setup, monkeypatch, tmp_path, failed_replay, receipt_is_additional):
     from eimemory.models.records import RecordEnvelope
     from eimemory.config import trusted
     from eimemory.governance.l5 import l5_readiness
     from test_release_lineage import _receipt
 
-    current = _receipt(setup.runtime, OWNER, RELEASE['release_commit'], RELEASE['release_version'])
+    owner = SCOPES[0] if receipt_is_additional else OWNER
+    if receipt_is_additional:
+        setup.policy['additional_owner_scopes'] = [asdict(owner)]
+    current = _receipt(setup.runtime, owner, RELEASE['release_commit'], RELEASE['release_version'])
+    receipt = {'record_ref': current.receipt_id, 'record_digest': 'c' * 64}
+    if receipt_is_additional:
+        receipt['scope'] = asdict(owner)
     monkeypatch.setattr(cpa, '_release', lambda *args, **kwargs:
-        (release_identity_payload(current), {'record_ref': current.receipt_id, 'record_digest': 'c' * 64}))
+        (release_identity_payload(current), deepcopy(receipt)))
     earlier, latest = run(setup), run(setup)
     gates = {'memory.recall': [earlier['record_id']], 'memory.governance': ['old-manifest'],
         'storage.integrity': ['live'], 'channel.delivery': ['channel'],
         'code.evolution': [current.receipt_id], 'deployment.runtime': [current.receipt_id]}
     seed = setup.runtime.store.append(RecordEnvelope.create(kind='l5_self_continuity',
-        title='Existing independent closure', scope=OWNER, source=release_lineage.SOURCE,
+        title='Existing independent closure', scope=owner, source=release_lineage.SOURCE,
         content={'lineage': {'schema_version': release_lineage.SCHEMA_VERSION,
-            'scope': asdict(OWNER), 'current_release': release_lineage._identity_payload(current),
+            'scope': asdict(owner), 'current_release': release_lineage._identity_payload(current),
             'gate_evidence': deepcopy(gates)}},
         meta={'report_type': 'release_lineage', 'current_commit': current.commit}))
     original = deepcopy(seed.to_dict())
@@ -168,14 +198,14 @@ def test_refresh_rebinds_only_actual_latest_acceptance_without_replaying_queries
         calls.append(kwargs)
         # Keep the actual new signed acceptance verifier in this orchestration
         # test; the pre-existing native lineage suite verifies other domains.
-        assert not module.controlled_recall_gate_error(runtime, scope=OWNER,
+        assert not module.controlled_recall_gate_error(runtime, scope=owner,
             release=current, references=kwargs['gate_evidence']['memory.recall'])
         return dict(ok=True, validated=True, compatible=True, record_id='new-lineage')
     monkeypatch.setattr(release_lineage, 'record_release_lineage', record)
     monkeypatch.setattr(release_lineage, 'current_release_lineage', lambda *args, **kwargs:
         dict(ok=True, validated=True, compatible=True, record_id='new-lineage',
              gate_evidence=deepcopy(calls[-1]['gate_evidence'])))
-    result = module.refresh_current_controlled_release_lineage(setup.runtime, scope=OWNER, release=current)
+    result = module.refresh_current_controlled_release_lineage(setup.runtime, scope=owner, release=current)
     if failed_replay:
         assert not result['ok'] and not calls
     else:
@@ -185,7 +215,7 @@ def test_refresh_rebinds_only_actual_latest_acceptance_without_replaying_queries
         assert result['controlled_reference'] == latest['record_id']
         assert result['certifies_natural_queries'] is False and result['l5_certified'] is False
     assert len(setup.calls) == 24
-    assert setup.runtime.store.get_by_id(seed.record_id, scope=OWNER).to_dict() == original
+    assert setup.runtime.store.get_by_id(seed.record_id, scope=owner).to_dict() == original
 
 
 @pytest.mark.parametrize('damage', ['missing', 'duplicate', 'record_id', 'not_compatible'])

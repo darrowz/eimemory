@@ -64,11 +64,8 @@ def _run_controlled_production_acceptance(runtime: Runtime, *, scope: dict,
                 return {"ok": False, "error": "controlled_production_report_invalid"}
             if report.get("ok") is not True or report.get("accepted") is not True:
                 return report
-            # Persisted envelope follows deployment receipt / policy primary owner
-            # when receipt.scope is present; re-verify under that partition.
-            verify_scope = report.get("scope") if isinstance(report.get("scope"), dict) else scope
             verification = verify_controlled_production_acceptance(
-                runtime, scope=verify_scope, record_id=str(report.get("record_id") or ""))
+                runtime, scope=scope, record_id=str(report.get("record_id") or ""))
             verified = (isinstance(verification, dict) and verification.get("ok") is True
                         and verification.get("accepted") is True
                         and verification.get("record_id") == report.get("record_id"))

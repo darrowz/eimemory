@@ -34,6 +34,12 @@ no recall query, replay or live task. It rechecks all unchanged domains and
 preserves original lineage and acceptance records. An initial release without
 an established full closure remains explicitly awaiting that closure.
 
+If the deployment receipt owner is explicitly listed as the policy primary or
+an additional owner, both acceptance persistence and verification use that
+exact partition for the latest attempt. The original caller must remain
+authorized. Evaluation scopes alone grant no owner authority; verification
+does not search other owner partitions or fall back to an older success.
+
 Business qualification and L5 completion remain separate claims. A valid
 lineage does not produce a code transaction, terminal receipt, source novelty
 fact or elapsed observation interval.

@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.15.61] — 2026-10-29
+
+- Align controlled acceptance producer, verifier, and high-water lookup with explicitly authorized deployment receipt owners; preserve caller authorization and fail-closed evidence checks.
+
 ## [1.15.60] — 2026-10-29
 
 - Synchronize package, README, Codex, and Hermes integration versions.

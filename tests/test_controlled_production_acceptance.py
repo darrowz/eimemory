@@ -604,6 +604,133 @@ def two_owner_policy(setup):
     return primary, nightly
 
 
+@pytest.fixture
+def receipt_scoped_setup(setup):
+    # The real nightly policy: logical primary, channel receipt as additional owner.
+    setup.receipt_owner = SCOPES[0]
+    setup.policy['additional_owner_scopes'] = [asdict(setup.receipt_owner)]
+    setup.receipt = dict(record_ref='receipt-fixture', record_digest='c' * 64,
+        scope=asdict(setup.receipt_owner), source='eimemory.deployment_receipt', source_id='default')
+    setup.monkeypatch.setattr(cpa, '_release', lambda runtime, scope:
+        (deepcopy(RELEASE), deepcopy(setup.receipt)))
+    return setup
+
+
+@pytest.mark.parametrize('schema', [cpa.POLICY_SCHEMA, cpa.EXACT_SCOPE_POLICY_SCHEMA])
+def test_additional_receipt_owner_shares_one_high_water_with_authorized_primary(receipt_scoped_setup, schema):
+    setup = receipt_scoped_setup
+    setup.policy['schema'] = schema
+    report = run(setup)
+    assert report['accepted'], report
+    for caller in (OWNER, setup.receipt_owner):
+        checked = cpa.verify_controlled_production_acceptance(setup.runtime,
+            scope=asdict(caller), record_id=report['record_id'])
+        assert checked['accepted'] and checked['record_id'] == report['record_id'], checked
+        assert checked['scope'] == asdict(setup.receipt_owner)
+    packet = setup.runtime.store.get_by_exact_ref(report['record_id'],
+        scope=setup.receipt_owner, source_id='default')
+    assert packet is not None and packet.content['scope'] == asdict(setup.receipt_owner)
+    assert cpa.verify(packet.content, cpa._schema_for_policy(setup.policy))
+    assert setup.runtime.store.get_by_exact_ref(report['record_id'], scope=OWNER, source_id='default') is None
+    assert len(setup.calls) == 12
+    assert report['certifies_natural_queries'] is False and report['natural_samples_created'] == 0
+    setup.monkeypatch.setattr(setup.runtime.memory, 'recall',
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError('retrieval failed')))
+    failed = cpa.run_controlled_production_acceptance(setup.runtime, scope=asdict(setup.receipt_owner))
+    assert failed['record_id'] and not failed['accepted']
+    for caller in (OWNER, setup.receipt_owner):
+        for reference in ('', report['record_id']):
+            assert not cpa.verify_controlled_production_acceptance(setup.runtime,
+                scope=asdict(caller), record_id=reference)['accepted']
+
+
+def test_evaluation_scope_is_not_receipt_owner_authority(receipt_scoped_setup):
+    setup = receipt_scoped_setup
+    setup.policy.pop('additional_owner_scopes')
+    report = run(setup)
+    assert report['accepted'] and report['scope'] == asdict(OWNER), report
+    assert verified(setup, record_id=report['record_id'])['accepted']
+    assert not cpa.verify_controlled_production_acceptance(setup.runtime,
+        scope=asdict(setup.receipt_owner), record_id=report['record_id'])['accepted']
+    assert setup.runtime.store.get_by_exact_ref(report['record_id'],
+        scope=setup.receipt_owner, source_id='default') is None
+    assert len(setup.calls) == 12
+
+
+def test_nightly_reverification_preserves_the_original_authorized_caller(receipt_scoped_setup):
+    from eimemory.scheduler.jobs import _run_controlled_production_acceptance
+    setup = receipt_scoped_setup
+    original = cpa.verify_controlled_production_acceptance
+    callers = []
+    def check(runtime, **kwargs):
+        callers.append(kwargs['scope'])
+        return original(runtime, **kwargs)
+    setup.monkeypatch.setattr(cpa, 'verify_controlled_production_acceptance', check)
+    report = _run_controlled_production_acceptance(setup.runtime, scope=asdict(OWNER), stable_before='')
+    assert report['accepted'] and report['runtime_authority_verified'], report
+    assert report['scope'] == asdict(setup.receipt_owner)
+    assert callers == [asdict(OWNER)] and len(setup.calls) == 12
+
+
+@pytest.mark.parametrize('damage,reason', [
+    ('hmac', 'report_authority_invalid'), ('body_scope', 'report_authority_invalid'),
+    ('envelope_scope', 'current_report_missing'), ('release', 'report_authority_invalid'),
+    ('expiry', 'report_expired'), ('payload', 'report_authority_invalid'),
+    ('unlisted_caller', 'policy_invalid'), ('revoked_caller', 'policy_invalid'),
+    ('revoked_during_verification', 'policy_invalid'), ('high_water_changed', 'high_water_changed'),
+])
+def test_shared_receipt_authority_remains_fail_closed(receipt_scoped_setup, damage, reason):
+    setup = receipt_scoped_setup
+    report = run(setup)
+    assert report['accepted'], report
+    caller = OWNER
+    packet = setup.runtime.store.get_by_exact_ref(report['record_id'],
+        scope=setup.receipt_owner, source_id='default')
+    assert packet is not None
+    if damage == 'unlisted_caller':
+        caller = replace(OWNER, user_id='unlisted')
+    elif damage == 'revoked_caller':
+        setup.policy['owner_scope'] = asdict(setup.receipt_owner)
+        setup.policy.pop('additional_owner_scopes')
+    elif damage in {'revoked_during_verification', 'high_water_changed'}:
+        original = setup.runtime.store.read_consistent
+        def read(reader):
+            if reader.__name__ == 'final_snapshot':
+                if damage == 'revoked_during_verification':
+                    setup.policy['owner_scope'] = asdict(setup.receipt_owner)
+                    setup.policy.pop('additional_owner_scopes')
+                else:
+                    newer = deepcopy(packet)
+                    newer.record_id = 'cpa_newer_attempt'
+                    setup.runtime.store.append(newer)
+            return original(reader)
+        setup.monkeypatch.setattr(setup.runtime.store, 'read_consistent', read)
+    else:
+        if damage == 'hmac': packet.content['signature'] = '0' * 64
+        if damage == 'payload': packet.content['agents'][0]['samples'][0]['complete'] = False
+        if damage == 'body_scope': packet.content['scope'] = asdict(OWNER)
+        if damage == 'envelope_scope': packet.scope = OWNER
+        if damage == 'release': packet.content['release_identity']['release_commit'] = 'f' * 40
+        if damage == 'expiry':
+            packet.content['started_at'] = packet.content['completed_at'] = '2020-01-01T00:00:00Z'
+        if damage in {'body_scope', 'release', 'expiry'}:
+            packet.content = cpa.seal({k: v for k, v in packet.content.items()
+                if k not in {'key_id', 'signature'}}, cpa.SCHEMA)
+        packet.meta['report_digest'] = cpa.digest(packet.content)
+        setup.runtime.store.append(packet)
+        if damage == 'envelope_scope':
+            def remove_original(sqlite):
+                sqlite.execute('DELETE FROM records WHERE record_id=? AND user_id=?',
+                    (packet.record_id, setup.receipt_owner.user_id))
+                sqlite.commit()
+            setup.runtime.store.run_locked(remove_original)
+    checked = cpa.verify_controlled_production_acceptance(setup.runtime,
+        scope=asdict(caller), record_id=report['record_id'])
+    assert not checked['accepted'], checked
+    assert checked['blocked_reason'] == 'controlled_acceptance_' + reason
+    assert len(setup.calls) == 12
+
+
 def test_one_protected_policy_creates_and_verifies_separate_native_receipts_for_both_owners(setup):
     primary, nightly = two_owner_policy(setup)
     policy_digest = cpa.digest(setup.policy)

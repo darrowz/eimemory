@@ -653,27 +653,16 @@ def _unavailable(reason):
 
 
 def _report_owner_scope(owner, policy, receipt):
-    """Persist under deployment receipt / policy primary owner when known.
+    """Use the explicitly authorized receipt owner for one acceptance high-water.
 
-    L5 controlled lineage refresh reads CPA high-water under ``receipt.scope``.
-    Nightly may call as an additional owner (for example darrow/embodied) while
-    the deployment receipt lives on the policy primary (ou_/hermes). Binding the
-    signed body and store envelope to that receipt owner keeps lineage and the
-    acceptance high-water in the same partition. Callers without a receipt scope
-    (fixtures) keep the historical per-caller envelope so dual-owner tests stay
-    byte-compatible.
+    Either the primary or an additional policy owner may hold the deployment
+    receipt. Without an authorized receipt scope, retain the caller partition.
+    Caller authorization is checked before resolving this persistence scope.
     """
     raw = receipt.get("scope") if isinstance(receipt, dict) else None
-    if not isinstance(raw, dict):
+    if raw not in [policy['owner_scope'], *policy.get('additional_owner_scopes', [])]:
         return owner
-    try:
-        receipt_owner = ScopeRef.from_dict(raw)
-        primary = ScopeRef.from_dict(policy["owner_scope"])
-    except (TypeError, ValueError, KeyError, AttributeError):
-        return owner
-    if receipt_owner != primary:
-        return owner
-    return receipt_owner
+    return _scope(raw)
 
 
 def run_controlled_production_acceptance(runtime, *, scope, persist=True, stable_before=''):
@@ -820,15 +809,16 @@ def verify_controlled_production_acceptance(runtime, *, scope, release=None, rec
             requested = release_identity_payload(release) if hasattr(release, 'commit') else release
             if requested != current:
                 _error('release_mismatch')
-        record = _latest(runtime, owner, current)
+        report_owner = _report_owner_scope(owner, policy, receipt)
+        record = _latest(runtime, report_owner, current)
         if record is None or (record_id and record.record_id != record_id):
             _error('current_report_missing')
         body = deepcopy(record.content)
         report_schema = _schema_for_policy(policy)
         if (record.kind != 'evaluation_packet' or record.source != SOURCE or record.source_id != 'default'
-                or record.status != 'active' or record.scope != owner or not verify(body, report_schema)
+                or record.status != 'active' or record.scope != report_owner or not verify(body, report_schema)
                 or body.get('record_id') != record.record_id or body.get('source') != SOURCE
-                or body.get('scope') != asdict(owner) or body.get('schema') != report_schema
+                or body.get('scope') != asdict(report_owner) or body.get('schema') != report_schema
                 or body.get('mode') != MODE or body.get('evidence_class') != EVIDENCE_CLASS
                 or body.get('policy_digest') != digest(policy) or body.get('request_digest') != policy['request_digest']
                 or body.get('release_identity') != current or body.get('release_reference') != receipt
@@ -931,7 +921,7 @@ def verify_controlled_production_acceptance(runtime, *, scope, release=None, rec
             _error('report_not_accepted')
         def final_snapshot(sqlite):
             _validate_versions(sqlite, entries)
-            latest = _latest_sqlite(sqlite, owner)
+            latest = _latest_sqlite(sqlite, report_owner)
             if latest is None or latest.record_id != record.record_id or digest(latest.content) != digest(body):
                 _error('high_water_changed')
         runtime.store.read_consistent(final_snapshot)
