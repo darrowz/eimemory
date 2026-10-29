@@ -1,3 +1,7 @@
+## 1.15.64
+
+- fix: treat sqlite candidate projection as not-applicable ready in release closure post_replay wait, and stop auto-routing sticky `post_replay_projection_not_ready` incidents Hermes cannot repair.
+
 ---
 AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'

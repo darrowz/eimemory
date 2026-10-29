@@ -822,7 +822,16 @@ def _wait_for_controlled_projection(runtime: Any, *, expected_commit: str,
         if barrier.get("ok") is not True:
             return finish(False, "candidate_projection_not_ready")
         measurement = barrier.get("final_measurement")
-        if source is None or barrier.get("applicable") is not True or not readiness_ok(measurement):
+        # SQLite candidate sources have no postgres vector projection barrier.
+        # Treat an explicit not_applicable sqlite result as ready so release
+        # closure / learn-watch do not invent post_replay_projection_not_ready
+        # incidents Hermes cannot repair.
+        if barrier.get("applicable") is not True:
+            if (barrier.get("status") == "not_applicable"
+                    and str(barrier.get("source_type") or "") == "sqlite"):
+                return finish(True, "sqlite_candidate_projection_not_applicable")
+            return finish(False, "projection_barrier_contract_invalid")
+        if source is None or not readiness_ok(measurement):
             return finish(False, "projection_barrier_contract_invalid")
         try:
             remaining = deadline-time.monotonic()

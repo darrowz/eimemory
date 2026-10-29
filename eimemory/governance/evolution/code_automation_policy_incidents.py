@@ -238,6 +238,48 @@ def _drop_resolved_allowlisted_unit_incidents(current, *, runtime, expected_comm
     return kept
 
 
+
+def _drop_inapplicable_sqlite_projection_incidents(current, *, runtime, expected_commit: str):
+    """Drop release.closure incidents caused by sqlite having no projection barrier.
+
+    ``post_replay_projection_not_ready`` / ``projection_barrier_contract_invalid``
+    on a sqlite candidate source are not code defects Hermes can repair. Once the
+    live wait reports sqlite not-applicable readiness, stop auto-routing them.
+    """
+    if not current:
+        return current
+    kept = []
+    live = None
+    target_reasons = {
+        "post_replay_projection_not_ready",
+        "projection_barrier_contract_invalid",
+        "post_acceptance_projection_not_ready",
+    }
+    for record, incident in current:
+        if not str(incident.get("incident_class") or "").startswith("release.closure_"):
+            kept.append((record, incident))
+            continue
+        report = getattr(record, "content", {}).get("detector_report") or {}
+        reason = str(report.get("blocked_reason") or "")
+        codes = [str(c) for c in (incident.get("diagnostic_codes") or []) if c]
+        identity = report.get("identity") if isinstance(report.get("identity"), dict) else {}
+        hard = identity.get("hard_errors") if isinstance(identity, dict) else None
+        if isinstance(hard, list):
+            codes.extend(str(item.get("code") or "") for item in hard if isinstance(item, dict))
+        matched = reason in target_reasons or any(code in target_reasons for code in codes)
+        if not matched:
+            kept.append((record, incident))
+            continue
+        if live is None:
+            from eimemory.governance.release.release_closure import _wait_for_controlled_projection
+            live = _wait_for_controlled_projection(
+                runtime, expected_commit=expected_commit, timeout_seconds=5.0)
+        if (live.get("ok") is True
+                and live.get("blocked_reason") == "sqlite_candidate_projection_not_applicable"):
+            continue
+        kept.append((record, incident))
+    return kept
+
 def select_current_system_incidents(runtime: Any, *, scope: ScopeRef, root: Path, repository: Mapping[str, Any] | None = None) -> dict[str, Any]:
     from eimemory.governance.release.evidence_contract import current_release_identity
     scope_ref = scope
@@ -322,6 +364,8 @@ def select_current_system_incidents(runtime: Any, *, scope: ScopeRef, root: Path
             diagnosis = [r for r in diagnosis if r == latest]
         current = _drop_resolved_allowlisted_unit_incidents(current, runtime=runtime,
                                                             expected_commit=repository["base_commit"])
+        current = _drop_inapplicable_sqlite_projection_incidents(current, runtime=runtime,
+                                                                expected_commit=repository["base_commit"])
     if not current:
         if diagnosis:
             return {"ok": False, "status": "diagnosis_required", "processed": [],
