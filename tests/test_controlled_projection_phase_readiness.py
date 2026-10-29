@@ -229,3 +229,40 @@ def test_failed_projection_restore_blocks_before_stability_sample(pipeline, monk
     result = pipeline.run()
     assert result["ok"] is False
     assert result["blocked_stage"] == "projection_acceptance_restore"
+
+
+def test_postgres_vector_not_applicable_is_ready(phase):
+    """Disabled/not_configured postgres_vector must not invent projection incidents."""
+    phase.monkeypatch.setattr(
+        phase.barrier, "wait_for_candidate_readiness",
+        lambda *a, **kw: {
+            "ok": True,
+            "applicable": False,
+            "status": "not_applicable",
+            "source_type": "postgres_vector",
+            "final_measurement": None,
+        },
+    )
+    result = closure._wait_for_controlled_projection(
+        phase.runtime, expected_commit="a" * 40, timeout_seconds=1)
+    assert result["ok"] is True
+    assert result["blocked_reason"] == "postgres_candidate_projection_not_applicable"
+    assert result["read_only"] is True
+
+
+def test_sqlite_not_applicable_is_ready(phase):
+    phase.monkeypatch.setattr(
+        phase.barrier, "wait_for_candidate_readiness",
+        lambda *a, **kw: {
+            "ok": True,
+            "applicable": False,
+            "status": "not_applicable",
+            "source_type": "sqlite",
+            "final_measurement": None,
+        },
+    )
+    result = closure._wait_for_controlled_projection(
+        phase.runtime, expected_commit="a" * 40, timeout_seconds=1)
+    assert result["ok"] is True
+    assert result["blocked_reason"] == "sqlite_candidate_projection_not_applicable"
+

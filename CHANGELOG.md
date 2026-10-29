@@ -1,3 +1,9 @@
+## 1.15.65
+
+- fix: drop sticky `post_replay_projection_not_ready` release.closure incidents once live projection wait reports ok (not only the sqlite N/A token). Stops Hermes `proposal_unwired_public_functions` thrash after postgres vector lag clears under a storage-release hold.
+- fix: treat postgres_vector candidate barriers with status `not_applicable` as ready in release-closure post_replay wait (disabled/not_configured), matching the sqlite path.
+
+---
 ## 1.15.64
 
 - fix: treat sqlite candidate projection as not-applicable ready in release closure post_replay wait, and stop auto-routing sticky `post_replay_projection_not_ready` incidents Hermes cannot repair.

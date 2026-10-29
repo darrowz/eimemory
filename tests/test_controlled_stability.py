@@ -876,3 +876,73 @@ def test_drop_resolved_allowlisted_unit_incidents_when_quiet(monkeypatch):
     assert kept[0][1]["incident_class"] == "release.closure_internal_failure"
     assert kept[0][0] is other
     assert kept[1][1]["incident_class"] == "deployment.runtime_commit_drift"
+
+
+def test_drop_resolved_projection_readiness_incidents_when_live_ok(monkeypatch):
+    """Sticky post_replay_projection_not_ready must drop once live wait is ok.
+
+    1.15.64 only dropped when blocked_reason was the sqlite N/A token. With
+    postgres_vector enabled the wait returns ok=True and an empty reason once
+    lag clears, so the sticky release.closure incident stayed routed to Hermes
+    (proposal_unwired_public_functions). Drop on live.ok alone.
+    """
+    from eimemory.governance.evolution import code_automation_policy_incidents as incidents
+    from types import SimpleNamespace
+
+    live = {"ok": True, "blocked_reason": "", "attempt_count": 1, "read_only": True}
+    monkeypatch.setattr(
+        "eimemory.governance.release.release_closure._wait_for_controlled_projection",
+        lambda *a, **k: live,
+    )
+    sticky = SimpleNamespace(content={
+        "detector_report": {
+            "blocked_reason": "post_replay_projection_not_ready",
+            "identity": {"hard_errors": [{"code": "post_replay_projection_not_ready"}]},
+        },
+    })
+    other = SimpleNamespace(content={
+        "detector_report": {"blocked_reason": "controlled_rpc_probe_failed", "identity": {}},
+    })
+    current = [
+        (sticky, {
+            "incident_class": "release.closure_internal_failure",
+            "diagnostic_codes": ["post_replay_projection_not_ready"],
+            "incident_id": "incident-release-closure-deadbeef",
+        }),
+        (other, {"incident_class": "release.closure_internal_failure", "diagnostic_codes": []}),
+        (SimpleNamespace(content={}), {"incident_class": "deployment.runtime_commit_drift"}),
+    ]
+    kept = incidents._drop_resolved_projection_readiness_incidents(
+        current, runtime=object(), expected_commit="a" * 40)
+    assert len(kept) == 2
+    assert kept[0][0] is other
+    assert kept[1][1]["incident_class"] == "deployment.runtime_commit_drift"
+
+
+def test_drop_resolved_projection_keeps_when_live_still_blocked(monkeypatch):
+    from eimemory.governance.evolution import code_automation_policy_incidents as incidents
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "eimemory.governance.release.release_closure._wait_for_controlled_projection",
+        lambda *a, **k: {"ok": False, "blocked_reason": "post_replay_projection_not_ready"},
+    )
+    sticky = SimpleNamespace(content={
+        "detector_report": {"blocked_reason": "post_replay_projection_not_ready", "identity": {}},
+    })
+    current = [
+        (sticky, {
+            "incident_class": "release.closure_internal_failure",
+            "diagnostic_codes": ["post_replay_projection_not_ready"],
+        }),
+    ]
+    kept = incidents._drop_resolved_projection_readiness_incidents(
+        current, runtime=object(), expected_commit="a" * 40)
+    assert len(kept) == 1
+    assert kept[0][0] is sticky
+
+
+def test_drop_inapplicable_sqlite_alias_still_exports():
+    from eimemory.governance.evolution import code_automation_policy_incidents as incidents
+    assert (incidents._drop_inapplicable_sqlite_projection_incidents
+            is incidents._drop_resolved_projection_readiness_incidents)

@@ -239,12 +239,15 @@ def _drop_resolved_allowlisted_unit_incidents(current, *, runtime, expected_comm
 
 
 
-def _drop_inapplicable_sqlite_projection_incidents(current, *, runtime, expected_commit: str):
-    """Drop release.closure incidents caused by sqlite having no projection barrier.
+def _drop_resolved_projection_readiness_incidents(current, *, runtime, expected_commit: str):
+    """Drop release.closure incidents once live projection readiness is restored.
 
-    ``post_replay_projection_not_ready`` / ``projection_barrier_contract_invalid``
-    on a sqlite candidate source are not code defects Hermes can repair. Once the
-    live wait reports sqlite not-applicable readiness, stop auto-routing them.
+    ``post_replay_projection_not_ready`` / ``post_acceptance_projection_not_ready``
+    / ``projection_barrier_contract_invalid`` are typically ops timing (vector sync
+    lag under a storage-release hold) or an explicit not-applicable candidate
+    barrier (sqlite, or postgres disabled/not_configured). Hermes cannot
+    code-repair them; once live wait reports ok, stop auto-routing so nightly
+    code_evolution does not thrash with ``proposal_unwired_public_functions``.
     """
     if not current:
         return current
@@ -274,11 +277,17 @@ def _drop_inapplicable_sqlite_projection_incidents(current, *, runtime, expected
             from eimemory.governance.release.release_closure import _wait_for_controlled_projection
             live = _wait_for_controlled_projection(
                 runtime, expected_commit=expected_commit, timeout_seconds=5.0)
-        if (live.get("ok") is True
-                and live.get("blocked_reason") == "sqlite_candidate_projection_not_applicable"):
+        # Ready for any admitted reason: empty (postgres caught up), sqlite N/A,
+        # or postgres disabled/not_configured N/A. Do not require the sqlite-only
+        # blocked_reason — that left sticky postgres-lag incidents routed to Hermes.
+        if live.get("ok") is True:
             continue
         kept.append((record, incident))
     return kept
+
+
+# Back-compat alias for callers/tests that imported the 1.15.64 name.
+_drop_inapplicable_sqlite_projection_incidents = _drop_resolved_projection_readiness_incidents
 
 def select_current_system_incidents(runtime: Any, *, scope: ScopeRef, root: Path, repository: Mapping[str, Any] | None = None) -> dict[str, Any]:
     from eimemory.governance.release.evidence_contract import current_release_identity
@@ -364,8 +373,8 @@ def select_current_system_incidents(runtime: Any, *, scope: ScopeRef, root: Path
             diagnosis = [r for r in diagnosis if r == latest]
         current = _drop_resolved_allowlisted_unit_incidents(current, runtime=runtime,
                                                             expected_commit=repository["base_commit"])
-        current = _drop_inapplicable_sqlite_projection_incidents(current, runtime=runtime,
-                                                                expected_commit=repository["base_commit"])
+        current = _drop_resolved_projection_readiness_incidents(current, runtime=runtime,
+                                                           expected_commit=repository["base_commit"])
     if not current:
         if diagnosis:
             return {"ok": False, "status": "diagnosis_required", "processed": [],
