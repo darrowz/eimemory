@@ -1,3 +1,8 @@
+## 1.15.67
+
+- fix: drop sticky release.closure oneshot-stability aggregates (`sample_not_current_or_healthy` + `sample_unit_inventory_incomplete`) once allowlisted JOB_UNITS are quiet again; reset-failed JOB_UNITS (and legacy learning oneshots) before CE readiness drops. Stops Hermes focused_verification thrash on unpatchable gate-evidence plans after timer-monitor / nightly sticky failures.
+
+---
 ## 1.15.65
 
 - fix: drop sticky `post_replay_projection_not_ready` release.closure incidents once live projection wait reports ok (not only the sqlite N/A token). Stops Hermes `proposal_unwired_public_functions` thrash after postgres vector lag clears under a storage-release hold.

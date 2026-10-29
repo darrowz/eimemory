@@ -833,7 +833,9 @@ def test_reset_failed_allowlisted_job_units_best_effort(monkeypatch):
     report = probe.reset_failed_allowlisted_job_units()
     assert report["action"] == "systemctl_user_reset_failed"
     assert report["ok"] is True
-    assert set(report["reset"]) == set(probe.JOB_UNITS)
+    expected = set(probe.JOB_UNITS) | set(probe._LEGACY_LEARNING_RESET_UNITS)
+    assert set(report["reset"]) == expected
+    assert set(report["units"]) == expected
     assert all(c[:3] == ["systemctl", "--user", "reset-failed"] for c in calls)
 
 
@@ -876,6 +878,54 @@ def test_drop_resolved_allowlisted_unit_incidents_when_quiet(monkeypatch):
     assert kept[0][1]["incident_class"] == "release.closure_internal_failure"
     assert kept[0][0] is other
     assert kept[1][1]["incident_class"] == "deployment.runtime_commit_drift"
+
+
+def test_drop_resolved_oneshot_stability_aggregate_codes_when_quiet(monkeypatch):
+    """Assess aggregates sample_* when a sample had allowlisted oneshot failures.
+
+    rec_846c64ee8260 CE thrash: sticky release.closure had blocked_reason
+    sample_not_current_or_healthy with hard_errors sample_not_current_or_healthy
+    + sample_unit_inventory_incomplete (timer-monitor failed mid-window). The
+    1.15.62 drop only matched allowlisted_unit_not_ready, so Hermes kept
+    receiving an unpatchable gate-evidence plan (focused_verification_failed).
+    """
+    from eimemory.governance.evolution import code_automation_policy_incidents as incidents
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "eimemory.ops.controlled_stability.allowlisted_job_units_restored_ready",
+        lambda: {"ok": True, "units": [], "read_only": True},
+    )
+    sticky = SimpleNamespace(content={
+        "detector_report": {
+            "blocked_reason": "sample_not_current_or_healthy",
+            "identity": {
+                "hard_errors": [
+                    {"code": "sample_not_current_or_healthy"},
+                    {"code": "sample_unit_inventory_incomplete"},
+                ],
+            },
+        },
+    })
+    health_only = SimpleNamespace(content={
+        "detector_report": {
+            "blocked_reason": "sample_not_current_or_healthy",
+            "identity": {"hard_errors": [{"code": "sample_not_current_or_healthy"}]},
+        },
+    })
+    other = SimpleNamespace(content={
+        "detector_report": {"blocked_reason": "controlled_rpc_probe_failed", "identity": {}},
+    })
+    current = [
+        (sticky, {"incident_class": "release.closure_internal_failure"}),
+        (health_only, {"incident_class": "release.closure_internal_failure"}),
+        (other, {"incident_class": "release.closure_internal_failure"}),
+    ]
+    kept = incidents._drop_resolved_allowlisted_unit_incidents(
+        current, runtime=None, expected_commit="a" * 40)
+    assert len(kept) == 2
+    assert kept[0][0] is health_only
+    assert kept[1][0] is other
 
 
 def test_drop_resolved_projection_readiness_incidents_when_live_ok(monkeypatch):

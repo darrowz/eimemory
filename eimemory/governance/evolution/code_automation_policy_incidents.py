@@ -204,12 +204,23 @@ def _repository_identity(root: Path) -> dict[str, Any]:
 
 
 
+# Aggregate assess codes when a stability sample had allowlisted oneshot
+# failures. Hermes cannot code-repair these; they must not stay routed to CE.
+_ONESHOT_STABILITY_CODES = frozenset({
+    "allowlisted_unit_not_ready",
+    "sample_not_current_or_healthy",
+    "sample_unit_inventory_incomplete",
+})
+
+
 def _drop_resolved_allowlisted_unit_incidents(current, *, runtime, expected_commit: str):
     """Drop release.closure incidents whose only live defect was sticky failed oneshots.
 
-    Hermes cannot code-repair ``allowlisted_unit_not_ready``; after JOB_UNITS are
-    quiet again the capture may still name the old incident until the next
-    successful closure. Re-observe units read-only and stop auto-routing.
+    Hermes cannot code-repair ``allowlisted_unit_not_ready`` (or the assess
+    aggregates ``sample_not_current_or_healthy`` + ``sample_unit_inventory_incomplete``
+    that fire when a sample had unit failures). After JOB_UNITS are quiet again
+    the capture may still name the old incident until the next successful
+    closure. Re-observe units read-only and stop auto-routing.
     """
     if not current:
         return current
@@ -226,7 +237,11 @@ def _drop_resolved_allowlisted_unit_incidents(current, *, runtime, expected_comm
         codes = []
         if isinstance(hard, list):
             codes = [str(item.get("code") or "") for item in hard if isinstance(item, dict)]
-        if reason != "allowlisted_unit_not_ready" and "allowlisted_unit_not_ready" not in codes:
+        observed = {c for c in codes if c}
+        if reason:
+            observed.add(reason)
+        unit_tied = bool(observed & {"allowlisted_unit_not_ready", "sample_unit_inventory_incomplete"})
+        if not unit_tied or not observed or not observed <= _ONESHOT_STABILITY_CODES:
             kept.append((record, incident))
             continue
         if live is None:
@@ -371,6 +386,10 @@ def select_current_system_incidents(runtime: Any, *, scope: ScopeRef, root: Path
             current = [(r, i) for r, i in current if not i['incident_class'].startswith('release.closure_')
                        or r.record_id == latest]
             diagnosis = [r for r in diagnosis if r == latest]
+        # Clear sticky Result=failed before readiness drops so CE does not keep
+        # routing oneshot-stability aggregates while JOB_UNITS still look failed.
+        from eimemory.ops.controlled_stability import reset_failed_allowlisted_job_units
+        reset_failed_allowlisted_job_units()
         current = _drop_resolved_allowlisted_unit_incidents(current, runtime=runtime,
                                                             expected_commit=repository["base_commit"])
         current = _drop_resolved_projection_readiness_incidents(current, runtime=runtime,

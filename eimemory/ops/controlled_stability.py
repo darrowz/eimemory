@@ -641,16 +641,29 @@ def _journal() -> dict[str, Any]:
 
 
 
+# Legacy learning oneshots are not in JOB_UNITS (stability inventory) but
+# timer-monitor --include-legacy-learning-timers fails closed on them, which
+# then fails timer-monitor.service itself and reopens allowlisted_unit_not_ready.
+_LEGACY_LEARNING_RESET_UNITS = (
+    "eimemory-learn-watch.service",
+    "eimemory-learn-think.service",
+    "eimemory-learn-dashboard.service",
+)
+
+
 def reset_failed_allowlisted_job_units() -> dict[str, Any]:
     """Clear sticky oneshot ``Result=failed`` before restored stability observation.
 
     Companion to the Result-after-reset-failed trust rule in the sample collector.
-    Does not start or stop units. Best-effort: per-unit failures are recorded and
-    never raised so a single reset miss cannot abort release closure.
+    Also clears legacy learning oneshots so timer-monitor does not immediately
+    re-fail and poison JOB_UNITS. Does not start or stop units. Best-effort:
+    per-unit failures are recorded and never raised so a single reset miss
+    cannot abort release closure.
     """
     reset: list[str] = []
     errors: dict[str, str] = {}
-    for unit in JOB_UNITS:
+    units = list(JOB_UNITS) + [u for u in _LEGACY_LEARNING_RESET_UNITS if u not in JOB_UNITS]
+    for unit in units:
         try:
             completed = subprocess.run(
                 ["systemctl", "--user", "reset-failed", unit],
@@ -666,7 +679,7 @@ def reset_failed_allowlisted_job_units() -> dict[str, Any]:
     return {
         "ok": not errors,
         "action": "systemctl_user_reset_failed",
-        "units": list(JOB_UNITS),
+        "units": units,
         "reset": reset,
         "errors": errors,
     }
