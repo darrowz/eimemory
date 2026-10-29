@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.15.63] — 2026-10-29
+
+- Deploy worker: after a successful immutable install, reconcile user-control-plane `runtime-manager.v1.json` and `managed-code-incident-manifest` to `/opt/eimemory/current` (restart runtime-manager when rewritten). Prevents pruned prior `runtime_commit` from surfacing as opaque `manager_operation_failed` / `managed_ingress_checkpoint_unavailable`.
+- Add `deploy/reconcile_managed_authority_to_current.py` (idempotent; skips non-user topologies).
+
 ## [1.15.62] — 2026-10-29
 
 - Release closure: reset-failed allowlisted oneshot JOB_UNITS before restored stability sampling so sticky nightly/timer-monitor failures cannot reopen allowlisted_unit_not_ready.

@@ -111,6 +111,17 @@ if [[ "$installer_rc" -eq 0 ]]; then
   /opt/eimemory/current/.venv/bin/python -B "$REPO/deploy/refresh_release_scope_bindings.py" "$COMMIT" "$log" >>"$log" 2>&1
   binding_rc=$?
 fi
+# User control-plane: keep managed-authority registry/manifest on the live
+# current release. Immutable install can advance current while registry still
+# names a pruned prior commit; checkpoint then returns manager_operation_failed.
+reconcile_rc=0
+if [[ "$installer_rc" -eq 0 ]]; then
+  current_for_reconcile="$(basename "$(readlink -f /opt/eimemory/current 2>/dev/null || true)")"
+  if [[ "$current_for_reconcile" == "$COMMIT" && -x "$REPO/deploy/reconcile_managed_authority_to_current.py" ]]; then
+    EIMEMORY_CONTROL_PLANE=user /opt/eimemory/current/.venv/bin/python -I -B       "$REPO/deploy/reconcile_managed_authority_to_current.py" "$COMMIT" >>"$log" 2>&1
+    reconcile_rc=$?
+  fi
+fi
 set -e
 
 current="$(basename "$(readlink -f /opt/eimemory/current 2>/dev/null || true)")"
@@ -215,10 +226,10 @@ if [[ -n "${EIMEMORY_RUNTIME_TRANSITION_JOB:-}" && "${EIMEMORY_CODE_EVOLUTION_TR
   fi
 fi
 
-python3 - "$tmp" "$COMMIT" "$started" "$installer_rc" "$current" "$service" "$health_rc" "$health_json" "$log" "$binding_rc" "$attempt_id" "$bytecode_rc" "$service_rc" "$settings_rc" "$post_resume_rc" "$post_resume_attempted" "$post_resume_required" <<'PY'
+python3 - "$tmp" "$COMMIT" "$started" "$installer_rc" "$current" "$service" "$health_rc" "$health_json" "$log" "$binding_rc" "$attempt_id" "$bytecode_rc" "$service_rc" "$settings_rc" "$post_resume_rc" "$post_resume_attempted" "$post_resume_required" "$reconcile_rc" <<'PY'
 import json, os, sys
 from datetime import datetime, timezone
-out, commit, started, installer_rc, current, service, health_rc, health_json, log, binding_rc, attempt_id, bytecode_rc, service_rc, settings_rc, post_resume_rc, post_resume_attempted, post_resume_required = sys.argv[1:]
+out, commit, started, installer_rc, current, service, health_rc, health_json, log, binding_rc, attempt_id, bytecode_rc, service_rc, settings_rc, post_resume_rc, post_resume_attempted, post_resume_required, reconcile_rc = sys.argv[1:]
 try:
     health = json.loads(health_json)
     if not isinstance(health, dict):
@@ -231,7 +242,7 @@ health_ok = (
     and health.get("ok") is True
     and str(health.get("commit") or "") == commit
 )
-ok = int(settings_rc) == 0 and int(post_resume_rc) == 0 and int(service_rc) == 0 and int(bytecode_rc) == 0 and int(binding_rc) == 0 and int(installer_rc) == 0 and current == commit and service == "active" and health_ok
+ok = int(settings_rc) == 0 and int(post_resume_rc) == 0 and int(service_rc) == 0 and int(bytecode_rc) == 0 and int(binding_rc) == 0 and int(reconcile_rc) == 0 and int(installer_rc) == 0 and current == commit and service == "active" and health_ok
 payload = {
     "ok": ok,
     "commit": commit,
@@ -240,6 +251,7 @@ payload = {
     "finished_at": datetime.now(timezone.utc).astimezone().isoformat(),
     "installer_exit_code": int(installer_rc),
     "binding_refresh_exit_code": int(binding_rc),
+    "managed_authority_reconcile_exit_code": int(reconcile_rc),
     "bytecode_cleanup_exit_code": int(bytecode_rc),
     "settings_exit_code": int(settings_rc),
     "post_resume_gate_required": bool(int(post_resume_required)),
