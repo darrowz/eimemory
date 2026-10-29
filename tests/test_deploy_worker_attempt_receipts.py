@@ -55,8 +55,23 @@ def harness(tmp_path, deploy_worker_environment):
         "print('active')\n")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    # Model the trusted checkout contract explicitly: master points at the
+    # target and the working tree is on that branch.  Detached checkouts are
+    # covered by the dedicated negative tests and must remain rejected by the
+    # standing-grant guard.
     (bin_dir / "git").write_text(
-        f'#!/usr/bin/env bash\ncase "$1" in\n  rev-parse) echo {COMMIT};;\n  status) ;;\n  *) ;;\nesac\n')
+        f'''#!/usr/bin/env bash
+case "$1" in
+  fetch) exit 0;;
+  rev-parse) case "$2" in --verify) echo {COMMIT};; origin/master|master|HEAD) echo {COMMIT};; esac;;
+  status) exit 0;;
+  symbolic-ref) echo master;;
+  show-ref) exit 0;;
+  merge-base) exit 0;;
+  checkout|merge) exit 0;;
+  *) exit 0;;
+esac
+''')
     (bin_dir / "systemctl").write_text('#!/usr/bin/env bash\necho unexpected_direct_systemctl >&2\nexit 99\n')
     for tool in ("git", "systemctl"):
         (bin_dir / tool).chmod(0o755)

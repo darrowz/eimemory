@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.15.60] — 2026-10-29
+
+- Synchronize package, README, Codex, and Hermes integration versions.
+- Preserve later real-query failures as high-water evidence; deployment-worker fixtures explicitly model master at tip.
+
+
 ## [1.15.59] — 2026-10-29
 
 - Deploy worker: after verifying HEAD equals origin/master tip, refuse non-master branches and reattach detached HEAD to `master` (check reports `checkout_reattach_master_required`). Prevents ops `git checkout <sha>` from breaking standing-grant verify / learn-watch / code_evolution (`standing_grant_detached_head` replaces unclassified CalledProcessError).

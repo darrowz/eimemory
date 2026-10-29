@@ -2237,23 +2237,32 @@ def test_trusted_prior_release_baseline_and_latest_blocked_high_water(tmp_path, 
     runtime.store.rewrite(accepted_record)
     assert verify_current_production_recall_gate(runtime, scope=BASE_SCOPE)["ok"] is True
 
-    blocked = {
-        **accepted,
-        "ok": False,
-        "accepted": False,
-        "gate_status": "blocked",
-        "blocked_reason": "production_recall_gate_failed",
-        "report_id": "prg_latest_blocked_attempt",
-        "cross_channel_leakage_count": 1,
-        "threshold_gate": {
-            **accepted["threshold_gate"],
+    # Build the blocked attempt from the exact persisted report payload.  The
+    # API projection is intentionally shallow and omits contract evidence such
+    # as baseline_capture; using it here would create a malformed, soft-skipped
+    # record rather than a formed blocked high-water attempt.
+    blocked = deepcopy(accepted_record.content["report"])
+    blocked.update(
+        {
             "ok": False,
+            "accepted": False,
+            "gate_status": "blocked",
             "blocked_reason": "production_recall_gate_failed",
-            "blocking_metrics": {
-                "cross_channel_leakage_count": {"actual": 1, "threshold": 0, "operator": "=="}
+            "report_id": "prg_latest_blocked_attempt",
+            "metrics": {
+                **blocked["metrics"],
+                "recall_at_5": 0.0,
             },
-        },
-    }
+            "threshold_gate": {
+                **blocked["threshold_gate"],
+                "ok": False,
+                "blocked_reason": "production_recall_gate_failed",
+                "blocking_metrics": {
+                    "recall_at_5": {"actual": 0.0, "threshold": 0.9}
+                },
+            },
+        }
+    )
     persisted_blocked = real_query_gate._persist_eligible_high_water(
         runtime,
         blocked,
