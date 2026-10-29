@@ -430,13 +430,30 @@ def _chatpaper_fallback_categories(uri: str, categories: list[str]) -> list[str]
     return [category]
 
 
+def _is_http_block_or_rate_limit(exc: BaseException) -> bool:
+    """True when upstream refuses the client (Cloudflare/WAF 403 or rate-limit 429)."""
+    code = getattr(exc, "code", None)
+    try:
+        if int(code) in {403, 429}:
+            return True
+    except (TypeError, ValueError):
+        pass
+    lowered = str(exc).lower()
+    return "429" in lowered or "too many requests" in lowered or "http error 403" in lowered
+
+
 def _arxiv_category_fallback(fetch_text: FetchTextFunc, *, categories: list[str]) -> list[CollectedItem]:
     items: list[CollectedItem] = []
     seen: set[str] = set()
     for category in categories:
+        # Call fetch_text directly so HTTP 403/429 surface here; fetch_arxiv()
+        # swallows exceptions into ok=False and would otherwise keep hammering.
+        url = build_arxiv_api_url(f"cat:{category}")
         try:
-            result = fetch_arxiv(f"cat:{category}", fetch_text)
-        except Exception:
+            result = parse_arxiv_xml(fetch_text(url))
+        except Exception as exc:
+            if _is_http_block_or_rate_limit(exc):
+                break
             continue
         if not result.ok:
             continue
@@ -475,10 +492,16 @@ def _collect_chatpaper_source(
     combined: list[CollectedItem] = []
     seen: set[str] = set()
     category_errors: list[str] = []
+    blocked = False
     for fetch_url in fetch_urls:
         try:
             result = parse_chatpaper_arxiv_json(fetch_text(fetch_url))
-        except Exception:  # INT-17: isolate one category failure
+        except Exception as exc:  # INT-17: isolate one category failure
+            if _is_http_block_or_rate_limit(exc):
+                code = getattr(exc, "code", None)
+                category_errors.append(f"http_{code}" if code is not None else "fetch blocked")
+                blocked = True
+                break
             category_errors.append("fetch failed")
             continue
         if not result.ok:
@@ -492,6 +515,17 @@ def _collect_chatpaper_source(
             combined.append(item)
 
     if not combined and category_errors:
+        # Cloudflare/WAF 403 on ChatPaper will not be cured by hammering arxiv;
+        # skip fallback to avoid cascading 429s that trip the whole nightly gate.
+        if blocked:
+            return _safe_error(
+                "fetch blocked",
+                metadata={
+                    "url": fetch_urls[0] if fetch_urls else "",
+                    "category_errors": category_errors,
+                    "blocked": True,
+                },
+            )
         fallback_items = _arxiv_category_fallback(
             fetch_text,
             categories=_chatpaper_fallback_categories(uri, categories),
