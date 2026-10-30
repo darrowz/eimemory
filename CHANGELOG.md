@@ -1,3 +1,8 @@
+## 1.15.68
+
+- fix: RelevanceAdmission grounded-backoff — prefer local post-fusion grounding when it finds evidence; only fall back to fused-order Admission select when grounding is empty. Restores production_recall gold ranking under `EIMEMORY_RERANKER_ENABLED=1` while keeping rewrite-empty unlocks.
+
+---
 ## 1.15.67
 
 - fix: drop sticky release.closure oneshot-stability aggregates (`sample_not_current_or_healthy` + `sample_unit_inventory_incomplete`) once allowlisted JOB_UNITS are quiet again; reset-failed JOB_UNITS (and legacy learning oneshots) before CE readiness drops. Stops Hermes focused_verification thrash on unpatchable gate-evidence plans after timer-monitor / nightly sticky failures.

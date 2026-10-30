@@ -176,3 +176,67 @@ def test_real_engine_proactive_delivery_and_session_dedupe(tmp_path, monkeypatch
         assert not calls
     finally:
         runtime.close()
+
+
+def test_relevance_admission_grounded_backoff_keeps_grounding(tmp_path):
+    """Admission ON must not skip local grounding when evidence exists."""
+    with closing(RuntimeStore(tmp_path)) as store:
+        gold = store.append(_record(text='鸿哥部署验收流程 requires pytest before publishing'))
+        distractor = store.append(_record(text='修复验证标记 smoke marker unrelated'))
+        engine = GovernedRecallEngine(store=store, candidate_source=None)
+        select_calls = []
+        admission = RelevanceAdmission(
+            RelevanceConfig(enabled=True, api_key='test', revision='a' * 40),
+            scorer=SimpleNamespace(score=lambda *a, **k: (_ for _ in ()).throw(AssertionError('tei forbidden'))),
+        )
+        real_select = admission.select
+
+        def spy_select(*args, **kwargs):
+            select_calls.append(True)
+            return real_select(*args, **kwargs)
+
+        admission.select = spy_select
+        engine.relevance_admission = admission
+        gold_key = engine._record_key(gold)
+        fusion = {
+            'evidence_by_ref': {gold_key: {'exact_title'}},
+            'detail_by_ref': {gold_key: {'score': 1.0}},
+            'authorized_exact_refs': {gold_key},
+            'pool_members': {},
+        }
+        chosen, state = engine._select_post_fusion_items(
+            [distractor, gold],
+            query=gold.title,
+            limit=1,
+            fusion_state=fusion,
+            component_hints_by_ref={},
+            exact_scope_strategy=True,
+        )
+        assert [r.record_id for r in chosen] == [gold.record_id]
+        assert state.get('hybrid_policy') == 'grounded_backoff_kept_grounded'
+        assert state.get('admission_used') is False
+        assert select_calls == [], 'admission.select must not run when grounding found evidence'
+
+
+def test_relevance_admission_grounded_backoff_fills_when_empty(tmp_path):
+    """Empty grounding still unlocks fused-order Admission fill (rewrite empties)."""
+    with closing(RuntimeStore(tmp_path)) as store:
+        first = store.append(_record(text='alpha smoke marker aaa'))
+        second = store.append(_record(text='beta smoke marker bbb'))
+        engine = GovernedRecallEngine(store=store, candidate_source=None)
+        admission = RelevanceAdmission(
+            RelevanceConfig(enabled=True, api_key='test', revision='a' * 40),
+            scorer=SimpleNamespace(score=lambda *a, **k: (_ for _ in ()).throw(AssertionError('tei forbidden'))),
+        )
+        engine.relevance_admission = admission
+        chosen, state = engine._select_post_fusion_items(
+            [first, second],
+            query='zzzz-no-lexical-match-query',
+            limit=2,
+            fusion_state={},
+            component_hints_by_ref={},
+        )
+        assert [r.record_id for r in chosen] == [first.record_id, second.record_id]
+        assert state.get('hybrid_policy') == 'grounded_backoff_admission_fill'
+        assert state.get('admission_used') is True
+        assert state.get('mode') == 'fused_order'

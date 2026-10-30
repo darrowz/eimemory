@@ -2072,7 +2072,42 @@ class GovernedRecallEngine:
         target_trace = current_target_trace(self)
         if self.relevance_admission is not None:
             from .lightweight_admission import LightweightAdmission
+            from .relevance import RelevanceAdmission
             extra = {}
+            grounding_report: dict[str, Any] | None = None
+            # RelevanceAdmission previously short-circuited past local grounding,
+            # which unlocked rewrite empties but dropped production gold out of
+            # top-5 (mrr 0.67→0). Prefer grounding when it finds evidence; only
+            # fall back to fused-order Admission when grounding is empty.
+            if isinstance(self.relevance_admission, RelevanceAdmission):
+                admission = self.relevance_admission
+                self.relevance_admission = None
+                try:
+                    grounded, grounding_report = self._select_post_fusion_items(
+                        items,
+                        query=query,
+                        limit=limit,
+                        fusion_state=fusion_state,
+                        component_hints_by_ref=component_hints_by_ref,
+                        graph_edge_refs=graph_edge_refs,
+                        source_reports=source_reports,
+                        explicit_recall_boundary=explicit_recall_boundary,
+                        preference_request=preference_request,
+                        research_multi_hit=research_multi_hit,
+                        exact_scope_strategy=exact_scope_strategy,
+                        canonical_first_strategy=canonical_first_strategy,
+                        validate=validate,
+                        deadline_at=deadline_at,
+                        assistance_deadline_at=assistance_deadline_at,
+                    )
+                finally:
+                    self.relevance_admission = admission
+                if grounded:
+                    return grounded, {
+                        **grounding_report,
+                        "hybrid_policy": "grounded_backoff_kept_grounded",
+                        "admission_used": False,
+                    }
             if isinstance(self.relevance_admission, LightweightAdmission):
                 try:
                     with self._local_read_scope(deadline_at):
@@ -2125,6 +2160,13 @@ class GovernedRecallEngine:
                 report = {**report, **{key: fusion_state[key] for key in (
                     "page_candidate_limit", "page_candidate_input_count", "page_candidate_retained_count",
                     "page_candidate_budget_dropped_count", "page_count") if key in fusion_state}}
+            if grounding_report is not None:
+                report = {
+                    **grounding_report,
+                    **report,
+                    "hybrid_policy": "grounded_backoff_admission_fill",
+                    "admission_used": True,
+                }
             return selected, report
         thresholds = dict(self._relevance_selector_thresholds)
         bounded_limit = max(0, int(limit or 0))
