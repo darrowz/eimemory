@@ -390,10 +390,13 @@ def _verify_prior_unconsumed_retired(runtime: Any, root: Path, intent: dict, pol
     if incident['incident_class'].startswith('release.closure_'):
         from eimemory.governance.evolution.code_automation_policy_capture import _current_snapshot
         _, capture, result, actual = _current_snapshot(runtime, scope=previous_scope, release=release)
+        # Only the prior policy's own capture/incident may block retirement.
+        # A sticky failure_detected for a *different* incident that selection
+        # already ops-dropped (projection lag / oneshot quiet) must not freeze
+        # an unrelated unconsumed prior — that deadlock left Hermes npo blocked
+        # with prior_policy_currentness_unverified after 1.15.65/1.15.67 drops.
         if (capture['capture_id'] == intent.get('source', {}).get('capture_id')
-                or result.get('incident_record_id') == intent.get('incident_record_id')
-                or actual['disposition'] in {'failure_detected', 'diagnosis_required'} and not any(
-                    r.record_id == result.get('incident_record_id') for r, _ in previous.get('current', []))):
+                or result.get('incident_record_id') == intent.get('incident_record_id')):
             raise ValueError('prior_policy_currentness_unverified')
     elif incident['incident_class'] == 'deployment.runtime_commit_drift':
         from eimemory.ops.runtime_identity_drift import current_runtime_identity_incident

@@ -1,3 +1,8 @@
+## 1.15.69
+
+- fix: native policy prior-retirement no longer treats a sticky `failure_detected` capture for a *different*, already ops-dropped release.closure incident as blocking. Unrelated unconsumed priors can retire so Hermes `native_policy_owner` does not deadlock on `prior_policy_currentness_unverified` after projection/oneshot readiness drops (1.15.65/1.15.67).
+
+---
 ## 1.15.68
 
 - fix: RelevanceAdmission grounded-backoff — prefer local post-fusion grounding when it finds evidence; only fall back to fused-order Admission select when grounding is empty. Restores production_recall gold ranking under `EIMEMORY_RERANKER_ENABLED=1` while keeping rewrite-empty unlocks.

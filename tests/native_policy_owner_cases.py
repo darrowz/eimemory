@@ -453,6 +453,30 @@ def test_native_two_owner_unconsumed_policy_requires_original_owner_retirement(n
     assert asdict(f.runtime.store.get_by_id(captured_a['incident_record_id']).scope) == asdict(original_scope)
 
 
+def test_sticky_unrelated_ops_dropped_failure_does_not_block_prior_retirement(native_policy_fixture, monkeypatch):
+    """Ops-dropped sticky capture for a different incident must not freeze prior.
+
+    After projection/oneshot readiness drops clear routing, capture may still say
+    failure_detected for that other incident while selection is idle. Retiring an
+    unrelated unconsumed prior must still be allowed (A/B own-capture checks).
+    """
+    f = native_policy_fixture
+    f.capture()
+    first = _ensure(f)
+    assert first['ok'] is True, first
+    published = json.loads((_state(f) / 'published.json').read_bytes())
+    intent = json.loads((_state(f) / (published['intent_key'] + '.json')).read_bytes())
+    policy = json.loads(intent['policy_bytes'])
+    f.capture(attempt='fixture-sticky-other-failure')
+    from eimemory.governance.release.evidence_contract import current_release_identity
+    release = current_release_identity(f.runtime, f.scope)
+    assert release is not None and release.complete
+    monkeypatch.setattr(owner, '_selection', lambda *_a, **_k: {
+        'ok': True, 'status': 'idle', 'processed': [], 'current': [], 'release': release,
+    })
+    owner._verify_prior_unconsumed_retired(f.runtime, f.repo, intent, policy)
+
+
 @pytest.mark.parametrize('wrong_scope', [False, True])
 def test_native_two_owner_terminal_handoff_binds_original_transaction_owner(native_policy_fixture, wrong_scope):
     from eimemory.storage.code_evolution_store import digest_json
