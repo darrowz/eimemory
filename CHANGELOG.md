@@ -36,6 +36,14 @@ AIGC:
 
 # Changelog
 
+## 1.15.71 - 2026-10-31
+
+### Fixed
+- Align Hermes `plugin.yaml` and `eimemory.version` with the package version so
+  `install_hermes_integration` accepts the release after the 1.15.70 hermes-extra
+  change (avoids `Hermes plugin version mismatch: eimemory` rollback).
+
+
 ## 1.15.70 - 2026-10-31
 
 ### Fixed
