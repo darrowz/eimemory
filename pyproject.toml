@@ -1,6 +1,6 @@
 [project]
 name = "eimemory"
-version = "1.15.69"
+version = "1.15.70"
 description = "Local-first memory and evidence-gated learning for long-running AI agents."
 readme = "README.md"
 license = "MIT"
@@ -11,7 +11,7 @@ dependencies = []
 [project.optional-dependencies]
 pdf = ["pypdf>=5,<7"]
 postgres = ["psycopg[binary]>=3.1,<4"]
-hermes = ["PyYAML>=6,<7"]
+hermes = ["PyYAML>=6,<7", "ruamel.yaml==0.18.16"]
 
 [project.scripts]
 eimemory = "eimemory.cli.main:main"

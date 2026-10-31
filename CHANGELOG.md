@@ -36,6 +36,15 @@ AIGC:
 
 # Changelog
 
+## 1.15.70 - 2026-10-31
+
+### Fixed
+- Include `ruamel.yaml` in the `eimemory[hermes]` extra so Hermes closed-loop
+  verify can import hermes-agent config helpers when `HERMES_PYTHON` is the
+  release interpreter (avoids deploy rollback after tip switch on hosts that
+  stub `~/.hermes/hermes-agent/venv/bin/python` at `current/.venv`).
+
+
 ## [1.15.63] — 2026-10-29
 
 - Deploy worker: after a successful immutable install, reconcile user-control-plane `runtime-manager.v1.json` and `managed-code-incident-manifest` to `/opt/eimemory/current` (restart runtime-manager when rewritten). Prevents pruned prior `runtime_commit` from surfacing as opaque `manager_operation_failed` / `managed_ingress_checkpoint_unavailable`.
