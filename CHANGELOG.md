@@ -53,6 +53,13 @@ AIGC:
   stub `~/.hermes/hermes-agent/venv/bin/python` at `current/.venv`).
 
 
+## [1.15.72] - 2026-10-31
+
+### Fixed
+- Hermes multiplexed gateways: wrap code-implementation structured completion in
+  the native profile `set_secret_scope` so aux socket threads no longer raise
+  `UnscopedSecretError` / remap to `provider_attestation_invalid`.
+
 ## [1.15.63] — 2026-10-29
 
 - Deploy worker: after a successful immutable install, reconcile user-control-plane `runtime-manager.v1.json` and `managed-code-incident-manifest` to `/opt/eimemory/current` (restart runtime-manager when rewritten). Prevents pruned prior `runtime_commit` from surfacing as opaque `manager_operation_failed` / `managed_ingress_checkpoint_unavailable`.

@@ -1103,17 +1103,49 @@ class CodeImplementationSocketServer:
         if not callable(complete):
             raise CodeImplementationError("structured_completion_unavailable")
         normalized_request = validate_request(request)
-        raw = complete(
-            task=FIXED_COMPLETION_TASK,
-            instructions=FIXED_COMPLETION_INSTRUCTIONS,
-            input=[{"type": "text", "text": canonical_json(normalized_request)}],
-            json_schema=_response_json_schema(normalized_request),
-            schema_name=RESPONSE_SCHEMA,
-            temperature=0.0,
-            max_tokens=FIXED_COMPLETION_MAX_TOKENS,
-            timeout=FIXED_COMPLETION_TIMEOUT_SECONDS,
-            purpose="bounded proposal-only code implementation",
-        )
+        # Multiplexed Hermes gateways fail-closed on get_secret without a
+        # ContextVar scope. Aux socket threads are not turn-scoped, so install
+        # the native default-profile mapping around structured completion.
+        secret_token = None
+        try:
+            try:
+                from agent.secret_scope import (
+                    build_profile_secret_scope,
+                    current_secret_scope,
+                    is_multiplex_active,
+                    reset_secret_scope,
+                    set_secret_scope,
+                )
+                from eimemory.adapters.hermes.profile_context import native_context
+
+                if is_multiplex_active() and current_secret_scope() is None:
+                    home = str((native_context() or {}).get("hermes_home") or "").strip()
+                    if home:
+                        secret_token = set_secret_scope(
+                            build_profile_secret_scope(Path(home)),
+                            profile_home=home,
+                        )
+            except ImportError:
+                secret_token = None
+            raw = complete(
+                task=FIXED_COMPLETION_TASK,
+                instructions=FIXED_COMPLETION_INSTRUCTIONS,
+                input=[{"type": "text", "text": canonical_json(normalized_request)}],
+                json_schema=_response_json_schema(normalized_request),
+                schema_name=RESPONSE_SCHEMA,
+                temperature=0.0,
+                max_tokens=FIXED_COMPLETION_MAX_TOKENS,
+                timeout=FIXED_COMPLETION_TIMEOUT_SECONDS,
+                purpose="bounded proposal-only code implementation",
+            )
+        finally:
+            if secret_token is not None:
+                try:
+                    from agent.secret_scope import reset_secret_scope
+
+                    reset_secret_scope(secret_token)
+                except ImportError:
+                    pass
         candidate = getattr(raw, "parsed", None)
         if not isinstance(candidate, Mapping):
             raise CodeImplementationError("structured_completion_not_json")
