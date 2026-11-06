@@ -15,7 +15,7 @@ import pytest
 def test_hermes_parser_is_a_declared_optional_package_dependency():
     project=tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8'))['project']
     assert project['dependencies']==[]
-    assert project['optional-dependencies']['hermes']==['PyYAML>=6,<7']
+    assert project['optional-dependencies']['hermes']==['PyYAML>=6,<7', 'ruamel.yaml==0.18.16', 'packaging==26.3']
 
 
 def test_standalone_installer_explains_missing_extra_before_native_mutation(monkeypatch,tmp_path):
@@ -75,7 +75,12 @@ def test_user_preparation_verifies_actual_hermes_import_before_accepting_receipt
     (site/'psycopg').mkdir()
     (site/'psycopg/__init__.py').write_text('')
     (site/'psycopg/rows.py').write_text('dict_row=object()\n')
-    if staged_has_yaml:(site/'yaml.py').write_text('def safe_load(value): return {}\n')
+    if staged_has_yaml:
+        (site/'yaml.py').write_text('def safe_load(value): return {}\n')
+        packaging=site/'packaging'
+        packaging.mkdir()
+        (packaging/'__init__.py').write_text('')
+        (packaging/'requirements.py').write_text('class Requirement:\n    pass\n')
     hashes={}
     for name in ('eimemory','eimemory-qmd','pip','pip3'):
         path=release/'.venv/bin'/name

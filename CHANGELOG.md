@@ -36,6 +36,11 @@ AIGC:
 
 # Changelog
 
+## 1.15.74 - 2026-11-06
+
+### Fixed
+- `eimemory[hermes]` now installs `packaging==26.3`, the direct dependency current Hermes v0.23.0 uses to load plugin requirements. The release interpreter is what the host verifier runs with `-I`; without this module, post-switch plugin discovery raises `ModuleNotFoundError` and the installer rolls back.
+
 ## 1.15.73 - 2026-11-06
 
 ### Fixed

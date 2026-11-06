@@ -26,6 +26,10 @@ def interpreter(root: Path, *, pdf: bool, prior: bool = False) -> Path:
         (package / "__init__.py").write_text("raise AssertionError('prior imported')\n" if prior else "")
     if not prior:
         (site / 'yaml.py').write_text('def safe_load(value): return {}\n')
+        packaging = site / 'packaging'
+        packaging.mkdir()
+        (packaging / '__init__.py').write_text('')
+        (packaging / 'requirements.py').write_text('class Requirement:\n    pass\n')
         pip = site / "pip"
         pip.mkdir()
         (pip / "__init__.py").write_text("")

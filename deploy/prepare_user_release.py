@@ -79,7 +79,7 @@ def verify(repository,commit,releases,record):
             raise ValueError('user_release_console_script_changed')
     run([root/'.venv/bin/python','-I','-B','-X','pycache_prefix='+str(cache),'-m','pip','check'])
     run([root/'.venv/bin/python','-I','-B','-X','pycache_prefix='+str(cache),'-c',
-         'import pypdf,psycopg,yaml; from psycopg.rows import dict_row; assert callable(yaml.safe_load)'])
+         'import pypdf,psycopg,yaml; from packaging.requirements import Requirement; from psycopg.rows import dict_row; assert callable(yaml.safe_load) and callable(Requirement)'])
     run([root/'.venv/bin/python','-I','-B','-X','pycache_prefix='+str(cache),
         root/'.venv/bin/eimemory','--help'],stdout=subprocess.DEVNULL)
     return root

@@ -3450,7 +3450,7 @@ if [ "$EIMEMORY_INSTALL_PDF_EXTRA" = "1" ]; then
 fi
 "$STAGE_DIR/.venv/bin/python" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" -m pip check
 if ! "$STAGE_DIR/.venv/bin/python" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" -c \
-    'import yaml; assert callable(yaml.safe_load)' >/dev/null 2>&1; then
+    'import yaml; from packaging.requirements import Requirement; assert callable(yaml.safe_load) and callable(Requirement)' >/dev/null 2>&1; then
   echo "hermes_dependency=failed staged_import" >&2
   exit 2
 fi
