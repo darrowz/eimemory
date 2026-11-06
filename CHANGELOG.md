@@ -36,6 +36,11 @@ AIGC:
 
 # Changelog
 
+## 1.15.73 - 2026-11-06
+
+### Fixed
+- Hermes cron/operator explicit recall no longer injects `acceptance_generated` into `task_context`. Explicit recall only accepts `source_ids` there; the extra key was collapsed to HTTP 400 `invalid_request`. Operator calls still force `explicit_request.acceptance_generated=true`, so they stay out of natural evidence.
+
 ## 1.15.71 - 2026-10-31
 
 ### Fixed

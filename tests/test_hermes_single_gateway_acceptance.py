@@ -222,7 +222,9 @@ def test_server_keeps_business_request_natural_and_forces_operator_explicit_out_
         'query': 'Synthetic local recall', 'task_context': {'source_ids': ['hermes']},
         'explicit_request': request}})
     assert response['ok'] and calls[-1]['explicit_request']['acceptance_generated'] is True
-    assert calls[-1]['task_context']['acceptance_generated'] is True
+    assert calls[-1]['task_context'] == {'source_ids': ['hermes']}
+    from eimemory.evaluation.explicit_recall import _explicit_sources
+    assert _explicit_sources(calls[-1]['task_context']) == ['hermes']
     assert request['acceptance_generated'] is False, 'do not mutate a caller object'
 
 

@@ -612,9 +612,14 @@ class EIBrainRPCBridge:
                 binding = request_sampling_binding(channel=channel, scope=scope,
                     source_ids=task_context.get('source_ids'), claim=params.get('runtime_profile_binding'))
                 if binding is not None and binding['binding_kind'] == 'operator':
-                    task_context = {**task_context, 'acceptance_generated': True}
+                    # Operator traffic must not count as natural evidence. Explicit
+                    # recall only accepts source_ids in task_context; putting the
+                    # flag there raises and the bridge collapses it to invalid_request.
+                    # The flag already lives on explicit_request for that path.
                     if explicit_request is not None:
                         explicit_request = {**explicit_request, 'acceptance_generated': True}
+                    else:
+                        task_context = {**task_context, 'acceptance_generated': True}
                 result = self.runtime_adapter.prefetch(
                     channel=channel,
                     scope=scope,
