@@ -770,7 +770,10 @@ class EIBrainRPCBridge:
                 )
             else:
                 return self._with_contract({"ok": False, "error": "unknown_method"})
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            if (method == "adapter.proactive_signal"
+                    and exc.args == ("effect_signal_acceptance_decision_rejected",)):
+                return self._with_contract({"ok": False, "error": "effect_signal_acceptance_decision_rejected"})
             return self._with_contract(self._invalid_request())
         return self._with_contract({"ok": bool(result.get("ok")), "result": result})
 

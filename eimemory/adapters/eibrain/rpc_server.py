@@ -4,10 +4,12 @@ import errno
 import hmac
 import ipaddress
 import json
+import logging
 import os
 from pathlib import Path
 import re
 import signal
+import sqlite3
 from typing import Mapping
 import socket
 import subprocess
@@ -27,6 +29,8 @@ from eimemory.intake.safe_transport import safe_urlopen
 from eimemory.ei_bridge.protocol import EIMEMORY_RPC_CONTRACT_VERSION
 from eimemory.ei_bridge.protocol import EIMemoryRPCRequest, EIMemoryRPCResponse
 from eimemory.version import __version__
+from eimemory.core.clock import now_iso
+from eimemory.storage.bounded_jsonl import append_bounded_jsonl
 from eimemory.runtime_identity import package_import_root, runtime_package_tree_digest
 
 
@@ -34,6 +38,29 @@ _CLIENT_DISCONNECT_ERRNOS = {errno.EPIPE, errno.ECONNRESET, errno.ECONNABORTED}
 MAX_RPC_BODY_BYTES = 1_000_000
 MIN_RPC_AUTH_TOKEN_LENGTH = 32
 MIN_RPC_AUTH_TOKEN_DISTINCT_CHARS = 12
+MAX_RPC_ERROR_LOG_BYTES = 64 * 1024
+_logger = logging.getLogger(__name__)
+
+
+def _record_internal_error(runtime, method, exc):
+    """Bounded diagnostic only; never serialize request, repr or traceback."""
+    methods = {'adapter.attest_tool_result', 'adapter.proactive_signal',
+               'adapter.record_verified_capability_outcome'}
+    classes = {RuntimeError, OSError, PermissionError, TimeoutError, KeyError,
+               TypeError, ValueError, AttributeError, AssertionError,
+               sqlite3.OperationalError, sqlite3.IntegrityError,
+               sqlite3.ProgrammingError, sqlite3.DatabaseError}
+    entry = {'ts': now_iso(), 'method': method if method in methods else 'other',
+             'error': 'internal_error',
+             'exception_class': type(exc).__name__ if type(exc) in classes else 'Exception'}
+    _logger.error('eimemory_rpc_failure %s', json.dumps(entry, sort_keys=True))
+    try:
+        append_bounded_jsonl(runtime.store.root / 'logs' / 'rpc-errors.jsonl', entry,
+                             max_bytes=MAX_RPC_ERROR_LOG_BYTES, lock_timeout=0.05)
+    except Exception:
+        # Diagnostics cannot change the original HTTP outcome or expose the
+        # exception text if logging itself is unavailable.
+        pass
 
 
 def _is_loopback_bind(host: str) -> bool:
@@ -165,6 +192,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
         # One POST per connection: rejected/unread bodies cannot become the
         # next HTTP/1.1 request. Authenticate before blocking on the body.
         self.close_connection = True
+        method = ''
         try:
             normal_authorized = self._authorized()
             producer = self._attestation_producer()
@@ -198,7 +226,11 @@ class _RPCHandler(BaseHTTPRequestHandler):
             self._send_json(408, {"ok": False, "error": "request_timeout"})
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
             self._send_json(400, {"ok": False, "error": "invalid_request"})
-        except Exception:  # pragma: no cover - defensive server boundary
+        except Exception as exc:
+            try:
+                _record_internal_error(self.runtime, method, exc)
+            except Exception:
+                pass
             self._send_json(500, {"ok": False, "error": "internal_error"})
 
     def _send_json(self, status_code: int, payload: EIMemoryRPCResponse) -> None:

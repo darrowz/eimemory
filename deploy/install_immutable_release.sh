@@ -537,6 +537,7 @@ STORAGE_WRITER_UNITS=(
 ACTIVE_STORAGE_WRITER_UNITS=()
 LEARNING_TIMER_UNITS=(
   eimemory-real-effect.timer
+  eimemory-l1-extract.timer
   eimemory-nightly.timer
   eimemory-learn-watch.timer
   eimemory-learn-think.timer
@@ -1368,74 +1369,80 @@ _install_learning_runtime_policy() {
   _run_as_service_user rm -f \
     "$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.sh" \
     "$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.service" \
-    "$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.timer"
-  _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/eimemory-nightly.service.d"
+    "$USER_SYSTEMD_DIR/eimemory-l5-observation-gate.timer" || return $?
+  _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/eimemory-nightly.service.d" || return $?
   _run_as_service_user rm -f \
     "$USER_SYSTEMD_DIR/eimemory-nightly.service.d/l5-auto-apply.conf" \
     "$USER_SYSTEMD_DIR/eimemory-nightly.service.d/99-disable-auto-promotion.conf" \
     "$USER_SYSTEMD_DIR/eimemory-nightly.service.d/zz-disable-auto-promotion.conf" \
-    "$USER_SYSTEMD_DIR/eimemory-nightly.service.d/zz-l5-start-now.conf"
+    "$USER_SYSTEMD_DIR/eimemory-nightly.service.d/zz-l5-start-now.conf" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-nightly.service" \
-    "$USER_SYSTEMD_DIR/eimemory-nightly.service"
+    "$USER_SYSTEMD_DIR/eimemory-nightly.service" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-nightly.timer" \
-    "$USER_SYSTEMD_DIR/eimemory-nightly.timer"
+    "$USER_SYSTEMD_DIR/eimemory-nightly.timer" || return $?
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-l1-extract.service" \
+    "$USER_SYSTEMD_DIR/eimemory-l1-extract.service" || return $?
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-l1-extract.timer" \
+    "$USER_SYSTEMD_DIR/eimemory-l1-extract.timer" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-learn-watch.service" \
-    "$USER_SYSTEMD_DIR/eimemory-learn-watch.service"
+    "$USER_SYSTEMD_DIR/eimemory-learn-watch.service" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-real-effect.service" \
-    "$USER_SYSTEMD_DIR/eimemory-real-effect.service"
+    "$USER_SYSTEMD_DIR/eimemory-real-effect.service" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-real-effect.timer" \
-    "$USER_SYSTEMD_DIR/eimemory-real-effect.timer"
+    "$USER_SYSTEMD_DIR/eimemory-real-effect.timer" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-learn-watch.timer" \
-    "$USER_SYSTEMD_DIR/eimemory-learn-watch.timer"
+    "$USER_SYSTEMD_DIR/eimemory-learn-watch.timer" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-learn-think.service" \
-    "$USER_SYSTEMD_DIR/eimemory-learn-think.service"
+    "$USER_SYSTEMD_DIR/eimemory-learn-think.service" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-learn-think.timer" \
-    "$USER_SYSTEMD_DIR/eimemory-learn-think.timer"
+    "$USER_SYSTEMD_DIR/eimemory-learn-think.timer" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-learn-dashboard.service" \
-    "$USER_SYSTEMD_DIR/eimemory-learn-dashboard.service"
+    "$USER_SYSTEMD_DIR/eimemory-learn-dashboard.service" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-learn-dashboard.timer" \
-    "$USER_SYSTEMD_DIR/eimemory-learn-dashboard.timer"
+    "$USER_SYSTEMD_DIR/eimemory-learn-dashboard.timer" || return $?
   _install_as_service_user 0755 \
     "$target_release/deploy/systemd/eimemory-l5-effect-review.sh" \
-    "$USER_SYSTEMD_DIR/eimemory-l5-effect-review.sh"
+    "$USER_SYSTEMD_DIR/eimemory-l5-effect-review.sh" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-l5-effect-review.service" \
-    "$USER_SYSTEMD_DIR/eimemory-l5-effect-review.service"
+    "$USER_SYSTEMD_DIR/eimemory-l5-effect-review.service" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-l5-effect-review.timer" \
-    "$USER_SYSTEMD_DIR/eimemory-l5-effect-review.timer"
+    "$USER_SYSTEMD_DIR/eimemory-l5-effect-review.timer" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-audit-verify.service" \
-    "$USER_SYSTEMD_DIR/eimemory-audit-verify.service"
+    "$USER_SYSTEMD_DIR/eimemory-audit-verify.service" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-audit-verify.timer" \
-    "$USER_SYSTEMD_DIR/eimemory-audit-verify.timer"
+    "$USER_SYSTEMD_DIR/eimemory-audit-verify.timer" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-timer-monitor.service" \
-    "$USER_SYSTEMD_DIR/eimemory-timer-monitor.service"
+    "$USER_SYSTEMD_DIR/eimemory-timer-monitor.service" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-timer-monitor.timer" \
-    "$USER_SYSTEMD_DIR/eimemory-timer-monitor.timer"
+    "$USER_SYSTEMD_DIR/eimemory-timer-monitor.timer" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-backup.service" \
-    "$USER_SYSTEMD_DIR/eimemory-backup.service"
+    "$USER_SYSTEMD_DIR/eimemory-backup.service" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-backup.timer" \
-    "$USER_SYSTEMD_DIR/eimemory-backup.timer"
+    "$USER_SYSTEMD_DIR/eimemory-backup.timer" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-learning-runtime.conf" \
-    "$USER_SYSTEMD_DIR/eimemory-nightly.service.d/zz-eimemory-learning-runtime.conf"
-  _user_systemctl daemon-reload
+    "$USER_SYSTEMD_DIR/eimemory-nightly.service.d/zz-eimemory-learning-runtime.conf" || return $?
+  _user_systemctl daemon-reload || return $?
   local unit
   for unit in "${LEARNING_TIMER_UNITS[@]}"; do
     _user_systemctl enable "$unit" || return $?
@@ -1478,7 +1485,7 @@ _install_code_implementation_owner_policy() {
   _run_as_service_user rm -f \
     "$USER_SYSTEMD_DIR/eimemory-code-implementation-bringup.service" \
     "$USER_SYSTEMD_DIR/eimemory-code-implementation-advertise.service" \
-    "$USER_SYSTEMD_DIR/eimemory-code-implementation-advertise.timer"
+    "$USER_SYSTEMD_DIR/eimemory-code-implementation-advertise.timer" || return $?
 
   # A rollback to a release predating the official owner must retire the new
   # timer instead of leaving a unit that points at an unavailable command.
@@ -1489,23 +1496,23 @@ _install_code_implementation_owner_policy() {
     _run_as_service_user rm -f \
       "$USER_SYSTEMD_DIR/eimemory-code-implementation-refresh.service" \
       "$USER_SYSTEMD_DIR/eimemory-code-implementation-refresh.timer" \
-      "$USER_SYSTEMD_DIR/eimemory-code-implementation-refresh.service.d/90-eimemory-python-runtime.conf"
+      "$USER_SYSTEMD_DIR/eimemory-code-implementation-refresh.service.d/90-eimemory-python-runtime.conf" || return $?
     _run_as_service_user rmdir \
       "$USER_SYSTEMD_DIR/eimemory-code-implementation-refresh.service.d" \
       >/dev/null 2>&1 || true
-    _user_systemctl daemon-reload
+    _user_systemctl daemon-reload || return $?
     echo "code_implementation_owner=retired target_release_without_owner"
     return 0
   fi
 
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-code-implementation-refresh.service" \
-    "$USER_SYSTEMD_DIR/eimemory-code-implementation-refresh.service"
+    "$USER_SYSTEMD_DIR/eimemory-code-implementation-refresh.service" || return $?
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-code-implementation-refresh.timer" \
-    "$USER_SYSTEMD_DIR/eimemory-code-implementation-refresh.timer"
-  _user_systemctl daemon-reload
-  _user_systemctl enable eimemory-code-implementation-refresh.timer
+    "$USER_SYSTEMD_DIR/eimemory-code-implementation-refresh.timer" || return $?
+  _user_systemctl daemon-reload || return $?
+  _user_systemctl enable eimemory-code-implementation-refresh.timer || return $?
 }
 
 _start_code_implementation_owner() {
@@ -1628,17 +1635,17 @@ _install_current_runtime_metadata() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return 0
   fi
-  _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
+  _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR" || return $?
   # Install before discovery so the worker receives the same immutable runtime
   # identity as RPC. A timer may run with serving disabled; maintenance is opt-in.
   if [ -f "$target_release/deploy/systemd/eimemory-vector-sync.service" ] && \
      [ -f "$target_release/deploy/systemd/eimemory-vector-sync.timer" ]; then
     _install_as_service_user 0644 "$target_release/deploy/systemd/eimemory-vector-sync.service" \
-      "$USER_SYSTEMD_DIR/eimemory-vector-sync.service"
+      "$USER_SYSTEMD_DIR/eimemory-vector-sync.service" || return $?
     _install_as_service_user 0644 "$target_release/deploy/systemd/eimemory-vector-sync.timer" \
-      "$USER_SYSTEMD_DIR/eimemory-vector-sync.timer"
-    _user_systemctl daemon-reload
-    _user_systemctl enable eimemory-vector-sync.timer
+      "$USER_SYSTEMD_DIR/eimemory-vector-sync.timer" || return $?
+    _user_systemctl daemon-reload || return $?
+    _user_systemctl enable eimemory-vector-sync.timer || return $?
   else
     _user_systemctl disable --now eimemory-vector-sync.timer >/dev/null 2>&1 || true
     _user_systemctl stop eimemory-vector-sync.service >/dev/null 2>&1 || true
@@ -1675,20 +1682,25 @@ _install_current_runtime_metadata() {
       --retire-target "$USER_SYSTEMD_DIR/$runtime_unit.d/$retired_runtime_dropin_name" \
       --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID" --render-commit "$target_commit" \
       --render-releases-root "$INSTALL_ROOT/releases" \
-      --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
+      --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE" || return $?
     # The user-control-plane drop-in is lexicographically last and overrides
     # Environment= values from earlier drop-ins. Refresh only its commit token
     # before reload; do not rewrite its sandbox or command policy here.
     _refresh_user_control_plane_commit "$runtime_unit" "$target_commit" "$metadata_release" || return $?
   done
   _install_as_service_user 0644 \
-    "$target_release/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"
-  _install_learning_runtime_policy "$metadata_release"
-  _install_code_implementation_owner_policy "$target_release"
+    "$target_release/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service" || return $?
+  # Re-render only an existing exact opt-in assignment before RPC is restarted.
+  # The controller helper is also used during rollback to an older release.
+  _run_as_service_user "$PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" \
+    "$metadata_release/deploy/repair_capture_scope_dropin.py" \
+    --systemd-root "$USER_SYSTEMD_DIR" || return $?
+  _install_learning_runtime_policy "$metadata_release" || return $?
+  _install_code_implementation_owner_policy "$target_release" || return $?
   _install_hermes_integration \
-    "$target_release" "$target_commit" "$metadata_release" "$allow_hermes_provider_only"
-  _user_systemctl daemon-reload
-  _user_systemctl enable eimemory-rpc.service
+    "$target_release" "$target_commit" "$metadata_release" "$allow_hermes_provider_only" || return $?
+  _user_systemctl daemon-reload || return $?
+  _user_systemctl enable eimemory-rpc.service || return $?
 }
 
 _provision_hermes_attestation() {
@@ -1785,14 +1797,14 @@ _install_hermes_integration() {
     if ! _user_systemctl cat "$unit" >/dev/null 2>&1 &&        [ ! -f "$USER_SYSTEMD_DIR/$unit" ]; then
       continue
     fi
-    _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/$unit.d"
+    _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/$unit.d" || return $?
     "$PYTHON_BIN" -I -B -X pycache_prefix="$CONTROL_PYCACHE_PREFIX" "$metadata_release/deploy/install_managed_systemd_dropin.py" \
       --source "$metadata_release/deploy/systemd/eimemory-python-runtime.conf" \
       --target "$USER_SYSTEMD_DIR/$unit.d/$runtime_dropin_name" \
       --retire-target "$USER_SYSTEMD_DIR/$unit.d/$retired_runtime_dropin_name" \
       --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" --render-commit "$target_commit" \
       --render-releases-root "$INSTALL_ROOT/releases" \
-      --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
+      --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE" || return $?
   done
   # The common renderer above supplies the complete memory environment.
   # Do not reinstall the retired gateway command wrapper, umask or startup
@@ -1804,7 +1816,7 @@ _refresh_current_runtime_metadata() {
     _runtime_manager_phase rollback || return $?
     return 0
   fi
-  _install_current_runtime_metadata "$@"
+  _install_current_runtime_metadata "$@" || return $?
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return 0
   fi
@@ -1953,12 +1965,6 @@ _start_managed_runtime_timers() {
     _user_systemctl start openclaw-loop-compact.timer || return $?
   fi
   _start_learning_runtime_timers || return $?
-  # L1 is stopped with the storage writers and restored only if it was active
-  # at capture time. One missed restart then leaves the extract queue undrained
-  # on every later deploy. An enabled unit is started with the other managed timers.
-  if _user_systemctl is-enabled --quiet eimemory-l1-extract.timer; then
-    _user_systemctl start eimemory-l1-extract.timer || return $?
-  fi
 }
 
 _wait_openclaw_gateway_ready() {

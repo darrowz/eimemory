@@ -53,6 +53,11 @@ def _check_live_targets(helper, root: Path, unit: str, names: tuple[str, ...], o
 def preflight(*, controller: Path, release: Path, commit: str, releases_root: str,
               systemd_root: Path, receipt_env_file: str, units: list[str], owner_uid: int):
     helper = _load(controller / 'deploy/install_managed_systemd_dropin.py', '_metadata_dropin')
+    capture = _load(controller / 'deploy/repair_capture_scope_dropin.py', '_metadata_capture')
+    # The helper uses the same runtime validator as the release being installed.
+    import sys
+    sys.path.insert(0, str(controller))
+    capture.repair_capture_dropin(systemd_root, check_only=True)
     policy = _load(release / 'deploy/runtime_identity_policy.py', '_metadata_identity')
     name = policy.managed_dropin_name()
     retired = {'zzzz-eimemory-python-runtime.conf': '90-eimemory-python-runtime.conf',

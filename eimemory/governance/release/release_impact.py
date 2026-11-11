@@ -173,6 +173,8 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "deploy/install_immutable_release.sh",
         "deploy/install_managed_systemd_dropin.py",
         "deploy/refresh_user_control_plane_commit.py",
+        "deploy/repair_capture_scope_dropin.py",
+        "deploy/reconcile_managed_authority_to_current.py",
         "deploy/record_deployment_receipt.py",
         "deploy/record_release_closure_incident.py",
         "deploy/rerun_release_closure.sh",

@@ -50,6 +50,7 @@ class EffectObserver:
         self.dropped = 0
         self.unbound_tools = 0
         self.unbound_turns = 0
+        self.excluded = 0
         self.error = ""
         self.persist_error = ""
         self.ledger_error = ""
@@ -115,6 +116,15 @@ class EffectObserver:
             state = self.turns.get((session, turn))
             if not pending or not pending.get("decision_id"):
                 self.unbound_turns += 1
+                return
+            if pending.get("acceptance_generated") is True:
+                # The server classifies cron/operator decisions. They still
+                # close normally but can never become natural effect evidence.
+                if state:
+                    state["done"] = True
+                self.previous.pop(session, None)
+                self.completed_targets.pop((session, turn), None)
+                self.excluded += 1
                 return
             if not state:
                 self.unbound_turns += 1
@@ -240,6 +250,19 @@ class EffectObserver:
                 return
             for key, params in pending:
                 response = self.provider._safe_call_with(client, "adapter.proactive_signal", params)
+                diagnostic = response.get("diagnostic")
+                rejected = response.get("error") == "effect_signal_acceptance_decision_rejected" or (
+                    isinstance(diagnostic, dict) and diagnostic.get("rpc_error") == "effect_signal_acceptance_decision_rejected")
+                if rejected:
+                    # A pre-upgrade retry ledger may already contain operator
+                    # signals. Retire only an explicit server-owned exclusion;
+                    # auth, namespace and transient failures keep retrying.
+                    with self.lock:
+                        self.pending.pop(key, None)
+                        self.excluded += 1
+                        self.error = ""
+                        self._persist()
+                    continue
                 if response.get("ok") is True and isinstance(response.get("result"), dict) and response["result"].get("ok") is True:
                     with self.lock:
                         self.pending.pop(key, None)
@@ -256,5 +279,6 @@ class EffectObserver:
                     "durable_queue_configured": self.path is not None,
                     "dropped": self.dropped, "error": self.ledger_error or self.persist_error or self.error,
                     "unbound_tool_callbacks": self.unbound_tools, "unbound_completed_turns": self.unbound_turns,
+                    "excluded_acceptance_signals": self.excluded,
                     "worker_running": bool(self.worker and self.worker.is_alive()),
                     "next_user_heuristics": True, "native_reaction_hook": False}

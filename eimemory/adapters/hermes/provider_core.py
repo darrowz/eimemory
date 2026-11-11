@@ -1409,6 +1409,7 @@ class HermesMemoryProviderCore:
             resolved = {
                 **pending,
                 "decision_id": decision_id,
+                "acceptance_generated": payload.get("acceptance_generated") is True,
                 "citations": sorted(set(_PROACTIVE_CITATION.findall(context))),
             }
             abandoned = []

@@ -21,6 +21,11 @@ def configured_capture_scopes():
     policy = os.environ.get('EIMEMORY_CAPTURE_QUERY_SCOPES')
     if policy is None:
         return None
+    return parse_capture_scopes(policy)
+
+
+def parse_capture_scopes(policy):
+    """Shared exact policy validation for runtime and deployment rendering."""
     fields = {'tenant_id', 'agent_id', 'workspace_id', 'user_id', 'channel', 'source_id'}
     try:
         allowed = json.loads(policy)

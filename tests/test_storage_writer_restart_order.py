@@ -8,6 +8,7 @@ import pytest
 
 LEARNING_TIMERS = (
     'eimemory-real-effect.timer',
+    'eimemory-l1-extract.timer',
     'eimemory-nightly.timer',
     'eimemory-learn-watch.timer',
     'eimemory-learn-think.timer',
@@ -17,6 +18,229 @@ LEARNING_TIMERS = (
     'eimemory-timer-monitor.timer',
     'eimemory-backup.timer',
 )
+
+
+@pytest.mark.parametrize('failure', ['', 'eimemory-l1-extract.service', 'eimemory-l1-extract.timer'])
+def test_learning_policy_installs_l1_before_enable_and_propagates_failure(tmp_path, failure):
+    script = Path('deploy/install_immutable_release.sh').read_text()
+    array = 'LEARNING_TIMER_UNITS=(' + script.split('LEARNING_TIMER_UNITS=(', 1)[1].split('\n)', 1)[0] + '\n)\n'
+    setup = f'''
+USER_SYSTEMD_DIR={shlex.quote(str(tmp_path / 'units'))}
+_runtime_manager_enabled() {{ return 1; }}
+_run_as_service_user() {{ :; }}
+_install_as_service_user() {{
+  [ "${{2##*/}}" != {shlex.quote(failure or 'none')} ] || return 42
+  mkdir -p "$(dirname "$3")"
+  install -m "$1" "$2" "$3"
+}}
+_user_systemctl() {{
+  printf '%s\n' "$*"
+  if [ "$1" = enable ]; then
+    test -f "$USER_SYSTEMD_DIR/eimemory-l1-extract.service" || return 99
+    test -f "$USER_SYSTEMD_DIR/eimemory-l1-extract.timer" || return 99
+  fi
+}}
+'''
+    result = _run_bash(setup + array + function('_install_learning_runtime_policy') +
+        'if _install_learning_runtime_policy "$PWD"; then exit 0; else exit $?; fi', tmp_path=tmp_path)
+    assert result.returncode == (42 if failure else 0), result.stderr
+    if failure:
+        assert 'enable ' not in result.stdout
+    else:
+        assert 'enable eimemory-l1-extract.timer' in result.stdout
+        assert 'start eimemory-l1-extract' not in result.stdout
+        for suffix in ('service', 'timer'):
+            assert (tmp_path / 'units' / f'eimemory-l1-extract.{suffix}').read_bytes() == Path(
+                f'deploy/systemd/eimemory-l1-extract.{suffix}').read_bytes()
+
+
+@pytest.mark.parametrize('inventory_status', [0, 43])
+def test_registered_manager_never_installs_or_enables_user_l1(tmp_path, inventory_status):
+    setup = f'''
+_runtime_manager_enabled() {{ return 0; }}
+_runtime_manager_control() {{ [ "$*" = inventory ] || exit 99; return {inventory_status}; }}
+_install_as_service_user() {{ exit 98; }}
+_user_systemctl() {{ exit 97; }}
+'''
+    result = _run_bash(setup + function('_install_learning_runtime_policy') +
+        '_install_learning_runtime_policy /unused', tmp_path=tmp_path)
+    assert result.returncode == inventory_status
+
+
+def test_first_install_l1_is_discovered_before_unit_publication(tmp_path):
+    result = subprocess.run(['bash', 'deploy/discover_python_runtime_units.sh', str(tmp_path / 'missing')],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines().count('eimemory-l1-extract.service') == 1
+
+
+def test_metadata_failure_never_restarts_rpc_or_hides_failure(tmp_path):
+    setup = '''
+USER_SYSTEMD_ENABLE_SERVICE=1
+_runtime_manager_enabled() { return 1; }
+_install_current_runtime_metadata() { return 42; }
+_user_systemctl() { echo forbidden-restart; }
+'''
+    result = _run_bash(setup + function('_refresh_current_runtime_metadata') +
+        'if _refresh_current_runtime_metadata; then exit 0; else exit $?; fi', tmp_path=tmp_path)
+    assert result.returncode == 42
+    assert result.stdout == ''
+
+
+@pytest.mark.parametrize('policy', ['_install_learning_runtime_policy', '_install_code_implementation_owner_policy'])
+@pytest.mark.parametrize('kind,code', [('prepare', 41), ('install', 42), ('reload', 43), ('enable', 44)])
+def test_learning_policy_stops_at_each_required_failure_under_conditional(tmp_path, kind, code, policy):
+    script = Path('deploy/install_immutable_release.sh').read_text()
+    array = 'LEARNING_TIMER_UNITS=(' + script.split('LEARNING_TIMER_UNITS=(', 1)[1].split('\n)', 1)[0] + '\n)\n'
+    setup = '''
+set -e
+USER_SYSTEMD_DIR=/fixture/units
+USER_SYSTEMD_ENABLE_SERVICE=1
+_runtime_manager_enabled() { return 1; }
+step() { printf '%s\n' "$*"; [ "$*" != "$FAIL_STEP" ] || return "$FAIL_CODE"; }
+_run_as_service_user() { step prepare "$@"; }
+_install_as_service_user() { step install "$@"; }
+_user_systemctl() {
+  case "$1" in
+    daemon-reload) step reload "$@" ;;
+    enable) step enable "$@" ;;
+    start) step start "$@" ;;
+    *) return 0 ;;
+  esac
+}
+'''
+    functions = array + function(policy) + function('_start_learning_runtime_timers')
+    def run(failure=''):
+        return _run_bash(setup + f'FAIL_STEP={shlex.quote(failure)}\nFAIL_CODE={code}\n' + functions + f'''
+if {policy} "$PWD"; then
+  _start_learning_runtime_timers
+else
+  exit $?
+fi
+''', tmp_path=tmp_path)
+    baseline = run()
+    assert baseline.returncode == 0, baseline.stderr
+    steps = baseline.stdout.splitlines()
+    failures = [index for index, item in enumerate(steps) if item.startswith(kind + ' ')]
+    assert failures
+    for index in failures:
+        result = run(steps[index])
+        assert result.returncode == code, (steps[index], result.stdout, result.stderr)
+        assert result.stdout.splitlines() == steps[:index + 1]
+
+
+@pytest.mark.parametrize('failure', ['mkdir', 'vector-service', 'vector-timer', 'reload-vector',
+    'enable-vector', 'identity-dropin', 'rpc-service', 'learning', 'owner', 'hermes', 'reload-final', 'enable-rpc'])
+def test_current_metadata_stops_at_required_failure_under_conditional(tmp_path, failure):
+    # Execute the actual orchestration; only the external copy/Python/manager
+    # effects and child-policy results are synthetic. No service is touched.
+    repo = shlex.quote(str(Path.cwd()))
+    setup = f'''
+set -e
+exec 3>&1
+USER_SYSTEMD_ENABLE_SERVICE=1
+USER_SYSTEMD_DIR=/fixture/units
+RELEASE_DIR={repo}
+REPO_DIR={repo}
+INSTALL_ROOT=/fixture/install
+SERVICE_USER=fixture
+PYTHON_BIN=fixture_python
+CONTROL_PYCACHE_PREFIX=/fixture/cache
+EVIDENCE_RECEIPT_ENV_FILE=/fixture/evidence.env
+FAIL_STEP={shlex.quote(failure)}
+step() {{ printf '%s\n' "$1" >&3; [ "$1" != "$FAIL_STEP" ] || return 42; }}
+_runtime_manager_enabled() {{ return 1; }}
+id() {{ printf '1001\n'; }}
+_run_as_service_user() {{
+  case "$1" in
+    mkdir) step mkdir ;;
+    bash) printf 'eimemory-rpc.service\n' ;;
+    *) step capture ;;
+  esac
+}}
+_install_as_service_user() {{
+  case "$2" in
+    *vector-sync.service) step vector-service ;;
+    *vector-sync.timer) step vector-timer ;;
+    *rpc.service) step rpc-service ;;
+  esac
+}}
+fixture_python() {{
+  case "$*" in
+    *runtime_identity_policy.py*) printf 'zzzz-eimemory-python-runtime.conf\n' ;;
+    *install_managed_systemd_dropin.py*) step identity-dropin ;;
+  esac
+}}
+RELOADS=0
+_user_systemctl() {{
+  if [ "$1" = daemon-reload ]; then
+    RELOADS=$((RELOADS + 1))
+    if [ "$RELOADS" = 1 ]; then step reload-vector; else step reload-final; fi
+  elif [ "$*" = 'enable eimemory-rpc.service' ]; then step enable-rpc
+  else step enable-vector; fi
+}}
+_is_unselected_openclaw_unit() {{ return 1; }}
+_refresh_user_control_plane_commit() {{ :; }}
+_install_learning_runtime_policy() {{ step learning; }}
+_install_code_implementation_owner_policy() {{ step owner; }}
+_install_hermes_integration() {{ step hermes; }}
+'''
+    result = _run_bash(setup + function('_install_current_runtime_metadata') + '''
+if _install_current_runtime_metadata "$REPO_DIR" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$REPO_DIR"; then
+  step forbidden-start
+else
+  exit $?
+fi
+''', tmp_path=tmp_path)
+    assert result.returncode == 42, (result.stdout, result.stderr)
+    assert result.stdout.splitlines()[-1] == failure
+
+
+@pytest.mark.parametrize('failure', ['gateway-directory', 'gateway-dropin'])
+def test_hermes_metadata_stops_before_later_gateway_after_failure(tmp_path, failure):
+    setup = f'''
+set -e
+exec 3>&1
+USER_SYSTEMD_ENABLE_SERVICE=1
+USER_SYSTEMD_DIR=/fixture/units
+HERMES_PYTHON=fixture_python
+PYTHON_BIN=fixture_python
+CONTROL_PYCACHE_PREFIX=/fixture/cache
+HERMES_HOME_DIR=/fixture/hermes
+SERVICE_HOME=/fixture/home
+SERVICE_USER=fixture
+REPO_DIR="$PWD"
+INSTALL_ROOT=/fixture/install
+EVIDENCE_RECEIPT_ENV_FILE=/fixture/evidence.env
+FAIL_STEP={shlex.quote(failure)}
+step() {{ printf '%s\n' "$1" >&3; [ "$1" != "$FAIL_STEP" ] || return 42; }}
+id() {{ printf '1001\n'; }}
+_hermes_is_installed() {{ return 0; }}
+_user_systemctl() {{ return 0; }}
+_run_as_service_user() {{
+  case "$1" in
+    mkdir) step gateway-directory ;;
+    bash) printf 'hermes-gateway-second.service\n' ;;
+    *) return 0 ;;
+  esac
+}}
+fixture_python() {{
+  case "$*" in
+    *runtime_identity_policy.py*) printf 'zzzz-eimemory-python-runtime.conf\n' ;;
+    *install_managed_systemd_dropin.py*) step gateway-dropin ;;
+  esac
+}}
+'''
+    result = _run_bash(setup + function('_install_hermes_integration') + '''
+if _install_hermes_integration "$PWD" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$PWD"; then
+  step forbidden-start
+else
+  exit $?
+fi
+''', tmp_path=tmp_path)
+    assert result.returncode == 42, (result.stdout, result.stderr)
+    assert result.stdout.splitlines() == (['gateway-directory'] if failure == 'gateway-directory'
+                                          else ['gateway-directory', 'gateway-dropin'])
 
 
 def function(name):
@@ -218,20 +442,19 @@ def test_all_paths_restore_background_only_after_core_and_watcher():
     assert '_verify_release_health' in recover
 
 
-def test_managed_runtime_timers_start_enabled_l1_extractor(tmp_path):
+def test_managed_runtime_timers_start_l1_once_with_learning_policy(tmp_path):
     setup = '''
 USER_SYSTEMD_ENABLE_SERVICE=1
 _openclaw_is_enabled() { return 1; }
-_start_learning_runtime_timers() { echo learning; }
 _user_systemctl() { printf '%s\\n' "$*"; }
 '''
-    result = _run_bash(setup + function('_start_managed_runtime_timers')
+    script = Path('deploy/install_immutable_release.sh').read_text()
+    array = 'LEARNING_TIMER_UNITS=(' + script.split('LEARNING_TIMER_UNITS=(', 1)[1].split('\n)', 1)[0] + '\n)\n'
+    result = _run_bash(setup + array + function('_start_learning_runtime_timers') + function('_start_managed_runtime_timers')
                        + '_start_managed_runtime_timers', tmp_path=tmp_path)
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
-    assert 'learning' in lines
-    assert 'is-enabled --quiet eimemory-l1-extract.timer' in lines
-    assert lines[-1] == 'start eimemory-l1-extract.timer'
+    assert lines.count('start eimemory-l1-extract.timer') == 1
 
 
 def test_managed_policy_starter_preserves_all_timer_activation():

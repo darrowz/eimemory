@@ -69,6 +69,12 @@ def refresh_commit(payload: bytes, commit: str) -> bytes:
 
 
 def write_refresh(target: Path, commit: str, *, check_only: bool = False) -> None:
+    write_payload_refresh(target, lambda payload: refresh_commit(payload, commit), check_only=check_only)
+
+
+def write_payload_refresh(target: Path, render, *, check_only: bool = False,
+                          missing_ok: bool = False) -> bool:
+    """Transform a trusted drop-in; False means only its initial open was absent."""
     # Walk directory descriptors so no component can redirect the update.
     target = Path(os.path.abspath(target))
     directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -78,12 +84,25 @@ def write_refresh(target: Path, commit: str, *, check_only: bool = False) -> Non
     staged = False
     try:
         for component in target.parent.parts[1:]:
-            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                            dir_fd=directory)
+            try:
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=directory)
+            except FileNotFoundError:
+                if missing_ok:
+                    return False
+                raise
             os.close(directory)
             directory = child
-        source = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                         dir_fd=directory)
+        parent = os.fstat(directory)
+        if parent.st_uid not in {os.geteuid(), 0} or parent.st_mode & 0o022:
+            raise RefreshError("drop-in directory must be trusted")
+        try:
+            source = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=directory)
+        except FileNotFoundError:
+            if missing_ok:
+                return False
+            raise
         info = os.fstat(source)
         if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
                 or info.st_uid not in {os.geteuid(), 0} or info.st_mode & 0o022
@@ -91,9 +110,19 @@ def write_refresh(target: Path, commit: str, *, check_only: bool = False) -> Non
             raise RefreshError("target must be a trusted regular file")
         with os.fdopen(os.dup(source), "rb") as stream:
             payload = stream.read(65537)
-        rendered = refresh_commit(payload, commit)
+        rendered = render(payload)
+
+        def verify_unchanged():
+            current = os.stat(target.name, dir_fd=directory, follow_symlinks=False)
+            identity = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns,
+                                   st.st_ctime_ns, st.st_mode, st.st_uid, st.st_gid, st.st_nlink)
+            os.lseek(source, 0, os.SEEK_SET)
+            if identity(current) != identity(info) or os.read(source, 65537) != payload:
+                raise RefreshError("target changed during refresh")
+
         if check_only or rendered == payload:
-            return
+            verify_unchanged()
+            return True
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      0o600, dir_fd=directory)
         staged = True
@@ -103,15 +132,11 @@ def write_refresh(target: Path, commit: str, *, check_only: bool = False) -> Non
         os.fchown(fd, info.st_uid, info.st_gid)
         os.fchmod(fd, stat.S_IMODE(info.st_mode))
         os.fsync(fd)
-        current = os.stat(target.name, dir_fd=directory, follow_symlinks=False)
-        identity = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns,
-                               st.st_ctime_ns, st.st_mode, st.st_uid, st.st_gid, st.st_nlink)
-        os.lseek(source, 0, os.SEEK_SET)
-        if identity(current) != identity(info) or os.read(source, 65537) != payload:
-            raise RefreshError("target changed during refresh")
+        verify_unchanged()
         os.replace(temporary, target.name, src_dir_fd=directory, dst_dir_fd=directory)
         staged = False
         os.fsync(directory)
+        return True
     finally:
         if fd >= 0:
             os.close(fd)

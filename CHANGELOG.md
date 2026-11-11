@@ -36,6 +36,14 @@ AIGC:
 
 # Changelog
 
+## [1.15.75] - 2026-11-11
+
+### Fixed
+- 为现有 L1 queue worker 补齐 service/timer 安装、运行时身份发现与失败传播；仅在已有部署归属下启用，保留 fused owner 的暂停/恢复与队列锁。
+- 正式部署元数据刷新会重新转义既有 capture scope 的 systemd `Environment=` JSON；保留精确授权和开关，不再因引号丢失产生 `scope_policy_invalid`。
+- Hermes effect observer 保留服务端 acceptance 分类，排除 cron/operator 信号；旧重试项仅在服务端明确拒绝 acceptance 决策时退出。
+- 为 RPC 500 增加有界、无私密正文的固定错误诊断，并补齐既有部署助手的 release-impact 归属；未认定历史 500 根因或质量闭环。
+
 ## 1.15.74 - 2026-11-06
 
 ### Fixed

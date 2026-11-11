@@ -75,6 +75,8 @@ def test_every_tracked_production_file_has_a_domain() -> None:
         ("deploy/capture_prior_health_snapshot.py", {"deployment.runtime"}),
         ("deploy/eimemory-deploy-worker", {"deployment.runtime"}),
         ("deploy/preflight_runtime_metadata.py", {"deployment.runtime"}),
+        ("deploy/repair_capture_scope_dropin.py", {"deployment.runtime"}),
+        ("deploy/reconcile_managed_authority_to_current.py", {"deployment.runtime"}),
         ("deploy/retire_completed_user_transition.py", {"deployment.runtime"}),
         ("deploy/prepare_qwen_reranker.py", {"memory.recall", "deployment.runtime"}),
         ("eimemory/adapters/hermes/native_memory.py", {"memory.recall", "channel.delivery"}),

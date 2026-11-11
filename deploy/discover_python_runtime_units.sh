@@ -16,6 +16,7 @@ BASE_UNITS=(
   # Installed in the same deploy that first ships it, after the drop-in pass
   # would have run discovery; it must be a base unit to receive its identity.
   eimemory-backup.service
+  eimemory-l1-extract.service
   eimemory-l5-effect-review.service
   eimemory-code-implementation-refresh.service
   eimemory-learn-dashboard.service
