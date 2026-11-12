@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from eimemory.core.strict_json import StrictJSONError, loads as strict_json_loads
 from eimemory.models.records import ScopeRef
-from eimemory.storage.atomic_file import DEFAULT_MAX_JSON_STATE_BYTES, atomic_write_json, interprocess_lock
+from eimemory.storage.atomic_file import DEFAULT_MAX_JSON_STATE_BYTES, atomic_write_json, interprocess_lock, open_regular_binary
 
 
 MAX_ATTEMPTS = 5
@@ -73,17 +73,25 @@ class L1ExtractQueue:
         self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         self.consumer_lock_path = self.path.with_suffix(self.path.suffix + ".consumer.lock")
 
-    def _load(self) -> dict[str, Any]:
+    def _load(self, *, missing_ok: bool = True) -> dict[str, Any]:
         try:
-            text = self.path.read_text(encoding="utf-8")
+            if missing_ok:
+                text = self.path.read_text(encoding="utf-8")
+            else:
+                with open_regular_binary(self.path) as handle:
+                    text = handle.read(DEFAULT_MAX_JSON_STATE_BYTES + 1)
         except FileNotFoundError as exc:
             if exc.errno == errno.ENOENT:
+                if not missing_ok:
+                    raise L1QueueStateError("recovery_queue_missing") from exc
                 return {"jobs": [], "dead": []}
             raise L1QueueStateError("queue_unreadable", retryable=True) from exc
         except OSError as exc:
             raise L1QueueStateError("queue_unreadable", retryable=True) from exc
         except UnicodeError as exc:
             raise L1QueueStateError("queue_corrupt") from exc
+        except ValueError as exc:
+            raise L1QueueStateError("recovery_state_invalid") from exc
         try:
             payload = strict_json_loads(text, max_bytes=DEFAULT_MAX_JSON_STATE_BYTES)
         except StrictJSONError as exc:
@@ -457,6 +465,29 @@ class L1ExtractQueue:
                                    if i >= len(dead) - 200 or row["job_id"] in pinned]
                 self._save(payload)
             return newly_dead
+
+    def health_summary(self) -> dict[str, int]:
+        """One validated snapshot; retained dead history is never rewritten."""
+        with interprocess_lock(self.lock_path, timeout=2):
+            self._require_recovery_queue()
+            payload = self._load(missing_ok=False)
+            records = payload.get("recoveries", {})
+            by_id = {job["job_id"]: job for job in [*payload["jobs"], *payload["dead"]]}
+            if len(by_id) != len(payload["jobs"]) + len(payload["dead"]):
+                raise L1QueueStateError("queue_schema_invalid")
+            completed = {origin for origin, record in records.items() if record.get("completed_at") is not None}
+            active = sum(1 for record in records.values() if record.get("completed_at") is None
+                         and by_id[record["job_id"]]["status"] in {"queued", "running"})
+            failed = sum(1 for record in records.values() if record.get("completed_at") is None
+                         and by_id[record["job_id"]]["status"] == "dead")
+            return {
+                "pending": len(payload["jobs"]),
+                "dead": len(payload["dead"]),
+                "unresolved_dead": sum(job["job_id"] not in completed for job in payload["dead"]),
+                "active_recoveries": active,
+                "completed_recoveries": len(completed),
+                "failed_recoveries": failed,
+            }
 
     def dead_count(self) -> int:
         with interprocess_lock(self.lock_path):

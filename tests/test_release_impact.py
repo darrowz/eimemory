@@ -129,7 +129,7 @@ def _commit(repo: Path, path: str, content: str, message: str) -> str:
         ),
         (
             "eimemory/knowledge/l1_queue.py",
-            ["memory.governance", "memory.recall"],
+            ["deployment.runtime", "memory.governance", "memory.recall"],
             [],
             "classified_production_change",
         ),

@@ -42,7 +42,7 @@ MAX_RPC_ERROR_LOG_BYTES = 64 * 1024
 _logger = logging.getLogger(__name__)
 
 
-def _record_internal_error(runtime, method, exc):
+def _record_internal_error(runtime, method, exc, *, stage='unknown'):
     """Bounded diagnostic only; never serialize request, repr or traceback."""
     methods = {'adapter.attest_tool_result', 'adapter.proactive_signal',
                'adapter.record_verified_capability_outcome'}
@@ -50,8 +50,14 @@ def _record_internal_error(runtime, method, exc):
                TypeError, ValueError, AttributeError, AssertionError,
                sqlite3.OperationalError, sqlite3.IntegrityError,
                sqlite3.ProgrammingError, sqlite3.DatabaseError}
+    stages = {'authentication', 'request_decode', 'bridge_dispatch', 'response_write'}
+    family = next((name for base, name in ((sqlite3.Error, 'sqlite'), (OSError, 'io'),
+                                          (RuntimeError, 'runtime'))
+                   if isinstance(exc, base)), 'unknown')
     entry = {'ts': now_iso(), 'method': method if method in methods else 'other',
              'error': 'internal_error',
+             'stage': stage if stage in stages else 'unknown',
+             'exception_family': family,
              'exception_class': type(exc).__name__ if type(exc) in classes else 'Exception'}
     _logger.error('eimemory_rpc_failure %s', json.dumps(entry, sort_keys=True))
     try:
@@ -193,12 +199,15 @@ class _RPCHandler(BaseHTTPRequestHandler):
         # next HTTP/1.1 request. Authenticate before blocking on the body.
         self.close_connection = True
         method = ''
+        stage = 'authentication'
         try:
             normal_authorized = self._authorized()
             producer = self._attestation_producer()
             if self._auth_required() and not normal_authorized and not producer:
+                stage = 'response_write'
                 self._send_json(401, {"ok": False, "error": "unauthorized"})
                 return
+            stage = 'request_decode'
             length = content_length(self.headers, max_bytes=MAX_RPC_BODY_BYTES)
             raw = self.rfile.read(length)
             if len(raw) != length:
@@ -209,28 +218,37 @@ class _RPCHandler(BaseHTTPRequestHandler):
             method = request["method"]
             if method in {"adapter.attest_tool_result", "adapter.record_verified_capability_outcome", "adapter.proactive_signal"}:
                 if not producer:
+                    stage = 'response_write'
                     self._send_json(401, {"ok": False, "error": "attestation_unauthorized"})
                     return
+                stage = 'bridge_dispatch'
                 response: EIMemoryRPCResponse = self.bridge.handle(request, attestation_producer=producer)
             else:
                 # Producer credentials never acquire ordinary runtime authority.
                 if self._auth_required() and not normal_authorized:
+                    stage = 'response_write'
                     self._send_json(401, {"ok": False, "error": "unauthorized"})
                     return
+                stage = 'bridge_dispatch'
                 response = self.bridge.handle(request)
             status = 400 if response.get("ok") is False else 200
+            stage = 'response_write'
             self._send_json(status, response)
         except RequestBoundaryError as exc:
+            stage = 'response_write'
             self._send_json(exc.status, {"ok": False, "error": str(exc)})
         except TimeoutError:
+            stage = 'response_write'
             self._send_json(408, {"ok": False, "error": "request_timeout"})
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            stage = 'response_write'
             self._send_json(400, {"ok": False, "error": "invalid_request"})
         except Exception as exc:
             try:
-                _record_internal_error(self.runtime, method, exc)
+                _record_internal_error(self.runtime, method, exc, stage=stage)
             except Exception:
                 pass
+            stage = 'response_write'
             self._send_json(500, {"ok": False, "error": "internal_error"})
 
     def _send_json(self, status_code: int, payload: EIMemoryRPCResponse) -> None:

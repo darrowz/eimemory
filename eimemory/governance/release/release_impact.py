@@ -104,6 +104,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "channel.delivery": (
+        "eimemory/adapters/eibrain/rpc_server.py",
         "eimemory/storage/runtime_store.py",
         "integrations/hermes/eimemory/__init__.py",
         "eimemory/ops/controlled_rpc_probe.py",
@@ -159,6 +160,8 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "deployment.runtime": (
+        "eimemory/knowledge/l1_queue.py",
+        "eimemory/adapters/runtime/service.py",
         "deploy/check_hermes_recall_identity.py",
         "deploy/inspect_release_pollution.py",
         "scripts/openclaw_loop.py",

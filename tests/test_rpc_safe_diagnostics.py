@@ -58,7 +58,9 @@ def test_attestation_500_has_bounded_safe_diagnostic(tmp_path, monkeypatch, erro
         assert diagnostic['method'] == 'adapter.attest_tool_result'
         assert diagnostic['error'] == 'internal_error'
         assert diagnostic['exception_class'] == type(error).__name__
-        assert set(diagnostic) == {'ts', 'method', 'error', 'exception_class'}
+        assert set(diagnostic) == {'ts', 'method', 'error', 'exception_class', 'stage', 'exception_family'}
+        assert diagnostic['stage'] == 'bridge_dispatch'
+        assert diagnostic['exception_family'] == ('io' if isinstance(error, OSError) else 'runtime')
         assert all(private not in path.read_text() for private in
                    (PUBLIC, HOST, 'synthetic-private', 'fixture-user', 'fixture-call'))
 
@@ -91,10 +93,12 @@ def test_diagnostic_write_failure_preserves_original_500(tmp_path, monkeypatch):
         assert post(runtime, bridge, request()) == (500, {'ok': False, 'error': 'internal_error'})
 
 
-def test_diagnostics_are_bounded_and_do_not_record_custom_exception_names(tmp_path, monkeypatch):
+@pytest.mark.parametrize('base,family', [(Exception, 'unknown'), (RuntimeError, 'runtime'),
+                                        (sqlite3.Error, 'sqlite')])
+def test_diagnostics_are_bounded_and_do_not_record_custom_exception_names(tmp_path, monkeypatch, base, family):
     from eimemory.adapters.eibrain import rpc_server
     monkeypatch.setattr(rpc_server, 'MAX_RPC_ERROR_LOG_BYTES', 1024)
-    private_type = type('synthetic_private_exception_name', (Exception,), {})
+    private_type = type('synthetic_private_exception_name', (base,), {})
     with Runtime.create(root=tmp_path) as runtime:
         bridge = EIBrainRPCBridge(runtime)
         def fail(**kwargs):
@@ -106,7 +110,8 @@ def test_diagnostics_are_bounded_and_do_not_record_custom_exception_names(tmp_pa
         assert len(data) <= 1024
         rows = [json.loads(line) for line in data.splitlines()]
         assert 0 < len(rows) < 12
-        assert all(row['exception_class'] == 'Exception' for row in rows)
+        assert all(row['exception_class'] == 'Exception' and row['stage'] == 'bridge_dispatch'
+                   and row['exception_family'] == family for row in rows)
         assert b'synthetic_private' not in data and b'synthetic-private' not in data
 
 
@@ -179,3 +184,27 @@ def test_duplicate_concurrent_attestations_publish_one_receipt(tmp_path, monkeyp
         if second is not first:
             second.close()
         first.close()
+
+
+@pytest.mark.parametrize('token,payload', [('invalid', request()), (PUBLIC, request()),
+                                         (HOST, {'method': 'adapter.status', 'params': {}})])
+def test_denial_write_failure_has_response_write_stage(tmp_path, monkeypatch, token, payload):
+    original_post = post
+    # Reuse the real router and request builder, injecting a failed denial write.
+    original_do_post = _RPCHandler.do_POST
+    def do_post(handler):
+        send = handler._send_json
+        def fail_denial(status, body):
+            if status == 401:
+                raise OSError('synthetic-private-denial-write')
+            send(status, body)
+        handler._send_json = fail_denial
+        original_do_post(handler)
+    monkeypatch.setattr(_RPCHandler, 'do_POST', do_post)
+    with Runtime.create(root=tmp_path) as runtime:
+        assert original_post(runtime, EIBrainRPCBridge(runtime), payload, token) == (
+            500, {'ok': False, 'error': 'internal_error'})
+    data = (tmp_path / PATH).read_text()
+    diagnostic = json.loads(data.splitlines()[-1])
+    assert diagnostic['stage'] == 'response_write'
+    assert 'synthetic-private' not in data and PUBLIC not in data and HOST not in data

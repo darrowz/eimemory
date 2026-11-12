@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from eimemory.core.strict_json import loads as strict_json_loads
 import os
 from hashlib import sha256
 from datetime import datetime, timedelta, timezone
@@ -1752,9 +1753,8 @@ class AgentRuntimeMemoryService:
     def _l1_extract_health(self) -> dict[str, Any]:
         queue = self._l1_queue()
         try:
-            pending = queue.pending_count()
-            dead = queue.dead_count()
-        except (L1QueueStateError, OSError) as exc:
+            summary = queue.health_summary()
+        except (L1QueueStateError, OSError, ValueError) as exc:
             # Status stays readable when the worker's durable queue is not.
             # Unknown queue counts cannot be reported as an empty healthy run.
             return {
@@ -1764,27 +1764,32 @@ class AgentRuntimeMemoryService:
                 "retryable": exc.retryable if isinstance(exc, L1QueueStateError) else True,
                 "pending": None,
                 "dead": None,
+                "unresolved_dead": None,
+                "active_recoveries": None,
+                "completed_recoveries": None,
+                "failed_recoveries": None,
                 "last_run": {},
             }
         health: dict[str, Any] = {
-            "ok": True,
-            "pending": pending,
-            "dead": dead,
+            "ok": not (summary["unresolved_dead"] or summary["active_recoveries"]
+                       or summary["failed_recoveries"]),
+            **summary,
             "last_run": {},
         }
-        if health["dead"]:
-            health["ok"] = False
         path = self.runtime.store.root / "logs" / "l1-extract.jsonl"
-        if not path.exists():
-            return health
         try:
             # Bounded tail read; status must not scan an unbounded worker log.
             with path.open("rb") as handle:
                 handle.seek(0, 2)
                 size = handle.tell()
-                handle.seek(max(0, size - 32 * 1024))
-                lines = handle.read(32 * 1024).decode("utf-8", errors="replace").splitlines()
-            last = json.loads(lines[-1]) if lines else {}
+                offset = max(0, size - (32 * 1024 + 2))
+                handle.seek(offset)
+                tail = handle.read(32 * 1024 + 2)
+            if not tail.endswith(b"\n"):
+                raise ValueError("l1_worker_log_invalid")
+            if offset and b"\n" not in tail:
+                raise ValueError("l1_worker_log_invalid")
+            last = strict_json_loads(tail[:-1].rsplit(b"\n", 1)[-1], max_bytes=32 * 1024) if tail else {}
         except (OSError, ValueError, json.JSONDecodeError):
             health["ok"] = False
             health["last_run"] = {"error": "l1_worker_log_unreadable"}
@@ -1804,8 +1809,11 @@ class AgentRuntimeMemoryService:
                     "zero_write_jobs",
                 )
             }
-            if last.get("ok") is False:
+            if last.get("ok") is not True:
                 health["ok"] = False
+        else:
+            health["ok"] = False
+            health["last_run"] = {"error": "l1_worker_log_invalid"}
         return health
 
     @staticmethod
