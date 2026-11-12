@@ -36,6 +36,14 @@ AIGC:
 
 # Changelog
 
+## [1.15.76] - 2026-11-12
+
+### Fixed
+- Hermes 保留初始化失败的重复 provider 时，原生 recall/status 仅在精确 host 上下文与既有 owner、profile、session、工具及参数一致时转交；重复初始化仍拒绝。
+- 回执注册经 RuntimeStore 锁与独立写事务执行，插入、资格更新及幂等检查共同提交，失败回滚且不提交调用者事务。历史 HTTP 500 的生产原因仍未确定。
+- 增加明确选择 dead job 的 L1 元数据检查、dry-run 与恢复 CLI，原 dead 证据、source/scope/order 和尝试历史保留，沿用唯一 consumer 锁及持久恢复幂等账本。
+- 回滚测试隔离宿主探测并使用有界离线 fixture；实现测试不代表生产部署、历史队列已恢复或自然召回质量提升。
+
 ## [1.15.75] - 2026-11-11
 
 ### Fixed

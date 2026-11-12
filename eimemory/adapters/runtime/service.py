@@ -844,9 +844,13 @@ class AgentRuntimeMemoryService:
             }
         )
         episode["l1_atoms"] = []
-        episode["l1_queued"] = True
+        episode["l1_queued"] = job.get("status") in {"queued", "running"}
+        if job.get("status") == "completed":
+            episode["l1_extraction_reason"] = "l1_recovery_already_completed"
+        elif job.get("status") == "dead":
+            episode["l1_extraction_reason"] = "l1_recovery_exhausted"
         episode["l1_job_id"] = job.get("job_id")
-        if os.environ.get("EIMEMORY_L1_KICK_THREAD") == "1":
+        if episode["l1_queued"] and os.environ.get("EIMEMORY_L1_KICK_THREAD") == "1":
             import threading
 
             threading.Thread(target=self.drain_l1_queue, kwargs={"limit": 1}, daemon=True).start()
@@ -1668,7 +1672,7 @@ class AgentRuntimeMemoryService:
             **(release_identity_payload(release) if release is not None else {}),
         }
         signed = sign_tool_receipt(receipt)
-        stored, idempotent = self.runtime.store.sqlite.register_adapter_tool_receipt(
+        stored, idempotent = self.runtime.store.register_adapter_tool_receipt(
             signed,
             scope=channel_scope,
             compatible_invocation_digests=invocation_commitments,

@@ -2483,7 +2483,14 @@ def _write_installer_test_python(target: Path) -> None:
         "from pathlib import Path\n"
         "import sys\n"
         "args = sys.argv[1:]\n"
-        "if args[:6] == ['-I', '-B', '-X', 'pycache_prefix=/var/lib/eimemory-manager/empty-pycache', '-m', 'venv']:\n"
+        "if (args[:3] == ['-I', '-B', '-c'] and len(args) == 4\n"
+        "        and 'pwd.getpwuid(os.geteuid()).pw_dir' in args[3]\n"
+        "        and '.config/eimemory/control-plane' in args[3]):\n"
+        "    raise SystemExit(1)  # Never discover the account's real home.\n"
+        "if any(Path(arg).name == 'runtime_manager_control.py' for arg in args):\n"
+        "    raise SystemExit('installer_fixture_unexpected_runtime_manager')\n"
+        "if (args[:3] == ['-I', '-B', '-X'] and len(args) >= 7\n"
+        "        and args[3].startswith('pycache_prefix=') and args[4:6] == ['-m', 'venv']):\n"
         "    bin_dir = Path(args[-1]) / 'bin'\n"
         "    bin_dir.mkdir(parents=True)\n"
         "    stub = '#!/usr/bin/env bash\\nexit 0\\n'\n"
@@ -2496,6 +2503,60 @@ def _write_installer_test_python(target: Path) -> None:
         encoding="utf-8",
     )
     target.chmod(0o755)
+
+
+def _installer_rollback_repository(tmp_path: Path) -> tuple[Path, str]:
+    """Keep real deployment/source guards; omit unrelated application fixtures.
+
+    Each exact-source checkpoint reads every committed blob in a separate Git
+    process. Archiving the whole growing repository made these link rollback
+    tests spend their bound validating thousands of unrelated files before the
+    injected failure was reached. Package execution remains the offline stub.
+    """
+    source = Path(__file__).resolve().parents[1]
+    repo = tmp_path / "installer-repository"
+    repo.mkdir()
+    shutil.copytree(source / "deploy", repo / "deploy")
+    for name in ("pyproject.toml", "eimemory/__init__.py", "eimemory/version.py",
+                 "eimemory/core/release_source_guard.py"):
+        target = repo / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / name, target)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=10)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, timeout=10)
+    subprocess.run(["git", "-c", "user.name=Installer Fixture", "-c", "user.email=fixture@example.invalid",
+                    "-c", "commit.gpgsign=false", "commit", "-qm", "synthetic installer source"],
+                   cwd=repo, check=True, timeout=10)
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True, timeout=10).strip()
+    return repo, commit
+
+
+def test_installer_python_fixture_keeps_user_cache_venv_offline(tmp_path) -> None:
+    trusted_python = tmp_path / "trusted-python"
+    _write_installer_test_python(trusted_python)
+    venv = tmp_path / "candidate-venv"
+    result = subprocess.run(
+        [str(trusted_python), "-I", "-B", "-X",
+         f"pycache_prefix={tmp_path / 'user-control-plane' / 'empty-pycache'}",
+         "-m", "venv", "--clear", "--without-pip", str(venv)],
+        capture_output=True, text=True, check=False, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (venv / "bin" / "eimemory").is_file(), "venv invocation escaped the offline fixture"
+    assert not (venv / "pyvenv.cfg").exists(), "fixture unexpectedly created a real virtualenv"
+
+
+def test_installer_python_fixture_rejects_host_control_plane_discovery(tmp_path) -> None:
+    trusted_python = tmp_path / "trusted-python"
+    _write_installer_test_python(trusted_python)
+    # A synthetic probe has the installer's account-home discovery signature,
+    # but must never execute even when the host would report an installation.
+    probe = ('import os,pwd,pathlib; '
+             'p=pathlib.Path(pwd.getpwuid(os.geteuid()).pw_dir)/".config/eimemory/control-plane"; '
+             'raise SystemExit(0)')
+    result = subprocess.run([str(trusted_python), "-I", "-B", "-c", probe],
+                            capture_output=True, text=True, check=False, timeout=10)
+    assert result.returncode == 1
 
 
 def _bash_binary() -> str:
@@ -2535,6 +2596,7 @@ def _installer_test_systemctl_env(tmp_path: Path) -> dict[str, str]:
     systemctl = bin_dir / "systemctl"
     systemctl.write_text(
         "#!/usr/bin/env bash\n"
+        "if [ \"${1:-}\" = \"--user\" ]; then shift; fi\n"
         "if [ \"${1:-}\" = \"is-active\" ]; then exit 3; fi\n"
         "exit 0\n",
         encoding="utf-8",
@@ -3356,7 +3418,7 @@ def test_immutable_release_installer_verifies_all_effective_runtime_commits_befo
 def test_installer_restores_previous_release_after_post_switch_failure(tmp_path, fail_stage) -> None:
     if os.name != "posix":
         pytest.skip("installer rollback fault injection requires POSIX rename and dir_fd semantics")
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    repo, commit = _installer_rollback_repository(tmp_path)
     install_root = tmp_path / "install"
     releases_root = install_root / "releases"
     old_release = releases_root / ("0" * 40)
@@ -3368,7 +3430,7 @@ def test_installer_restores_previous_release_after_post_switch_failure(tmp_path,
     env = dict(os.environ)
     env.update(
         {
-            "REPO_DIR": Path.cwd().as_posix(),
+            "REPO_DIR": repo.as_posix(),
             "INSTALL_ROOT": install_root.as_posix(),
             "PYTHON_BIN": _bash_path(trusted_python),
             "EIMEMORY_ROOT": (tmp_path / "runtime").as_posix(),
@@ -3377,6 +3439,8 @@ def test_installer_restores_previous_release_after_post_switch_failure(tmp_path,
             "USER_SYSTEMD_ENABLE_SERVICE": "0",
             "EIMEMORY_POST_SWITCH_GATES": "0",
             "EIMEMORY_DEPLOY_FAIL_STAGE": fail_stage,
+            "EIMEMORY_HERMES_INTEGRATION_DEPLOY": "0",
+            "EIMEMORY_OPENCLAW_ADAPTER": "disabled",
             "OPENCLAW_LOOP_DEPLOY_VERIFY": "0",
             "OPENCLAW_LOOP_COMPAT_SCRIPT": "",
             "OPENCLAW_BIN": (tmp_path / "missing-openclaw").as_posix(),
@@ -3387,16 +3451,18 @@ def test_installer_restores_previous_release_after_post_switch_failure(tmp_path,
 
     result = subprocess.run(
         [_bash_binary(), "deploy/install_immutable_release.sh", commit],
-        cwd=Path.cwd(),
+        cwd=repo,
         env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         check=False,
+        timeout=30,
     )
 
-    assert result.returncode != 0
+    assert result.returncode == 97
+    assert f"injected_post_switch_failure={fail_stage}" in result.stderr
     assert current_link.resolve() == old_release.resolve()
     assert "rollback_current_release=restored" in result.stderr
     assert "commit_complete=1" not in result.stdout
@@ -3405,7 +3471,7 @@ def test_installer_restores_previous_release_after_post_switch_failure(tmp_path,
 def test_installer_does_not_claim_success_or_delete_candidate_when_rollback_fails(tmp_path) -> None:
     if os.name != "posix":
         pytest.skip("installer rollback fault injection requires POSIX rename semantics")
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    repo, commit = _installer_rollback_repository(tmp_path)
     install_root = tmp_path / "install"
     releases_root = install_root / "releases"
     old_release = releases_root / ("0" * 40)
@@ -3417,7 +3483,7 @@ def test_installer_does_not_claim_success_or_delete_candidate_when_rollback_fail
     env = dict(os.environ)
     env.update(
         {
-            "REPO_DIR": Path.cwd().as_posix(),
+            "REPO_DIR": repo.as_posix(),
             "INSTALL_ROOT": install_root.as_posix(),
             "PYTHON_BIN": _bash_path(trusted_python),
             "EIMEMORY_ROOT": (tmp_path / "runtime").as_posix(),
@@ -3427,6 +3493,8 @@ def test_installer_does_not_claim_success_or_delete_candidate_when_rollback_fail
             "EIMEMORY_POST_SWITCH_GATES": "0",
             "EIMEMORY_DEPLOY_FAIL_STAGE": "registry",
             "EIMEMORY_DEPLOY_FAIL_ROLLBACK_STAGE": "link",
+            "EIMEMORY_HERMES_INTEGRATION_DEPLOY": "0",
+            "EIMEMORY_OPENCLAW_ADAPTER": "disabled",
             "OPENCLAW_LOOP_DEPLOY_VERIFY": "0",
             "OPENCLAW_LOOP_COMPAT_SCRIPT": "",
             **_installer_test_service_env(tmp_path),
@@ -3436,20 +3504,24 @@ def test_installer_does_not_claim_success_or_delete_candidate_when_rollback_fail
 
     result = subprocess.run(
         [_bash_binary(), "deploy/install_immutable_release.sh", commit],
-        cwd=Path.cwd(),
+        cwd=repo,
         env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         check=False,
+        timeout=30,
     )
 
-    assert result.returncode != 0
+    assert result.returncode == 97
+    assert "injected_post_switch_failure=registry" in result.stderr
     assert "rollback_current_release=failed" in result.stderr
     assert "rollback_preserved_failed_release=" in result.stderr
     assert "rollback_current_release=restored" not in result.stderr
     assert (releases_root / commit).is_dir()
+    assert current_link.resolve() == (releases_root / commit).resolve()
+    assert "commit_complete=1" not in result.stdout
 
 
 def test_immutable_release_installer_refreshes_openclaw_registry_before_gateway_restart() -> None:

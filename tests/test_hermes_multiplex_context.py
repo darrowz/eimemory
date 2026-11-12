@@ -331,6 +331,56 @@ def test_session_registry_reservation_rejects_conflict_without_mutation(native_p
                 provider.shutdown()
 
 
+def test_retained_native_tool_candidate_cannot_cross_profiles(native_profiles, monkeypatch):
+    from integrations.hermes.eimemory import EIMemoryProvider
+    from integrations.hermes import eimemory_hook as hook
+
+    monkeypatch.setattr(hook, 'register_code_implementation_task', lambda _ctx: None)
+    monkeypatch.setattr(hook, 'hermes_attestation_client_from_env', lambda **_kwargs: None)
+    middleware = {}
+    context = SimpleNamespace(
+        _manager=SimpleNamespace(_middleware=middleware),
+        register_hook=lambda *_args: None,
+        register_middleware=lambda name, callback: middleware.update({name: [callback]}),
+    )
+    hook.register(context)
+    execute = middleware['tool_execution'][0]
+    owners, candidates = [], []
+    try:
+        for name in ('teammate-a', 'teammate-b'):
+            with native_profiles.activate(name):
+                owner = EIMemoryProvider(client=Client())
+                kwargs = dict(hermes_home=str(native_profiles.homes[name]), agent_identity=name,
+                              agent_workspace='hermes', user_id='platform-' + name)
+                owner.initialize('shared-session', **kwargs)
+                owners.append(owner)
+                candidate = EIMemoryProvider()
+                candidates.append(candidate)
+                with pytest.raises(ValueError, match='already_bound'):
+                    candidate.initialize('shared-session', **kwargs)
+                result = json.loads(execute(
+                    'eimemory_status', {},
+                    lambda args: candidate.handle_tool_call('eimemory_status', args),
+                    session_id='shared-session', tool_call_id='native-status',
+                ))
+                assert result['adapter_local']['identity']['profile_binding']['profile_name'] == name
+                assert owner._client.calls[-1][1]['scope']['agent_id'] == name
+        with native_profiles.activate('teammate-b'):
+            before = [len(owner._client.calls) for owner in owners]
+            refused = json.loads(execute(
+                'eimemory_recall', {'query': 'prior work'},
+                lambda args: candidates[0].handle_tool_call('eimemory_recall', args),
+                session_id='shared-session', tool_call_id='wrong-owner',
+            ))
+            assert refused['ok'] is False
+            assert [len(owner._client.calls) for owner in owners] == before
+    finally:
+        for name, owner, candidate in zip(('teammate-a', 'teammate-b'), owners, candidates):
+            with native_profiles.activate(name):
+                candidate.shutdown()
+                owner.shutdown()
+
+
 def test_each_worker_takes_an_independent_copy_of_native_context(native_profiles):
     barrier = threading.Barrier(3)
     seen = []

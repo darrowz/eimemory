@@ -232,7 +232,7 @@ def register(ctx) -> None:
             provider = get_hermes_provider(session) if isinstance(session, str) else None
             with hermes_explicit_tool_context(
                 provider=provider, tool_name=tool_name,
-                args=_explicit_provider_args(args) if tool_name == "eimemory_recall" else args,
+                args=_explicit_provider_args(args) if tool_name in {"eimemory_recall", "eimemory_status"} else args,
                 session_id=session,
                 tool_call_id=kwargs.get("tool_call_id") or kwargs.get("tool_correlation_id"),
             ):

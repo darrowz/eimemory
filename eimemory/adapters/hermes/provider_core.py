@@ -65,7 +65,7 @@ def hermes_explicit_tool_context(*, provider: Any, tool_name: str, args: Any,
     """
     binding = None
     digest = _explicit_tool_args_digest(args)
-    if (provider is not None and tool_name == "eimemory_recall" and digest
+    if (provider is not None and tool_name in {"eimemory_recall", "eimemory_status"} and digest
             and all(isinstance(value, str) and value.strip() and len(value) <= 256
                     for value in (session_id, tool_call_id))
             and session_id == getattr(provider, "_session_id", None)):
@@ -88,6 +88,12 @@ def _explicit_request_from_host(provider: Any, tool_name: str, args: dict) -> tu
         return None, "hermes_explicit_host_invocation_mismatch"
     return {"session_id": session_id, "request_id": tool_call_id,
             "acceptance_generated": False, "capture_mode": "private"}, ""
+
+
+def hermes_host_tool_context_matches(provider: Any, tool_name: str, args: dict) -> bool:
+    """Check an exact synchronous invocation without changing its owner binding."""
+    request, _reason = _explicit_request_from_host(provider, tool_name, args)
+    return request is not None
 
 
 def _adapter_timeout_seconds_from_env() -> float:

@@ -11,7 +11,7 @@ from threading import Condition, Lock, RLock
 from types import BuiltinFunctionType, FunctionType, MethodType
 from time import perf_counter
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, TypeVar
 from uuid import uuid4
 
@@ -1414,6 +1414,32 @@ class RuntimeStore:
                 raise
             self._safe_post_commit_projection(exports, [])
             return result
+
+    def register_adapter_tool_receipt(
+        self,
+        receipt: dict,
+        *,
+        scope: ScopeRef | dict | None = None,
+        compatible_invocation_digests: Iterable[str] | None = None,
+        compatible_result_digests: Iterable[str] | None = None,
+    ) -> tuple[dict, bool]:
+        """Serialize receipt identity checks and commit eligibility atomically."""
+        with self._lock:
+            self._require_own_transaction("register_adapter_tool_receipt")
+            try:
+                self.sqlite.execute("BEGIN IMMEDIATE")
+                result = self.sqlite.register_adapter_tool_receipt(
+                    receipt,
+                    scope=scope,
+                    compatible_invocation_digests=compatible_invocation_digests,
+                    compatible_result_digests=compatible_result_digests,
+                    commit=False,
+                )
+                self.sqlite.commit()
+                return result
+            except BaseException:
+                self.sqlite.rollback()
+                raise
 
     def record_terminal_bundle(
         self,

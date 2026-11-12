@@ -2,6 +2,9 @@
 from email.message import Message
 from io import BytesIO
 import json
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
@@ -105,3 +108,74 @@ def test_diagnostics_are_bounded_and_do_not_record_custom_exception_names(tmp_pa
         assert 0 < len(rows) < 12
         assert all(row['exception_class'] == 'Exception' for row in rows)
         assert b'synthetic_private' not in data and b'synthetic-private' not in data
+
+
+def test_attestation_insert_is_rolled_back_when_eligibility_update_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv('EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY', 'synthetic-receipt-signing-key-0123456789-ABCDEFG')
+    with Runtime.create(root=tmp_path) as runtime:
+        bridge = EIBrainRPCBridge(runtime)
+        conn = runtime.store.sqlite.conn
+        # The real second persistence statement fails, after INSERT succeeded.
+        conn.set_authorizer(lambda operation, table, *_args: (
+            sqlite3.SQLITE_DENY if operation == sqlite3.SQLITE_UPDATE
+            and table == 'adapter_tool_receipts' else sqlite3.SQLITE_OK
+        ))
+        try:
+            assert post(runtime, bridge, request()) == (500, {'ok': False, 'error': 'internal_error'})
+        finally:
+            conn.set_authorizer(None)
+        assert not conn.in_transaction
+        assert conn.execute('SELECT COUNT(*) FROM adapter_tool_receipts').fetchone()[0] == 0
+        diagnostic = json.loads((tmp_path / PATH).read_text().splitlines()[-1])
+        assert diagnostic['exception_class'] == 'DatabaseError'
+        assert 'synthetic-private' not in (tmp_path / PATH).read_text()
+        # A failed attempt must not become an idempotent success from a dirty connection.
+        status, body = post(runtime, bridge, request())
+        assert status == 200 and body['result']['idempotent'] is False
+        assert post(runtime, bridge, request())[1]['result']['idempotent'] is True
+        assert conn.execute('SELECT COUNT(*) FROM adapter_tool_receipts').fetchone()[0] == 1
+
+
+def test_attestation_does_not_commit_or_rollback_callers_transaction(tmp_path, monkeypatch):
+    monkeypatch.setenv('EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY', 'synthetic-receipt-signing-key-0123456789-ABCDEFG')
+    with Runtime.create(root=tmp_path) as runtime:
+        bridge = EIBrainRPCBridge(runtime)
+        with runtime.store.locked() as sqlite:
+            sqlite.execute('BEGIN IMMEDIATE')
+            try:
+                assert post(runtime, bridge, request()) == (500, {'ok': False, 'error': 'internal_error'})
+                assert sqlite.in_transaction
+                assert sqlite.conn.execute('SELECT COUNT(*) FROM adapter_tool_receipts').fetchone()[0] == 0
+            finally:
+                sqlite.rollback()
+
+
+@pytest.mark.parametrize('separate_connections', [False, True])
+def test_duplicate_concurrent_attestations_publish_one_receipt(tmp_path, monkeypatch, separate_connections):
+    from eimemory.adapters.runtime import service
+    monkeypatch.setenv('EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY', 'synthetic-receipt-signing-key-0123456789-ABCDEFG')
+    first = Runtime.create(root=tmp_path)
+    second = Runtime.create(root=tmp_path) if separate_connections else first
+    barriers = Barrier(2)
+    original_sign = service.sign_tool_receipt
+
+    def sign(receipt):
+        signed = original_sign(receipt)
+        barriers.wait(timeout=5)
+        return signed
+
+    monkeypatch.setattr(service, 'sign_tool_receipt', sign)
+    try:
+        bridges = [EIBrainRPCBridge(first), EIBrainRPCBridge(second)]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            replies = list(pool.map(lambda pair: post(*pair, request()), zip([first, second], bridges)))
+        assert [status for status, _ in replies] == [200, 200]
+        results = [body['result'] for _, body in replies]
+        assert sorted(result['idempotent'] for result in results) == [False, True]
+        assert results[0]['receipt'] == results[1]['receipt']
+        assert first.store.sqlite.conn.execute('SELECT COUNT(*) FROM adapter_tool_receipts').fetchone()[0] == 1
+        assert not first.store.sqlite.in_transaction and not second.store.sqlite.in_transaction
+    finally:
+        if second is not first:
+            second.close()
+        first.close()

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from copy import deepcopy
 import errno
+import re
+import stat
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -12,6 +15,9 @@ from eimemory.storage.atomic_file import DEFAULT_MAX_JSON_STATE_BYTES, atomic_wr
 
 
 MAX_ATTEMPTS = 5
+RECOVERY_INTENT = "recover-selected-dead-l1"
+MAX_RECOVERY_JOBS = 32
+_RECOVERY_JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 
 
 def _now() -> str:
@@ -99,7 +105,192 @@ class L1ExtractQueue:
                         or item.get("attempts", 0) < 0):
                     raise L1QueueStateError("queue_schema_invalid")
                 _validate_job_identity(item)
+        self._validate_recoveries(payload)
         return payload
+
+    @staticmethod
+    def _validate_recoveries(payload: dict[str, Any]) -> None:
+        """Recovery acknowledgements survive removal of a completed live job."""
+        records = payload.get("recoveries", {})
+        if not isinstance(records, dict):
+            raise L1QueueStateError("recovery_state_invalid")
+        for job in [*payload["jobs"], *payload["dead"]]:
+            if "recovery_of" in job:
+                origin = job["recovery_of"]
+                record = records.get(origin) if isinstance(origin, str) else None
+                if not isinstance(record, dict) or record.get("job_id") != job["job_id"]:
+                    raise L1QueueStateError("recovery_state_invalid")
+        if not records:
+            return
+        all_jobs = [*payload["jobs"], *payload["dead"]]
+        ids = [job["job_id"] for job in all_jobs]
+        if len(ids) != len(set(ids)):
+            raise L1QueueStateError("recovery_state_invalid")
+        by_id = {job["job_id"]: job for job in all_jobs}
+        parents: list[tuple[str, str, ScopeRef]] = []
+        targets: set[str] = set()
+        for original_id, record in records.items():
+            original = by_id.get(original_id)
+            if (not isinstance(original_id, str) or not isinstance(record, dict)
+                    or original is None or original.get("status") != "dead"
+                    or set(record) - {"job_id", "episode_id", "channel_id", "channel_scope",
+                                      "original_attempts", "recovered_at", "completed_at"}
+                    or not isinstance(record.get("job_id"), str)
+                    or not _RECOVERY_JOB_ID.fullmatch(record["job_id"])
+                    or record["job_id"] in targets
+                    or record["job_id"] in records
+                    or type(record.get("original_attempts")) is not int
+                    or record["original_attempts"] != original.get("attempts", 0)
+                    or not isinstance(record.get("recovered_at"), str)
+                    or not record["recovered_at"]):
+                raise L1QueueStateError("recovery_state_invalid")
+            _validate_job_identity(record)
+            identity = _parent_identity(record)
+            if identity != _parent_identity(original) or identity in parents:
+                raise L1QueueStateError("recovery_state_invalid")
+            parents.append(identity)
+            targets.add(record["job_id"])
+            target = by_id.get(record["job_id"])
+            completed = record.get("completed_at")
+            if completed is not None:
+                if not isinstance(completed, str) or not completed or target is not None:
+                    raise L1QueueStateError("recovery_state_invalid")
+            elif (target is None or target.get("recovery_of") != original_id
+                    or _parent_identity(target) != identity):
+                raise L1QueueStateError("recovery_state_invalid")
+
+    @staticmethod
+    def _recovery_selection(job_ids: list[str]) -> set[str]:
+        if (not isinstance(job_ids, list) or not 1 <= len(job_ids) <= MAX_RECOVERY_JOBS
+                or any(not isinstance(value, str) or not _RECOVERY_JOB_ID.fullmatch(value)
+                       for value in job_ids)
+                or len(set(job_ids)) != len(job_ids)):
+            raise L1QueueStateError("recovery_selection_invalid")
+        return set(job_ids)
+
+    @staticmethod
+    def _recovery_metadata(job: dict[str, Any], record: dict[str, Any] | None,
+                           payload: dict[str, Any]) -> dict[str, Any]:
+        # Explicit allowlist: no turn text, arbitrary exception strings or payload.
+        status = None
+        if record:
+            status = "completed" if "completed_at" in record else next(
+                row["status"] for row in [*payload["jobs"], *payload["dead"]]
+                if row["job_id"] == record["job_id"])
+        return {
+            "job_id": job["job_id"],
+            "episode_id": job["episode_id"],
+            "channel_id": job.get("channel_id", "hermes"),
+            "channel_scope": job.get("channel_scope", {}),
+            "attempts": job.get("attempts", 0),
+            "state": "already_recovered" if record else "dead",
+            "recovery_job_id": record["job_id"] if record else None,
+            "recovery_status": status,
+        }
+
+    def inspect_dead(self, *, job_ids: list[str] | None = None, limit: int = 32,
+                     lock_timeout: float = 2) -> dict[str, Any]:
+        selected = self._recovery_selection(job_ids) if job_ids is not None else None
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise L1QueueStateError("recovery_selection_invalid")
+        self._require_recovery_queue()
+        with interprocess_lock(self.lock_path, timeout=lock_timeout):
+            self._require_recovery_queue()
+            payload = self._load()
+            jobs = [job for job in payload["dead"] if selected is None or job["job_id"] in selected]
+            if selected is not None and {job["job_id"] for job in jobs} != selected:
+                raise L1QueueStateError("recovery_job_unknown")
+            if len({job["job_id"] for job in jobs}) != len(jobs):
+                raise L1QueueStateError("recovery_state_invalid")
+            truncated = selected is None and len(jobs) > limit
+            if selected is None:
+                jobs = jobs[-limit:]
+            records = payload.get("recoveries", {})
+            return {"ok": True, "dead": len(payload["dead"]), "truncated": truncated, "jobs": [
+                self._recovery_metadata(job, records.get(job["job_id"]), payload) for job in jobs
+            ]}
+
+    def recover_dead(self, job_ids: list[str], *, operator_intent: str,
+                     dry_run: bool = False, lock_timeout: float = 2) -> dict[str, Any]:
+        """Atomically publish one bounded, explicit recovery with retained history.
+
+        The original dead entries remain unchanged. The new jobs have a separate
+        retry budget, while acknowledgements retain a permanent parent tombstone.
+        The consumer lock serializes recovery with handlers and interrupted-claim
+        recovery; the short state lock serializes publication with enqueue.
+        """
+        selected = self._recovery_selection(job_ids)
+        if operator_intent != RECOVERY_INTENT:
+            raise L1QueueStateError("recovery_intent_required")
+        if type(dry_run) is not bool:
+            raise L1QueueStateError("recovery_selection_invalid")
+        self._require_recovery_queue()
+        with interprocess_lock(self.consumer_lock_path, timeout=lock_timeout):
+            with interprocess_lock(self.lock_path, timeout=lock_timeout):
+                self._require_recovery_queue()
+                payload = self._load()
+                all_jobs = [*payload["jobs"], *payload["dead"]]
+                all_ids = [job["job_id"] for job in all_jobs]
+                if len(set(all_ids)) != len(all_ids):
+                    raise L1QueueStateError("recovery_state_invalid")
+                originals = [job for job in payload["dead"] if job["job_id"] in selected]
+                if {job["job_id"] for job in originals} != selected:
+                    raise L1QueueStateError("recovery_job_unknown")
+                records = payload.get("recoveries", {})
+                occupied = [_parent_identity(job) for job in payload["jobs"]]
+                recovered = [_parent_identity(record) for record in records.values()]
+                eligible = []
+                # Validate the whole batch first. Preserve stored source order,
+                # regardless of the order of operator arguments.
+                for job in originals:
+                    if job["job_id"] in records:
+                        continue
+                    identity = _parent_identity(job)
+                    if identity in occupied or identity in recovered:
+                        raise L1QueueStateError("recovery_parent_conflict")
+                    occupied.append(identity)
+                    eligible.append(job)
+                report = {"ok": True, "dry_run": dry_run, "eligible": len(eligible),
+                          "already_recovered": len(originals) - len(eligible), "published": 0,
+                          "jobs": [self._recovery_metadata(job, records.get(job["job_id"]), payload)
+                                   for job in originals]}
+                if dry_run or not eligible:
+                    return report
+                records = dict(records)
+                for job in eligible:
+                    recovery_id = "recovery-" + uuid4().hex
+                    if recovery_id in all_ids:
+                        raise L1QueueStateError("recovery_state_invalid")
+                    all_ids.append(recovery_id)
+                    child = deepcopy(job)
+                    child.update(job_id=recovery_id, status="queued", attempts=0,
+                                 last_error="", recovery_of=job["job_id"])
+                    child.pop("claim_token", None)
+                    child.pop("claimed_at", None)
+                    payload["jobs"].append(child)
+                    records[job["job_id"]] = {
+                        "job_id": recovery_id, "episode_id": job["episode_id"],
+                        "channel_id": job.get("channel_id", "hermes"),
+                        "channel_scope": deepcopy(job.get("channel_scope", {})),
+                        "original_attempts": job.get("attempts", 0), "recovered_at": _now(),
+                    }
+                payload["recoveries"] = records
+                self._save(payload)
+                report["published"] = len(eligible)
+                report["jobs"] = [self._recovery_metadata(job, records[job["job_id"]], payload) for job in originals]
+                return report
+
+    def _require_recovery_queue(self) -> None:
+        # Operator mistakes must not initialize an empty queue at another root.
+        # Check before acquiring locks too, because locks create their directory.
+        try:
+            info = self.path.lstat()
+        except FileNotFoundError as exc:
+            raise L1QueueStateError("recovery_queue_missing") from exc
+        except OSError as exc:
+            raise L1QueueStateError("queue_unreadable", retryable=True) from exc
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise L1QueueStateError("recovery_state_invalid")
 
     def _save(self, payload: dict[str, Any]) -> None:
         try:
@@ -111,7 +302,7 @@ class L1ExtractQueue:
             raise L1QueueStateError("queue_unwritable", retryable=True) from exc
 
     def enqueue(self, job: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(job, dict):
+        if not isinstance(job, dict) or "recovery_of" in job:
             raise ValueError("queue_job_invalid")
         try:
             _validate_job_identity(job)
@@ -129,6 +320,14 @@ class L1ExtractQueue:
                         "running",
                     }:
                         return existing
+                for recovery in payload.get("recoveries", {}).values():
+                    if _parent_identity(recovery) == identity:
+                        for existing in payload["dead"]:
+                            if existing["job_id"] == recovery["job_id"]:
+                                return dict(existing)
+                        # A completed recovery retains the parent identity so a
+                        # repeated producer enqueue cannot resurrect the work.
+                        return {**recovery, "status": "completed"}
             record = {
                 "job_id": str(job.get("job_id") or uuid4().hex[:16]),
                 "status": "queued",
@@ -252,7 +451,10 @@ class L1ExtractQueue:
                 remaining.append(job)
             if changed:
                 payload["jobs"] = remaining
-                payload["dead"] = dead[-200:]
+                pinned = set(payload.get("recoveries", {})) | {
+                    row["job_id"] for row in payload.get("recoveries", {}).values()}
+                payload["dead"] = [row for i, row in enumerate(dead)
+                                   if i >= len(dead) - 200 or row["job_id"] in pinned]
                 self._save(payload)
             return newly_dead
 
@@ -312,6 +514,9 @@ class L1ExtractQueue:
             if len(remaining) == len(jobs):
                 return False
             payload["jobs"] = remaining
+            for recovery in payload.get("recoveries", {}).values():
+                if recovery["job_id"] == job_id:
+                    recovery["completed_at"] = _now()
             self._save(payload)
             return True
 
@@ -335,6 +540,9 @@ class L1ExtractQueue:
                     job["status"] = "queued"
                     remaining.append(job)
             payload["jobs"] = remaining
-            payload["dead"] = dead[-200:]
+            pinned = set(payload.get("recoveries", {})) | {
+                row["job_id"] for row in payload.get("recoveries", {}).values()}
+            payload["dead"] = [row for i, row in enumerate(dead)
+                               if i >= len(dead) - 200 or row["job_id"] in pinned]
             self._save(payload)
             return newly_dead
