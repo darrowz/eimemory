@@ -1,3 +1,11 @@
+## [1.15.80]
+
+- Merge attributed RAW relevance ranking into the deployed ordinary-chat valid-time baseline, preserving scoped canonical hydration, collection limits and temporal behavior.
+- Repair legitimate Chinese/English corrections, correction preambles, quoted entity boundaries and own-statement subject/attribute binding without restoring unrelated recency/correction boosts.
+- Parent consolidated execution: 1045 passed, 89 subtests passed; one existing LoCoMo-data check skipped because its real dataset is absent.
+- Original 200-question RAW fixture: Top-1 109/120, Top-5 119/120; no-answer correct empty retrieval remains 0/80 and is not claimed fixed. Existing 16 ranking checks and added eight-case set pass; three added examples became seen during repair.
+- See `docs/releases/v1.15.80.md` for exact attribution, acceptance and deployment limits.
+
 ## [1.15.79]
 
 - Enable ordinary Runtime chat valid-time capture, literal-bound L1 proposals and current/historical prefetch with canonical scope, full-digest and query-local evidence checks.

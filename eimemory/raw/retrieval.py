@@ -8,7 +8,7 @@ import logging
 import urllib.error
 import urllib.request
 from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from eimemory.identity import hongtu_query_scopes
@@ -20,6 +20,8 @@ from .boundary import (raw_request_boundary, raw_ref_allowed, capture_raw_snapsh
                        raw_read_scope, raw_remaining_seconds, invoke_raw_reranker,
                        RawRecallUnavailable, require_raw_collection_complete)
 from eimemory.models.source_partitions import normalize_source_ids
+from ._relevance import (CONFLICT_DEPTH, ContentMatch, QueryContent, change_lines, common_subject,
+                        conflict_preference, current_assertion, match_content, query_content)
 
 _log = logging.getLogger(__name__)
 _WORD_RE = re.compile(r"[\w']+", re.UNICODE)
@@ -134,33 +136,136 @@ def rerank_raw_results(
     query_text = str(query or "")
     task_context = dict(task_context or {})
     results = _unique_raw_candidates(results)
-    max_time = _max_timestamp(results)
+    # Candidate collection, exact scope/source checks and authoritative
+    # hydration remain upstream of this pure ranking step. No global corpus
+    # statistics, provider-score thresholds or candidate expansion are needed.
+    plan = query_content(_content_query(query_text, task_context))
     ranked: list[dict[str, Any]] = []
     for index, result in enumerate(results):
         record = _result_record(result)
         base_score = _result_base_score(result)
         record_text = _record_text(record)
+        title = str(record.get("title") or "") if isinstance(record, dict) else str(getattr(record, "title", "") or "")
+        content_match = match_content(plan, record_text, title)
         boosts = _boosts(
             query=query_text,
             text=record_text,
             record=record,
             task_context=task_context,
-            max_time=max_time,
+            content_match=content_match,
+            plan=plan,
         )
-        final_score = round(base_score + sum(boosts.values()), 6)
+        secondary = base_score + sum(boosts.values())
+        # Store final_score mixes quality/relevance and is not BM25. Compress
+        # it monotonically into a tiebreaker smaller than one content band.
+        # The offset is just a rank-score origin; this is not confidence.
+        final_score = round(1.0 + content_match.strength + 0.5 * (secondary / (1.0 + secondary)), 6)
         ranked.append(
             {
                 "record": _record_payload(record, text=record_text),
                 "base_score": round(base_score, 6),
                 "final_score": final_score,
                 "boosts": boosts,
+                "_secondary": secondary,
                 "_index": index,
+                "_match": content_match,
+                "_day": _evidence_day(record),
+                "_partition": _raw_key(record)[1:],
+                "_current": _current_fact(record),
             }
         )
-    ranked.sort(key=lambda item: (-float(item["final_score"]), item["_index"]))
+    # Sort the finite secondary itself: public compression/rounding can erase
+    # meaningful differences (and even unrounded compression saturates).
+    ranked.sort(key=lambda item: (-item["_match"].strength, -item["_secondary"], item["_index"]))
+    _apply_topic_order(ranked, plan)
     for item in ranked:
-        item.pop("_index", None)
+        for key in ("_index", "_match", "_day", "_partition", "_current", "_secondary"):
+            item.pop(key, None)
     return ranked
+
+
+def _evidence_day(record: Any) -> date | None:
+    # Storage created_at/updated_at are not dates of the asserted fact.
+    values = [container.get(key) for container in _containers(record)
+              for key in ("occurred_at", "valid_from")]
+    if isinstance(record, RecordEnvelope):
+        values.append(record.time.occurred_at)
+    elif not isinstance(record, dict):
+        values.append(getattr(record, "occurred_at", None))
+    for value in values:
+        parsed = _parse_timestamp(value)
+        if parsed is not None:
+            return datetime.fromtimestamp(parsed, timezone.utc).date()
+    return None
+
+
+def _content_query(query: str, task_context: dict) -> str:
+    # Preserve the original spelling/boundaries of identifiers and quotes in
+    # question metadata instead of round-tripping through legacy _terms().
+    values = [query]
+    for key in ("question", "question_terms", "query_terms", "metadata_question",
+                "question_text", "questionTerm", "temporal_hints", "temporal_hint", "time_hints"):
+        value = task_context.get(key)
+        if isinstance(value, (list, tuple, set)):
+            values.extend(str(item) for item in value if item)
+        elif value:
+            values.append(str(value))
+    return "\n".join(values)
+
+
+def _apply_topic_order(ranked: list[dict[str, Any]], plan: QueryContent) -> None:
+    """Adapt upstream's bounded anchor/pair move; never infer cross-partition correction."""
+    if len(ranked) < 2:
+        return
+    first = ranked[0]
+    for other in ranked[1:CONFLICT_DEPTH]:
+        if first["_partition"] != other["_partition"]:
+            continue
+        subject = common_subject(first["_match"], other["_match"])
+        if not subject:
+            continue
+        decision = conflict_preference(
+            plan, first["_match"], other["_match"],
+            first["record"]["text"], other["record"]["text"], first["_day"], other["_day"],
+        )
+        # Explicit record metadata or a subject-bound textual assertion can
+        # break a same-topic tie. Neither may bypass an unbound correction.
+        current_pair = (not plan.historical and first["_match"] == other["_match"]
+                        and first["_day"] is not None and other["_day"] is not None
+                        and first["_day"] != other["_day"])
+        if decision is None and current_pair:
+            newer = other if other["_day"] > first["_day"] else first
+            text = newer["record"]["text"]
+            any_change, _ = change_lines(text, subject, first["_match"].phrases, plan.named_terms)
+            is_current = current_assertion(text, subject, first["_match"].phrases,
+                                           metadata=newer["_current"])
+            if is_current and not any_change:
+                decision = int(newer is other)
+        if decision is None:
+            continue
+        preferred, previous = (other, first) if decision else (first, other)
+        historical_choice = plan.historical and preferred["_day"] < previous["_day"]
+        if historical_choice:
+            preferred["boosts"]["historical_window"] = 1.0
+        else:
+            preferred["boosts"]["temporal_currentness"] = 0.6
+            previous["boosts"]["temporal_currentness"] = 0.0
+            if _preference_like(preferred["record"]["text"]):
+                preferred["boosts"]["preference_pattern"] = 0.55
+            if current_assertion(
+                preferred["record"]["text"], subject, first["_match"].phrases,
+                metadata=preferred["_current"],
+            ):
+                preferred["boosts"]["current_fact"] = 0.7
+            if change_lines(preferred["record"]["text"], subject, first["_match"].phrases, plan.named_terms)[1]:
+                preferred["boosts"]["correction_marker"] = 0.95
+                preferred["boosts"]["conflict_marker"] = 0.25
+        # Keep numeric delivery scores consistent with the explicit local
+        # move (LoCoMo turn expansion also orders by these scores).
+        preferred["final_score"] = round(max(preferred["final_score"], previous["final_score"]) + 0.001, 6)
+        if decision:
+            ranked.insert(0, ranked.pop(ranked.index(other)))
+        break
 
 
 def _raw_api_search(store: Any, *, query: str, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
@@ -692,23 +797,19 @@ def authoritative_raw_payload(record: RecordEnvelope) -> dict[str, Any]:
     return _record_payload(record, text=_record_text(record))
 
 
-def _boosts(*, query: str, text: str, record: Any, task_context: dict, max_time: float | None) -> dict[str, float]:
+def _boosts(*, query: str, text: str, record: Any, task_context: dict,
+            content_match: ContentMatch, plan: QueryContent) -> dict[str, float]:
     boosts: dict[str, float] = {}
-    query_terms = set(_metadata_terms(task_context, query=query))
-    if not query_terms:
-        query_terms = set(_terms(query))
-    text_terms = set(_terms(text))
-    if query_terms and text_terms:
-        overlap = len(query_terms & text_terms) / max(1, len(query_terms))
+    query_terms = plan.terms
+    if query_terms and content_match.terms:
+        overlap = len(content_match.terms) / len(query_terms)
         if overlap:
             boosts["keyword_overlap"] = round(min(0.8, overlap * 0.8), 6)
-    quoted = _quoted_phrases(query) + _quoted_phrases(str(task_context.get("question") or ""))
-    quoted = list(dict.fromkeys([item for item in quoted if item]))
-    if quoted and any(phrase.lower() in text.lower() for phrase in quoted):
+    if content_match.phrases:
         boosts["quoted_phrase"] = 0.75
     proper = _proper_nouns(query) + _proper_nouns(str(task_context.get("question") or ""))
     proper = list(dict.fromkeys(proper))
-    if proper and any(noun.lower() in text.lower() for noun in proper):
+    if content_match.strength and proper and any(noun.lower() in text.lower() for noun in proper):
         boosts["proper_noun"] = round(min(0.5, 0.2 * len(proper)), 6)
     if _benchmark_session_match(record, task_context):
         boosts["benchmark_session_match"] = 1.0
@@ -723,18 +824,10 @@ def _boosts(*, query: str, text: str, record: Any, task_context: dict, max_time:
     if _speaker_matches(record, task_context):
         boosts["speaker_role"] = 0.25
     if _preference_like(text):
-        boosts["preference_pattern"] = 0.55
-    if _current_fact(record, text):
-        boosts["current_fact"] = 0.7
-    if _conflict_marker(text):
-        boosts["conflict_marker"] = 0.25
-    if _correction_marker(text):
-        # A later explicit correction must be able to outrank a lexically
-        # stronger stale statement. Raw evidence remains visible; only order changes.
-        boosts["correction_marker"] = 0.95
-    temporal = _temporal_currentness(record, max_time=max_time)
-    if temporal:
-        boosts["temporal_currentness"] = temporal
+        # Retain the diagnostic key; reward it only in a supported local pair.
+        boosts["preference_pattern"] = 0.0
+    # Current/correction/recency signals are applied only by the dated,
+    # same-subject comparison, never independently across the candidate pool.
     return boosts
 
 
@@ -1050,28 +1143,6 @@ def _proper_nouns(text: str) -> list[str]:
     return [match.group(0) for match in re.finditer(r"\b[A-Z][A-Za-z0-9_-]{2,}\b", str(text or ""))]
 
 
-def _metadata_terms(task_context: dict, *, query: str) -> list[str]:
-    task_terms: list[str] = []
-    for key in (
-        "question",
-        "question_terms",
-        "query_terms",
-        "metadata_question",
-        "question_text",
-        "questionTerm",
-    ):
-        value = task_context.get(key)
-        if isinstance(value, list):
-            for item in value:
-                task_terms.extend(_terms(str(item or "")))
-        elif value:
-            task_terms.extend(_terms(str(value)))
-    temporal = _metadata_values(task_context, keys=("temporal_hints", "temporal_hint", "time_hints"))
-    for item in temporal:
-        task_terms.extend(_terms(str(item)))
-    return list(dict.fromkeys(task_terms)) + _terms(query)
-
-
 def _metadata_values(task_context: dict, *, keys: tuple[str, ...]) -> list[str]:
     values: list[str] = []
     for key in keys:
@@ -1216,90 +1287,13 @@ def _preference_like(text: str) -> bool:
     )
 
 
-def _current_fact(record: Any, text: str) -> bool:
-    lowered = str(text or "").lower()
-    if "current=true" in lowered or "currently" in lowered or "now prefer" in lowered:
-        return True
+def _current_fact(record: Any) -> bool:
+    """Explicit record-level metadata only; fact dates do not assert currentness."""
     for container in _containers(record):
         value = container.get("current")
         if value is True or str(value).strip().lower() == "true":
             return True
-        if container.get("valid_from"):
-            return True
     return False
-
-
-def _conflict_marker(text: str) -> bool:
-    lowered = str(text or "").lower()
-    return any(
-        marker in lowered
-        for marker in (
-            "instead",
-            "changed",
-            "no longer",
-            "but now",
-            "rather than",
-            "conflict",
-            "更正",
-            "纠正",
-            "修正",
-            "串档",
-            "串号",
-            "搞错",
-            "说错",
-            "弄错",
-        )
-    )
-
-
-def _correction_marker(text: str) -> bool:
-    value = str(text or "")
-    lowered = value.lower()
-    if any(
-        marker in lowered
-        for marker in (
-            "correction",
-            "corrected",
-            "instead",
-            "no longer",
-            "but now",
-            "rather than",
-        )
-    ):
-        return True
-    return bool(re.search(
-        r"更正|纠正|修正|串档|串号|搞错(?:了)?|说错(?:了)?|弄错(?:了)?|"
-        r"之前.{0,24}(?:不对|错误|错了)|"
-        r"不是.{0,48}(?:而是|应该是|应为)|"
-        r"(?:应该|应当|应)为|改为",
-        value,
-        re.I,
-    ))
-
-
-def _temporal_currentness(record: Any, *, max_time: float | None) -> float:
-    timestamp = _timestamp(record)
-    if timestamp is None:
-        return 0.0
-    if max_time is not None and timestamp >= max_time:
-        return 0.6
-    # Stable, deterministic recency curve for older evidence.
-    days_since_epoch = max(0.0, timestamp / 86400.0)
-    return round(min(0.45, math.log1p(days_since_epoch) / 30.0), 6)
-
-
-def _max_timestamp(results: list[Any]) -> float | None:
-    values = [_timestamp(_result_record(item)) for item in results]
-    present = [value for value in values if value is not None]
-    return max(present) if present else None
-
-
-def _timestamp(record: Any) -> float | None:
-    for value in _timestamp_values(record):
-        parsed = _parse_timestamp(value)
-        if parsed is not None:
-            return parsed
-    return None
 
 
 def _timestamp_text(record: Any) -> str:

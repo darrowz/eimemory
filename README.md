@@ -31,7 +31,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.15.79" src="https://img.shields.io/badge/version-1.15.79-blue">
+  <img alt="Package version 1.15.80" src="https://img.shields.io/badge/version-1.15.80-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -285,7 +285,9 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.15.79, source package)
+## Current package status (1.15.80, source package)
+
+The [1.15.80 release notes](docs/releases/v1.15.80.md) merge the previously isolated RAW ranking improvements into the ordinary-chat temporal release. On the unchanged 200-question public RAW retrieval fixture, answerable Top-1 is 109/120 and Top-5 is 119/120, compared with 61/120 and 99/120 for 1.15.79. Correct empty retrieval remains 0/80 on no-answer cases: ranking improvement is not a complete refusal policy or a claim of end-to-end model-answer accuracy.
 
 The [1.15.79 release notes](docs/releases/v1.15.79.md) cover valid-time semantics on ordinary Runtime chat capture, L1 extraction and prefetch/recall using the existing canonical store. The ordinary Runtime integration is enabled; the separate structured temporal-fact API remains opt-in. Default-off readers withhold managed temporal bodies instead of treating obsolete observations as current facts.
 

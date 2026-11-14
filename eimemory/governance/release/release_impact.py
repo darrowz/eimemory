@@ -43,6 +43,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/llm/bridge_pool.py",
         "eimemory/llm/openclaw_adapter.py",
         "eimemory/raw/retrieval.py",
+        "eimemory/raw/_relevance.py",
         "deploy/backfill_hermes_scope.py",
         "eimemory/api/memory.py",
         "eimemory/knowledge/l1_conflict.py",
@@ -165,6 +166,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "deployment.runtime": (
+        "eimemory/raw/KROUTER_NOTICE.txt",
         "eimemory/knowledge/l1_queue.py",
         "eimemory/adapters/runtime/service.py",
         "deploy/check_hermes_recall_identity.py",
