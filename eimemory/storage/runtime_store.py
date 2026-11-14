@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from copy import deepcopy
+from dataclasses import asdict, replace
 
 import json
 import os
@@ -147,6 +149,106 @@ class _ReadSlot:
         self.in_use = False
 
 
+def _temporal_links(request: dict) -> list[LinkRef]:
+    return [LinkRef(relation="temporal_target", target_kind="record", target_id=target)
+            for target in request["targets"]] + [
+                LinkRef(relation="evidence", target_kind="record", target_id=source)
+                for source in request["evidence"]]
+
+
+def _temporal_evidence_digests(sqlite, ids, access, source_registry):
+    from eimemory.contracts.temporal_facts import canonical_json, digest
+    from eimemory.knowledge.evidence_gate import filter_answer_evidence
+    from eimemory.knowledge.safety import evaluate_knowledge_safety
+
+    result = {}
+    scope, source_id = ScopeRef(**asdict(access.scope)), access.source_id
+    for record_id in ids:
+        record = sqlite.get_by_exact_ref(record_id, scope=scope, source_id=source_id,
+                                         fail_on_unavailable=True)
+        if (record is None or record.status != "active" or record.record_id != record_id
+                or record.scope != scope or record.source_id != source_id):
+            raise ValueError("evidence_rejected")
+        snapshot = record.to_dict()
+        canonical = canonical_json(snapshot)
+        # The trusted Python callback may inspect a detached envelope, but may
+        # not change what the requested identity authorizes. Gates and digest
+        # always consume the original hydration, including during family replay.
+        admission_record = deepcopy(record)
+        admitted = access.admit_evidence(admission_record)
+        if canonical_json(admission_record.to_dict()) != canonical:
+            raise ValueError("evidence_admission_mutated")
+        if (admitted is not True
+                or not evaluate_knowledge_safety(record, task="recall", registry=source_registry)["recall_allowed"]
+                or not filter_answer_evidence([record], registry=source_registry, store=sqlite)["records"]):
+            raise ValueError("evidence_rejected")
+        result[record_id] = digest(snapshot)
+    return result
+
+
+def _certify_temporal_family(sqlite, records, *, access, family_id, fact, source_registry):
+    """Certify all persisted operations and original evidence, in one snapshot.
+
+    Only this exact new protocol admits canonical inactive envelopes. Ordinary
+    evidence still passes the existing active, lineage, safety and answer gates.
+    No historical bypass is applied to legacy records or their original sources.
+    """
+    from datetime import datetime
+    from eimemory.contracts.temporal_facts import (
+        MAX_EVENTS, SCHEMA, access_partition, canonical_json, digest, family_id_for,
+        is_resolved, normalize_operation, revision_id_for, temporal_payload, validate_target_interval,
+    )
+    seen, evidence_digests, last_order = {}, {}, 0
+    for sequence, record in enumerate(records, 1):
+        payload = temporal_payload(record)
+        request = normalize_operation(payload.get("request"))
+        if canonical_json(request) != canonical_json(payload.get("request")):
+            raise ValueError("temporal_request_invalid")
+        if request["fact"] != fact:
+            raise ValueError("family_contract_mismatch")
+        if (record.kind != "unknown" or record.status != "inactive" or record.scope != access.scope
+                or record.source_id != access.source_id or record.source != access.source
+                or payload.get("schema") != SCHEMA or payload.get("authority") != access.authority
+                or business_metadata(record.meta).get("temporal_fact_family_id") != family_id
+                or family_id_for(access, request["fact"]) != family_id or payload.get("family_id") != family_id
+                or payload.get("revision_id") != record.record_id
+                or record.record_id != revision_id_for(access, request["idempotency_key"])
+                or payload.get("request_digest") != digest([access_partition(access), request])
+                or type(payload.get("family_sequence")) is not int or payload["family_sequence"] != sequence
+                or type(payload.get("commit_order")) is not int or payload["commit_order"] <= last_order
+                or request["expected_revision"] != (records[sequence - 2].record_id if sequence > 1 else None)
+                or payload.get("operation") != request["operation"] or payload.get("targets") != request["targets"]
+                or any(payload.get(key) != value for key, value in request["interval"].items())
+                or record.evidence != request["evidence"] or record.links != _temporal_links(request)
+                or record.content != {"operation": request["operation"]}
+                or record.provenance != {"temporal_protocol": SCHEMA, "authority": access.authority}
+                or payload.get("resolution") != ("resolved" if is_resolved(request["fact"], request["interval"]) else "unresolved")
+                or record.time.occurred_at != "" or record.time.created_at != payload.get("recorded_at")
+                or record.time.updated_at != payload.get("recorded_at")):
+            raise ValueError("temporal_family_evidence_invalid")
+        try:
+            if datetime.fromisoformat(payload["recorded_at"].replace("Z", "+00:00")).tzinfo is None:
+                raise ValueError("recorded_at_invalid")
+        except (KeyError, AttributeError, TypeError) as exc:
+            raise ValueError("recorded_at_invalid") from exc
+        for target in request["targets"]:
+            if target not in seen:
+                raise ValueError("target_missing_or_cycle")
+            validate_target_interval(request, temporal_payload(seen[target])["request"])
+        stored_digests = payload.get("evidence_digests")
+        if type(stored_digests) is not dict or set(stored_digests) != set(request["evidence"]):
+            raise ValueError("temporal_source_binding_invalid")
+        for source_id, stored_digest in stored_digests.items():
+            if source_id not in evidence_digests:
+                if len(evidence_digests) >= MAX_EVENTS:
+                    raise ValueError("temporal_source_budget_exceeded")
+                evidence_digests.update(_temporal_evidence_digests(sqlite, [source_id], access, source_registry))
+            if evidence_digests[source_id] != stored_digest:
+                raise ValueError("temporal_source_changed")
+        seen[record.record_id] = record
+        last_order = payload["commit_order"]
+
+
 class RuntimeStore:
     def __init__(self, root: str | Path, *, bootstrap_schema: bool = True) -> None:
         self.root = Path(root)
@@ -174,6 +276,148 @@ class RuntimeStore:
             bind(self._lock)
 
         self._last_capability_export_status = self._durable_capability_export_status()
+
+    def apply_temporal_facts(self, *, operations: list[dict], access, enabled: bool = False,
+                             source_registry=None) -> list[RecordEnvelope]:
+        """Append structured fact operations, edges and outbox in one transaction.
+
+        This is an opt-in trusted local API. No model-facing metadata establishes
+        access or authority, and generic append/replace cannot write this journal.
+        """
+        from eimemory.contracts.temporal_facts import (
+            MAX_BATCH, MAX_EVENTS, SCHEMA, TemporalFactAccess, access_partition, digest,
+            family_id_for, is_resolved, normalize_operation, reject_batch_cycles,
+            revision_id_for, temporal_payload, validate_target_interval,
+        )
+        from eimemory.core.clock import now_iso
+        from eimemory.living.schema import default_living_memory_meta
+
+        if enabled is not True:
+            raise PermissionError("temporal_writes_disabled")
+        if type(access) is not TemporalFactAccess:
+            raise PermissionError("temporal_access_required")
+        access = replace(access)
+        if type(operations) is not list or not 1 <= len(operations) <= MAX_BATCH:
+            raise ValueError("temporal_batch_invalid")
+        requests = [normalize_operation(item) for item in operations]
+
+        def mutation(sqlite):
+            # Validation, CAS, retries and all target reads share this write
+            # transaction, including dependencies inserted earlier in the batch.
+            reject_batch_cycles(requests, access)
+            result, changed, edges = [], [], []
+            for request in requests:
+                revision_id = revision_id_for(access, request["idempotency_key"])
+                family_id = family_id_for(access, request["fact"])
+                request_digest = digest([access_partition(access), request])
+                existing = sqlite.get_by_exact_ref(revision_id, scope=access.scope, source_id=access.source_id,
+                                                   fail_on_unavailable=True, preserve_unknown_occurred_at=True)
+                if existing is not None and temporal_payload(existing).get("request_digest") != request_digest:
+                    raise ValueError("idempotency_conflict")
+                family, complete = sqlite.temporal_fact_family(family_id=family_id, scope=access.scope,
+                    source_id=access.source_id, max_events=MAX_EVENTS)
+                if not complete:
+                    raise ValueError("temporal_family_incomplete")
+                _certify_temporal_family(sqlite, family, access=access, family_id=family_id,
+                                         fact=request["fact"], source_registry=source_registry)
+                if existing is not None:
+                    if not any(item.record_id == existing.record_id for item in family):
+                        raise ValueError("temporal_family_evidence_unavailable")
+                    result.append(existing)
+                    continue
+                if len(family) >= MAX_EVENTS:
+                    raise ValueError("temporal_family_incomplete")
+                source_ids = {source_id for item in family for source_id in item.evidence}
+                if len(source_ids | set(request["evidence"])) > MAX_EVENTS:
+                    raise ValueError("temporal_source_budget_exceeded")
+                if request["expected_revision"] != (family[-1].record_id if family else None):
+                    raise ValueError("revision_conflict")
+                for target_id in request["targets"]:
+                    if target_id == revision_id:
+                        raise ValueError("target_cycle")
+                    target = sqlite.get_by_exact_ref(target_id, scope=access.scope, source_id=access.source_id,
+                        fail_on_unavailable=True, preserve_unknown_occurred_at=True)
+                    if target is None:
+                        raise ValueError("target_missing")
+                    if not any(item.record_id == target_id for item in family):
+                        raise ValueError("target_partition")
+                    validate_target_interval(request, temporal_payload(target)["request"])
+                evidence_digests = _temporal_evidence_digests(sqlite, request["evidence"], access, source_registry)
+                recorded_at = now_iso()
+                living = default_living_memory_meta()
+                living["temporal"].update(
+                    schema=SCHEMA, **request["interval"], family_id=family_id,
+                    revision_id=revision_id, family_sequence=len(family) + 1,
+                    commit_order=sqlite.next_temporal_commit_order(), recorded_at=recorded_at,
+                    operation=request["operation"], targets=request["targets"],
+                    request=request, request_digest=request_digest, evidence_digests=evidence_digests,
+                    authority=access.authority, resolution="resolved" if is_resolved(request["fact"], request["interval"]) else "unresolved",
+                )
+                # Inactive is a pre-existing lifecycle exclusion in old SQL and
+                # API readers. Here it denotes journal evidence from inception,
+                # never a global supersession decision about a business fact.
+                # The existing unknown/report-only envelope is non-exportable
+                # to QMD as well; memory-kind inactive envelopes still export.
+                record = RecordEnvelope.create(kind="unknown", status="inactive", title="Structured temporal evidence",
+                    scope=ScopeRef(**asdict(access.scope)), source=access.source,
+                    source_id=access.source_id, content={"operation": request["operation"]},
+                    evidence=request["evidence"], links=_temporal_links(request),
+                    meta={"memory_type": "temporal_fact_evidence", "force_capture": True,
+                          "temporal_fact_family_id": family_id, "living_memory_v1": living},
+                    provenance={"temporal_protocol": SCHEMA, "authority": access.authority})
+                record.record_id = revision_id
+                record.time = TimeRef(created_at=recorded_at, updated_at=recorded_at, occurred_at="")
+                sqlite.upsert(record, commit=False, temporal_fact_insert=True)
+                changed.append(record)
+                result.append(record)
+                for target_id in request["targets"]:
+                    edges.append(MemoryEdge.create(from_id=revision_id, to_id=target_id, edge_type="temporal",
+                        confidence=1.0, evidence_id=revision_id, scope=record.scope,
+                        reason=request["operation"], meta={"schema": SCHEMA, "family_id": family_id,
+                            "source_id": access.source_id, "authority": access.authority,
+                            "interval": request["interval"]}))
+            return result, changed, edges
+
+        return self.mutate_records_atomically(mutation)
+
+    def recall_temporal_facts(self, *, access, fact: dict, valid_at: str, known_at=None,
+                              max_events: int = 256, limit: int = 100, source_registry=None) -> dict:
+        """Explicit valid-time read of a complete, exact-owner evidence family.
+
+        A failed evidence check makes the whole family unavailable. In particular
+        it cannot silently drop a revocation or return a partial predecessor.
+        """
+        import sqlite3
+        from eimemory.contracts.temporal_facts import (
+            MAX_EVENTS, TemporalFactAccess, access_partition, family_id_for, normalize_fact, parse_instant, resolve_family,
+        )
+        if known_at is not None:
+            raise ValueError("known_at_unsupported")
+        if type(access) is not TemporalFactAccess:
+            raise PermissionError("temporal_access_required")
+        access = replace(access)
+        identity, at = normalize_fact(fact), parse_instant(valid_at)
+        if type(max_events) is not int or not 1 <= max_events <= MAX_EVENTS:
+            raise ValueError("temporal_event_budget_invalid")
+        if type(limit) is not int or not 0 <= limit <= MAX_EVENTS:
+            raise ValueError("temporal_limit_invalid")
+        family_id = family_id_for(access, identity)
+        base = dict(schema="temporal_fact_result.v1", family_id=family_id, valid_at=at.isoformat(),
+                    partition=access_partition(access), fact=identity,
+                    known_at_supported=False, complete=False, items=[], unresolved=[], head_revision=None,
+                    event_count=None, selected_count=0, truncated=False)
+        def read(sqlite):
+            family, complete = sqlite.temporal_fact_family(family_id=family_id, scope=access.scope,
+                source_id=access.source_id, max_events=max_events)
+            if not complete:
+                return dict(base, status="incomplete", reason="temporal_event_budget_exceeded")
+            _certify_temporal_family(sqlite, family, access=access, family_id=family_id,
+                                     fact=identity, source_registry=source_registry)
+            return dict(base, **resolve_family(family, at=at, limit=limit), complete=True)
+        try:
+            return self.read_consistent(read)
+        except (OSError, ValueError, TypeError, RuntimeError, sqlite3.Error):
+            return dict(base, status="unavailable", reason="temporal_evidence_unavailable")
 
     def append(
         self,
@@ -2329,23 +2573,51 @@ class RuntimeStore:
                     continue
                 from .record_replay import retired_record_ref
                 retired = retired_record_ref(scanned.payload)
+                record = RecordEnvelope.from_dict(scanned.payload)
+                from eimemory.contracts.temporal_facts import SCHEMA, temporal_payload
                 if retired is not None:
+                    if (temporal_payload(record).get("schema") == SCHEMA
+                            or business_metadata(record.meta).get("temporal_fact_family_id")):
+                        raise ValueError("temporal_protocol_requires_structured_write")
                     previous = ScopeRef.from_dict(retired['scope'])
                     rows = target.execute(
-                        'SELECT storage_key, source_id FROM records WHERE record_id=? AND tenant_id=? AND agent_id=? '
+                        'SELECT storage_key, source_id, meta_json FROM records WHERE record_id=? AND tenant_id=? AND agent_id=? '
                         'AND workspace_id=? AND user_id=?',
                         (retired['record_id'], previous.tenant_id, previous.agent_id,
                          previous.workspace_id, previous.user_id),
                     ).fetchall()
                     if any(str(row['source_id']) != retired['source_id'] for row in rows):
                         raise ValueError('record_scope_move_retired_source_mismatch')
+                    # As in rewrite, check both persisted locations before
+                    # retiring any row, even when the log payload is scrubbed.
+                    for row in rows:
+                        target._guard_persisted_temporal_revision(row)
+                    current = target.execute(
+                        'SELECT meta_json FROM records WHERE storage_key=?', (target._storage_key(record),)
+                    ).fetchone()
+                    target._guard_persisted_temporal_revision(current)
                     for row in rows:
                         key = str(row['storage_key'])
                         target.execute('DELETE FROM records WHERE storage_key=?', (key,))
                         target._delete_recall_index(key)
                         target.execute("DELETE FROM temp.rebuild_expected WHERE table_name='records' AND item_key=?", (key,))
-                record = RecordEnvelope.from_dict(scanned.payload)
-                target.upsert(record, commit=False)
+                if temporal_payload(record).get("schema") == SCHEMA:
+                    # Recovery restores passive journal envelopes, never applies
+                    # their operations or grants authority. Explicit reads still
+                    # certify the full family against the caller's source gates.
+                    if scanned.payload.get("source_id") != record.source_id:
+                        raise ValueError("temporal_source_binding_invalid")
+                    if record.kind != "unknown" or record.status != "inactive" or record.time.occurred_at:
+                        raise ValueError("temporal_recovery_requires_isolated_evidence")
+                    previous = target.get_by_exact_ref(record.record_id, scope=record.scope,
+                        source_id=record.source_id, fail_on_unavailable=True, preserve_unknown_occurred_at=True)
+                    if previous is not None:
+                        if previous.to_dict() != record.to_dict():
+                            raise ValueError("temporal_evidence_append_only")
+                    else:
+                        target.upsert(record, commit=False, temporal_fact_insert=True)
+                else:
+                    target.upsert(record, commit=False)
                 target.execute(
                     "INSERT OR IGNORE INTO temp.rebuild_expected VALUES ('records', ?)",
                     (target._storage_key(record),),

@@ -136,9 +136,19 @@ class MemoryAPI:
         source_registry: SourceRegistry | None = None,
         candidate_source: CandidateSource | None = None,
         recall_engine: RecallEngine | None = None,
+        enable_temporal_facts: bool = False,
+        temporal_fact_access=None,
     ) -> None:
         self.store = store
         self.source_registry = source_registry
+        from dataclasses import replace
+        from eimemory.contracts.temporal_facts import TemporalFactAccess
+        if temporal_fact_access is not None and type(temporal_fact_access) is not TemporalFactAccess:
+            raise ValueError("temporal_access_binding_invalid")
+        if type(enable_temporal_facts) is not bool:
+            raise ValueError("temporal_enablement_invalid")
+        self._temporal_writes_enabled = enable_temporal_facts
+        self._temporal_fact_access = replace(temporal_fact_access) if temporal_fact_access is not None else None
         if candidate_source is not None and recall_engine is not None:
             raise ValueError("candidate_source and recall_engine cannot both be supplied")
         engine_store = getattr(recall_engine, "store", store)
@@ -156,6 +166,34 @@ class MemoryAPI:
         bind = getattr(self.recall_engine, "bind", None)
         if callable(bind):
             bind(self)
+
+    def apply_temporal_facts(self, *, operations: list[dict]) -> list[RecordEnvelope]:
+        """Trusted structured ingestion; disabled by default, never L1 inferred.
+
+        Each operation declares exact identity, business interval, source IDs,
+        targets, idempotency and a family head CAS. Authority comes exclusively
+        from the constructor's caller-bound TemporalFactAccess.
+        """
+        return self.store.apply_temporal_facts(operations=operations, access=self._temporal_fact_access,
+            enabled=self._temporal_writes_enabled, source_registry=self.source_registry)
+
+    def recall_temporal_facts(self, *, scope: dict, fact: dict, valid_at: str, known_at=None,
+                              max_events: int = 256, limit: int = 100) -> dict:
+        """Resolve persisted evidence at explicit valid_at, with exact access.
+
+        Ordinary recall and natural-language extraction remain unchanged. This
+        endpoint supports today's evidence about valid time, not known-time replay.
+        """
+        from dataclasses import asdict
+        if known_at is not None:
+            raise ValueError("known_at_unsupported")
+        access = self._temporal_fact_access
+        if access is None:
+            raise PermissionError("temporal_access_required")
+        if type(scope) is not dict or scope != asdict(access.scope):
+            raise PermissionError("scope_denied")
+        return self.store.recall_temporal_facts(access=access, fact=fact, valid_at=valid_at,
+            known_at=known_at, max_events=max_events, limit=limit, source_registry=self.source_registry)
 
     def ingest(
         self,
@@ -766,10 +804,15 @@ class MemoryAPI:
         scope: dict,
         task_context: dict | None = None,
         limit: int = 8,
+        known_at=None,
     ) -> RecallBundle:
         """Build the immutable public request and delegate all recall control flow."""
 
         context = dict(task_context or {})
+        if known_at is not None or context.get("known_at") is not None:
+            raise ValueError("known_at_unsupported")
+        if context.get("valid_at") is not None:
+            raise ValueError("valid_at_requires_recall_temporal_facts")
         # Hard recall contract for CLI/RPC/SDK without requiring Lightweight env.
         # Callers (e.g. OpenClaw) may set a tighter deadline; never extend past the shared budget.
         from eimemory.core.budgets import recall_budget_seconds

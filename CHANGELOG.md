@@ -1,3 +1,10 @@
+## [1.15.78]
+
+- Add opt-in structured temporal fact operations and explicit valid-time queries on the existing canonical RuntimeStore/SQLite records, with immutable evidence, scoped identity, interval-local correction and append-only retraction semantics.
+- Preserve legacy behavior and old-reader isolation; reject unsupported knowledge-time replay. New entry points remain disabled by default, without production data migration or a second database.
+- Protect revisions before generic rewrite/replay mutation, require canonical source bindings, and isolate evidence-admission callbacks from the original proof.
+- Exclude the failed experimental RAW ranking changes. See `docs/releases/v1.15.78.md` for exact acceptance scope and limitations.
+
 ## 1.15.69
 
 - fix: native policy prior-retirement no longer treats a sticky `failure_detected` capture for a *different*, already ops-dropped release.closure incident as blocking. Unrelated unconsumed priors can retire so Hermes `native_policy_owner` does not deadlock on `prior_policy_currentness_unverified` after projection/oneshot readiness drops (1.15.65/1.15.67).

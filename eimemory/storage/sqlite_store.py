@@ -3742,9 +3742,40 @@ class SqliteRecordStore:
             return {**result, "ok": False, "reason": "deferred_archive_write_unsupported"}
         return {**result, "ok": True}
 
-    def upsert(self, record: RecordEnvelope, *, commit: bool = True, allow_quarantine_restore: bool = False) -> None:
+    @staticmethod
+    def _guard_persisted_temporal_revision(row) -> None:
+        """Use persisted markers, independently of a generic caller's payload."""
+        if row is None:
+            return
+        from eimemory.contracts.temporal_facts import SCHEMA
+        meta = business_metadata(json.loads(row["meta_json"]))
+        living = meta.get("living_memory_v1")
+        temporal = living.get("temporal") if isinstance(living, dict) else None
+        if (meta.get("temporal_fact_family_id")
+                or isinstance(temporal, dict) and temporal.get("schema") == SCHEMA):
+            raise ValueError("temporal_evidence_append_only")
+
+    def upsert(self, record: RecordEnvelope, *, commit: bool = True, allow_quarantine_restore: bool = False,
+               temporal_fact_insert: bool = False) -> None:
         self.assert_connection_lock_held()
         validate_record_id(record.record_id)
+        from eimemory.contracts.temporal_facts import SCHEMA, temporal_payload
+        is_temporal = temporal_payload(record).get("schema") == SCHEMA
+        if (is_temporal or business_metadata(record.meta).get("temporal_fact_family_id")) and not temporal_fact_insert:
+            raise ValueError("temporal_protocol_requires_structured_write")
+        if temporal_fact_insert and (not is_temporal or commit or not self.in_transaction
+                                     or record.kind != "unknown" or record.status != "inactive"
+                                     or record.time.occurred_at != ""):
+            raise ValueError("temporal_insert_requires_transaction")
+        storage_key = self._storage_key(record)
+        existing = self.conn.execute(
+            "SELECT source_id, meta_json FROM records WHERE storage_key = ?", (storage_key,)
+        ).fetchone()
+        if temporal_fact_insert and existing is not None:
+            raise ValueError("temporal_evidence_append_only")
+        self._guard_persisted_temporal_revision(existing)
+        if existing is not None and str(existing["source_id"]) != record.source_id:
+            raise ValueError("source_id move requires an explicit mutation path")
         if record.kind == "rule":
             from eimemory.storage.test_rule_quarantine import guard_rule_write
             existing = self.get_by_id(record.record_id, scope=record.scope, exact_scope=True)
@@ -3783,12 +3814,6 @@ class SqliteRecordStore:
             ] if part
         )
         embedding = json.dumps(_embed_text(content_text), ensure_ascii=False)
-        storage_key = self._storage_key(record)
-        existing = self.conn.execute(
-            "SELECT source_id FROM records WHERE storage_key = ?", (storage_key,)
-        ).fetchone()
-        if existing is not None and str(existing["source_id"]) != record.source_id:
-            raise ValueError("source_id move requires an explicit mutation path")
         idempotency_key = str(record.meta.get("idempotency_key") or "")
         semantic_key = str(record.meta.get("semantic_key") or "")
         # Every projection column, created_at included, is derived from the
@@ -6974,6 +6999,51 @@ class SqliteRecordStore:
             return None
         return int(row[0]) if row is not None else 0
 
+    def temporal_fact_family(self, *, family_id: str, scope: ScopeRef, source_id: str,
+                             max_events: int) -> tuple[list[RecordEnvelope], bool]:
+        """Exact complete family in the caller's pinned snapshot, before selection.
+
+        No active-state predicate: these are intentionally inactive journal
+        envelopes. The protocol reader must certify every canonical envelope.
+        Fetch a sentinel row and fail closed before hydrating a partial family.
+        """
+        self.assert_connection_lock_held()
+        from eimemory.contracts.temporal_facts import MAX_EVENTS
+        if type(max_events) is not int or not 1 <= max_events <= MAX_EVENTS:
+            raise ValueError("temporal_event_budget_invalid")
+        rows = self.conn.execute(
+            "SELECT storage_key, record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, "
+            "source_id, payload_json, payload_pointer_json, payload_digest FROM records "
+            "WHERE tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ? AND source_id = ? "
+            "AND json_extract(meta_json, '$.temporal_fact_family_id') = ? "
+            "ORDER BY CAST(json_extract(meta_json, '$.living_memory_v1.temporal.family_sequence') AS INTEGER), record_id "
+            "LIMIT ?",
+            (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id, source_id, family_id, max_events + 1),
+        ).fetchall()
+        if len(rows) > max_events:
+            return [], False
+        records = []
+        for row in rows:
+            record = self._record_from_storage_row(row, hydrate=True, preserve_unknown_occurred_at=True)
+            if (record is None or not self._record_matches_projection_row(record, row)
+                    or self._storage_key(record) != str(row["storage_key"])):
+                raise RuntimeError("temporal_family_evidence_unavailable")
+            records.append(record)
+        return records, True
+
+    def next_temporal_commit_order(self) -> int:
+        """Server order allocated under BEGIN IMMEDIATE; no second authority table."""
+        self.assert_connection_lock_held()
+        if not self.in_transaction:
+            raise RuntimeError("temporal_order_requires_transaction")
+        row = self.conn.execute(
+            "SELECT COALESCE(MAX(CAST(json_extract(meta_json, "
+            "'$.living_memory_v1.temporal.commit_order') AS INTEGER)), 0) + 1 FROM records "
+            "WHERE json_extract(meta_json, '$.living_memory_v1.temporal.schema') = ?",
+            ("temporal_fact.v1",),
+        ).fetchone()
+        return int(row[0])
+
     def list_records_by_meta_value(
         self,
         *,
@@ -7228,6 +7298,9 @@ class SqliteRecordStore:
         commit: bool = True,
     ) -> None:
         self.assert_connection_lock_held()
+        from eimemory.contracts.temporal_facts import SCHEMA, temporal_payload
+        if temporal_payload(record).get("schema") == SCHEMA or business_metadata(record.meta).get("temporal_fact_family_id"):
+            raise ValueError("temporal_protocol_requires_structured_write")
         self._invalidate_recall_schema_cache()
         previous_key = None
         if previous_scope is not None:
@@ -7244,7 +7317,8 @@ class SqliteRecordStore:
             self.conn.execute('BEGIN IMMEDIATE')
         try:
             for key in {new_key, previous_key} - {None}:
-                existing = self.conn.execute("SELECT source_id FROM records WHERE storage_key = ?", (key,)).fetchone()
+                existing = self.conn.execute("SELECT source_id, meta_json FROM records WHERE storage_key = ?", (key,)).fetchone()
+                self._guard_persisted_temporal_revision(existing)
                 if existing is not None and str(existing["source_id"]) != record.source_id:
                     raise ValueError("source_id move requires an explicit mutation path")
             if previous_key and previous_key != new_key:
