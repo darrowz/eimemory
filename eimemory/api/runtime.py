@@ -103,6 +103,9 @@ class Runtime:
             candidate_source=candidate_source,
             recall_engine=recall_engine,
         )
+        # Trusted runtime route; each write/read still derives its exact access
+        # from an admitted original chat partition, never a model/wire binding.
+        self.memory._ordinary_chat_temporal = True
         # D1+D4: profile controls which optional extensions are constructed.
         # "core" = storage + memory read/write only; "full" = all extensions.
         # Default is "full" for backward compatibility.

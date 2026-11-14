@@ -68,6 +68,7 @@ class L1Atom:
     semantic_key: str
     category: str
     source_message_ids: tuple[str, ...] = ()
+    temporal_proposal: dict | None = None
 
 
 # Backward-compatible alias used by earlier turn-sediment callers.
@@ -225,6 +226,7 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
         user_prompt=(
             "【上一个情境】无\n"
             f"【权威来源消息ID】{json.dumps(list(source_message_ids), ensure_ascii=False)}\n"
+            f"【原始USER文本SHA256】{sha256(user.encode('utf-8')).hexdigest()}\n"
             f"【背景消息】无\n【待提取的新消息】\nUSER:\n{user}\n\nASSISTANT:\n{assistant}"
         ),
         json_mode=True,
@@ -252,7 +254,7 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
         else:
             memories.append(item)
     # Validate the complete model schema before treating its count as known.
-    prepared: list[tuple[str, str, float, tuple[str, ...]]] = []
+    prepared: list[tuple[str, str, float, tuple[str, ...], dict | None]] = []
     for item in memories:
         if not isinstance(item.get("content"), str) or not item["content"].strip():
             return None
@@ -276,11 +278,14 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
         source_ids = tuple(dict.fromkeys(value.strip() for value in requested_ids)) or source_message_ids
         if any(value not in source_message_ids for value in source_ids):
             return None
-        prepared.append((content, atom_type, priority, source_ids))
+        temporal = item.get("temporal") if "temporal" in item else None
+        if "temporal" in item and type(temporal) is not dict:
+            temporal = {"invalid": True}
+        prepared.append((content, atom_type, priority, source_ids, temporal))
     diagnostics["raw_candidate_count"] = len(prepared)
     atoms: list[L1Atom] = []
     filters: dict[str, int] = {}
-    for content, atom_type, priority, source_ids in prepared:
+    for content, atom_type, priority, source_ids, temporal in prepared:
         min_priority = {
             "instruction": 70,
             "persona": 50,
@@ -313,6 +318,7 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
                 semantic_key=semantic_key(memory_type=atom_type, title=title),
                 category=atom_type,
                 source_message_ids=source_ids,
+                temporal_proposal=temporal,
             )
         )
     diagnostics.update(admitted_count=len(atoms), filter_reason_counts=filters)

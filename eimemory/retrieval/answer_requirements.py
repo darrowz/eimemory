@@ -226,6 +226,18 @@ _MONEY_ROLES = {
     'unit_price': r'单价',
 }
 _CURRENCY_AMOUNT = rf'(?:(?:人民币|USD|CNY|RMB|EUR|[¥￥$€£])\s*{_NUMBER}(?:万|亿)?(?:元)?|{_NUMBER}\s*(?:万|亿)?\s*(?:元|美元|人民币|USD|CNY|RMB|EUR))'
+# States and changes require the same factual context across commas. Numeric
+# grouping must not remove either the owner or a condition on the assertion.
+_MONEY_CHANGE_NONFACT = re.compile(
+    r'(?P<state>未知|不详|不确定|不清楚|未|没有|没|不是|并非|不为|不曾|不予|不再|'
+    r'不(?:改|调整|变更|实施|执行|生效|落实|落地)|\b(?:unknown|unconfirmed|not|never)\b)|'
+    r'(?P<context>[？?]|是否|能否|可否|吗(?:$|[，,；;！!])|'
+    r'如果|假如|假设|倘若|一旦|若|除非|只有|否则|前提|条件是|条件为|'
+    r'(?:获批|批准|通过|确认)(?:后|时)|建议|提议|推荐|要求|请|希望|考虑|申请|'
+    r'计划|提案|草案|打算|准备|拟|预计|预期|将|应该|应当|可能|或许|待|'
+    r'需(?:要)?(?:获批|批准|审批|确认|实施|执行|生效|落实)|'
+    r'\b(?:if|unless|once|will|would|could|should|must|may|might|whether|'
+    r'plan(?:ned)?|intend(?:ed)?|recommend(?:ed)?)\b)', re.I)
 
 
 def _supports_money_role(query: str, evidence: str, aliases=()) -> bool:
@@ -235,6 +247,36 @@ def _supports_money_role(query: str, evidence: str, aliases=()) -> bool:
         return supports_requested_attribute('money', evidence)
     assertion = re.compile('(?:' + _MONEY_ROLES[role] + r')\s*(?:为|是|约为|约|共计|合计|[:：=])?\s*'
                            + _CURRENCY_AMOUNT, re.I)
+    change_assertion = re.compile('(?:' + _MONEY_ROLES[role]
+                                  + r')\s*(?:已(?:经)?\s*)?(?:改为|调整为|变更为)\s*'
+                                  + _CURRENCY_AMOUNT, re.I)
+    project = explicit_project(query).casefold()
+    allowed_projects = {project, *(str(alias).casefold() for alias in aliases)}
+
+    def owned(sentence):
+        projects = {next(v for v in match.groups() if v).casefold()
+                    for match in _PROJECT.finditer(sentence)}
+        return not (project and projects - allowed_projects)
+
+    def factual(sentence):
+        # Recognized identity spans are names, not modal assertions. Keep the
+        # original sentence for ownership and role/amount matching.
+        context = _PROJECT.sub(lambda match: ' ' * len(match[0]), sentence)
+        # Explicit record aliases authorize ownership, never erasure of prose.
+        # A bare name equal to "if" can still introduce a condition even when
+        # immediately followed by a monetary role.
+        other_roles = '|'.join(pattern for name, pattern in _MONEY_ROLES.items() if name != role)
+        for clause in re.split(r'[，；;]|(?<!\d),|,(?!\d)', context):
+            # A standalone other-role clause owns its local unknown/negative
+            # state. Conditions, plans and questions still constrain the whole
+            # sentence, including when they occur beside another role.
+            independent = (re.match(r'\s*(?:' + other_roles + r')', clause, re.I)
+                           and not re.search(_MONEY_ROLES[role], clause, re.I))
+            if any(not (independent and match.lastgroup == 'state')
+                   for match in _MONEY_CHANGE_NONFACT.finditer(clause)):
+                return False
+        return True
+
     previous = ''
     for sentence in re.split(r'[。\n]', evidence):
         sentence = sentence.strip()
@@ -242,12 +284,15 @@ def _supports_money_role(query: str, evidence: str, aliases=()) -> bool:
         # Explicit anaphora may inherit the immediately preceding contract's
         # project. Do not transfer identity to another project's amount.
         if (not identity and re.match(r'^(?:该|此|这份)合同', sentence)
-                and '合同' in previous and supports_query_identity(query, previous, aliases)):
+                and '合同' in previous and owned(previous)
+                and factual(previous)
+                and supports_query_identity(query, previous, aliases)):
             identity = True
-        if identity:
-            for clause in re.split(r'[，,；;]', sentence):
-                if (assertion.search(clause)
-                        and not re.search(r'未知|未确定|未定|不详|不是|并非|不为|尚未|[？?]', clause)):
+        if identity and owned(sentence) and factual(sentence):
+            # _NUMBER already accepts digit-comma-digit amounts. Keep their
+            # grouping inside this monetary clause without joining prose.
+            for clause in re.split(r'[，；;]|(?<!\d),|,(?!\d)', sentence):
+                if assertion.search(clause) or change_assertion.search(clause):
                     return True
         previous = sentence
     return False

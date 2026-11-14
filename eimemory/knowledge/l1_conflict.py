@@ -76,6 +76,10 @@ def find_conflict_candidates(
         if source_id and record_source_id != source_id:
             continue
         meta = business_metadata(record.meta)
+        # Managed observations can only be masked by their exact temporal
+        # family protocol, never by a free-form legacy model target list.
+        if "ordinary_chat_temporal_v1" in meta:
+            continue
         layer = str(meta.get("memory_layer") or "").strip().lower()
         memory_type = str(meta.get("memory_type") or record.content.get("memory_type") or "")
         if layer == "l0":

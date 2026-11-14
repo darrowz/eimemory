@@ -21,6 +21,14 @@ from eimemory.contracts.l1_source_order import (
 L1_EXTRACT_VERSION = "l1_extract.v3"
 
 
+def _atom_payload(atom):
+    payload = asdict(atom)
+    # Preserve legacy deterministic IDs and write receipts for the old DTO.
+    if payload.get("temporal_proposal") is None:
+        payload.pop("temporal_proposal", None)
+    return payload
+
+
 def _is_episode_evidence_record(record):
     from eimemory.recall.indexing import is_episode_evidence_record as _impl
     return _impl(record)
@@ -55,7 +63,7 @@ def _atom_record_id(
         episode_id,
         session_id,
         turn_id,
-        asdict(atom),
+        _atom_payload(atom),
     ]
     return "mem_" + sha256(json.dumps(
         identity,
@@ -84,7 +92,7 @@ def _l1_write_receipt(
     def digest(value: Any) -> str:
         return sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
                                  separators=(",", ":")).encode("utf-8")).hexdigest()
-    return {"schema": "l1_atom_write.v1", "atom_digest": digest(asdict(atom)),
+    return {"schema": "l1_atom_write.v1", "atom_digest": digest(_atom_payload(atom)),
             "output_digest": digest({"text": text, "memory_type": memory_type}),
             "decision_digest": digest({"action": action,
                 "target_ids": sorted({value.strip() for value in target_ids})})}
@@ -255,6 +263,49 @@ def persist_l1_atoms(
         raise L1SourceOrderBlocked("l1_source_parent_changed")
     source_binding = source_event_binding or (l1_source_event_binding(parent) if parent is not None else None)
     typed_atoms = [atom for atom in atoms if isinstance(atom, L1Atom)]
+    from eimemory.knowledge.chat_temporal import eligible_parent
+    if parent is not None and eligible_parent(memory_api, parent):
+        from eimemory.knowledge.chat_temporal import ground_observation, persist_observation
+        managed, legacy = [], []
+        for atom in typed_atoms:
+            grounding = ground_observation(memory_api, parent, atom.text, atom.temporal_proposal) if atom.memory_type == "fact" else None
+            if grounding is None:
+                legacy.append(atom)
+            else:
+                managed.append((atom, grounding))
+        if managed:
+            counts = dict(store_count=0, skip_count=0, update_count=0,
+                          source_order_stale_count=0, skipped_target_records=[], written_record_ids=[])
+            written = []
+            for atom, grounding in managed:
+                atom_id = _atom_record_id(atom=atom, scope_ref=scope_ref, channel_id=channel_id,
+                    episode_id=episode_id, session_id=session_id, turn_id=turn_id)
+                try:
+                    fact = persist_observation(memory_api, parent, atom, grounding, record_id=atom_id,
+                        receipt=_l1_write_receipt(atom, text=grounding.get("quote", atom.text), memory_type="fact", action="store", target_ids=[]))
+                except L1SourceOrderBlocked as exc:
+                    if exc.code != "l1_source_order_stale":
+                        raise
+                    counts["skip_count"] += 1
+                    counts["source_order_stale_count"] += 1
+                    if exc.target is not None:
+                        counts["skipped_target_records"].append(exc.target)
+                    continue
+                written.append(dict(record_id=fact.record_id, status=fact.status, memory_type="fact",
+                                    title=fact.title, memory_layer="l1", conflict_action="store"))
+                counts["store_count"] += 1
+                counts["written_record_ids"].append(fact.record_id)
+            if legacy:
+                other = {}
+                written.extend(persist_l1_atoms(memory_api, atoms=legacy, episode_id=episode_id,
+                    scope=scope, channel_id=channel_id, session_id=session_id, turn_id=turn_id,
+                    llm=llm, strict_conflict=strict_conflict, diagnostics_sink=other,
+                    source_event_binding=source_binding))
+                for key in counts:
+                    counts[key] += other.get(key, [] if isinstance(counts[key], list) else 0)
+            if diagnostics_sink is not None:
+                diagnostics_sink.update(counts)
+            return written
     atom_ids = {
         id(atom): _atom_record_id(
             atom=atom,

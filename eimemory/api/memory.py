@@ -149,6 +149,7 @@ class MemoryAPI:
             raise ValueError("temporal_enablement_invalid")
         self._temporal_writes_enabled = enable_temporal_facts
         self._temporal_fact_access = replace(temporal_fact_access) if temporal_fact_access is not None else None
+        self._ordinary_chat_temporal = False
         if candidate_source is not None and recall_engine is not None:
             raise ValueError("candidate_source and recall_engine cannot both be supplied")
         engine_store = getattr(recall_engine, "store", store)
@@ -181,8 +182,9 @@ class MemoryAPI:
                               max_events: int = 256, limit: int = 100) -> dict:
         """Resolve persisted evidence at explicit valid_at, with exact access.
 
-        Ordinary recall and natural-language extraction remain unchanged. This
-        endpoint supports today's evidence about valid time, not known-time replay.
+        This explicit endpoint retains its constructor-bound access. The trusted
+        chat runtime separately derives exact-owner access from captured sources.
+        Both routes resolve valid time, not known-time replay.
         """
         from dataclasses import asdict
         if known_at is not None:
@@ -811,6 +813,11 @@ class MemoryAPI:
         context = dict(task_context or {})
         if known_at is not None or context.get("known_at") is not None:
             raise ValueError("known_at_unsupported")
+        if self._ordinary_chat_temporal and re.search(
+            r"当时.*(?:知道|已知)|(?:截至|截止).*(?:已知|知道)|\b(?:what did you know|known as of|knew on)\b",
+            str(query or ""), re.I,
+        ):
+            raise ValueError("known_at_unsupported")
         if context.get("valid_at") is not None:
             raise ValueError("valid_at_requires_recall_temporal_facts")
         # Hard recall contract for CLI/RPC/SDK without requiring Lightweight env.
@@ -847,9 +854,41 @@ class MemoryAPI:
             scope=request.scope,
         ))
         try:
-            return self.recall_engine.recall(request)
+            bundle = self.recall_engine.recall(request)
+            if self._ordinary_chat_temporal:
+                from eimemory.knowledge.chat_temporal import resolve_candidates
+                selected = resolve_candidates(self, request, bundle.items, expand=False)
+                if selected != bundle.items:
+                    # Old bodies may also occur in explanations assembled before
+                    # a concurrent transition. Rebuild only the surviving lanes.
+                    bundle = RecallBundle(items=selected, rules=bundle.rules,
+                        reflections=bundle.reflections, confidence=bundle.confidence if selected else 0.0,
+                        next_action_hint="", explanation={"ordinary_chat_temporal": {"revalidated": True}})
+            else:
+                from eimemory.knowledge.chat_temporal import exclude_managed_candidates
+                # Default callers (including evolution) cannot interpret managed
+                # active bodies as ordinary facts. Recheck every output lane so
+                # a custom engine or a concurrent write cannot bypass subtraction.
+                lanes = (bundle.items, bundle.rules, bundle.reflections)
+                delivered = [item for lane in lanes for item in lane]
+                selected = exclude_managed_candidates(self, request, delivered)
+                allowed = {id(item) for item in selected}
+                if len(selected) != len(delivered):
+                    items, rules, reflections = ([item for item in lane if id(item) in allowed] for lane in lanes)
+                    bundle = RecallBundle(items=items, rules=rules, reflections=reflections,
+                        confidence=bundle.confidence if items else 0.0, next_action_hint="",
+                        explanation={"ordinary_chat_temporal": {"disabled_reader_withheld": True}})
+            return bundle
         finally:
             reset_verifier_route(token)
+
+    def _ordinary_temporal_candidates(self, request, items):
+        from eimemory.knowledge.chat_temporal import (
+            TemporalResolution, exclude_managed_candidates, resolve_candidates,
+        )
+        if not self._ordinary_chat_temporal:
+            return TemporalResolution(tuple(exclude_managed_candidates(self, request, items)), ())
+        return resolve_candidates(self, request, items, expand=True, include_admission=True)
 
     def _final_current_evidence_admission(self, bundle: RecallBundle, *, deadline_at: float) -> RecallBundle:
         from eimemory.knowledge.evidence_gate import current_evidence_reasons

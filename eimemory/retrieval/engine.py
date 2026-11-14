@@ -1077,6 +1077,18 @@ class GovernedRecallEngine:
                 source_ids=source_ids,
             )
             blocked_counts.update(diagnostic_blocked_counts)
+        # Expand/certify scoped business-time families before ordinary identity,
+        # lane, relevance and evidence admission. Canonical journal envelopes
+        # never enter this candidate list, and no active filter is relaxed.
+        temporal_candidates = getattr(memory, "_ordinary_temporal_candidates", None)
+        temporal_support = None
+        if callable(temporal_candidates):
+            resolution = temporal_candidates(request, items)
+            items = list(resolution.items)
+            # A local closure binds the exact immutable request. No proof goes
+            # into candidate hints, task_context or shared engine/API state.
+            def temporal_support(query, item, text):
+                return resolution.supports(request, query=query, record=item, text=text)
         before_filter_items = items
         from eimemory.identity_governance import filter_current_records
 
@@ -1368,6 +1380,7 @@ class GovernedRecallEngine:
             explicit_recall_boundary=explicit_evidence_boundary,
             preference_request=preference_request,
             deadline_at=deadline_at,
+            temporal_support=temporal_support,
         )
         auxiliary_snapshots = {self._record_key(rule): record_digest(rule) for rule in rules}
         auxiliary_snapshots.update(raw_authority_digests)
@@ -1406,6 +1419,7 @@ class GovernedRecallEngine:
             validate=_batch_unchanged,
             deadline_at=deadline_at,
             assistance_deadline_at=assistance_deadline_at,
+            temporal_support=temporal_support,
         )
         if target_trace is not None:
             target_trace.observe("selector_output", items)
@@ -1691,6 +1705,7 @@ class GovernedRecallEngine:
         explicit_recall_boundary: bool = False,
         preference_request: PreferenceRecallRequest | None = None,
         deadline_at: float = 0.0,
+        temporal_support=None,
     ) -> tuple[list[RecordEnvelope], dict[str, Any]]:
         pre_pool_items = list(items)[:5000]
         normalized_query = normalize_identity_text(query)
@@ -1935,6 +1950,7 @@ class GovernedRecallEngine:
                     vector_min_score=float(self._relevance_selector_thresholds["vector_grounding_min_score"]),
                     explicit_recall_boundary=explicit_recall_boundary,
                     preference_request=preference_request,
+                    temporal_support=temporal_support,
                 )
                 return score >= float(self._relevance_selector_thresholds["non_exact_min_grounding"])
 
@@ -2060,6 +2076,8 @@ class GovernedRecallEngine:
         validate=None,
         deadline_at: float = 0.0,
         assistance_deadline_at: float = 0.0,
+        temporal_support=None,
+        _grounding_only: bool = False,
     ) -> tuple[list[RecordEnvelope], dict[str, Any]]:
         """Apply one bounded relevance gate after fusion and page pooling.
 
@@ -2070,7 +2088,7 @@ class GovernedRecallEngine:
 
         from .target_trace import current_target_trace
         target_trace = current_target_trace(self)
-        if self.relevance_admission is not None:
+        if self.relevance_admission is not None and not _grounding_only:
             from .lightweight_admission import LightweightAdmission
             from .relevance import RelevanceAdmission
             extra = {}
@@ -2080,28 +2098,27 @@ class GovernedRecallEngine:
             # top-5 (mrr 0.67→0). Prefer grounding when it finds evidence; only
             # fall back to fused-order Admission when grounding is empty.
             if isinstance(self.relevance_admission, RelevanceAdmission):
-                admission = self.relevance_admission
-                self.relevance_admission = None
-                try:
-                    grounded, grounding_report = self._select_post_fusion_items(
-                        items,
-                        query=query,
-                        limit=limit,
-                        fusion_state=fusion_state,
-                        component_hints_by_ref=component_hints_by_ref,
-                        graph_edge_refs=graph_edge_refs,
-                        source_reports=source_reports,
-                        explicit_recall_boundary=explicit_recall_boundary,
-                        preference_request=preference_request,
-                        research_multi_hit=research_multi_hit,
-                        exact_scope_strategy=exact_scope_strategy,
-                        canonical_first_strategy=canonical_first_strategy,
-                        validate=validate,
-                        deadline_at=deadline_at,
-                        assistance_deadline_at=assistance_deadline_at,
-                    )
-                finally:
-                    self.relevance_admission = admission
+                # Recursion selects the native policy for this call only;
+                # concurrent requests must never observe a changed engine.
+                grounded, grounding_report = self._select_post_fusion_items(
+                    items,
+                    query=query,
+                    limit=limit,
+                    fusion_state=fusion_state,
+                    component_hints_by_ref=component_hints_by_ref,
+                    graph_edge_refs=graph_edge_refs,
+                    source_reports=source_reports,
+                    explicit_recall_boundary=explicit_recall_boundary,
+                    preference_request=preference_request,
+                    research_multi_hit=research_multi_hit,
+                    exact_scope_strategy=exact_scope_strategy,
+                    canonical_first_strategy=canonical_first_strategy,
+                    validate=validate,
+                    deadline_at=deadline_at,
+                    assistance_deadline_at=assistance_deadline_at,
+                    temporal_support=temporal_support,
+                    _grounding_only=True,
+                )
                 if grounded:
                     return grounded, {
                         **grounding_report,
@@ -2310,6 +2327,7 @@ class GovernedRecallEngine:
                 vector_min_score=float(thresholds["vector_grounding_min_score"]),
                 explicit_recall_boundary=explicit_recall_boundary,
                 preference_request=preference_request,
+                temporal_support=temporal_support,
             )
             if target_trace is not None:
                 target_trace.grounding(item, grounding_score, float(thresholds["non_exact_min_grounding"]))
@@ -2427,6 +2445,7 @@ class GovernedRecallEngine:
         vector_min_score: float,
         explicit_recall_boundary: bool,
         preference_request: PreferenceRecallRequest | None = None,
+        temporal_support=None,
     ) -> tuple[float, str]:
         hints: list[dict[str, Any]] = [component_hints_by_ref.get(self._record_key(item)) or {}]
         text = " ".join(
@@ -2460,6 +2479,8 @@ class GovernedRecallEngine:
         attribute = requested_attribute(gate_query)
         if attribute:
             return min_grounding, "requested_attribute"
+        if temporal_support is not None and temporal_support(query, item, text):
+            return min_grounding, "canonical_temporal_slot"
         if supports_preference_request(preference_request, item):
             return min_grounding, "preference_" + preference_request.mode
         if self._is_project_delivery_durable_evidence(gate_query, item, text):

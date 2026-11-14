@@ -31,7 +31,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.15.78" src="https://img.shields.io/badge/version-1.15.78-blue">
+  <img alt="Package version 1.15.79" src="https://img.shields.io/badge/version-1.15.79-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -285,9 +285,11 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.15.78, source package)
+## Current package status (1.15.79, source package)
 
-The [1.15.78 release notes](docs/releases/v1.15.78.md) cover an opt-in structured temporal-fact API using the existing canonical store. The entry point remains disabled by default. Ordinary chat/L1 extraction and full system-knowledge-time replay are not enabled or certified; the rejected experimental RAW ranking patch is excluded.
+The [1.15.79 release notes](docs/releases/v1.15.79.md) cover valid-time semantics on ordinary Runtime chat capture, L1 extraction and prefetch/recall using the existing canonical store. The ordinary Runtime integration is enabled; the separate structured temporal-fact API remains opt-in. Default-off readers withhold managed temporal bodies instead of treating obsolete observations as current facts.
+
+Supported, explicitly dated assertions retain scoped source evidence and interval-local corrections/retractions; omitted or malformed proposals conservatively remove certainty. Old-binary access to a store populated by this integration is unsupported and rollback compatibility is outside this release scope. Full knowledge-time replay, general extraction accuracy, production latency and L5 are not certified by source tests. The rejected experimental RAW ranking patch remains excluded.
 
 ### Retained 1.15.77 recovery and diagnostics context
 

@@ -1,3 +1,12 @@
+## [1.15.79]
+
+- Enable ordinary Runtime chat valid-time capture, literal-bound L1 proposals and current/historical prefetch with canonical scope, full-digest and query-local evidence checks.
+- Withhold uncertain values when supported dated changes, bounded corrections or retractions are omitted or malformed; preserve unaffected intervals and attributes.
+- Prevent upgraded default-off readers and evolution callers from leaking managed temporal bodies or stale derived hints.
+- Add allowlisted deployment RPC diagnostics; explicit business/authorization refusals are not retried.
+- Old-binary rollback compatibility is unsupported and excluded by operator choice. No data migration, RAW ranking patch, global model change or production/L5 acceptance is implied.
+- See `docs/releases/v1.15.79.md` for exact source acceptance and remaining deployment boundaries.
+
 ## [1.15.78]
 
 - Add opt-in structured temporal fact operations and explicit valid-time queries on the existing canonical RuntimeStore/SQLite records, with immutable evidence, scoped identity, interval-local correction and append-only retraction semantics.

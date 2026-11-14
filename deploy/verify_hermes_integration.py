@@ -37,17 +37,111 @@ def verify_code_implementation_binding(
     }
 
 
-def _rpc_result(raw: str, *, operation: str) -> dict:
-    payload = json.loads(raw)
-    if payload.get("ok") is not True:
-        failure_kind = "transport" if payload.get("bypassed") is True else "operation"
-        raise RuntimeError(f"{operation} RPC {failure_kind} failed")
+# These are diagnostic enums, not patterns accepting arbitrary server strings.
+# The method is the requested provider route; it does not prove an RPC was sent.
+_RPC_METHODS = {
+    "eimemory_status": "adapter.status",
+    "eimemory_remember": "adapter.remember",
+    "eimemory_recall": "adapter.prefetch",
+    "eimemory_verify_outcome": "adapter.record_terminal",
+}
+_RPC_REASONS = frozenset({
+    "configuration_missing", "configuration_invalid", "invalid_request",
+    "timeout", "connection_error", "http_error", "response_too_large",
+    "invalid_response", "transport_error", "adapter_unavailable", "circuit_open",
+})
+_RPC_ERRORS = frozenset({
+    "invalid_request", "unknown_method", "unauthorized", "attestation_unauthorized",
+    "capability_evidence_unauthorized", "original_proactive_release_unverified",
+    "effect_signal_acceptance_decision_rejected", "internal_error", "request_timeout",
+    "hermes_expected_sources_mismatch", "hermes_response_scope_mismatch",
+})
+
+
+def _safe_rpc_diagnostic(payload: dict, *, method: str, attempt: int) -> dict:
+    """Project only fixed codes and typed scalars from one observed tool reply."""
+    safe = {"method": method if method in _RPC_METHODS.values() else "unknown",
+            "attempt": attempt}
+    for name in ("ok", "bypassed"):
+        if type(payload.get(name)) is bool:
+            safe[name] = payload[name]
+    diagnostic = payload.get("diagnostic")
+    diagnostic = diagnostic if isinstance(diagnostic, dict) else {}
+    reason = diagnostic.get("reason")
+    if not isinstance(reason, str) or reason not in _RPC_REASONS:
+        reason = payload.get("error")
+    if isinstance(reason, str) and reason in _RPC_REASONS:
+        safe["reason"] = reason
+    status = diagnostic.get("http_status")
+    if type(status) is int and 100 <= status <= 599:
+        safe["http_status"] = status
+    nested = payload.get("result")
+    nested = nested if isinstance(nested, dict) else {}
+    for code in (diagnostic.get("rpc_error"), payload.get("error"), nested.get("error")):
+        if isinstance(code, str) and code in _RPC_ERRORS:
+            safe["rpc_error"] = code
+            break
+    return safe
+
+
+class _RPCFailure(RuntimeError):
+    def __init__(self, message: str, diagnostics: list[dict], *, retryable: bool = False):
+        self.message = message
+        self.diagnostics = diagnostics
+        self.retryable = retryable
+        super().__init__(message + "; diagnostics=" + json.dumps(diagnostics, sort_keys=True))
+
+
+def _rpc_result(
+    raw: str, *, operation: str, method: str = "unknown", attempt: int = 1,
+) -> dict:
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, RecursionError):
+        payload = None
+    if not isinstance(payload, dict):
+        diagnostic = _safe_rpc_diagnostic({}, method=method, attempt=attempt)
+        diagnostic["reason"] = "invalid_response"
+        raise _RPCFailure(f"{operation} RPC transport failed", [diagnostic]) from None
+    diagnostic = _safe_rpc_diagnostic(payload, method=method, attempt=attempt)
+    if payload.get("ok") is not True or payload.get("bypassed") is True:
+        bypassed = payload.get("bypassed") is True
+        details = payload.get("diagnostic")
+        details = details if isinstance(details, dict) else {}
+        # An HTTP 4xx/business result is a refusal, not a retry permission.
+        # Preserve the legacy bounded retry for an unclassified empty bypass,
+        # but do not retry a provider-local adapter_unavailable without evidence.
+        status = diagnostic.get("http_status", 0)
+        nested = payload.get("result")
+        refusal = (400 <= status < 500 or bool(details.get("rpc_error"))
+                   or "rpc_error" in diagnostic
+                   or (isinstance(nested, dict) and nested.get("ok") is False)
+                   or payload.get("error") not in (None, "", "adapter_unavailable", "circuit_open"))
+        retryable = bypassed and not refusal and (
+            diagnostic.get("reason") in {"timeout", "connection_error", "circuit_open"}
+            or (not details and not payload.get("error"))
+        )
+        failure_kind = "transport" if bypassed and not refusal else "operation"
+        raise _RPCFailure(f"{operation} RPC {failure_kind} failed", [diagnostic],
+                          retryable=retryable)
     if not isinstance(payload.get("result"), dict):
-        raise RuntimeError(f"{operation} RPC transport failed")
+        raise _RPCFailure(f"{operation} RPC transport failed", [diagnostic])
     result = payload["result"]
     if result.get("ok") is not True:
-        raise RuntimeError(f"{operation} RPC operation failed")
+        raise _RPCFailure(f"{operation} RPC operation failed", [diagnostic])
     return result
+
+
+def _invoke_rpc_tool(provider, tool_name: str, args: dict, *, operation: str, attempt: int) -> str:
+    try:
+        return provider.handle_tool_call(tool_name, args)
+    except Exception:
+        # The invocation happened, but no reply was observed. Do not fabricate
+        # ok/bypassed/status, or expose the exception (including its cause).
+        diagnostic = _safe_rpc_diagnostic(
+            {}, method=_RPC_METHODS.get(tool_name, "unknown"), attempt=attempt,
+        )
+        raise _RPCFailure(f"{operation} RPC local invocation failed", [diagnostic]) from None
 
 
 def _rpc_tool_result(
@@ -60,15 +154,17 @@ def _rpc_tool_result(
 ) -> dict:
     if attempts < 1:
         raise ValueError("attempts must be positive")
+    failures = []
     for attempt in range(1, attempts + 1):
         try:
+            raw = _invoke_rpc_tool(provider, tool_name, args, operation=operation, attempt=attempt)
             return _rpc_result(
-                provider.handle_tool_call(tool_name, args),
-                operation=operation,
+                raw, operation=operation, method=_RPC_METHODS.get(tool_name, "unknown"), attempt=attempt,
             )
-        except RuntimeError as exc:
-            if "RPC transport failed" not in str(exc) or attempt >= attempts:
-                raise
+        except _RPCFailure as exc:
+            failures.extend(exc.diagnostics)
+            if not exc.retryable or attempt >= attempts:
+                raise _RPCFailure(exc.message, failures) from None
             time.sleep(0.25 * attempt)
     raise AssertionError("unreachable")
 
@@ -81,26 +177,29 @@ def _timed_recall_tool_result(provider, args: dict, *, timeout_seconds: float) -
     """
 
     started = time.monotonic()
-    raw = provider.handle_tool_call("eimemory_recall", args)
+    raw = _invoke_rpc_tool(provider, "eimemory_recall", args, operation="recall", attempt=1)
     elapsed = time.monotonic() - started
     latency = {
         "recall_latency_ms": int(elapsed * 1000),
         "recall_timeout_seconds": float(timeout_seconds),
         "recall_within_timeout": elapsed <= float(timeout_seconds),
     }
-    payload = json.loads(raw)
-    if payload.get("bypassed") is True:
-        diagnostic = payload.get("diagnostic") if isinstance(payload.get("diagnostic"), dict) else {}
-        reason = str(diagnostic.get("reason") or payload.get("error") or "transport")
-        raise RuntimeError(
-            f"recall tool call failed ({reason}) after {latency['recall_latency_ms']}ms "
-            f"with timeout {timeout_seconds:g}s"
-        )
+    try:
+        result = _rpc_result(raw, operation="recall", method="adapter.prefetch", attempt=1)
+    except _RPCFailure as exc:
+        diagnostic = exc.diagnostics[-1]
+        if diagnostic.get("bypassed") is True:
+            reason = diagnostic.get("reason", "transport")
+            raise _RPCFailure(
+                f"recall tool call failed ({reason}) after {latency['recall_latency_ms']}ms "
+                f"with timeout {timeout_seconds:g}s", exc.diagnostics,
+            ) from None
+        raise
     if not latency["recall_within_timeout"]:
         raise RuntimeError(
             f"recall tool call took {latency['recall_latency_ms']}ms, over its {timeout_seconds:g}s timeout"
         )
-    return _rpc_result(raw, operation="recall"), latency
+    return result, latency
 
 
 def _deploy_agent() -> str:

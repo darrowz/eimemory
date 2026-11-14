@@ -32,6 +32,23 @@ _EXTRACT_MEMORIES_SYSTEM_PROMPT = """你是专业的情境切分与记忆提取�
 
 打分：instruction <70 丢弃；persona <50 丢弃；episodic <60 丢弃；fact <60 丢弃。
 
+对具有明确业务生效日期的 fact，可在同一个 memory 内增加 temporal 提案（不能增加调用）：
+{"schema":"ordinary_temporal_literals.v1", "source_digest":"提供的原始USER文本SHA256",
+ "slot":"原文完整事实字段短语", "value":"原文完整值",
+ "valid_from":"原文生效日期", "valid_until":null,
+ "operation":"claim|transition|correction|retraction"}
+schema 必须逐字使用上述标签，source_digest 必须原样复制提供的摘要；只能包含上述七个键。
+slot、value、valid_from 和非 null 的 valid_until 只能是原始 USER 中的非空逐字字符串，不是改写后的 content。
+不要计算或提供 span、字符下标或 text/span 对象；由服务端唯一定位原文位置并验证。
+只提议同一明确断言中各自唯一出现的完整事实字段、值和日期，保留引号、Unicode、大小写及前导零；重复或歧义时不得猜测。
+日期必须明确表示业务生效时间，不能拿编号、陈述时间或采集时间充当生效日期。
+代词、别名、推测、歧义日期不得猜测。不能提供 scope、namespace、authority、source 或覆盖目标 ID。
+统一提供 slot，不要自行拆成 subject 和 attribute，以免重叠或遗漏原文字符。
+slot 必须是关系词之前的完整字面短语，不含日期前缀，不是外部实体名；不得省略、改写或猜测别名。服务端统一从原句确定字段身份。
+transition 只用于明确「改为/changed to」；correction/retraction 须有明确纠正/撤回文字和有限区间。
+有限区间的 valid_until 使用逐字字符串 "原文结束日期"，否则为 null；区间左闭右开。
+没有可严格定位的提案时省略 temporal，保持现有 content DTO；日期未知不代表现在生效。
+
 只返回 JSON 数组：
 [{"scene_name":"...","message_ids":["id"],"memories":[{"content":"...","type":"persona|episodic|instruction|fact","priority":80,"source_message_ids":["id"]}]}]
 无记忆时 memories 为空数组。不要 Markdown。"""
