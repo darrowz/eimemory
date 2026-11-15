@@ -27,6 +27,7 @@ _SHARED_MODEL_PATHS = ("eimemory/models", "eimemory/identity.py", "eimemory/core
 
 DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
     "memory.recall": (
+        "eimemory/recall/raw_citation.py",
         "eimemory/knowledge/chat_temporal.py",
         "eimemory/contracts/temporal_facts.py",
         "deploy/check_hermes_recall_identity.py",
@@ -44,6 +45,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/llm/openclaw_adapter.py",
         "eimemory/raw/retrieval.py",
         "eimemory/raw/_relevance.py",
+        "eimemory/raw/citation_gate.py",
         "deploy/backfill_hermes_scope.py",
         "eimemory/api/memory.py",
         "eimemory/knowledge/l1_conflict.py",
@@ -108,6 +110,8 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "channel.delivery": (
+        "eimemory/recall/raw_citation.py",
+        "eimemory/raw/citation_gate.py",
         "eimemory/adapters/eibrain/rpc_server.py",
         "eimemory/storage/runtime_store.py",
         "integrations/hermes/eimemory/__init__.py",
@@ -151,6 +155,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "storage.integrity": (
+        "eimemory/raw/citation_gate.py",
         "eimemory/knowledge/chat_temporal.py",
         "eimemory/contracts/temporal_facts.py",
         "eimemory/compatibility/migration_helpers.py",

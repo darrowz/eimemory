@@ -390,6 +390,7 @@ class GovernedRecallEngine:
         # Quality evaluation belongs to the bounded post-delivery monitor.
         with native_target_trace_scope(self, request), verification_budget_scope(), evidence_scope(self.store, request):
             bundle = self._recall(request)
+            citation_lane = bundle.raw_citation
             from eimemory.identity_governance import filter_current_records
 
             delivered = [*bundle.items, *bundle.rules, *bundle.reflections]
@@ -412,6 +413,8 @@ class GovernedRecallEngine:
             bundle = self._callbacks._final_current_evidence_admission(bundle,
                 deadline_at=final_authority_deadline(self._safe_float(
                     request.task_context_dict().get("_recall_deadline_monotonic"))))
+            if citation_lane is not None and bundle.raw_citation is None:
+                bundle.raw_citation = citation_lane.withhold("final_authority_revalidation")
             target_trace = current_target_trace(self)
             if target_trace is not None:
                 target_trace.observe("final_items", bundle.items)
@@ -454,6 +457,7 @@ class GovernedRecallEngine:
             return collection_deadline_at > 0.0 and perf_counter() >= collection_deadline_at
 
         raw_hybrid = recall_mode == "raw_hybrid"
+        fact_citation = raw_hybrid and task_context.get("evidence_intent") == "fact_citation"
         scope_ref = request.scope.to_scope_ref()
         recall_scope_aliases = extract_user_aliases(task_context)
         requested_scope_strategy = str(task_context.get("scope_strategy") or "").strip().lower()
@@ -712,7 +716,7 @@ class GovernedRecallEngine:
         raw_evidence: list[dict] = []
         raw_authority_records = {}
         raw_authority_digests = {}
-        if raw_hybrid and source_ids != ():
+        if raw_hybrid and not fact_citation and source_ids != ():
             seen_raw_refs: set[tuple[str, ExactScope, str]] = set()
             for query_scope_ref in query_scope_refs:
                 for evidence in guarded_raw_search(
@@ -1576,12 +1580,21 @@ class GovernedRecallEngine:
             limit=limit,
             elapsed_ms=(perf_counter() - started) * 1000.0,
         )
+        citation_lane = None
+        if fact_citation:
+            from eimemory.recall.raw_citation import collect_citation
+            citation_lane = collect_citation(memory, query=normalized_query, scope=scope_ref,
+                context={**task_context, "source_ids": source_ids, "_recall_deadline_monotonic": deadline_at},
+                limit=limit, authorized_scopes={
+                    (owner.tenant_id, owner.agent_id, owner.workspace_id, owner.user_id)
+                    for owner in authorized_exact_scopes})
         return RecallBundle(
             items=items,
             rules=rules,
             reflections=reflections,
             confidence=confidence,
             next_action_hint=next_hint,
+            raw_citation=citation_lane,
             explanation={
                 "query": normalized_query,
                 "task_context": task_context,

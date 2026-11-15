@@ -1,3 +1,12 @@
+## [1.15.81]
+
+- Add an explicit, source/owner/kind-bound fact-citation gate while preserving default RAW exploration, accepted ranking and ordinary L1/temporal recall.
+- Wire a separately scoped RAW lane through real Hermes normal/proactive consumers, compact receipts and bounded rendering; related does not mean entailed, and RAW rejection/unavailability leaves independent L1 usable.
+- Require independent current service policy/release metadata before first and repeated proactive RAW consumption; missing or mismatched metadata withholds only RAW, without borrowing the delivery response as its own expectation.
+- Preserve exact-scope RPC constraints, server-derived task/history restrictions, source withdrawal, cache/reopen behavior, L1-first budgets and original-L1-only acknowledgement semantics.
+- Retain the public RAW fixture's 109/120 Top-1 and 119/120 Top-5; explicit gating correctly withholds 5/80 no-answer cases without added answerable empties. This is not semantic entailment or final-answer accuracy.
+- See `docs/releases/v1.15.81.md` for scope, limits and acceptance boundaries.
+
 ## [1.15.80]
 
 - Merge attributed RAW relevance ranking into the deployed ordinary-chat valid-time baseline, preserving scoped canonical hydration, collection limits and temporal behavior.

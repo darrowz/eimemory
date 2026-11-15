@@ -22,12 +22,14 @@ from .boundary import (raw_request_boundary, raw_ref_allowed, capture_raw_snapsh
 from eimemory.models.source_partitions import normalize_source_ids
 from ._relevance import (CONFLICT_DEPTH, ContentMatch, QueryContent, change_lines, common_subject,
                         conflict_preference, current_assertion, match_content, query_content)
+from .citation_gate import fact_citation_gate
 
 _log = logging.getLogger(__name__)
 _WORD_RE = re.compile(r"[\w']+", re.UNICODE)
 _CJK_RUN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 
 
+@fact_citation_gate
 @raw_request_boundary
 def search_raw_chunks(
     store: Any,

@@ -6496,6 +6496,155 @@ class SqliteRecordStore:
         return [record for row in rows
                 if (record := self._record_from_storage_row(row, hydrate=True)) is not None]
 
+    def read_raw_citation_records(self, *, owner_scopes, source_ids, kinds, deadline, check_budget):
+        """Enumerate a complete small authorized active corpus or fail explicitly.
+
+        Caller owns a read transaction/connection lock. LIMIT is applied to
+        scope/source/kind/active rows BEFORE payload hydration; no global term
+        statistics or unbounded counts are consulted. A cap is not an empty set.
+        """
+        from math import isfinite
+        from time import perf_counter
+        from eimemory.contracts.recall_boundary import exact_ref, scope_tuple
+        from eimemory.core.record_ids import MAX_RECORD_ID_LEN
+        from eimemory.models.source_partitions import MAX_SOURCE_ID_LENGTH
+        from eimemory.raw.citation_gate import (
+            CitationUnavailable, MAX_ROWS, MAX_SCOPES, MAX_RECORD_BYTES,
+            MAX_CORPUS_BYTES, MAX_POINTER_BYTES, MAX_SCOPE_COMPONENT_CHARS,
+        )
+        self.assert_connection_lock_held()
+        check_budget()
+        if not self.in_transaction:
+            raise CitationUnavailable("snapshot_unavailable")
+        if (type(deadline) not in (int, float) or not isfinite(deadline)
+                or perf_counter() >= deadline):
+            raise CitationUnavailable("deadline")
+        if (not isinstance(owner_scopes, tuple) or len(owner_scopes) > MAX_SCOPES
+                or any(not isinstance(owner, tuple) or len(owner) != 4
+                       or any(not isinstance(v, str) or len(v) > MAX_SCOPE_COMPONENT_CHARS for v in owner)
+                       or not owner[0] for owner in owner_scopes)
+                or not isinstance(kinds, tuple) or len(kinds) > 2
+                or any(not isinstance(kind, str) or kind not in {"raw_chunk", "memory"} for kind in kinds)
+                or (source_ids is not None and not isinstance(source_ids, (list, tuple)))):
+            raise CitationUnavailable("invalid_authority_filter")
+        try:
+            sources = normalize_source_ids(source_ids)
+            scopes = [ScopeRef(tenant_id=tenant, agent_id=agent, workspace_id=workspace, user_id=user)
+                      for tenant, agent, workspace, user in sorted(set(owner_scopes))]
+            if {scope_tuple(scope) for scope in scopes} != set(owner_scopes):
+                raise ValueError("scope normalization changed the physical owner")
+        except (TypeError, ValueError) as exc:
+            raise CitationUnavailable("invalid_authority_filter") from exc
+        if not owner_scopes or not kinds or sources == ():
+            return []
+        owner_clauses, params = [], []
+        for scope in scopes:
+            where = []
+            self._apply_exact_scope_filters(where, params, scope, alias="r")
+            owner_clauses.append("(" + " AND ".join(where) + ")")
+        where = ["(" + " OR ".join(owner_clauses) + ")", "r.status='active'",
+                 "r.kind IN (" + ",".join("?" for _ in kinds) + ")"]
+        params.extend(kinds)
+        if sources is not None:
+            where.append("r.source_id IN (" + ",".join("?" for _ in sources) + ")")
+            params.extend(sources)
+        # Guard EVERY returned string in SQL before row_factory/Python sees it.
+        # Four UTF-8 bytes preserve each permitted Unicode scope character.
+        scope_bytes = MAX_SCOPE_COMPONENT_CHARS * 4
+        metadata_limits = {
+            "storage_key": scope_bytes * 4 + MAX_RECORD_ID_LEN + 4,
+            "record_id": MAX_RECORD_ID_LEN,
+            "tenant_id": scope_bytes, "agent_id": scope_bytes,
+            "workspace_id": scope_bytes, "user_id": scope_bytes,
+            "source_id": MAX_SOURCE_ID_LENGTH, "kind": 9, "status": 6, "payload_digest": 64,
+        }
+        projection = [
+            f"CASE WHEN typeof(r.{column})='text' AND length(CAST(r.{column} AS BLOB)) <= ? "
+            f"THEN r.{column} ELSE NULL END AS {column}"
+            for column in metadata_limits
+        ]
+        # A malformed duplicate physical row must not let get_by_exact_ref's
+        # LIMIT 1 select a different (possibly withdrawn) payload. This scoped
+        # integrity flag reads no duplicate payload and is never term evidence.
+        identity_columns = ("record_id", "tenant_id", "agent_id", "workspace_id", "user_id", "source_id")
+        duplicate_ref = " AND ".join(f"other.{column}=r.{column}" for column in identity_columns)
+        rows = self.conn.execute(
+            "SELECT " + ",".join(projection) + ","
+            "length(CAST(r.payload_json AS BLOB)) AS inline_bytes,"
+            "length(CAST(r.payload_pointer_json AS BLOB)) AS pointer_bytes,"
+            "typeof(r.payload_json)='text' AS payload_is_text,"
+            "CASE WHEN typeof(r.payload_pointer_json)='text' AND "
+            "length(CAST(r.payload_pointer_json AS BLOB)) <= ? THEN r.payload_pointer_json ELSE NULL END AS pointer,"
+            "EXISTS(SELECT 1 FROM records AS other WHERE " + duplicate_ref +
+            " AND other.rowid!=r.rowid) AS ambiguous_ref "
+            "FROM records AS r WHERE " + " AND ".join(where) + " LIMIT ?",
+            [*metadata_limits.values(), MAX_POINTER_BYTES, *params, MAX_ROWS + 1],
+        ).fetchall()
+        check_budget()
+        if len(rows) > MAX_ROWS:
+            raise CitationUnavailable("row_limit")
+        total_bytes, records, seen = 0, [], set()
+        for row in rows:
+            check_budget()
+            if perf_counter() >= deadline:
+                raise CitationUnavailable("deadline")
+            if any(not isinstance(row[column], str) for column in metadata_limits):
+                raise CitationUnavailable("metadata_limit")
+            if row["pointer"] is None or not row["payload_is_text"]:
+                raise CitationUnavailable("payload_limit")
+            # Never remap a stored physical identifier. Validate before calling
+            # the shared getter, whose public API accepts normalized inputs.
+            try:
+                validate_record_id(row["record_id"])
+                scope = ScopeRef(tenant_id=row["tenant_id"], agent_id=row["agent_id"],
+                                 workspace_id=row["workspace_id"], user_id=row["user_id"])
+                physical_owner = tuple(row[column] for column in ("tenant_id", "agent_id", "workspace_id", "user_id"))
+                expected_key = self._storage_key_from_values(record_id=row["record_id"],
+                    tenant_id=scope.tenant_id, agent_id=scope.agent_id,
+                    workspace_id=scope.workspace_id, user_id=scope.user_id)
+                if (scope_tuple(scope) != physical_owner or physical_owner not in owner_scopes
+                        or normalize_source_id(row["source_id"]) != row["source_id"]
+                        or row["storage_key"] != expected_key or row["ambiguous_ref"]):
+                    raise ValueError("physical reference is noncanonical or ambiguous")
+            except (TypeError, ValueError) as exc:
+                raise CitationUnavailable("invalid_physical_reference") from exc
+            inline_bytes = int(row["inline_bytes"] or 0)
+            pointer_bytes = int(row["pointer_bytes"] or 0)
+            if inline_bytes > MAX_RECORD_BYTES or pointer_bytes > MAX_POINTER_BYTES:
+                raise CitationUnavailable("payload_limit")
+            digest = row["payload_digest"]
+            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise CitationUnavailable("snapshot_unavailable")
+            allocation = inline_bytes + pointer_bytes + sum(len(row[column].encode("utf-8"))
+                                                           for column in metadata_limits)
+            if pointer_bytes:
+                try:
+                    pointer = json.loads(row["pointer"])
+                except (ValueError, TypeError):
+                    raise CitationUnavailable("snapshot_unavailable") from None
+                if not isinstance(pointer, dict):
+                    raise CitationUnavailable("snapshot_unavailable")
+                for field in ("raw_size", "compressed_size"):
+                    size = pointer.get(field)
+                    if type(size) is not int or size < 0 or size > MAX_RECORD_BYTES:
+                        raise CitationUnavailable("payload_limit")
+                    allocation += size
+            total_bytes += allocation
+            if total_bytes > MAX_CORPUS_BYTES:
+                raise CitationUnavailable("payload_limit")
+            record = self.get_by_exact_ref(row["record_id"], scope=scope, source_id=row["source_id"],
+                                           fail_on_unavailable=True)
+            if (record is None or self._storage_key(record) != row["storage_key"]
+                    or record.kind != row["kind"] or record.status != "active"
+                    or exact_ref(record) in seen):
+                raise CitationUnavailable("snapshot_unavailable")
+            seen.add(exact_ref(record))
+            records.append(record)
+        if perf_counter() >= deadline:
+            raise CitationUnavailable("deadline")
+        check_budget()
+        return records
+
     def list_records_by_sources_exact_scope(
         self,
         *,

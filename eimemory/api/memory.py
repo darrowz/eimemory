@@ -811,6 +811,11 @@ class MemoryAPI:
         """Build the immutable public request and delegate all recall control flow."""
 
         context = dict(task_context or {})
+        if (scope.get("preserve_scope") is True and context.get("recall_mode") == "raw_hybrid"
+                and context.get("evidence_intent") == "fact_citation"):
+            # RPC preserve_scope must constrain the proof itself, not merely
+            # remove shared-owner items after a query-wide decision was made.
+            context["exact_scope_only"] = True
         if known_at is not None or context.get("known_at") is not None:
             raise ValueError("known_at_unsupported")
         if self._ordinary_chat_temporal and re.search(
@@ -863,7 +868,9 @@ class MemoryAPI:
                     # a concurrent transition. Rebuild only the surviving lanes.
                     bundle = RecallBundle(items=selected, rules=bundle.rules,
                         reflections=bundle.reflections, confidence=bundle.confidence if selected else 0.0,
-                        next_action_hint="", explanation={"ordinary_chat_temporal": {"revalidated": True}})
+                        next_action_hint="", explanation={"ordinary_chat_temporal": {"revalidated": True}},
+                        raw_citation=(bundle.raw_citation.withhold("temporal_revalidation")
+                                      if bundle.raw_citation is not None else None))
             else:
                 from eimemory.knowledge.chat_temporal import exclude_managed_candidates
                 # Default callers (including evolution) cannot interpret managed
@@ -877,7 +884,9 @@ class MemoryAPI:
                     items, rules, reflections = ([item for item in lane if id(item) in allowed] for lane in lanes)
                     bundle = RecallBundle(items=items, rules=rules, reflections=reflections,
                         confidence=bundle.confidence if items else 0.0, next_action_hint="",
-                        explanation={"ordinary_chat_temporal": {"disabled_reader_withheld": True}})
+                        explanation={"ordinary_chat_temporal": {"disabled_reader_withheld": True}},
+                        raw_citation=(bundle.raw_citation.withhold("temporal_revalidation")
+                                      if bundle.raw_citation is not None else None))
             return bundle
         finally:
             reset_verifier_route(token)

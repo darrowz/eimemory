@@ -341,6 +341,7 @@ class RecallBundle:
     confidence: float
     next_action_hint: str
     explanation: dict[str, Any] = field(default_factory=dict)
+    raw_citation: Any = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -350,7 +351,13 @@ class RecallBundle:
             "confidence": self.confidence,
             "next_action_hint": self.next_action_hint,
             "explanation": dict(self.explanation),
+            **self._citation_payload(),
         }
+
+    def _citation_payload(self) -> dict[str, Any]:
+        from eimemory.recall.raw_citation import RawCitationLane
+        return ({"raw_citation": self.raw_citation.to_dict()}
+                if isinstance(self.raw_citation, RawCitationLane) else {})
 
     def to_compact_dict(
         self,
@@ -431,8 +438,10 @@ class RecallBundle:
         if isinstance(intent, dict) and intent.get('name') == 'task_recall':
             payload['task_evidence_scope'] = 'historical_only_latest_state_unverified'
         from eimemory.contracts.recall_evidence import bind_compact_evidence
-        return _fit_compact_payload(bind_compact_evidence(payload),
-                                    maximum_bytes=16_384 if bounded_limit > 1 else 4_096)
+        maximum_bytes = 16_384 if bounded_limit > 1 else 4_096
+        payload = _fit_compact_payload(bind_compact_evidence(payload), maximum_bytes=maximum_bytes)
+        from eimemory.recall.raw_citation import attach_compact_lane
+        return attach_compact_lane(payload, self.raw_citation, maximum_bytes=maximum_bytes)
 
 
 def compact_record(record: RecordEnvelope) -> dict[str, Any]:

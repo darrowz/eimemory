@@ -106,6 +106,11 @@ class EIBrainRPCBridge:
             ):
                 return self._with_contract(self._invalid_request())
             resolved_scope = self._resolve_scope(scope, aliases=extract_user_aliases(task_context))
+            if scope.get("preserve_scope") is True:
+                # _resolve_scope strips transport flags. Carry this validated
+                # narrowing restriction before retrieval/proof, not merely into
+                # the post-serialization ordinary-item filter below.
+                task_context = {**task_context, "exact_scope_only": True, "scope_strategy": "exact"}
             bundle = self.runtime.memory.recall(
                 query=query,
                 scope=resolved_scope,
@@ -488,7 +493,14 @@ class EIBrainRPCBridge:
                 )
             elif method == "adapter.status":
                 result = self.runtime_adapter.status(channel=channel, scope=scope)
-            elif method == "adapter.proactive_prefetch":
+            elif method in {"adapter.proactive_prefetch", "adapter.proactive_delivery_metadata"}:
+                if method == "adapter.proactive_delivery_metadata" and (channel != "hermes" or attestation_producer):
+                    return self._with_contract(self._invalid_request())
+                metadata_budget = {}
+                if method == "adapter.proactive_delivery_metadata":
+                    remaining = params.get("remaining_budget_seconds")
+                    metadata_budget = {"remaining_budget_seconds": remaining,
+                        "_metadata_deadline": self.runtime_adapter._metadata_read_deadline(remaining)}
                 acceptance_generated = params.get("acceptance_generated", False)
                 source_ids = params.get("source_ids", [])
                 session_id = params.get("session_id", "")
@@ -507,10 +519,14 @@ class EIBrainRPCBridge:
                     source_ids=source_ids, claim=params.get('runtime_profile_binding'))
                 if binding is not None and binding['binding_kind'] == 'operator':
                     acceptance_generated = True
-                result = self.runtime_adapter.proactive_prefetch(
+                operation = (self.runtime_adapter.proactive_delivery_metadata
+                             if method == "adapter.proactive_delivery_metadata"
+                             else self.runtime_adapter.proactive_prefetch)
+                result = operation(
                     channel=channel, scope=scope, source_ids=source_ids,
                     session_id=session_id, turn_id=turn_id, query=query, task_type=task_type,
                     acceptance_generated=acceptance_generated,
+                    **metadata_budget,
                 )
             elif method == "adapter.proactive_ack":
                 source_ids = params.get("source_ids", [])

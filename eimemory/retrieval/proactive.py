@@ -284,6 +284,7 @@ class ProactiveRecallService:
         task_type: str = "",
         recall_bundle: RecallBundle | None = None,
         acceptance_generated: bool = False,
+        _chat_delivery_deadline: float = 0.0,
     ) -> dict[str, Any]:
         if type(acceptance_generated) is not bool:
             raise ValueError("acceptance_generated must be boolean")
@@ -359,6 +360,7 @@ class ProactiveRecallService:
             )
             return self._persisted_decision_response(
                 exact_existing,
+                delivery_query=normalized_query, delivery_deadline=_chat_delivery_deadline,
                 cache_key=self._cache_key(
                     channel_id, exact_scope, sources, stored_effective_digest,
                     policy_version, release,
@@ -441,6 +443,7 @@ class ProactiveRecallService:
         if existing is not None:
             return self._persisted_decision_response(
                 existing,
+                delivery_query=normalized_query, delivery_deadline=_chat_delivery_deadline,
                 cache_key=cache_key,
                 expected={
                     "channel": channel_id,
@@ -494,6 +497,7 @@ class ProactiveRecallService:
                     query=normalized_query, recall_query=recall_query, scope=exact_scope,
                     source_ids=sources, task_type=normalized_task_type,
                     channel=channel_id,
+                    **({"host_deadline": _chat_delivery_deadline} if _chat_delivery_deadline else {}),
                 )
             except Exception as exc:  # noqa: BLE001 - proactive recall is advisory
                 self._record_bypass(
@@ -700,6 +704,11 @@ class ProactiveRecallService:
                     "mandatory": mandatory,
                 }
             )
+        if (_chat_delivery_deadline and channel_id == "hermes" and recall_bundle is None
+                and revalidate_candidates):
+            from eimemory.recall.raw_citation import current_proactive_items
+            public_items = current_proactive_items(self.runtime.memory, public_items,
+                query=normalized_query, scope=exact_scope, sources=sources, deadline=_chat_delivery_deadline)
         mandatory_items = [item for item in public_items if item["mandatory"]]
         voluntary_items = [item for item in public_items if not item["mandatory"]]
         proposed_delivery = mandatory_items if control else public_items
@@ -753,6 +762,19 @@ class ProactiveRecallService:
             trusted_retrieval=isinstance(cached, _CachedRecall) and cached.trusted_retrieval,
             local_delivery=local_delivery)
         decision_payload['retrieval_diagnostics']['real_effect_policy'] = effect_policy["context"]
+        if channel_id == "hermes" and _chat_delivery_deadline and recall_bundle is None:
+            from eimemory.recall.raw_citation import digest, PROACTIVE_DELIVERY_MODE
+            from eimemory.recall.task_queries import task_recall_mode
+            from eimemory.recall.query_clean import clean_user_query
+            # Existing insert-only diagnostics persist this digest atomically
+            # with the original decision/items. Retries never replace it with
+            # a freshly rendered projection or mint it for legacy decisions.
+            decision_payload['retrieval_diagnostics']['original_context_commitment'] = {
+                "schema": "proactive_context_origin.v1", "context_digest": digest(context),
+                "host_query_digest": digest(str(query).strip()),
+                "task_mode": task_recall_mode(clean_user_query(normalized_query)),
+                "delivery_mode": PROACTIVE_DELIVERY_MODE,
+            }
         # Local ledger observations only; a supplied bundle cannot forge this.
         # Historical items stay out of this decision's delivered candidate list.
         decision_payload['retrieval_diagnostics']['session_dedupe'] = session_dedupe
@@ -1129,12 +1151,19 @@ class ProactiveRecallService:
         *,
         cache_key: str,
         expected: Mapping[str, Any],
+        delivery_query: str = "",
+        delivery_deadline: float = 0.0,
     ) -> dict[str, Any]:
         for key, value in expected.items():
             if payload.get(key) != value:
                 raise ValueError("persisted proactive decision identity conflict")
         from eimemory.evaluation.query_input_vault import query_input_capture_status
         public_items = self._rehydrate_persisted_items(payload, cache_key=cache_key)
+        if delivery_deadline and expected.get("channel") == "hermes":
+            from eimemory.recall.raw_citation import current_proactive_items
+            public_items = current_proactive_items(self.runtime.memory, public_items,
+                query=delivery_query, scope=expected["scope"], sources=payload["source_ids"],
+                deadline=delivery_deadline)
         control = bool(payload.get("control_cohort"))
         proposed = [item for item in public_items if item["mandatory"]] if control else public_items
         context, delivered = self._render_context_with_items(proposed)
@@ -1602,6 +1631,18 @@ class ProactiveRecallService:
         exact_scope = resolve_channel_scope(channel_id, dict(scope))
         return self._current_release(exact_scope, channel=channel_id)
 
+    def current_delivery_policy(self, *, channel, scope, source_ids, session_id,
+                                acceptance_generated=False):
+        """Metadata only, using the exact current policy fingerprint of decide."""
+        channel_id, exact_scope, sources, normalized_session = self._namespace(
+            channel=channel, scope=scope, source_ids=source_ids, session_id=session_id)
+        release = self._current_release(exact_scope, channel=channel_id)
+        from eimemory.governance.learning.effect_learning import recall_policy_view
+        effect_policy = recall_policy_view(self.runtime.store, channel=channel_id, scope=exact_scope,
+            source_ids=sources, session_id=normalized_session, acceptance_generated=acceptance_generated)
+        return {"release_identity": release,
+                "policy_version": self._policy_version() + effect_policy["version_suffix"]}
+
     def _namespace(
         self, *, channel: str, scope: Mapping[str, Any], source_ids: Iterable[str] | None, session_id: str
     ) -> tuple[str, dict[str, str], tuple[str, ...], str]:
@@ -1955,7 +1996,7 @@ class ProactiveRecallService:
         return (perf_counter() + max(1.0, host_window - proactive_host_margin_seconds())
                 if host_window else 0.0)
 
-    def _recall_with_literal_fallback(self, *, query: str, recall_query: str, **kwargs):
+    def _recall_with_literal_fallback(self, *, query: str, recall_query: str, host_deadline=None, **kwargs):
         """Context-expanded retrieval, then the host's literal words if empty.
 
         Appended context entities resolve elliptical follow-ups, but they also
@@ -1966,6 +2007,8 @@ class ProactiveRecallService:
         from time import perf_counter
         # Both passes share one host window; the fallback never extends it.
         deadline = self._host_deadline(str(kwargs.get('channel') or ''))
+        if host_deadline:
+            deadline = min(deadline, host_deadline) if deadline else host_deadline
         bundle = self._recall_with_timeout(query=recall_query, host_deadline=deadline, **kwargs)
         if recall_query == query or bundle.items:
             return bundle

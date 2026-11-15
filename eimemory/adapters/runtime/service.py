@@ -123,6 +123,9 @@ class AgentRuntimeMemoryService:
         channel_scope = resolve_channel_scope(channel_id, scope)
         normalized_query = clean_user_query(str(query or "").strip())
         context = dict(task_context or {})
+        from eimemory.recall.raw_citation import RawCitationLane, collect_citation, pin_deadline
+        if channel_id == "hermes":
+            context["_recall_deadline_monotonic"] = pin_deadline(context)
         context["runtime_channel"] = channel_id
         context["authority_mode"] = AUTHORITY_MODE
         if task_type:
@@ -133,17 +136,24 @@ class AgentRuntimeMemoryService:
             task_context=context,
             limit=max(1, min(50, self._positive_limit(limit, 8))),
         )
+        if channel_id == "hermes" and not isinstance(bundle.raw_citation, RawCitationLane):
+            # Server-owned operation semantics, never a keyword/DTO classifier.
+            bundle.raw_citation = collect_citation(self.runtime.memory, query=normalized_query,
+                scope=channel_scope, context=context, limit=limit)
         assembled = self._assemble_recall_bundle(
             bundle,
             limit=max(1, min(50, self._positive_limit(limit, 8))),
         )
+        rendered = render_loadout(assembled, max_chars=self.max_context_chars)
         return {
             "ok": True,
             "adapter_contract_version": RUNTIME_ADAPTER_CONTRACT_VERSION,
             "channel": channel_id,
             "scope": channel_scope,
             "bundle": assembled,
-            "context": render_loadout(assembled, max_chars=self.max_context_chars),
+            "context": rendered,
+            **({"raw_citation_presentation": (assembled.get("raw_citation") or {}).get(
+                "presentation", bundle.raw_citation.presentation)} if bundle.raw_citation is not None else {}),
         }, bundle
 
     def proactive_prefetch(
@@ -165,7 +175,18 @@ class AgentRuntimeMemoryService:
         normalized_query = self._bounded_text(query, self.max_turn_chars)
         if not normalized_query:
             raise ValueError("query is required")
-        return self.runtime.proactive.decide(
+        from eimemory.recall.raw_citation import (
+            RAW_SCOPE_BASIS, RawCitationLane, attach_compact_lane, collect_citation, digest,
+            issue_proactive_authority, pin_deadline, render_citation, sidecar_binding,
+        )
+        citation_context = {"source_ids": sources, "exact_scope_only": True, "runtime_channel": channel_id}
+        citation_context["_recall_deadline_monotonic"] = pin_deadline(citation_context)
+        from eimemory.retrieval.proactive import ProactiveRecallService
+        host_deadline = ProactiveRecallService._host_deadline(channel_id)
+        if host_deadline:
+            citation_context["_recall_deadline_monotonic"] = min(
+                citation_context["_recall_deadline_monotonic"], host_deadline)
+        result = self.runtime.proactive.decide(
             channel=channel_id,
             scope=channel_scope,
             source_ids=sources,
@@ -174,7 +195,121 @@ class AgentRuntimeMemoryService:
             query=normalized_query,
             task_type=str(task_type or "").strip(),
             acceptance_generated=acceptance_generated,
+            **({"_chat_delivery_deadline": citation_context["_recall_deadline_monotonic"]}
+               if channel_id == "hermes" else {}),
         )
+        if (channel_id == "hermes" and result.get("ok") is True and not result.get("bypassed")
+                and not result.get("control_cohort") and result.get("release_bound")
+                and result.get("decision_id") and result.get("items")):
+            # Decide/rehydrate/verify first. This fresh sidecar has its own
+            # binding and is never recorded as an old pm: acknowledgement.
+            authority, binding_reason = issue_proactive_authority(self.runtime, result,
+                query=normalized_query, scope=channel_scope, sources=sources, session_id=session, turn_id=turn,
+                task_type=str(task_type or "proactive.recall").strip(),
+                deadline=citation_context["_recall_deadline_monotonic"])
+            if binding_reason:
+                lane = RawCitationLane(request={"query_digest": digest(clean_user_query(normalized_query)),
+                    "scope_digest": digest(channel_scope), "source_ids_digest": digest(sources),
+                    "scope_basis": RAW_SCOPE_BASIS}).withhold(binding_reason)
+            else:
+                lane = collect_citation(self.runtime.memory, query=normalized_query, scope=channel_scope,
+                                        context=citation_context)
+            bundle = attach_compact_lane({}, lane, maximum_bytes=4096)
+            raw = bundle.get("raw_citation")
+            remaining = max(0, min(7200, self.max_context_chars) - len(result.get("context") or "") - 1)
+            extra = render_citation("", raw, max_chars=remaining)
+            if authority is None or self._proactive_release(channel_id, channel_scope) != result.get("release_identity"):
+                extra = ""
+                if raw is not None:
+                    raw["presentation"] = {"status": "not_delivered", "reason": binding_reason or "release_binding_changed"}
+            result = {**result, "bundle": bundle, "raw_citation_context": extra,
+                      "raw_citation_presentation": (raw or {}).get("presentation", lane.presentation)}
+            if authority is not None:
+                result["raw_citation_authority"] = authority
+                result["raw_citation_binding"] = sidecar_binding(result, authority=authority, context=extra)
+        return result
+
+    @staticmethod
+    def _metadata_read_deadline(remaining_budget_seconds):
+        # A duration is only a narrowing budget, never an authority grant.
+        # Validate before profile/policy/store I/O; no missing-budget fallback.
+        from math import isfinite
+        if (type(remaining_budget_seconds) not in (int, float)
+                or not 0 < remaining_budget_seconds <= 3.0 or not isfinite(remaining_budget_seconds)):
+            raise ValueError("bounded metadata budget required")
+        from eimemory.recall.raw_citation import pin_deadline
+        from eimemory.core.budgets import proactive_host_window_seconds
+        started = time.monotonic()
+        deadline = pin_deadline({"_recall_deadline_monotonic": started + remaining_budget_seconds})
+        window = proactive_host_window_seconds("hermes")
+        deadline = min(deadline, started + window) if window else deadline
+        if time.monotonic() >= deadline:
+            raise ValueError("metadata deadline exhausted")
+        return deadline
+
+    def proactive_delivery_metadata(self, *, channel, scope, source_ids, session_id, turn_id,
+                                    query, task_type="", acceptance_generated=False,
+                                    remaining_budget_seconds=None, _metadata_deadline=None):
+        """Independent current expectations, never copied from a delivery reply.
+
+        This read has no recall, decision creation, acknowledgement or L0/L1
+        payload. The host uses it once before accepting this attempt's sidecar.
+        """
+        # The RPC bridge pins this before its existing profile-binding read.
+        # Direct service callers must also supply a valid relative duration.
+        if _metadata_deadline is None:
+            deadline = self._metadata_read_deadline(remaining_budget_seconds)
+        else:
+            from math import isfinite
+            if (type(remaining_budget_seconds) not in (int, float)
+                    or not 0 < remaining_budget_seconds <= 3.0 or not isfinite(remaining_budget_seconds)
+                    or type(_metadata_deadline) not in (int, float) or not isfinite(_metadata_deadline)):
+                raise ValueError("bounded metadata budget required")
+            deadline = min(_metadata_deadline, time.monotonic() + remaining_budget_seconds)
+        unavailable = {"ok": False, "reason": "delivery_metadata_deadline"}
+        if time.monotonic() >= deadline:
+            return unavailable
+        channel_id, channel_scope, sources, session, turn = self._proactive_namespace(
+            channel=channel, scope=scope, source_ids=source_ids, session_id=session_id, turn_id=turn_id)
+        normalized_query = self._bounded_text(query, self.max_turn_chars)
+        if channel_id != "hermes" or not normalized_query or type(acceptance_generated) is not bool:
+            raise ValueError("invalid proactive delivery metadata request")
+        from eimemory.recall.raw_citation import proactive_attempt_identity
+        from eimemory.retrieval.proactive import _bounded_text, _MAX_QUERY_CHARS
+        from eimemory.storage.recall_deadline import RecallReadDeadlineExceeded, recall_read_scope
+        expected = proactive_attempt_identity(query=normalized_query, scope=channel_scope, sources=sources,
+            session_id=session, turn_id=turn, task_type=task_type)
+        if time.monotonic() >= deadline:
+            return unavailable
+        try:
+            with recall_read_scope(self.runtime.store, {"_recall_collection_deadline_monotonic": deadline}):
+                current = self.runtime.proactive.current_delivery_policy(channel=channel_id, scope=channel_scope,
+                    source_ids=sources, session_id=session, acceptance_generated=acceptance_generated)
+                if time.monotonic() >= deadline:
+                    return unavailable
+                if not current["policy_version"] or not all(current["release_identity"].values()):
+                    return {"ok": False, "reason": "delivery_metadata_unavailable"}
+                stored = self.runtime.store.find_proactive_decision({
+                    "channel": channel_id, "scope": channel_scope, "source_key": self._proactive_source_key(sources),
+                    "session_id": session, "turn_id": turn, "release_identity": current["release_identity"]})
+        except RecallReadDeadlineExceeded:
+            return unavailable
+        if time.monotonic() >= deadline:
+            return unavailable
+        native = {"query_id": turn, "source_ids": sources, "task_type": expected["task_type"],
+                  "acceptance_generated": acceptance_generated,
+                  "query_digest": sha256(_bounded_text(normalized_query, _MAX_QUERY_CHARS).encode(
+                      "utf-8", errors="replace")).hexdigest()}
+        matched = stored is not None and all(stored.get(key) == value for key, value in native.items())
+        origin = ((stored.get("retrieval_diagnostics") or {}).get("original_context_commitment")
+                  if matched else None)
+        valid_origin = (isinstance(origin, dict) and origin.get("schema") == "proactive_context_origin.v1"
+            and all(origin.get(key) == expected[key] for key in ("host_query_digest", "task_mode", "delivery_mode")))
+        if time.monotonic() >= deadline:
+            return unavailable
+        return {"ok": True, "expectation": {"schema": "proactive_raw_delivery_expectation.v1", **expected,
+            **current, "decision_id": stored["decision_id"] if matched else None,
+            "original_context_digest": origin.get("context_digest") if valid_origin else None}}
 
     def _proactive_transition_release(self, *, decision, channel, scope, sources, session, turn,
                                      release, terminal_outcome=None):
@@ -1000,6 +1135,10 @@ class AgentRuntimeMemoryService:
         payload.update(loadout)
         from eimemory.contracts.recall_evidence import bind_compact_evidence
         payload = bind_compact_evidence(payload)
+        from eimemory.recall.raw_citation import attach_compact_lane
+        payload.pop("raw_citation", None)
+        payload = attach_compact_lane(payload, bundle.raw_citation,
+                                     maximum_bytes=16_384 if limit > 1 else 4_096)
         # Loadout metadata is part of the delivered compact payload. Recheck
         # after it is bound, using the caller's limit rather than pool size.
         validate_compact_payload_budget(payload, maximum_bytes=16_384 if limit > 1 else 4_096)

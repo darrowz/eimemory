@@ -1318,7 +1318,8 @@ class HermesMemoryProviderCore:
     def _safe_call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         return self._safe_call_with(self._client, method, params)
 
-    def _safe_call_with(self, client: Any, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _safe_call_with(self, client: Any, method: str, params: dict[str, Any],
+                        *, metadata_deadline: float | None = None) -> dict[str, Any]:
         try:
             verify_owner(self._host_binding)
             if getattr(client,'_eimemory_profile_rpc',False):
@@ -1328,7 +1329,26 @@ class HermesMemoryProviderCore:
                 client=copy(client)
                 client.base_url=configuration['base_url']
                 client.auth_token=configuration['auth_token']
+            if method == "adapter.proactive_delivery_metadata":
+                from math import isfinite
+                # Only this known implementation applies timeout_seconds to
+                # safe_urlopen. Custom transports cannot assert a time bound.
+                if (type(client) is not AgentRuntimeRPCClient
+                        or type(metadata_deadline) not in (int, float) or not isfinite(metadata_deadline)):
+                    raise ValueError("bounded metadata transport required")
+                metadata_started = time.monotonic()
+                remaining = metadata_deadline - metadata_started
+                timeout = client.timeout_seconds
+                if (type(timeout) not in (int, float) or not isfinite(timeout)
+                        or min(timeout, remaining) < 0.01):
+                    raise ValueError("metadata deadline exhausted")
+                client = copy(client)
+                client.timeout_seconds = min(timeout, remaining)
+                call_deadline = min(metadata_deadline, metadata_started + client.timeout_seconds)
+                params = {**params, "remaining_budget_seconds": min(3.0, client.timeout_seconds)}
             result = client.call_or_bypass(method, params)
+            if method == "adapter.proactive_delivery_metadata" and time.monotonic() >= call_deadline:
+                raise TimeoutError("metadata deadline exhausted")
         except Exception:
             return {"ok": False, "bypassed": True, "error": "adapter_unavailable", "result": None}
         return result if isinstance(result, dict) else {
@@ -1347,6 +1367,13 @@ class HermesMemoryProviderCore:
         with self._lock:
             pending = self._pending_proactive.get(key)
             if pending is None:
+                from eimemory.contracts.recall_boundary import bounded_deadline
+                from eimemory.core.budgets import proactive_host_window_seconds
+                from eimemory.recall.raw_citation import pin_deadline
+                deadline = pin_deadline({"_recall_deadline_monotonic": bounded_deadline(None, started=started)})
+                window = proactive_host_window_seconds("hermes")
+                if window:
+                    deadline = min(deadline, started + window)
                 # Keep the attempt identity through RPC retries, then discard it
                 # with the existing terminal/session lifecycle. A later real
                 # turn can ask the same question without replaying old feedback.
@@ -1356,6 +1383,7 @@ class HermesMemoryProviderCore:
                     "session_id": session,
                     "scope": dict(self._scope),
                     "source_ids": list(source_ids),
+                    "raw_delivery_deadline": deadline,
                 }
                 self._pending_proactive[key] = pending
             decision_turn_id = pending["decision_turn_id"]
@@ -1379,7 +1407,51 @@ class HermesMemoryProviderCore:
         if result.get("ok") is not True or not isinstance(result.get("result"), dict):
             return ""
         payload = result["result"]
-        context = _bounded_text(payload.get("context"), MAX_PREFETCH_CONTEXT_CHARS)
+        from eimemory.adapters.runtime.channel import resolve_channel_scope
+        from eimemory.recall.raw_citation import consume_sidecar
+        expected_authority = None
+        # This belongs to the original pending attempt, not this retry or RPC.
+        metadata_deadline = pending.get("raw_delivery_deadline", 0.0)
+        if (payload.get("ok") is True and not payload.get("bypassed") and not payload.get("control_cohort")
+                and payload.get("release_bound") and payload.get("decision_id") and payload.get("items")
+                and isinstance(payload.get("raw_citation_context"), str) and payload["raw_citation_context"]):
+            # Independently read current policy/release before every acceptance,
+            # including the first. Only pending request values enter this call.
+            # Never reuse an earlier expectation when this metadata read fails.
+            try:
+                metadata = {"ok": False}
+                if metadata_deadline - time.monotonic() >= 0.01:
+                    metadata = self._safe_call_with(self._proactive_client or self._client,
+                        "adapter.proactive_delivery_metadata", {**self._common_params(),
+                            "scope": dict(pending["scope"]), "source_ids": list(pending["source_ids"]),
+                            "session_id": pending["session_id"], "turn_id": pending["decision_turn_id"],
+                            "query": pending["query"], "task_type": "research.task"},
+                        metadata_deadline=metadata_deadline)
+            except Exception:
+                # Metadata/preflight failure withholds only the optional RAW.
+                metadata = {"ok": False}
+            value = metadata.get("result")
+            if (time.monotonic() < metadata_deadline and metadata.get("ok") is True
+                    and isinstance(value, dict) and value.get("ok") is True):
+                if isinstance(value.get("expectation"), dict):
+                    expected_authority = dict(value["expectation"])
+            with self._lock:
+                current = self._pending_proactive.get(key)
+                if time.monotonic() >= metadata_deadline:
+                    expected_authority = None
+                if current is not None and current["decision_turn_id"] == decision_turn_id:
+                    current["raw_delivery_authority"] = expected_authority
+                else:
+                    expected_authority = None
+        if time.monotonic() >= metadata_deadline:
+            expected_authority = None
+            with self._lock:
+                pending["raw_delivery_authority"] = None
+        delivered_context = consume_sidecar(payload, query=pending["query"],
+            scope=resolve_channel_scope("hermes", pending["scope"]), sources=pending["source_ids"],
+            session_id=pending["session_id"], turn_id=pending["decision_turn_id"], task_type="research.task",
+            max_chars=MAX_PREFETCH_CONTEXT_CHARS, expected_authority=expected_authority)
+        context = _bounded_text(delivered_context, MAX_PREFETCH_CONTEXT_CHARS)
         decision_id = _bounded_text(payload.get("decision_id"), 200)
         # A successful proactive policy bypass is not evidence that no
         # authoritative channel memory exists.  Hermes has no separate base
@@ -1416,7 +1488,9 @@ class HermesMemoryProviderCore:
                 **pending,
                 "decision_id": decision_id,
                 "acceptance_generated": payload.get("acceptance_generated") is True,
-                "citations": sorted(set(_PROACTIVE_CITATION.findall(context))),
+                # Only the original decision's rendered L1 can be acknowledged
+                # under its pm: receipt. RAW is a separately validated sidecar.
+                "citations": sorted(set(_PROACTIVE_CITATION.findall(str(payload.get("context") or "")))),
             }
             abandoned = []
             with self._lock:

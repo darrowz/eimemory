@@ -222,3 +222,20 @@ def guarded_raw_search(store, *, diagnostics, **kwargs):
     except Exception:
         diagnostics["raw_collection_unavailable"] += 1
         return []
+
+
+def guarded_citation_search(store, **kwargs):
+    """Explicit consumer API: preserve the real kernel's zero-row receipt.
+
+    Legacy RAW exploration and its exception behavior remain unchanged.
+    Non-kernel failures propagate to the consumer's separate admission state.
+    """
+    from eimemory.raw.citation_gate import CitationResults, CitationUnavailable
+    from eimemory.raw.retrieval import search_raw_chunks
+    try:
+        result = search_raw_chunks(store, **kwargs)
+    except CitationUnavailable as exc:
+        return CitationResults([], exc.decision)
+    if not isinstance(result, CitationResults):
+        raise RawRecallUnavailable("citation_receipt_missing", allow_recovery=False)
+    return result

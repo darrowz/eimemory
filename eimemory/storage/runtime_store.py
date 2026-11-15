@@ -850,6 +850,33 @@ class RuntimeStore:
                     # Read-only contract: never publish an accidental write.
                     sqlite.rollback()
 
+    def read_raw_citation_records(self, *, owner_scopes, source_ids, kinds, deadline, check_budget):
+        """Complete bounded RAW authority read for explicit citation admission.
+
+        One borrowed connection and read transaction own selection and canonical
+        hydration. Never join/commit a caller's transaction, never use FTS/global
+        counts. Ordinary readers and read_consistent retain their old behavior.
+        """
+        from .recall_deadline import recall_read_scope
+        from eimemory.raw.citation_gate import CitationUnavailable
+
+        check_budget()
+        with self.borrow_reader(deadline=deadline, wait_for_reader=True) as slot:
+            sqlite = slot.store
+            if sqlite.in_transaction:
+                raise CitationUnavailable("snapshot_unavailable")
+            with recall_read_scope(self, {"_recall_collection_deadline_monotonic": deadline},
+                                   sqlite=sqlite, lock=slot.lock, lock_held=True):
+                sqlite.execute("BEGIN")
+                try:
+                    return sqlite.read_raw_citation_records(
+                        owner_scopes=owner_scopes, source_ids=source_ids, kinds=kinds, deadline=deadline,
+                        check_budget=check_budget)
+                finally:
+                    # Only our own read transaction. Do not publish writes.
+                    if sqlite.in_transaction:
+                        sqlite.rollback()
+
     def execute_readonly(self, sql: str, parameters=()):
         """Execute a read SQL statement on a pooled reader connection."""
         with self.borrow_reader() as slot:
