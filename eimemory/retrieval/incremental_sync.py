@@ -18,7 +18,10 @@ from eimemory.storage.atomic_file import _fsync_directory, interprocess_lock, op
 from eimemory.storage.private_file import private_temporary_file
 
 from .postgres_sync import PostgresVectorIndexSynchronizer, ProjectionCursor, SQLiteProjectionReader
-from .postgres_vector import PROJECTION_DIGEST_SCHEMA, embedding_provider_fingerprint, projection_fingerprint
+from .postgres_vector import (
+    IndexState, PROJECTION_DIGEST_SCHEMA, _PostgresDeltaConflict,
+    embedding_provider_fingerprint, projection_fingerprint,
+)
 
 
 class SnapshotProjectionReader:
@@ -223,7 +226,8 @@ def maintain_memory_projection(*, store, repository, config, batch_size=16, max_
             result['caught_up'] = reader.snapshot_token() == snapshot.revision
         return result
     processed = embedded = pages = 0
-    for _ in range(max(1,min(10000,max_pages))):
+    attempt_limit = max(1,min(10000,max_pages))
+    for attempt in range(attempt_limit):
         snapshot = delta_snapshot(reader, since=state.authority_revision, limit=batch_size)
         if snapshot['revision'] == state.authority_revision:
             return {'ok':True, 'complete':True, 'caught_up':True, 'processed':processed,
@@ -254,8 +258,29 @@ def maintain_memory_projection(*, store, repository, config, batch_size=16, max_
         unreachable = [key for key in snapshot["keys"] if key not in live_keys]
         if unreachable and not hasattr(repository, "apply_memory_delta"):
             raise RuntimeError("journal_fold_unreachable_without_delta")
-        repository.apply_memory_delta(expected_state=state, projections=projections,
-            changed_keys=snapshot['keys'], authority_revision=snapshot['revision'], authoritative_head=snapshot['head'])
+        try:
+            repository.apply_memory_delta(expected_state=state, projections=projections,
+                changed_keys=snapshot['keys'], authority_revision=snapshot['revision'], authoritative_head=snapshot['head'])
+        except _PostgresDeltaConflict:
+            # Another native maintainer may have committed while we embedded.
+            # Its progress is not our commit, and an arbitrary database error
+            # (even with the same text) is never this typed recovery signal.
+            current = repository.read_index_state()
+            authority = reader.snapshot_token()
+            if (type(current) is not IndexState or current.ready is not True
+                    or any(getattr(current, key) != getattr(state, key) for key in (
+                        'watermark', 'embedding_fingerprint', 'projection_fingerprint', 'projection_digest_schema'))
+                    or not isinstance(current.authority_revision, str)
+                    or not current.authority_revision.isdecimal()
+                    or not isinstance(authority, str) or not authority.isdecimal()
+                    or not int(state.authority_revision) < int(current.authority_revision) <= int(authority)
+                    or attempt + 1 >= attempt_limit):
+                raise
+            # Re-read the delta in the next *existing* page attempt. Do not
+            # reuse stale projections, count uncommitted rows, or claim caught
+            # up just because this separate state read looks current.
+            state = current
+            continue
         pages += 1
         processed += len(snapshot['keys'])
         embedded += len(missing)

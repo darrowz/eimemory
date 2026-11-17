@@ -31,7 +31,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.15.85" src="https://img.shields.io/badge/version-1.15.85-blue">
+  <img alt="Package version 1.15.86" src="https://img.shields.io/badge/version-1.15.86-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -285,9 +285,9 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.15.85, source package)
+## Current package status (1.15.86, source package)
 
-The [1.15.85 release notes](docs/releases/v1.15.85.md) describe source-grounded classification of unmarked legacy observations and current-authority qualification of controlled benchmark targets. Persisted unresolved temporal evidence and invalid parent bindings remain withheld; the benchmark selects positives before recall without using rank or pass results. The preserved 15-case native baseline is 10/15; candidate comparisons and formal closure are pending. Synthetic RAW Top-1 109/120 and Top-5 119/120 remain guardrails from the prior validation, not a new measurement or final-answer accuracy.
+The [1.15.86 release notes](docs/releases/v1.15.86.md) describe bounded recovery when concurrent vector maintenance advances the same committed projection. Generation, fingerprint, revision and final readiness checks remain required. The deployed 1.15.85 qualified operational cohort passed 15/15, but its formal closure remained degraded after projection maintenance failed; later healthy service status does not replace that receipt. This candidate's tests and fresh formal receipt are pending. Synthetic RAW Top-1 109/120 and Top-5 119/120 remain prior ranking guardrails, not final-answer accuracy.
 
 The unchanged 200-question public RAW fixture retains answerable Top-1 109/120 and Top-5 119/120. Default RAW correct-empty retrieval stays 0/80; explicit fact-citation gating reaches 5/80 with no added answerable empty retrieval or admitted reorder. These are retrieval results on a repeatedly used regression set, not final model-answer accuracy. The [1.15.80 release notes](docs/releases/v1.15.80.md) describe the retained ranking baseline.
 

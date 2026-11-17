@@ -1,3 +1,10 @@
+## [1.15.86]
+
+- Preserve a dedicated safe PostgreSQL incremental-commit conflict outcome. Recover after a bounded re-read proves compatible forward progress in the same committed generation.
+- The deployed 1.15.85 qualified operational cohort passed 15/15 and authenticated RPC passed 3/3. Its final projection maintenance left formal closure degraded. Concurrent worker timing matches the reproduced protocol defect. The lost historical exception code leaves the precise cause unverified.
+- A previous 120-second maintenance budget took 160 seconds. Strict end-to-end maintenance deadlines remain an unresolved performance item.
+- Focused projection regression passes 362 cases, and the frozen independent conflict suite improves from 11/14 to 14/14. Full CI and a fresh persisted native receipt are required for formal business closure. See `docs/releases/v1.15.86.md` for validation boundaries.
+
 ## [1.15.85]
 
 - Reclassify an unmarked legacy observation only when its literal original source and exact parent support an undated scalar fact and no temporal family reserves that slot. Persisted unresolved markers, unsupported assertions and changed parents remain withheld.

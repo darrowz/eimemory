@@ -198,7 +198,7 @@ def handle_vector_index_command(parsed: object, runtime: Any) -> dict[str, Any]:
                 allowed = {'embedding_dimension_mismatch', 'snapshot_symlink_forbidden',
                            'memory_journal_gap', 'snapshot_fingerprint_mismatch',
                            'delta_journal_gap', 'projection_snapshot_contract_mismatch',
-                           'fragment_projection_incomplete'}
+                           'fragment_projection_incomplete', 'postgres_delta_conflict'}
                 reason = str(exc) if str(exc) in allowed else type(exc).__name__
                 return {"ok":False,"complete":False,"error":"memory_projection_maintenance_failed",
                         "reason":reason}

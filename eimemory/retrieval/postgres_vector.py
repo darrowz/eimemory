@@ -468,6 +468,13 @@ class _ConnectionGate:
         self._slots.release()
 
 
+class _PostgresDeltaConflict(RuntimeError):
+    """Only the repository's own locked CAS check can emit this signal."""
+
+    def __init__(self) -> None:
+        super().__init__("postgres_delta_conflict")
+
+
 class PostgresCandidateRepository:
     """Prepared-SQL access to the non-authoritative candidate projection."""
 
@@ -1004,7 +1011,7 @@ class PostgresCandidateRepository:
                         or state.get('embedding_fingerprint') != expected_state.embedding_fingerprint
                         or state.get('projection_fingerprint') != expected_state.projection_fingerprint
                         or state.get('projection_digest_schema') != PROJECTION_DIGEST_SCHEMA):
-                    raise RuntimeError('postgres_delta_conflict')
+                    raise _PostgresDeltaConflict()
                 if changed_keys:
                     cursor.execute(f'DELETE FROM {self.qualified_table} '
                         'WHERE index_watermark=%s AND storage_key=ANY(%s)',
@@ -1038,6 +1045,9 @@ class PostgresCandidateRepository:
                     'completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE singleton=TRUE',
                     (authority_revision, authoritative_head[0], authoritative_head[1]))
             connection.commit()
+        except _PostgresDeltaConflict:
+            connection.rollback()
+            raise
         except Exception:
             connection.rollback()
             raise RuntimeError('postgres_delta_apply_failed') from None
