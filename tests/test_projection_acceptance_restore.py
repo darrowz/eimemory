@@ -49,7 +49,8 @@ def test_waits_for_storage_guard_then_catches_up_before_accept_budget(tmp_path, 
     marker.write_text('{}', encoding='utf-8')
     rounds = []
 
-    def maintain(runtime_arg):
+    def maintain(runtime_arg, *, deadline_at):
+        assert deadline_at > restore.monotonic()
         rounds.append(restore.monotonic())
         assert not marker.exists()
         return {'ok': True, 'skipped': 'already_current', 'watermark': 'w'}
@@ -73,7 +74,8 @@ def test_incomplete_sync_retries_until_caught_up(tmp_path, clock, monkeypatch):
         {'ok': True, 'complete': True, 'caught_up': True, 'processed': 1, 'authority_revision': '9'},
     ]
 
-    def maintain(runtime_arg):
+    def maintain(runtime_arg, *, deadline_at):
+        assert deadline_at > restore.monotonic()
         return responses.pop(0)
 
     monkeypatch.setattr('eimemory.retrieval.vector_sync_worker.maintain_index', maintain)

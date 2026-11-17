@@ -1,6 +1,7 @@
 from dataclasses import asdict
 from hashlib import sha256
 import json
+from pathlib import Path
 
 import pytest
 
@@ -38,6 +39,9 @@ def configure(tmp_path, monkeypatch, receipt, target=TARGET):
 def receipt_for_service():
     receipt = _deployment_receipt()
     effect = receipt.content['side_effect']
+    release_path = f"{Path('/opt/eimemory/releases')}/{RELEASE.commit}"
+    for section in ('release', 'deployment', 'post_deploy_health'):
+        effect[section]['release_path'] = release_path
     effect['verification']['prior_commit'] = 'b' * 40
     effect['deployment']['current_link'] = '/opt/eimemory/current'
     effect['post_deploy_health']['current_link'] = '/opt/eimemory/current'

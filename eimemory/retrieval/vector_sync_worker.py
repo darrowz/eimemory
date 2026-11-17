@@ -21,9 +21,10 @@ def _default_runtime_root() -> str:
     return str(default_root())
 
 
-def maintain_index(runtime: Any) -> dict[str, object]:
-    status = handle_vector_index_command(SimpleNamespace(vector_index_command='status'), runtime)
-    if not status.get('ok'):
+def maintain_index(runtime: Any, *, deadline_at: float | None = None) -> dict[str, object]:
+    options = {'deadline_at': deadline_at} if deadline_at is not None else {}
+    status = handle_vector_index_command(SimpleNamespace(vector_index_command='status'), runtime, **options)
+    if not status.get('ok') or status.get('deadline_exhausted'):
         return status
     state = status.get('vector_index', {})
     if not state.get('enabled') and not state.get('maintenance_enabled'):
@@ -31,7 +32,7 @@ def maintain_index(runtime: Any) -> dict[str, object]:
     if state.get('available'):
         return {'ok': True, 'skipped': 'already_current', 'watermark': state.get('watermark')}
     return handle_vector_index_command(
-        SimpleNamespace(vector_index_command='sync', batch_size=32, max_pages=8), runtime)
+        SimpleNamespace(vector_index_command='sync', batch_size=32, max_pages=8), runtime, **options)
 
 
 def main() -> int:

@@ -57,7 +57,7 @@
   "paired_eimemory_contracts": [
     {
       "path": "integrations/hermes/eimemory/__init__.py",
-      "sha256": "8eab7fb7557b7aeed77add8d9712af669dfc72e4c86c002940800fac04ff3488",
+      "sha256": "69e46c26c8e0987510b76466eda24b5164e326675def777b09e7c743284c4bfb",
       "contract": "can_reuse_for_session returns strict boolean True only for the same live initialized owner identity and sources",
       "frozen_original_sha256": "a7b6b1129e53f95987e7873bd6b8e60d6911f42692ef3b032e12814250bbc339",
       "sha256_basis": "Git canonical LF bytes; frozen_original_sha256 identifies the historical local replay bytes"
@@ -115,7 +115,95 @@
       "LLM or production RPC",
       "real adapters and production state",
       "legacy ApiServerMemorySessions checkout/checkin pool"
-    ]
+    ],
+    "current_adapter_compatibility": {
+      "baseline_source_commit": "a45cace9618b43521ba977baadd781c29194bc23",
+      "sha256_basis": "Git canonical LF bytes",
+      "source_hashes": {
+        "integrations/hermes/eimemory/__init__.py": "69e46c26c8e0987510b76466eda24b5164e326675def777b09e7c743284c4bfb",
+        "eimemory/adapters/hermes/provider_registry.py": "e2608cc0da89b88aa95b42d36b50a8407aee5af9211fc9158b27d773ceb7f56d",
+        "eimemory/adapters/hermes/provider_core.py": "6bae41ae34f85c60f97e06b58ad59e4eaa641e3b6aed24bb0c3c0c17f5eecb26",
+        "eimemory/adapters/hermes/session_observation.py": "edbbe58ce7fd14b4e7dfc4a8530781c4ae7909ac80177c6ba373e8bd4a595c78",
+        "eimemory/adapters/hermes/effect_observer.py": "546d05286bd337f8437bb0381fe096f33b2bbbffd2f8340a7321c8b091229e1c",
+        "eimemory/adapters/hermes/answer_observation.py": "beb853d078669c81bd0302dda86960e516b43e324129617183b18fc5e46a3a4b"
+      },
+      "test_hashes": {
+        "tests/test_hermes_provider_reuse_contract.py": "905b8fb3545427c90586a885012d899b2297b45ebd863714ebbb5cb7702d1b35",
+        "tests/test_hermes_provider_lifecycle.py": "5602f26c0be98b51962d9bc2b65bd0be16184b6f5edfbf7629325cf25cf2aa0a",
+        "tests/test_hermes_explicit_host_context.py": "98ba917cd47eaa6db9a90eb34c3cfc4088b5c875be2dd02ee2b468bc7521dc40",
+        "tests/test_hermes_session_observation.py": "90dd759faa8bfc68078621093f4e2c024bbafaaa8d5d91369d4c48c15a344940",
+        "tests/test_explicit_recall_capture.py": "0ddb9729b8c02d800fe98f82e617a1534b9f43477c85dec74801818f5f8aa557",
+        "tests/test_release_scope_binding.py": "4ecb1ee28ca22a55fb4a59d6479b468285bcee495f832ed472801876d94b2ddf",
+        "tests/test_hermes_adapter.py": "a1920a0a5cac6b8c99063ebd13888413a869078f68223a58c2480ea363ce1cf5",
+        "tests/test_hermes_multiplex_context.py": "dc30a7717024215f4356c2749019ca1c05b96820a0b70d5ebc916898a2c74acd",
+        "tests/test_hermes_answer_observation.py": "2903fd6fe4d94bd12648a763380af719515e85b848e34f6652113fdba2c06990",
+        "tests/test_real_effect_signals.py": "f63dbe3a13bf4622b2edc032b11f52089b1b8df2ada6d04bd73cc6b5b94f576d"
+      },
+      "windows": {
+        "tests": 242,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 49,
+        "passed": 193
+      },
+      "linux": {
+        "tests": 257,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "passed": 257
+      },
+      "windows_existing_skips": {
+        "posix_owner_mode_boundary": 2,
+        "native_posix_routing_credential_boundary": 47
+      },
+      "observation_contract_comparison": {
+        "before": {
+          "passed": 1,
+          "failed": 12,
+          "error": 0,
+          "skipped": 0
+        },
+        "after": {
+          "passed": 13,
+          "failed": 0,
+          "error": 0,
+          "skipped": 0
+        },
+        "interpretation": "Missing observations are failures before; these counts do not measure recall or final-answer accuracy."
+      },
+      "evidence_location": "docs/releases/v1.15.87.md",
+      "scope": "Isolated stored-memory RPC and host callback contracts; source hashes apply to final candidate. No original-warning recovery or final-answer accuracy assertion.",
+      "linux_additional_suite": "tests/test_real_effect_signals.py (15 cases; one existing Windows POSIX fixture error verified on baseline)",
+      "same_public_answer_callbacks_before": {
+        "tests": 7,
+        "failures": 2,
+        "errors": 0,
+        "skipped": 0,
+        "passed": 5
+      },
+      "same_public_answer_callbacks_after": {
+        "tests": 7,
+        "passed": 7,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "independent_callback_binding_probes_before": {
+        "tests": 2,
+        "failures": 2,
+        "errors": 0,
+        "skipped": 0,
+        "passed": 0
+      },
+      "independent_callback_binding_probes_after": {
+        "tests": 2,
+        "passed": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    }
   },
   "rollback": "With affected gateway processes stopped and all five files matching after_sha256, git apply --reverse --check and git apply --reverse this exact patch; verify before hashes and original absence of memory_handoff.py. Preserve pre-existing host changes and all user/session state.",
   "deployment_status": "Artifact package only. No installation or production verification is asserted.",

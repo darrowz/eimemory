@@ -8,6 +8,7 @@ from __future__ import annotations
 # RET-12 FIXED: default max_response_bytes lowered (4MiB hard ceiling 8MiB)
 
 from collections import Counter, OrderedDict
+from copy import copy
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -22,6 +23,10 @@ from threading import BoundedSemaphore, Lock
 from time import monotonic
 from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 from urllib.error import HTTPError, URLError
+from .projection_deadline import (
+    ProjectionMaintenanceDeadlineExceeded, ProjectionCommitOutcomeUnknown,
+    pure_call, remaining_seconds, validate_deadline, DeadlineSocket,
+)
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -478,8 +483,9 @@ class _PostgresDeltaConflict(RuntimeError):
 class PostgresCandidateRepository:
     """Prepared-SQL access to the non-authoritative candidate projection."""
 
-    def __init__(self, config: PostgresVectorConfig) -> None:
+    def __init__(self, config: PostgresVectorConfig, *, deadline_at: float | None = None) -> None:
         self.config = config
+        self._maintenance_deadline_at = validate_deadline(deadline_at) or 0.0
         self._gate = _ConnectionGate(pool_size=config.pool_size, queue_bound=config.queue_bound)
         # RET-19: reuse idle connections to avoid per-request connect + set_config storms.
         self._idle_pool: list[Any] = []
@@ -493,12 +499,55 @@ class PostgresCandidateRepository:
     def qualified_state_table(self) -> str:
         return f'"{self.config.schema}"."{_derived_identifier(self.config, "state")}"'
 
+    def _effective_deadline(self, deadline_at: float = 0.0) -> float:
+        maintenance = getattr(self, '_maintenance_deadline_at', 0.0)
+        return min(value for value in (deadline_at, maintenance) if value) if deadline_at or maintenance else 0.0
+
+    def with_deadline(self, deadline_at: float | None):
+        deadline_at = validate_deadline(deadline_at)
+        if deadline_at is None:
+            return self
+        effective = self._effective_deadline(deadline_at)
+        if effective == getattr(self, '_maintenance_deadline_at', 0.0):
+            return self
+        bounded = copy(self)
+        bounded._maintenance_deadline_at = effective
+        return bounded
+
+    def _check_maintenance_deadline(self) -> None:
+        remaining_seconds(getattr(self, '_maintenance_deadline_at', 0.0))
+
+    def _commit_maintenance(self, connection) -> None:
+        self._check_maintenance_deadline()
+        if getattr(self, '_maintenance_deadline_at', 0.0):
+            with connection.cursor() as cursor:
+                self._set_timeout(cursor)
+            self._check_maintenance_deadline()
+        try:
+            connection.commit()
+        except Exception:
+            deadline = getattr(self, '_maintenance_deadline_at', 0.0)
+            if deadline and monotonic() >= deadline:
+                raise ProjectionCommitOutcomeUnknown() from None
+            raise
+        deadline = getattr(self, '_maintenance_deadline_at', 0.0)
+        if deadline and monotonic() >= deadline:
+            # A sent COMMIT may have succeeded before its acknowledgement.
+            raise ProjectionCommitOutcomeUnknown()
+
     def _connect(self, *, deadline_at: float = 0.0) -> Any:
-        if not self._gate.acquire(_remaining_timeout(deadline_at, self.config.connect_timeout_seconds)):
+        maintenance = getattr(self, '_maintenance_deadline_at', 0.0)
+        self._check_maintenance_deadline()
+        deadline_at = self._effective_deadline(deadline_at)
+        timeout = (remaining_seconds(deadline_at, self.config.connect_timeout_seconds) if maintenance
+                   else _remaining_timeout(deadline_at, self.config.connect_timeout_seconds))
+        if not self._gate.acquire(timeout):
+            self._check_maintenance_deadline()
             raise TimeoutError("connection_queue_full")
+        owns_gate = True
         try:
             with self._idle_lock:
-                while self._idle_pool:
+                while self._idle_pool and not maintenance:
                     pooled = self._idle_pool.pop()
                     try:
                         if getattr(pooled, "closed", False):
@@ -506,27 +555,42 @@ class PostgresCandidateRepository:
                         return _GatedConnection(pooled, self._gate, repository=self)
                     except Exception:
                         continue
-            factory = self.config.connection_factory
-            connect_timeout = _remaining_timeout(deadline_at, self.config.connect_timeout_seconds)
-            if factory is None:
-                try:
-                    import psycopg  # type: ignore[import-not-found]
-                    from psycopg.rows import dict_row  # type: ignore[import-not-found]
-                except ImportError:
-                    raise RuntimeError("postgres_dependency_unavailable") from None
-                connection = psycopg.connect(
-                    self.config.dsn,
-                    connect_timeout=max(1, int(connect_timeout)),
-                    row_factory=dict_row,
-                )
-            else:
-                connection = factory(
-                    dsn=self.config.dsn,
-                    connect_timeout_seconds=connect_timeout,
-                )
-            return _GatedConnection(connection, self._gate, repository=self)
+            def connect():
+                factory = self.config.connection_factory
+                connect_timeout = (remaining_seconds(deadline_at, self.config.connect_timeout_seconds) if maintenance
+                                   else _remaining_timeout(deadline_at, self.config.connect_timeout_seconds))
+                if factory is None:
+                    try:
+                        import psycopg  # type: ignore[import-not-found]
+                        from psycopg.rows import dict_row  # type: ignore[import-not-found]
+                    except ImportError:
+                        raise RuntimeError("postgres_dependency_unavailable") from None
+                    return psycopg.connect(self.config.dsn, connect_timeout=max(1, int(connect_timeout)),
+                                           row_factory=dict_row)
+                return factory(dsn=self.config.dsn, connect_timeout_seconds=connect_timeout)
+
+            try:
+                connection = pure_call(connect, deadline_at=deadline_at) if maintenance else connect()
+            except ProjectionMaintenanceDeadlineExceeded as exc:
+                if exc.pending is not None:
+                    owns_gate = False
+                    def close_late(future):
+                        try:
+                            future.result().close()
+                        except Exception:
+                            pass
+                        finally:
+                            self._gate.release()
+                    exc.pending.add_done_callback(close_late)
+                raise
+            # Bounded maintenance connections close directly. Returning them to
+            # the idle pool would issue an unbudgeted rollback during cleanup.
+            return _GatedConnection(connection, self._gate, repository=None if maintenance else self,
+                                    deadline_at=deadline_at if maintenance else 0.0,
+                                    statement_timeout_ms=self.config.statement_timeout_ms)
         except BaseException:
-            self._gate.release()
+            if owns_gate:
+                self._gate.release()
             raise
 
     def _release_idle(self, connection: Any) -> None:
@@ -545,6 +609,7 @@ class PostgresCandidateRepository:
             pass
 
     def read_index_state(self, *, deadline_at: float = 0.0) -> IndexState:
+        self._check_maintenance_deadline()
         connection = self._connect(deadline_at=deadline_at) if deadline_at else self._connect()
         try:
             with connection.cursor() as cursor:
@@ -588,8 +653,11 @@ class PostgresCandidateRepository:
                 for statement in build_candidate_projection_ddl(self.config):
                     cursor.execute(statement)
                 self._validate_projection_schema(cursor)
-            connection.commit()
+            self._commit_maintenance(connection)
             return {"ok": True, "ddl_version": DDL_VERSION}
+        except (ProjectionMaintenanceDeadlineExceeded, ProjectionCommitOutcomeUnknown):
+            connection.rollback()
+            raise
         except Exception:
             connection.rollback()
             raise RuntimeError("postgres_migration_failed") from None
@@ -684,8 +752,11 @@ class PostgresCandidateRepository:
                         lease_owner=lease_owner,
                         authority_revision=authority_revision,
                     )
-            connection.commit()
+            self._commit_maintenance(connection)
             return progress
+        except (ProjectionMaintenanceDeadlineExceeded, ProjectionCommitOutcomeUnknown):
+            connection.rollback()
+            raise
         except Exception as exc:
             connection.rollback()
             code = str(exc)
@@ -804,7 +875,10 @@ class PostgresCandidateRepository:
                     "WHERE singleton = %s AND run_id = %s AND in_progress = TRUE AND lease_owner = %s",
                     (True, str(run_id or "")[:256], str(lease_owner or "")[:128]),
                 )
-            connection.commit()
+            self._commit_maintenance(connection)
+        except (ProjectionMaintenanceDeadlineExceeded, ProjectionCommitOutcomeUnknown):
+            connection.rollback()
+            raise
         except Exception:
             connection.rollback()
             raise RuntimeError("postgres_sync_lease_release_failed") from None
@@ -830,7 +904,10 @@ class PostgresCandidateRepository:
                 )
                 if int(getattr(cursor, "rowcount", -1)) == 0:
                     raise RuntimeError("postgres_sync_lease_lost")
-            connection.commit()
+            self._commit_maintenance(connection)
+        except (ProjectionMaintenanceDeadlineExceeded, ProjectionCommitOutcomeUnknown):
+            connection.rollback()
+            raise
         except Exception as exc:
             connection.rollback()
             if str(exc) == "postgres_sync_lease_lost":
@@ -850,7 +927,10 @@ class PostgresCandidateRepository:
                     "WHERE singleton = %s AND committed_watermark = %s",
                     (True, str(watermark or "")[:256]),
                 )
-            connection.commit()
+            self._commit_maintenance(connection)
+        except (ProjectionMaintenanceDeadlineExceeded, ProjectionCommitOutcomeUnknown):
+            connection.rollback()
+            raise
         except Exception:
             connection.rollback()
             raise RuntimeError("postgres_index_invalidate_failed") from None
@@ -975,7 +1055,10 @@ class PostgresCandidateRepository:
                         lease_owner,
                     ),
                 )
-            connection.commit()
+            self._commit_maintenance(connection)
+        except (ProjectionMaintenanceDeadlineExceeded, ProjectionCommitOutcomeUnknown):
+            connection.rollback()
+            raise
         except Exception:
             connection.rollback()
             raise RuntimeError("postgres_sync_apply_failed") from None
@@ -990,6 +1073,7 @@ class PostgresCandidateRepository:
         Revisions remain part of every query/cache fence. An index behind SQLite
         is unavailable, never falsely certified current. No authority rows change.
         """
+        self._check_maintenance_deadline()
         if (not self.config.projection_memory_only or not expected_state.ready
                 or not expected_state.watermark or len(changed_keys) > 256
                 or len(set(changed_keys)) != len(changed_keys)
@@ -1044,8 +1128,11 @@ class PostgresCandidateRepository:
                     "authoritative_updated_at=NULLIF(%s,'')::timestamptz,authoritative_storage_key=%s,"
                     'completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE singleton=TRUE',
                     (authority_revision, authoritative_head[0], authoritative_head[1]))
-            connection.commit()
+            self._commit_maintenance(connection)
         except _PostgresDeltaConflict:
+            connection.rollback()
+            raise
+        except (ProjectionMaintenanceDeadlineExceeded, ProjectionCommitOutcomeUnknown):
             connection.rollback()
             raise
         except Exception:
@@ -1212,7 +1299,10 @@ class PostgresCandidateRepository:
                         normalized_run_id,
                     ),
                 )
-            connection.commit()
+            self._commit_maintenance(connection)
+        except (ProjectionMaintenanceDeadlineExceeded, ProjectionCommitOutcomeUnknown):
+            connection.rollback()
+            raise
         except Exception:
             connection.rollback()
             raise RuntimeError("postgres_sync_finalize_failed") from None
@@ -1406,7 +1496,12 @@ class PostgresCandidateRepository:
         return sql, execute_params
 
     def _set_timeout(self, cursor: Any, *, deadline_at: float = 0.0) -> None:
-        timeout_ms = max(1, int(_remaining_timeout(deadline_at, self.config.statement_timeout_ms / 1000) * 1000))
+        self._check_maintenance_deadline()
+        deadline_at = self._effective_deadline(deadline_at)
+        timeout = (remaining_seconds(deadline_at, self.config.statement_timeout_ms / 1000)
+                   if getattr(self, '_maintenance_deadline_at', 0.0)
+                   else _remaining_timeout(deadline_at, self.config.statement_timeout_ms / 1000))
+        timeout_ms = max(1, int(timeout * 1000))
         cursor.execute(
             "SELECT set_config('statement_timeout', %s, true)",
             (f"{timeout_ms}ms",),
@@ -1414,26 +1509,96 @@ class PostgresCandidateRepository:
 
 
 class _GatedConnection:
-    def __init__(self, connection: Any, gate: _ConnectionGate, *, repository: Any | None = None) -> None:
+    def __init__(self, connection: Any, gate: _ConnectionGate, *, repository: Any | None = None,
+                 deadline_at: float = 0.0, statement_timeout_ms: int = 1500) -> None:
         self._connection = connection
         self._gate = gate
         self._repository = repository
         self._closed = False
+        self._deadline_at = deadline_at
+        self._statement_timeout_ms = statement_timeout_ms
+        self._deadline_socket = None
+        if deadline_at:
+            try:
+                self._deadline_socket = DeadlineSocket(connection, deadline_at)
+            except BaseException:
+                connection.close()
+                raise
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._connection, name)
+
+    def cursor(self, *args, **kwargs):
+        cursor = self._connection.cursor(*args, **kwargs)
+        return _MaintenanceCursor(cursor, self._deadline_at, self._statement_timeout_ms,
+                                  self._deadline_socket) if self._deadline_at else cursor
+
+    def rollback(self):
+        if self._deadline_at and monotonic() >= self._deadline_at:
+            self.close()
+            return
+        self._connection.rollback()
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
         try:
+            if self._deadline_socket is not None:
+                self._deadline_socket.close()
             if self._repository is not None and hasattr(self._repository, "_release_idle"):
                 self._repository._release_idle(self._connection)
             else:
                 self._connection.close()
         finally:
             self._gate.release()
+
+
+class _MaintenanceCursor:
+    """Refresh PostgreSQL's statement budget before every maintenance statement."""
+    def __init__(self, cursor, deadline_at, maximum_ms, deadline_socket):
+        self.raw, self.deadline_at, self.maximum_ms = cursor, deadline_at, maximum_ms
+        self.deadline_socket = deadline_socket
+
+    def __getattr__(self, name):
+        return getattr(self.raw, name)
+
+    def __enter__(self):
+        self.raw.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        return self.raw.__exit__(*args)
+
+    def execute(self, sql, parameters=()):
+        timeout = remaining_seconds(self.deadline_at, self.maximum_ms / 1000)
+        try:
+            self.raw.execute("SELECT set_config('statement_timeout', %s, true)",
+                             (f'{max(1, int(timeout * 1000))}ms',))
+            remaining_seconds(self.deadline_at)
+            result = self.raw.execute(sql, parameters)
+        except Exception:
+            if self.deadline_socket is not None and self.deadline_socket.expired.is_set():
+                raise ProjectionMaintenanceDeadlineExceeded() from None
+            raise
+        remaining_seconds(self.deadline_at)
+        return result
+
+    def executemany(self, sql, rows):
+        for parameters in rows:
+            self.execute(sql, parameters)
+
+    def fetchone(self):
+        remaining_seconds(self.deadline_at)
+        value = self.raw.fetchone()
+        remaining_seconds(self.deadline_at)
+        return value
+
+    def fetchall(self):
+        remaining_seconds(self.deadline_at)
+        value = self.raw.fetchall()
+        remaining_seconds(self.deadline_at)
+        return value
 
 
 class PostgresVectorCandidateSource:

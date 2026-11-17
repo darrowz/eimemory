@@ -30,6 +30,7 @@ from eimemory.adapters.hermes.provider_core import (
     hermes_host_tool_context_matches,
 )
 from eimemory.adapters.hermes.profile_context import resolve_host_binding, verify_owner
+from eimemory.adapters.hermes.session_observation import observe_session
 from eimemory.adapters.hermes.provider_registry import (
     HermesProviderSessionAlreadyBound,
     bind_hermes_provider,
@@ -64,6 +65,7 @@ class EIMemoryProvider(HermesMemoryProviderCore, MemoryProvider):
                     self._active = self._client_injected or self.is_available()
                     if self._active and self._write_enabled:
                         self._start_write_worker()
+                observe_session(self, 'initialized')
                 return
         existing=get_hermes_provider(session_id,hermes_home=kwargs.get('hermes_home'))
         if existing is not None and existing is not self:
@@ -77,14 +79,20 @@ class EIMemoryProvider(HermesMemoryProviderCore, MemoryProvider):
                 compatible = False
             if compatible:
                 self._retained_tool_owner = (ref(existing), existing._session_id, existing._hermes_home)
+            observe_session(self, 'initialization_conflict', session_id=session_id,
+                            context=kwargs, retained_owner=existing)
             raise HermesProviderSessionAlreadyBound()
         try:
             super().initialize(session_id, **kwargs)
             bind_hermes_provider(session_id=self._session_id, provider=self)
-        except Exception:
+        except Exception as exc:
             self._active = False
+            observe_session(self, 'initialization_conflict' if isinstance(exc, HermesProviderSessionAlreadyBound)
+                            else 'initialization_failed', session_id=session_id, context=kwargs,
+                            retained_owner=get_hermes_provider(session_id, hermes_home=self._hermes_home))
             raise
         self._initialized = True
+        observe_session(self, 'initialized')
 
     def _same_initialization(self, owner, session_id, context) -> bool:
         if not isinstance(owner, HermesMemoryProviderCore) or owner._host_binding is None:
@@ -158,6 +166,7 @@ class EIMemoryProvider(HermesMemoryProviderCore, MemoryProvider):
                 rewound=rewound,
                 **kwargs,
             )
+        observe_session(self, 'session_rotated')
 
     def shutdown(self) -> None:
         if getattr(self, '_closed', False):
@@ -171,6 +180,7 @@ class EIMemoryProvider(HermesMemoryProviderCore, MemoryProvider):
             self._closed = True
             self._active = False
             unbind_hermes_provider(self)
+            observe_session(self, 'closed')
 
     def _safe_call_with(self, client, method, params, *, metadata_deadline=None):
         # Draining during shutdown still uses the normal owner checks. Once

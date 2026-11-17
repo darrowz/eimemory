@@ -84,7 +84,8 @@ class EffectObserver:
                         "reask": "suspected" if fingerprint and fingerprint == previous["fingerprint"] else "none",
                     })
                 previous["observed"] = True
-            self.turns[key] = {"fingerprint": fingerprint, "time": time.monotonic(), "tools": {}, "done": False}
+            self.turns[key] = {"fingerprint": fingerprint, "query_digest": sha256(str(query).encode('utf-8', errors='replace')).hexdigest(),
+                               "time": time.monotonic(), "tools": {}, "done": False}
             self.current[session] = turn
             while len(self.current) > 128:
                 self.current.popitem(last=False)
@@ -110,7 +111,8 @@ class EffectObserver:
                 if current and not current["done"]:
                     current["tools"]["unbound"] = "unknown"
 
-    def completed(self, session, turn, pending, task_success=None):
+    def completed(self, session, turn, pending, task_success=None, *, assistant_message=None,
+                  observed_host_turn_id=None):
         with self.lock:
             turn = turn or self.current.get(session, "")
             state = self.turns.get((session, turn))
@@ -148,6 +150,11 @@ class EffectObserver:
             if state["time"] is not None:
                 labels["latency_ms"] = round(max(0, time.monotonic() - state["time"]) * 1000, 3)
             self.emit(namespace, "turn_completed", self._event(turn), labels)
+            if state["time"] is not None and os.environ.get('EIMEMORY_CAPTURE_ANSWER_OBSERVATIONS', '0') == '1':
+                from eimemory.adapters.hermes.answer_observation import observe_answer
+                observe_answer(self.provider, session_id=session, host_turn_id=turn, pending=pending,
+                               observed_host_turn_id=observed_host_turn_id,
+                               started_query_digest=state.get("query_digest"), assistant_message=assistant_message)
             self.previous[session] = {"turn": turn, "time": time.monotonic(), "fingerprint": state["fingerprint"],
                                       "namespace": namespace, "observed": False}
             self.completed_targets[(session, turn)] = namespace

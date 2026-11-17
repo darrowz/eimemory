@@ -22,6 +22,10 @@ from .postgres_vector import (
     build_postgres_vector_candidate_source,
 )
 from .sqlite_source import SQLiteCandidateSource
+from .projection_deadline import (
+    ProjectionMaintenanceDeadlineExceeded, ProjectionCommitOutcomeUnknown,
+    ProjectionDeadlineTransportUnsupported,
+)
 
 
 def config_from_env() -> PostgresVectorConfig:
@@ -164,19 +168,42 @@ def _runtime_environment_fingerprint() -> str:
     ).hexdigest()
 
 
-def handle_vector_index_command(parsed: object, runtime: Any) -> dict[str, Any]:
+def handle_vector_index_command(parsed: object, runtime: Any, *, deadline_at: float | None = None) -> dict[str, Any]:
+    from .projection_deadline import (
+        ProjectionMaintenanceDeadlineExceeded, ProjectionCommitOutcomeUnknown,
+        remaining_seconds, validate_deadline,
+    )
+    deadline_at = validate_deadline(deadline_at)
+    try:
+        remaining_seconds(deadline_at)
+        result = _handle_vector_index_command(parsed, runtime, deadline_at=deadline_at)
+        if result.get('ok') is not True and result.get('error') != 'projection_maintenance_deadline_exhausted':
+            return result
+        remaining_seconds(deadline_at)
+        if result.get('error') == 'projection_maintenance_deadline_exhausted':
+            return {**result, 'ok': True, 'complete': False, 'caught_up': False, 'deadline_exhausted': True}
+        return result
+    except ProjectionMaintenanceDeadlineExceeded:
+        return {'ok': True, 'complete': False, 'caught_up': False, 'deadline_exhausted': True}
+    except ProjectionCommitOutcomeUnknown:
+        return {'ok': False, 'complete': False, 'error': 'projection_commit_outcome_unknown'}
+    except ProjectionDeadlineTransportUnsupported:
+        return {'ok': False, 'complete': False, 'error': 'projection_maintenance_deadline_transport_unsupported'}
+
+
+def _handle_vector_index_command(parsed: object, runtime: Any, *, deadline_at=None) -> dict[str, Any]:
     try:
         config = config_from_env()
     except (TypeError, ValueError):
         return {"ok": False, "error": "invalid_vector_index_config"}
     command = str(getattr(parsed, "vector_index_command", "") or "")
     if command == "status":
-        return {"ok": True, "vector_index": _status(config, runtime=runtime)}
+        return {"ok": True, "vector_index": _status(config, runtime=runtime, deadline_at=deadline_at)}
     if command in {'sync', 'migrate'} and _env_flag('EIMEMORY_POSTGRES_MAINTENANCE_ENABLED'):
         config = replace(config, enabled=True)
     if not config.configured:
         return {"ok": False, "error": "postgres_not_configured"}
-    repository = PostgresCandidateRepository(config)
+    repository = PostgresCandidateRepository(config, **({'deadline_at': deadline_at} if deadline_at else {}))
     if command == "migrate":
         try:
             return repository.migrate()
@@ -192,7 +219,11 @@ def handle_vector_index_command(parsed: object, runtime: Any) -> dict[str, Any]:
             try:
                 return maintain_memory_projection(store=runtime.store, repository=repository, config=config,
                     batch_size=max(2,min(254,int(getattr(parsed,'batch_size',4)))),
-                    max_pages=max(1,min(10000,int(getattr(parsed,'max_pages',1)))))
+                    max_pages=max(1,min(10000,int(getattr(parsed,'max_pages',1)))),
+                    **({'deadline_at': deadline_at} if deadline_at else {}))
+            except (ProjectionMaintenanceDeadlineExceeded, ProjectionCommitOutcomeUnknown,
+                    ProjectionDeadlineTransportUnsupported):
+                raise
             except Exception as exc:
                 # Public status is intentionally secret-free.
                 allowed = {'embedding_dimension_mismatch', 'snapshot_symlink_forbidden',
@@ -204,10 +235,12 @@ def handle_vector_index_command(parsed: object, runtime: Any) -> dict[str, Any]:
                         "reason":reason}
         syncer = PostgresVectorIndexSynchronizer(
             reader=SQLiteProjectionReader(runtime.store, max_text_chars=config.projection_text_chars,
-                                          projection_memory_only=config.projection_memory_only),
+                                          projection_memory_only=config.projection_memory_only,
+                                          **({'deadline_at': deadline_at} if deadline_at else {})),
             repository=repository,
             embedding_provider=config.embedding_provider,
             config=config,
+            **({'deadline_at': deadline_at} if deadline_at else {}),
         )
         return syncer.sync(
             batch_size=max(1, min(256, int(getattr(parsed, "batch_size", 32)))),
@@ -216,10 +249,11 @@ def handle_vector_index_command(parsed: object, runtime: Any) -> dict[str, Any]:
     return {"ok": False, "error": "unknown_vector_index_command"}
 
 
-def _status(config: PostgresVectorConfig, *, runtime: Any | None = None) -> dict[str, Any]:
+def _status(config: PostgresVectorConfig, *, runtime: Any | None = None, deadline_at=None) -> dict[str, Any]:
+    from .projection_deadline import ProjectionMaintenanceDeadlineExceeded, sqlite_scope, pure_call
     maintenance = _env_flag('EIMEMORY_POSTGRES_MAINTENANCE_ENABLED')
     if not config.enabled and maintenance:
-        state = _status(replace(config, enabled=True), runtime=runtime)
+        state = _status(replace(config, enabled=True), runtime=runtime, deadline_at=deadline_at)
         return {**state, 'enabled':False, 'maintenance_enabled':True, 'serving_available':False}
     provider_health = sanitized_embedding_health(config.embedding_provider)
     status: dict[str, Any] = {
@@ -236,7 +270,10 @@ def _status(config: PostgresVectorConfig, *, runtime: Any | None = None) -> dict
     if not config.enabled or not config.configured or config.embedding_provider is None:
         return status
     try:
-        state: IndexState = PostgresCandidateRepository(config).read_index_state()
+        repository = PostgresCandidateRepository(config, **({'deadline_at': deadline_at} if deadline_at else {}))
+        state: IndexState = pure_call(repository.read_index_state, deadline_at=deadline_at)
+    except (ProjectionMaintenanceDeadlineExceeded, ProjectionDeadlineTransportUnsupported):
+        raise
     except Exception:
         status["last_error"] = "postgres_unavailable"
         return status
@@ -252,17 +289,20 @@ def _status(config: PostgresVectorConfig, *, runtime: Any | None = None) -> dict
         authority_cursor: tuple[str, str] | None = None
         authority_revision: str | None = None
         if runtime is not None:
-            sqlite_source = SQLiteCandidateSource(runtime.store, projection_memory_only=config.projection_memory_only)
-            raw_head = sqlite_source.authority_head()
-            authority_cursor = (_canonical_timestamp(raw_head[0]), raw_head[1])
-            authority_revision = sqlite_source.authority_revision()
-            if not authority_revision.isdigit():
-                raise RuntimeError("authority_revision_unavailable")
+            with sqlite_scope(runtime.store, deadline_at):
+                sqlite_source = SQLiteCandidateSource(runtime.store, projection_memory_only=config.projection_memory_only)
+                raw_head = sqlite_source.authority_head()
+                authority_cursor = (_canonical_timestamp(raw_head[0]), raw_head[1])
+                authority_revision = sqlite_source.authority_revision()
+                if not authority_revision.isdigit():
+                    raise RuntimeError("authority_revision_unavailable")
         lag_seconds = candidate_index_lag_seconds(
             state,
             authority_cursor=authority_cursor,
             authority_revision=authority_revision,
         )
+    except ProjectionMaintenanceDeadlineExceeded:
+        raise
     except Exception:
         lag_seconds = float("inf")
     fresh = lag_seconds <= config.max_index_lag_seconds

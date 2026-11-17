@@ -1,3 +1,10 @@
+## [1.15.87]
+
+- Carry one maintenance deadline through SQLite reads, embedding work and dedicated PostgreSQL connections. Commit small resumable checkpoints and preserve an unknown outcome when a sent COMMIT loses its acknowledgement.
+- Keep final projection and serving-listener readiness checks within the existing outer budget. Expired maintenance slices cannot certify completion.
+- Record scoped, digest-only Hermes session and recall observations while preserving owner protections. Optional complete-answer callback digests require an explicit observed host turn and the matching original query; they do not certify task success.
+- Normalize synthetic deployment receipt paths for portable tests, retain the historical host patch, and register the new contracts in required CI. See `docs/releases/v1.15.87.md` for measurements and remaining evidence limits.
+
 ## [1.15.86]
 
 - Preserve a dedicated safe PostgreSQL incremental-commit conflict outcome. Recover after a bounded re-read proves compatible forward progress in the same committed generation.

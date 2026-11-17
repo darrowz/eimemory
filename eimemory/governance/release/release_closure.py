@@ -15,6 +15,7 @@ from eimemory.governance.release.release_closure_lineage import (
     finalize_release_lineage as _finalize_release_lineage,
 )
 from eimemory.models.records import ScopeRef
+from eimemory.retrieval.projection_deadline import projection_operation
 
 
 _BOOTSTRAP_PENDING_RECALL_REASONS = frozenset(
@@ -765,13 +766,14 @@ def _run_controlled_operational_closure_locked(
     return report
 
 
+@projection_operation()
 def _wait_for_controlled_projection(runtime: Any, *, expected_commit: str,
                                     timeout_seconds: float = 300.0) -> dict[str, Any]:
     """Wait for actual projection and listener proof after memory-writing gates.
 
-    This is a separate maintenance phase. It never extends a recall deadline,
-    writes the index, embeds, or treats a cached pre-write health proof as ready.
-    Budget aligns with candidate readiness / max_index_lag (300s).
+    Catch-up and subsequent read-only observation share one outer budget.
+    Each catch-up slice keeps its own maintenance cap. The barrier proves
+    current index and listener authority after the last committed write.
     """
     from datetime import datetime, timezone
     import math
@@ -801,12 +803,27 @@ def _wait_for_controlled_projection(runtime: Any, *, expected_commit: str,
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         return finish(False, "projection_wait_exhausted")
-    projection_restore = ensure_candidate_projection_restored(
-        runtime, timeout_seconds=min(120.0, remaining))
-    result["projection_acceptance_restore"] = projection_restore
-    if (projection_restore.get("applicable") is True
-            and projection_restore.get("ok") is not True):
-        return finish(False, "projection_acceptance_restore_failed")
+    result['projection_acceptance_restore_rounds'] = []
+    while remaining > 0:
+        before_restore = time.monotonic()
+        projection_restore = ensure_candidate_projection_restored(
+            runtime, timeout_seconds=min(120.0, remaining))
+        result["projection_acceptance_restore"] = projection_restore
+        result['projection_acceptance_restore_rounds'].append(projection_restore)
+        if source is not getattr(getattr(getattr(runtime, 'memory', None), 'recall_engine', None), 'candidate_source', None):
+            return finish(False, 'candidate_source_changed')
+        if projection_restore.get('applicable') is not True or projection_restore.get('ok') is True:
+            break
+        if projection_restore.get('blocked_reason') != 'projection_restore_deadline_exhausted':
+            return finish(False, "projection_acceptance_restore_failed")
+        # An exhausted maintenance slice can have committed safe checkpoints.
+        # Resume within this same outer budget, then run the normal read proof.
+        after_restore = time.monotonic()
+        if after_restore <= before_restore:
+            return finish(False, 'projection_acceptance_restore_invalid')
+        remaining = deadline - after_restore
+    else:
+        return finish(False, 'projection_wait_exhausted')
 
     while time.monotonic() < deadline:
         remaining = deadline - time.monotonic()

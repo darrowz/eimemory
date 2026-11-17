@@ -36,15 +36,25 @@ This patch changes only:
 - `gateway/session_execution.py`
 - `gateway/run_turn_runner.py`
 
-The manifest also pins the eimemory provider and registry used by the reviewed
-replay. The provider exposes the read-only, strict-boolean
+The manifest also pins the current compatible eimemory provider and registry.
+The provider exposes the read-only, strict-boolean
 `can_reuse_for_session` opt-in; the registry exposes the typed
 `memory_owner_busy` collision. The host must already own the exact previous
 manager. The contract does not authorize acquiring an owner by matching kwargs.
 The manifest separates the Git canonical LF `sha256` values used to verify
 published plugin files from each `frozen_original_sha256` used by the historical
-local replay. Both plugin files match the recorded replay bytes before line-ending
-normalization, and their canonical hashes match the Git index blobs.
+local replay. A later compatible adapter change updates only its current hash
+and records its own verification; historical replay identities are retained.
+
+The adapter emits `eimemory.hermes_session_observation.v1` events with hashes of
+the session, canonical scope, home and sources. Collision events retain separate
+attempted and retained-owner namespace hashes. `initialized` records only that
+initialization returned. Recall observations distinguish `returned`, `empty`
+and `unavailable` after the adapter has produced its response. They do not
+certify answer correctness or recovery of a different attempted namespace.
+An explicit recall's opaque capture reference can be checked against the
+existing signed capture for the same namespace. No session text, query,
+memory content, raw path or exception text is included in these events.
 
 Publication uses LF line endings. Only CRLF-to-LF normalization is allowed; it
 does not change patch semantics. `patch_audit_original_sha256` preserves the

@@ -740,6 +740,16 @@ for _domain in ("memory.recall", "channel.delivery", "deployment.runtime"):
 # deployment hash verification; it does not authorize other unregistered files.
 DOMAIN_PATHS["deployment.runtime"] = (*DOMAIN_PATHS["deployment.runtime"], ".gitattributes")
 
+# Observations share the host callback and evidence boundary with the effect
+# observer. Classify them explicitly instead of admitting an unknown new path.
+for _domain in ("memory.recall", "memory.governance", "channel.delivery",
+                "deployment.runtime", "code.evolution"):
+    DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain],
+        "eimemory/adapters/hermes/answer_observation.py",
+        "eimemory/adapters/hermes/session_observation.py")
+DOMAIN_PATHS["deployment.runtime"] = (*DOMAIN_PATHS["deployment.runtime"],
+    "eimemory/retrieval/projection_deadline.py")
+
 IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
 IGNORED_PATHS = {
     ".gitignore",

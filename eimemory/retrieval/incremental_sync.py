@@ -21,12 +21,18 @@ from .postgres_sync import PostgresVectorIndexSynchronizer, ProjectionCursor, SQ
 from .postgres_vector import (
     IndexState, PROJECTION_DIGEST_SCHEMA, _PostgresDeltaConflict,
     embedding_provider_fingerprint, projection_fingerprint,
+    PostgresCandidateRepository,
+)
+from .projection_deadline import (
+    ProjectionMaintenanceDeadlineExceeded, remaining_seconds, validate_deadline, sqlite_deadline_exceeded, pure_call,
 )
 
 
 class SnapshotProjectionReader:
-    def __init__(self, reader: SQLiteProjectionReader, *, path: Path, fingerprint: str):
+    def __init__(self, reader: SQLiteProjectionReader, *, path: Path, fingerprint: str,
+                 deadline_at: float | None = None):
         self.path = path
+        self.deadline_at = validate_deadline(deadline_at)
         if path.is_symlink() or path.parent.is_symlink():
             raise ValueError('snapshot_symlink_forbidden')
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -37,16 +43,17 @@ class SnapshotProjectionReader:
         # Keep a consistent store -> file lock order, including callers already
         # holding the reentrant store lock. No pending source transaction may be
         # exported as independently committed projection authority.
-        with reader.store.locked() as source:
+        with reader.locked() as source:
             if source.in_transaction:
                 raise RuntimeError('projection_snapshot_requires_own_transaction')
-            with interprocess_lock(path.with_name(path.name + '.lock'), timeout=30):
+            with interprocess_lock(path.with_name(path.name + '.lock'),
+                                   timeout=remaining_seconds(self.deadline_at, 30)):
                 if path.is_symlink() or path.parent.is_symlink():
                     raise ValueError('snapshot_symlink_forbidden')
-                revision = self._existing_revision(path, fingerprint)
+                revision = self._existing_revision(path, fingerprint, deadline_at=self.deadline_at)
                 if revision is None:
-                    self._publish_snapshot(reader, path=path, fingerprint=fingerprint)
-                self.conn = sqlite3.connect(f'{path.resolve().as_uri()}?mode=ro', uri=True)
+                    self._publish_snapshot(reader, path=path, fingerprint=fingerprint, deadline_at=self.deadline_at)
+                self.conn = self._connection(path, self.deadline_at, readonly=True)
                 try:
                     row = self.conn.execute('SELECT fingerprint,revision FROM contract').fetchone()
                     if not row or row[0] != fingerprint:
@@ -59,12 +66,24 @@ class SnapshotProjectionReader:
                     raise
 
     @staticmethod
-    def _existing_revision(path: Path, fingerprint: str) -> str | None:
+    def _connection(path, deadline_at, *, readonly=False):
+        remaining_seconds(deadline_at)
+        target = f'{path.resolve().as_uri()}?mode=ro' if readonly else str(path)
+        connection = sqlite3.connect(target, uri=readonly, timeout=remaining_seconds(deadline_at, 5))
+        if deadline_at:
+            from time import monotonic
+            from eimemory.storage.recall_deadline import _ReadConnection
+            connection.set_progress_handler(lambda: int(monotonic() >= deadline_at), 1000)
+            return _ReadConnection(connection, deadline_at)
+        return connection
+
+    @staticmethod
+    def _existing_revision(path: Path, fingerprint: str, *, deadline_at=None) -> str | None:
         if not path.exists():
             return None
         with open_regular_binary(path):
             pass
-        connection = sqlite3.connect(f'{path.resolve().as_uri()}?mode=ro', uri=True)
+        connection = SnapshotProjectionReader._connection(path, deadline_at, readonly=True)
         try:
             contract = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='contract'").fetchone()
@@ -82,18 +101,18 @@ class SnapshotProjectionReader:
             connection.close()
 
     @staticmethod
-    def _publish_snapshot(reader: SQLiteProjectionReader, *, path: Path, fingerprint: str) -> None:
+    def _publish_snapshot(reader: SQLiteProjectionReader, *, path: Path, fingerprint: str, deadline_at=None) -> None:
         fd, temporary_name = private_temporary_file(prefix='.' + path.name + '.', directory=path.parent)
         temporary = Path(temporary_name)
         try:
             os.close(fd)
-            target = sqlite3.connect(temporary)
+            target = SnapshotProjectionReader._connection(temporary, deadline_at)
             try:
                 target.execute('CREATE TABLE projections(updated_at TEXT,storage_key TEXT PRIMARY KEY,payload TEXT)')
                 target.execute('CREATE INDEX projection_cursor ON projections(updated_at,storage_key)')
                 target.execute('CREATE TABLE contract(fingerprint TEXT,revision TEXT)')
                 # Ensure auxiliary indexes before opening a stable source snapshot.
-                with reader.store.locked() as _sqlite:
+                with reader.locked() as _sqlite:
                     if _sqlite.in_transaction:
                         raise RuntimeError('projection_snapshot_requires_own_transaction')
                     reader._ensure_contract_locked()
@@ -103,6 +122,7 @@ class SnapshotProjectionReader:
                         revision = reader.snapshot_token()
                         cursor = ProjectionCursor()
                         while True:
+                            remaining_seconds(deadline_at)
                             rows = reader.page(cursor, limit=256)
                             if not rows:
                                 break
@@ -110,9 +130,13 @@ class SnapshotProjectionReader:
                                 [(r['updated_at'],r['storage_key'],json.dumps(r, ensure_ascii=False)) for r in rows])
                             cursor = ProjectionCursor(rows[-1]['updated_at'], rows[-1]['storage_key'])
                         target.execute('INSERT INTO contract VALUES(?,?)', (fingerprint,revision))
+                        remaining_seconds(deadline_at)
                         target.commit()
+                        remaining_seconds(deadline_at)
                     finally:
-                        source.execute('RELEASE SAVEPOINT vector_projection_snapshot')
+                        # This function started the read transaction. A deadline
+                        # wrapper must not prevent its owned cleanup.
+                        getattr(source.conn, 'raw', source.conn).rollback()
             finally:
                 target.close()
             with open_regular_binary(temporary, create=True) as handle:
@@ -122,25 +146,31 @@ class SnapshotProjectionReader:
                     pass
             elif path.is_symlink():
                 raise ValueError('snapshot_symlink_forbidden')
+            remaining_seconds(deadline_at)
             os.replace(temporary, path)
             _fsync_directory(path.parent)
         finally:
             temporary.unlink(missing_ok=True)
 
     def snapshot_token(self):
+        remaining_seconds(self.deadline_at)
         return self.revision
 
     def page(self, cursor: ProjectionCursor, *, limit: int):
-        return [json.loads(row[0]) for row in self.conn.execute(
+        remaining_seconds(self.deadline_at)
+        rows = [json.loads(row[0]) for row in self.conn.execute(
             'SELECT payload FROM projections WHERE (updated_at,storage_key)>(?,?) '
             'ORDER BY updated_at,storage_key LIMIT ?', (cursor.updated_at,cursor.storage_key,max(1,min(256,limit))))]
+        remaining_seconds(self.deadline_at)
+        return rows
 
     def close(self):
         self.conn.close()
 
     def discard(self):
         """Remove only the completed snapshot this reader actually consumed."""
-        with interprocess_lock(self.path.with_name(self.path.name + '.lock'), timeout=30):
+        with interprocess_lock(self.path.with_name(self.path.name + '.lock'),
+                               timeout=remaining_seconds(self.deadline_at, 30)):
             try:
                 with open_regular_binary(self.path) as handle:
                     info = os.fstat(handle.fileno())
@@ -156,7 +186,7 @@ def delta_snapshot(reader: SQLiteProjectionReader, *, since: str, limit: int):
     if reader._memory_authority is None:
         raise ValueError('delta_requires_memory_projection')
     limit = max(2,min(254,int(limit)))  # a key transition can add two keys per revision
-    with reader.store.locked() as _sqlite:
+    with reader.locked() as _sqlite:
         if _sqlite.in_transaction:
             raise RuntimeError('projection_snapshot_requires_own_transaction')
         reader._ensure_contract_locked()
@@ -181,16 +211,38 @@ def delta_snapshot(reader: SQLiteProjectionReader, *, since: str, limit: int):
             return {'revision':str(revision), 'current_revision':str(current),
                     'keys':keys, 'rows':rows, 'head':head}
         finally:
-            conn.execute('RELEASE SAVEPOINT memory_delta_snapshot')
+            getattr(conn, 'raw', conn).rollback()
 
 
-def maintain_memory_projection(*, store, repository, config, batch_size=16, max_pages=16):
+def maintain_memory_projection(*, store, repository, config, batch_size=16, max_pages=16, deadline_at=None):
+    deadline_at = validate_deadline(deadline_at)
+    progress = dict(processed=0, embedded=0, pages=0, maintenance_mode='incremental')
+    try:
+        remaining_seconds(deadline_at)
+        result = _maintain_memory_projection(store=store, repository=repository, config=config,
+            batch_size=batch_size, max_pages=max_pages, deadline_at=deadline_at, progress=progress)
+        remaining_seconds(deadline_at)
+        return result
+    except ProjectionMaintenanceDeadlineExceeded:
+        return dict(ok=True, complete=False, caught_up=False, deadline_exhausted=True,
+                    **progress)
+    except Exception as exc:
+        if sqlite_deadline_exceeded(exc, deadline_at):
+            return dict(ok=True, complete=False, caught_up=False, deadline_exhausted=True, **progress)
+        raise
+
+
+def _maintain_memory_projection(*, store, repository, config, batch_size, max_pages, deadline_at, progress):
     # Maintenance shares the embedding service with foreground queries. Keep
     # one request small instead of occupying its queue with long fragment batches.
     provider = config.embedding_provider
     if provider is not None and hasattr(provider, 'max_batch'):
         provider.max_batch = min(provider.max_batch, 1)
-    reader = SQLiteProjectionReader(store, max_text_chars=config.projection_text_chars, projection_memory_only=True)
+    if deadline_at and not isinstance(repository, PostgresCandidateRepository):
+        raise ValueError('projection_deadline_repository_required')
+    repository = repository.with_deadline(deadline_at) if deadline_at else repository
+    reader = SQLiteProjectionReader(store, max_text_chars=config.projection_text_chars, projection_memory_only=True,
+                                    **({'deadline_at': deadline_at} if deadline_at else {}))
     fingerprint = embedding_provider_fingerprint(config.embedding_provider, config)
     projection_fp = projection_fingerprint(config)
     # Different shadow generations must never share/delete a resumable snapshot.
@@ -199,8 +251,8 @@ def maintain_memory_projection(*, store, repository, config, batch_size=16, max_
         config.vector_dimension, sha256(config.dsn.encode()).hexdigest(),
         config.schema, config.table]).encode()).hexdigest()
     path = store.root / 'state' / 'vector-projections' / (snapshot_key + '.sqlite')
-    state = repository.read_index_state()
-    with store.locked() as sqlite:
+    state = pure_call(repository.read_index_state, deadline_at=deadline_at)
+    with reader.locked() as sqlite:
         floor = sqlite.execute(
             'SELECT floor_revision FROM memory_vector_journal_contract WHERE singleton=1').fetchone()[0]
     head = int(reader.snapshot_token())
@@ -212,10 +264,13 @@ def maintain_memory_projection(*, store, repository, config, batch_size=16, max_
         and state.embedding_fingerprint == fingerprint and state.projection_fingerprint == projection_fp
         and state.projection_digest_schema == PROJECTION_DIGEST_SCHEMA)
     if path.exists() or not compatible:
-        snapshot = SnapshotProjectionReader(reader, path=path, fingerprint=snapshot_key)
+        progress['maintenance_mode'] = 'durable_snapshot'
+        snapshot = SnapshotProjectionReader(reader, path=path, fingerprint=snapshot_key,
+                                             **({'deadline_at': deadline_at} if deadline_at else {}))
         try:
             result = PostgresVectorIndexSynchronizer(reader=snapshot, repository=repository,
-                embedding_provider=config.embedding_provider, config=config).sync(
+                embedding_provider=config.embedding_provider, config=config,
+                **({'deadline_at': deadline_at} if deadline_at else {})).sync(
                     batch_size=min(batch_size, int(getattr(provider, 'max_batch', batch_size))),
                     max_pages=max_pages)
         finally:
@@ -228,24 +283,27 @@ def maintain_memory_projection(*, store, repository, config, batch_size=16, max_
     processed = embedded = pages = 0
     attempt_limit = max(1,min(10000,max_pages))
     for attempt in range(attempt_limit):
-        snapshot = delta_snapshot(reader, since=state.authority_revision, limit=batch_size)
+        remaining_seconds(deadline_at)
+        # A journal revision can move two keys. Keep bounded checkpoints small
+        # enough to publish progress before the shared embedding budget expires.
+        delta_limit = min(batch_size, max(2, int(getattr(provider, 'max_batch', 1)))) if deadline_at else batch_size
+        snapshot = delta_snapshot(reader, since=state.authority_revision, limit=delta_limit)
         if snapshot['revision'] == state.authority_revision:
             return {'ok':True, 'complete':True, 'caught_up':True, 'processed':processed,
                     'embedded':embedded, 'pages':pages, 'maintenance_mode':'incremental',
                     'watermark':state.watermark, 'authority_revision':state.authority_revision}
         helper = PostgresVectorIndexSynchronizer(reader=reader, repository=repository,
-            embedding_provider=config.embedding_provider, config=config)
+            embedding_provider=config.embedding_provider, config=config,
+            **({'deadline_at': deadline_at} if deadline_at else {}))
         rows = snapshot['rows']
-        cached = repository.reusable_embeddings(
+        cached = pure_call(repository.reusable_embeddings,
             projection_digests={r['storage_key']:helper._candidate_projection(r,vector=(),run_id=state.watermark)['projection_digest'] for r in rows},
-            embedding_fingerprint=fingerprint,projection_fingerprint=projection_fp)
+            embedding_fingerprint=fingerprint,projection_fingerprint=projection_fp, deadline_at=deadline_at)
         missing = [r for r in rows if r['storage_key'] not in cached]
         vectors = []
         provider_batch = max(1,min(batch_size,int(getattr(config.embedding_provider,'max_batch',batch_size))))
         for offset in range(0,len(missing),provider_batch):
-            vectors.extend(config.embedding_provider.embed(
-                [helper._embedding_text(r) for r in missing[offset:offset+provider_batch]],
-                timeout_seconds=helper._embedding_timeout_seconds()))
+            vectors.extend(helper.embed([helper._embedding_text(r) for r in missing[offset:offset+provider_batch]]))
         if len(vectors) != len(missing) or any(len(v) != config.vector_dimension
                 or not all(isfinite(float(x)) for x in v) for v in vectors):
             raise ValueError('embedding_dimension_mismatch')
@@ -259,13 +317,14 @@ def maintain_memory_projection(*, store, repository, config, batch_size=16, max_
         if unreachable and not hasattr(repository, "apply_memory_delta"):
             raise RuntimeError("journal_fold_unreachable_without_delta")
         try:
+            remaining_seconds(deadline_at)
             repository.apply_memory_delta(expected_state=state, projections=projections,
                 changed_keys=snapshot['keys'], authority_revision=snapshot['revision'], authoritative_head=snapshot['head'])
         except _PostgresDeltaConflict:
             # Another native maintainer may have committed while we embedded.
             # Its progress is not our commit, and an arbitrary database error
             # (even with the same text) is never this typed recovery signal.
-            current = repository.read_index_state()
+            current = pure_call(repository.read_index_state, deadline_at=deadline_at)
             authority = reader.snapshot_token()
             if (type(current) is not IndexState or current.ready is not True
                     or any(getattr(current, key) != getattr(state, key) for key in (
@@ -284,7 +343,8 @@ def maintain_memory_projection(*, store, repository, config, batch_size=16, max_
         pages += 1
         processed += len(snapshot['keys'])
         embedded += len(missing)
-        state = repository.read_index_state()
+        progress.update(processed=processed, embedded=embedded, pages=pages)
+        state = pure_call(repository.read_index_state, deadline_at=deadline_at)
     caught_up = reader.snapshot_token() == state.authority_revision
     return {'ok':True,'complete':caught_up,'caught_up':caught_up,'processed':processed,
             'embedded':embedded,'pages':pages,'maintenance_mode':'incremental',

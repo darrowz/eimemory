@@ -15,6 +15,7 @@ from math import isfinite
 from pathlib import Path
 from time import monotonic, sleep
 from typing import Any
+from eimemory.retrieval.projection_deadline import projection_operation
 
 SCHEMA = 'projection_acceptance_restore.v1'
 # Separate from the readiness accept budget. Storage markers usually clear
@@ -93,6 +94,7 @@ def _maintenance_public(maintenance: dict[str, Any]) -> dict[str, Any]:
         for key in (
             'ok', 'skipped', 'complete', 'caught_up', 'processed', 'embedded',
             'pages', 'maintenance_mode', 'watermark', 'authority_revision', 'error', 'reason',
+            'deadline_exhausted',
         )
         if key in maintenance
     }
@@ -111,6 +113,7 @@ def _maintenance_caught_up(maintenance: dict[str, Any]) -> bool:
     return False
 
 
+@projection_operation()
 def ensure_candidate_projection_restored(
     runtime: Any, *, timeout_seconds: float = DEFAULT_WAIT_SECONDS,
 ) -> dict[str, Any]:
@@ -169,7 +172,7 @@ def ensure_candidate_projection_restored(
     while monotonic() < deadline:
         try:
             from eimemory.retrieval.vector_sync_worker import maintain_index
-            maintenance = maintain_index(runtime)
+            maintenance = maintain_index(runtime, deadline_at=deadline)
         except Exception:
             return finish('projection_maintenance_unavailable')
         if not isinstance(maintenance, dict):
@@ -179,6 +182,8 @@ def ensure_candidate_projection_restored(
         result['maintenance'] = last
         if maintenance.get('ok') is not True:
             return finish(str(maintenance.get('error') or 'projection_maintenance_failed'))
+        if monotonic() >= deadline or maintenance.get('deadline_exhausted') is True:
+            return finish('projection_restore_deadline_exhausted')
         if _maintenance_caught_up(maintenance):
             return finish(ok=True)
         remaining = deadline - monotonic()
@@ -186,6 +191,4 @@ def ensure_candidate_projection_restored(
             break
         sleep(min(POLL_SECONDS, remaining))
 
-    if last and last.get('ok') is True:
-        return finish('projection_restore_incomplete')
     return finish('projection_restore_deadline_exhausted')

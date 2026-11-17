@@ -42,6 +42,16 @@ def _commit(repo: Path, path: str, content: str, message: str) -> str:
     ("path", "expected_domains", "expected_unknown", "expected_reason"),
     [
         *[
+            (path, ["channel.delivery", "code.evolution", "deployment.runtime",
+                    "memory.governance", "memory.recall"], [], "classified_production_change")
+            for path in (
+                "eimemory/adapters/hermes/answer_observation.py",
+                "eimemory/adapters/hermes/session_observation.py",
+            )
+        ],
+        ("eimemory/retrieval/projection_deadline.py", ["deployment.runtime", "memory.recall"],
+         [], "classified_production_change"),
+        *[
             (path, ["code.evolution", "deployment.runtime", "memory.governance"],
              [], "classified_production_change")
             for path in (

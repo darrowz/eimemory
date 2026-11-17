@@ -2,9 +2,9 @@ from __future__ import annotations
 # RET-20: projection summary computed once per batch
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 from math import isfinite
 from typing import Any, Mapping, Protocol
-from uuid import uuid4
 
 from eimemory.storage.runtime_store import RuntimeStore
 
@@ -15,6 +15,12 @@ from .postgres_vector import (
     candidate_projection_digest,
     embedding_provider_fingerprint,
     projection_fingerprint,
+    _CandidateFailure, _FailureOrigin,
+    PostgresCandidateRepository,
+)
+from .projection_deadline import (
+    ProjectionMaintenanceDeadlineExceeded, ProjectionCommitOutcomeUnknown,
+    pure_call, remaining_seconds, sqlite_scope, validate_deadline, sqlite_deadline_exceeded, maintenance_owner,
 )
 
 
@@ -81,25 +87,31 @@ class SQLiteProjectionReader:
     """Bounded metadata/text projection reader over the SQLite authority."""
 
     def __init__(self, store: RuntimeStore, *, max_text_chars: int = 16_000,
-                 projection_memory_only: bool = False) -> None:
+                 projection_memory_only: bool = False, deadline_at: float | None = None) -> None:
         self.store = store
+        self.deadline_at = validate_deadline(deadline_at)
         self.projection_memory_only = projection_memory_only
         self._memory_authority = None
         if projection_memory_only:
             from .memory_projection_authority import MemoryProjectionAuthority
             # Its constructor also bootstraps derived tables and triggers. Do
             # not retain an authority whose schema a caller could roll back.
-            with store.locked() as sqlite:
+            with self.locked() as sqlite:
                 if sqlite.in_transaction and getattr(store, "bootstrap_schema", True):
                     raise RuntimeError("projection_reader_bootstrap_requires_own_transaction")
                 self._memory_authority = MemoryProjectionAuthority(store)
         self.max_text_chars = max(1, min(64_000, int(max_text_chars)))
         self._index_ready = False
 
+    @contextmanager
+    def locked(self):
+        with sqlite_scope(self.store, self.deadline_at), self.store.locked() as sqlite:
+            yield sqlite
+
     def page(self, cursor: ProjectionCursor, *, limit: int,
              storage_keys: list[str] | None = None) -> list[dict[str, Any]]:
         bounded_limit = max(1, min(1_000, int(limit)))
-        with self.store.locked() as _sqlite:  # preserve RuntimeStore's single-writer/read contract
+        with self.locked() as _sqlite:
             self._ensure_contract_locked()
             if cursor.updated_at or cursor.storage_key:
                 keyset_clause = "WHERE (r.updated_at, r.storage_key) > (?, ?)"
@@ -154,6 +166,7 @@ class SQLiteProjectionReader:
             ).fetchall()
         projected: list[dict[str, Any]] = []
         for row in rows:
+            remaining_seconds(self.deadline_at)
             aliases = [item for item in str(row["alias_text"] or "").split("\x1f") if item]
             keyword_text = "\n".join(
                 part
@@ -185,9 +198,9 @@ class SQLiteProjectionReader:
         return projected
 
     def snapshot_token(self) -> str:
-        if self._memory_authority is not None:
-            return self._memory_authority.revision()
-        with self.store.locked() as _sqlite:
+        with self.locked() as _sqlite:
+            if self._memory_authority is not None:
+                return self._memory_authority.revision()
             self._ensure_contract_locked()
             row = self.store.sqlite.execute(
                 "SELECT revision FROM vector_sync_revision WHERE singleton = 1"
@@ -294,16 +307,20 @@ class PostgresVectorIndexSynchronizer:
         embedding_provider: EmbeddingProvider,
         config: PostgresVectorConfig,
         max_text_chars: int | None = None,
+        deadline_at: float | None = None,
     ) -> None:
         self.reader = reader
-        self.repository = repository
+        if deadline_at and not isinstance(repository, PostgresCandidateRepository):
+            raise ValueError('projection_deadline_repository_required')
+        self.repository = repository.with_deadline(deadline_at) if deadline_at else repository
         self.embedding_provider = embedding_provider
         self.config = config
+        self.deadline_at = validate_deadline(deadline_at)
         configured_chars = config.projection_text_chars if max_text_chars is None else int(max_text_chars)
         if configured_chars != config.projection_text_chars:
             raise ValueError("projection_text_chars must match PostgresVectorConfig")
         self.max_text_chars = config.projection_text_chars
-        self._lease_owner = f"worker-{uuid4().hex}"
+        self._lease_owner = maintenance_owner()
 
     def sync(self, *, batch_size: int = 32, max_pages: int = 1) -> dict[str, Any]:
         bounded_batch = max(1, min(256, int(batch_size)))
@@ -322,16 +339,17 @@ class PostgresVectorIndexSynchronizer:
                 authority_revision=authority_revision,
             )
         except Exception as exc:
-            return self._failure(_sync_error_code(exc, "postgres_sync_begin"))
+            return self._failure(_sync_error_code(exc, "postgres_sync_begin", deadline_at=self.deadline_at))
         cursor = progress.cursor
         processed = 0
         pages = 0
         for _ in range(bounded_pages):
             try:
+                remaining_seconds(self.deadline_at)
                 rows = self.reader.page(cursor, limit=bounded_batch)
             except Exception as exc:
                 self._release_lease(progress)
-                return self._failure(_sync_error_code(exc, "sqlite_projection_read"))
+                return self._failure(_sync_error_code(exc, "sqlite_projection_read", deadline_at=self.deadline_at))
             if not rows:
                 if not self._authority_unchanged(authority_revision):
                     self._release_lease(progress)
@@ -348,7 +366,7 @@ class PostgresVectorIndexSynchronizer:
                     )
                 except Exception as exc:
                     self._release_lease(progress)
-                    return self._failure(_sync_error_code(exc, "postgres_sync_apply"))
+                    return self._failure(_sync_error_code(exc, "postgres_sync_apply", deadline_at=self.deadline_at))
                 return self._report(
                     progress=progress,
                     cursor=cursor,
@@ -370,17 +388,16 @@ class PostgresVectorIndexSynchronizer:
                 reuse = getattr(self.repository, "reusable_embeddings", None)
                 cached = {}
                 if callable(reuse):
-                    cached = reuse(
+                    cached = pure_call(reuse,
                         projection_digests={
                             str(row["storage_key"]): shell["projection_digest"]
                             for row, shell in zip(rows, projection_shells, strict=True)
                         },
                         embedding_fingerprint=fingerprint, projection_fingerprint=projection_fp,
+                        deadline_at=self.deadline_at,
                     )
                 missing = [i for i, row in enumerate(rows) if str(row['storage_key']) not in cached]
-                fresh = self.embedding_provider.embed(
-                    [texts[i] for i in missing], timeout_seconds=self._embedding_timeout_seconds(),
-                ) if missing else []
+                fresh = self.embed([texts[i] for i in missing]) if missing else []
                 if len(fresh) != len(missing):
                     raise RuntimeError("embedding_dimension_mismatch")
                 fresh_by_position = dict(zip(missing, fresh, strict=True))
@@ -400,7 +417,7 @@ class PostgresVectorIndexSynchronizer:
                 )
             except Exception as exc:
                 self._release_lease(progress)
-                return self._failure(_sync_error_code(exc, "embedding"))
+                return self._failure(_sync_error_code(exc, "embedding", deadline_at=self.deadline_at))
             projections = []
             for shell, vector in zip(projection_shells, vectors, strict=True):
                 filled = dict(shell)
@@ -411,7 +428,7 @@ class PostgresVectorIndexSynchronizer:
                     run_id=progress.run_id, lease_owner=self._lease_owner))
             except Exception as exc:
                 self._release_lease(progress)
-                return self._failure(_sync_error_code(exc, "embedding"))
+                return self._failure(_sync_error_code(exc, "embedding", deadline_at=self.deadline_at))
             next_cursor = ProjectionCursor(
                 updated_at=str(rows[-1].get("updated_at") or ""),
                 storage_key=str(rows[-1].get("storage_key") or ""),
@@ -439,7 +456,7 @@ class PostgresVectorIndexSynchronizer:
                 )
             except Exception as exc:
                 self._release_lease(progress)
-                return self._failure(_sync_error_code(exc, "postgres_sync_apply"))
+                return self._failure(_sync_error_code(exc, "postgres_sync_apply", deadline_at=self.deadline_at))
             cursor = next_cursor
             pages += 1
             processed += len(rows)
@@ -459,7 +476,7 @@ class PostgresVectorIndexSynchronizer:
                     )
                 except Exception as exc:
                     self._release_lease(progress)
-                    return self._failure(_sync_error_code(exc, "postgres_sync_finalize"))
+                    return self._failure(_sync_error_code(exc, "postgres_sync_finalize", deadline_at=self.deadline_at))
                 return self._report(
                     progress=progress,
                     cursor=cursor,
@@ -487,7 +504,10 @@ class PostgresVectorIndexSynchronizer:
 
     def _authority_unchanged(self, expected: str) -> bool:
         try:
+            remaining_seconds(self.deadline_at)
             return self.reader.snapshot_token() == expected
+        except ProjectionMaintenanceDeadlineExceeded:
+            raise
         except Exception:
             return False
 
@@ -495,9 +515,22 @@ class PostgresVectorIndexSynchronizer:
         lease_bound = max(0.05, self.config.sync_lease_seconds * 0.8)
         provider_timeout = getattr(self.embedding_provider, "timeout_seconds", lease_bound)
         try:
-            return max(0.05, min(lease_bound, float(provider_timeout)))
+            maximum = max(0.05, min(lease_bound, float(provider_timeout)))
         except (TypeError, ValueError, OverflowError):
-            return lease_bound
+            maximum = lease_bound
+        return remaining_seconds(self.deadline_at, maximum)
+
+    def embed(self, texts):
+        timeout = self._embedding_timeout_seconds()
+        if self.deadline_at and timeout < 0.05:
+            raise ProjectionMaintenanceDeadlineExceeded()
+        try:
+            return pure_call(self.embedding_provider.embed, texts, timeout_seconds=timeout,
+                             deadline_at=self.deadline_at)
+        except _CandidateFailure as exc:
+            if self.deadline_at and exc.origin is _FailureOrigin.BUDGET:
+                raise ProjectionMaintenanceDeadlineExceeded() from None
+            raise
 
     def _embedding_text(self, row: Mapping[str, Any]) -> str:
         if self.config.evidence_fragments:
@@ -517,10 +550,10 @@ class PostgresVectorIndexSynchronizer:
         if not self.config.evidence_fragments or not projections:
             return
         from .evidence_fragments import evidence_fragments
-        cached = self.repository.reusable_fragment_embeddings(
+        cached = pure_call(self.repository.reusable_fragment_embeddings,
             projections=projections,
             embedding_fingerprint=embedding_provider_fingerprint(self.embedding_provider, self.config),
-            projection_fingerprint=projection_fingerprint(self.config))
+            projection_fingerprint=projection_fingerprint(self.config), deadline_at=self.deadline_at)
         missing = []
         for projection in projections:
             fragments = evidence_fragments(projection['keyword_text'])
@@ -536,8 +569,7 @@ class PostgresVectorIndexSynchronizer:
             if renew is not None:
                 renew()
             group = missing[offset:offset + batch]
-            vectors = self.embedding_provider.embed([f['text'] for f in group],
-                timeout_seconds=self._embedding_timeout_seconds())
+            vectors = self.embed([f['text'] for f in group])
             if len(vectors) != len(group) or any(len(v) != self.config.vector_dimension
                     or not all(isfinite(float(x)) for x in v) for v in vectors):
                 raise ValueError('embedding_dimension_mismatch')
@@ -605,7 +637,16 @@ class PostgresVectorIndexSynchronizer:
         }
 
 
-def _sync_error_code(exc: Exception, default: str) -> str:
+def _sync_error_code(exc: Exception, default: str, *, deadline_at=None) -> str:
+    from .projection_deadline import ProjectionDeadlineTransportUnsupported
+    if isinstance(exc, ProjectionDeadlineTransportUnsupported):
+        return 'projection_maintenance_deadline_transport_unsupported'
+    if sqlite_deadline_exceeded(exc, deadline_at):
+        return 'projection_maintenance_deadline_exhausted'
+    if isinstance(exc, ProjectionMaintenanceDeadlineExceeded):
+        return 'projection_maintenance_deadline_exhausted'
+    if isinstance(exc, ProjectionCommitOutcomeUnknown):
+        return 'projection_commit_outcome_unknown'
     text = str(exc)
     allowed = {
         "embedding_batch_invalid",

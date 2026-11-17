@@ -147,6 +147,8 @@ jobs:
           tests/test_business_closure_bc.py
           tests/test_business_closure_audit_regressions.py
           tests/test_real_effect_signals.py
+          tests/test_hermes_answer_observation.py
+          tests/test_hermes_session_observation.py
           tests/test_real_effect_report.py
           tests/test_real_effect_hypotheses.py
           tests/test_real_effect_cycle.py
@@ -266,6 +268,7 @@ jobs:
           tests/test_memory_projection_authority.py
           tests/test_incremental_sync.py
           tests/test_incremental_projection_conflict_recovery.py
+          tests/test_projection_maintenance_deadline.py
           tests/test_projection_conflict_error_contract.py
           tests/test_projection_reader_transaction_ownership.py
           tests/test_controlled_projection_phase_readiness.py

@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from eimemory.adapters.hermes.host_context import hermes_producer_token
 from eimemory.adapters.hermes.outbox import HermesOutbox, digest as outbox_digest
+from eimemory.adapters.hermes.session_observation import observe_recall
 from eimemory.adapters.hermes.profile_context import (
     profile_value, resolve_host_binding, rpc_configuration, spawn_owned_thread, verify_owner,
 )
@@ -733,7 +734,8 @@ class HermesMemoryProviderCore:
                 if not self._terminal_call_succeeded(terminal):
                     self._retain_terminal_retries([terminal_params])
         completed_turn = host_turn or str((pending or {}).get("host_turn_id") or "")
-        self._effects.completed(session, completed_turn, pending, task_success)
+        self._effects.completed(session, completed_turn, pending, task_success,
+                                assistant_message=assistant_message, observed_host_turn_id=host_turn)
         completed_turn = completed_turn or str((pending or {}).get("decision_turn_id") or "")
         if not completed_turn and (query or assistant):
             completed_turn = "hermes-turn-" + sha256(
@@ -1074,7 +1076,10 @@ class HermesMemoryProviderCore:
                 result = response.get("result")
                 if (not isinstance(result, dict) or result.get("channel") != "hermes"
                         or result.get("scope") != resolve_channel_scope("hermes", self._scope)):
-                    return {"ok": False, "error": "hermes_response_scope_mismatch"}
+                    rejected = {"ok": False, "error": "hermes_response_scope_mismatch"}
+                    observe_recall(self, rejected, operation='explicit_recall')
+                    return rejected
+            observe_recall(self, response, operation='explicit_recall')
             return response
         if tool_name == "eimemory_search_l0":
             with self._lock:
@@ -1405,8 +1410,10 @@ class HermesMemoryProviderCore:
             },
         )
         if result.get("ok") is not True or not isinstance(result.get("result"), dict):
+            observe_recall(self, result, operation='prefetch', session_id=session)
             return ""
         payload = result["result"]
+        observed_response = result
         from eimemory.adapters.runtime.channel import resolve_channel_scope
         from eimemory.recall.raw_citation import consume_sidecar
         expected_authority = None
@@ -1481,6 +1488,7 @@ class HermesMemoryProviderCore:
                     fallback_payload.get("context"),
                     MAX_PREFETCH_CONTEXT_CHARS,
                 )
+                observed_response = fallback
         # Empty retrievals still have a server-owned decision to close. Keeping
         # its identity does not claim any citation was injected or task passed.
         if decision_id:
@@ -1502,6 +1510,8 @@ class HermesMemoryProviderCore:
                     # while the request ran; retain the existing cleanup path.
                     abandoned.append(resolved)
             self._close_abandoned_pending(abandoned)
+        observe_recall(self, observed_response, operation='prefetch', session_id=session,
+                       delivered_context=context)
         return context
 
     def _prefetch_worker(self, key: tuple[str, ...], query: str, session_id: str) -> None:
