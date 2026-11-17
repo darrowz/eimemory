@@ -167,6 +167,7 @@ jobs:
           tests/test_sqlite_sparse_fts.py
           tests/test_proactive_proof_delivery.py
           tests/test_governance_env.py
+          tests/test_governance_reranker_environment.py
           tests/test_payload_segments.py
           tests/test_production_recall_bootstrap_deploy.py
           tests/test_safe_dataset_loader.py

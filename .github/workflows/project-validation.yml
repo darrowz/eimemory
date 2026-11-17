@@ -333,6 +333,7 @@ jobs:
           tests/test_proactive_host_window.py
           tests/test_proactive_literal_fallback.py
           tests/test_raw_answer_support.py
+          tests/test_final_registered_source_admission.py
           tests/test_raw_answer_support_consumer.py
           tests/test_raw_applicability.py
           tests/test_raw_applicability_delivery.py

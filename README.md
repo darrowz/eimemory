@@ -31,7 +31,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.15.82" src="https://img.shields.io/badge/version-1.15.82-blue">
+  <img alt="Package version 1.15.83" src="https://img.shields.io/badge/version-1.15.83-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -285,9 +285,9 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.15.82, source package)
+## Current package status (1.15.83, source package)
 
-The [1.15.82 release notes](docs/releases/v1.15.82.md) separate ordinary related RAW search from optional answer-support assessment, refine citation applicability and delivery binding, and require affirmative tool evidence before OpenClaw signs a successful verification receipt. Answer-support assessment remains disabled by default. Hermes provider reuse keeps exact ownership checks; the separately packaged, pinned Hermes host lifecycle patch is required for host cache handoff and is not applied by plugin installation alone. Synthetic RAW recall retains Top-1 109/120 and Top-5 119/120; these are document-ranking results, not final answer accuracy or production acceptance.
+The [1.15.83 release notes](docs/releases/v1.15.83.md) describe final registered-source admission and complete reranker configuration for release gates. Source revocation is rechecked before recall delivery, including persisted brief parents. Release-gate profile loading preserves the native reranker's identity and parameters. Optional answer-support assessment remains disabled by default, and Hermes provider reuse retains exact ownership checks. The separately packaged, pinned Hermes host lifecycle patch remains required for host cache handoff. Synthetic RAW Top-1 109/120 and Top-5 119/120 are the retained ranking baseline; these figures do not establish final-answer accuracy or production business acceptance.
 
 The unchanged 200-question public RAW fixture retains answerable Top-1 109/120 and Top-5 119/120. Default RAW correct-empty retrieval stays 0/80; explicit fact-citation gating reaches 5/80 with no added answerable empty retrieval or admitted reorder. These are retrieval results on a repeatedly used regression set, not final model-answer accuracy. The [1.15.80 release notes](docs/releases/v1.15.80.md) describe the retained ranking baseline.
 

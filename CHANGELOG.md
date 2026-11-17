@@ -1,3 +1,10 @@
+## [1.15.83]
+
+- Recheck registered-source trust and binding at final recall admission, including persisted brief parents, so revocation after candidate selection withholds stale body and citations.
+- Preserve the native reranker URL, revision, text bound, score threshold and calibration when loading release-gate profiles. Enabled reranking retains identity validation and configured profile precedence.
+- Add the source-admission and release-profile regression cases to the explicit CI selections. Versioned release notes distinguish synthetic recall checks from production business acceptance.
+- See `docs/releases/v1.15.83.md` for validation and remaining boundaries.
+
 ## [1.15.82]
 
 - Separate related RAW evidence from optional answer support; preserve related search while binding support decisions to the request, current source content, provenance and delivered passages.

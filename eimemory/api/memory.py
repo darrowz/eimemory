@@ -904,7 +904,8 @@ class MemoryAPI:
 
         delivered = [*bundle.items, *bundle.rules, *bundle.reflections]
         reasons = Counter(reason for reason in current_evidence_reasons(
-            delivered, store=self.store, deadline_at=deadline_at) if reason)
+            delivered, store=self.store, deadline_at=deadline_at,
+            registry=self.source_registry) if reason)
         if not reasons:
             return bundle
         paper_count = sum(count for reason, count in reasons.items() if reason.startswith("paper_source_"))

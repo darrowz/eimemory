@@ -42,7 +42,8 @@ def inactive_evidence_reason(payload: Mapping[str, Any]) -> str:
     return ""
 
 
-def current_evidence_reasons(records: list[Any], *, store=None, deadline_at: float = 0.0) -> list[str]:
+def current_evidence_reasons(records: list[Any], *, store=None, deadline_at: float = 0.0,
+                             registry=None) -> list[str]:
     payloads = [_payload(record) for record in records]
     if not records or store is None:
         # Pure builders still accept caller-owned, unpersisted records. Only a
@@ -50,7 +51,7 @@ def current_evidence_reasons(records: list[Any], *, store=None, deadline_at: flo
         return [inactive_evidence_reason(payload) for payload in payloads]
 
     def read(reader):
-        gate = _CurrentEvidence(reader, deadline_at=deadline_at)
+        gate = _CurrentEvidence(reader, deadline_at=deadline_at, registry=registry)
         return [gate.check_input(payload) for payload in payloads]
 
     try:
@@ -66,9 +67,10 @@ def current_evidence_reasons(records: list[Any], *, store=None, deadline_at: flo
 
 
 class _CurrentEvidence:
-    def __init__(self, reader, *, deadline_at):
+    def __init__(self, reader, *, deadline_at, registry=None):
         self.reader = reader
         self.deadline_at = deadline_at
+        self.registry = registry
         self.cache: dict[tuple, RecordEnvelope | None] = {}
         self.attempted: set[tuple] = set()
         self.failed: set[tuple] = set()
@@ -149,6 +151,17 @@ class _CurrentEvidence:
         payload = record.to_dict()
         if inactive_evidence_reason(payload):
             return "source_evidence_inactive"
+        if self.registry is not None:
+            from eimemory.knowledge.safety import evaluate_knowledge_safety
+            from eimemory.knowledge.source_trust import source_trust_decision_from_payload
+
+            # Recheck an existing server-issued source binding, including the
+            # native parents visited below. Ordinary/manual evidence without
+            # such a binding does not gain a new registry dependency here.
+            if source_trust_decision_from_payload(payload) is not None:
+                safety = evaluate_knowledge_safety(payload, task="recall", registry=self.registry)
+                if safety["external"] and not safety["recall_allowed"]:
+                    return "external_knowledge_untrusted"
         from eimemory.knowledge.evidence_gate import paper_source_evidence_reasons
 
         paper_reason = paper_source_evidence_reasons([record], store=self.paper_reader)[0]

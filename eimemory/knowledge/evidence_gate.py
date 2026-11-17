@@ -24,10 +24,11 @@ MAX_PAPER_SOURCE_LOOKUPS = 4096
 MAX_PAPER_SOURCE_REFS = MAX_PAPER_SOURCE_LOOKUPS
 
 
-def current_evidence_reasons(records: list[Any], *, store: Any = None, deadline_at: float = 0.0) -> list[str]:
+def current_evidence_reasons(records: list[Any], *, store: Any = None, deadline_at: float = 0.0,
+                             registry: Any = None) -> list[str]:
     from eimemory.knowledge.current_evidence import current_evidence_reasons as _current
 
-    return _current(records, store=store, deadline_at=deadline_at)
+    return _current(records, store=store, deadline_at=deadline_at, registry=registry)
 
 
 def paper_source_evidence_reasons(records: list[Any], *, store: Any = None, deadline_at: float = 0.0) -> list[str]:
