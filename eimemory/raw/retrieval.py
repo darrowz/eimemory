@@ -145,6 +145,13 @@ def rerank_raw_results(
     ranked: list[dict[str, Any]] = []
     for index, result in enumerate(results):
         record = _result_record(result)
+        if task_context.get("evidence_intent") == "fact_citation":
+            from .applicability import assess_applicability
+            # Keep exploratory ranking unchanged. Unknown applicability is
+            # still related material; only an explicit mismatch is excluded.
+            # The authority boundary rechecks hydrated records after ranking.
+            if assess_applicability(record, query=query_text, task_context=task_context).status == "not_applicable":
+                continue
         base_score = _result_base_score(result)
         record_text = _record_text(record)
         title = str(record.get("title") or "") if isinstance(record, dict) else str(getattr(record, "title", "") or "")

@@ -310,73 +310,119 @@ function rememberLoopTask(event, payload) {
 }
 
 function successfulToolReceipt(event) {
-  if (String(event?.error || '').trim()) {
+  if (toolReceiptControlFailure(normalizeObject(event))) {
     return false;
   }
   if (!Object.prototype.hasOwnProperty.call(normalizeObject(event), 'result') || event.result == null) {
     return false;
   }
   const result = event.result;
+  if (toolResultContainsFailure(result)) {
+    return false;
+  }
   if (typeof result === 'object' && !Array.isArray(result)) {
     const resultObject = normalizeObject(result);
     const details = normalizeObject(resultObject.details);
-    const hasResultCount = Object.prototype.hasOwnProperty.call(resultObject, 'resultCount');
-    const resultCount = Number(resultObject.resultCount);
-    if (
-      String(resultObject.error || '').trim()
-      || resultObject.ok === false
-      || resultObject.success === false
-      || resultObject.isError === true
-      || resultObject.is_error === true
-      || Number(resultObject.exitCode ?? resultObject.exit_code ?? 0) !== 0
-      || details.ok === false
-      || details.success === false
-      || Number(details.exitCode ?? details.exit_code ?? 0) !== 0
-      || (hasResultCount && (!Number.isFinite(resultCount) || resultCount <= 0))
-    ) {
-      return false;
+    if ([resultObject, details].some((item) => (
+      item.ok === true || item.success === true
+      || ['exitCode', 'exit_code'].some((key) => (
+        Object.prototype.hasOwnProperty.call(item, key) && zeroToolExitCode(item[key])
+      ))
+      || affirmativeToolStatus(item.status, event)
+    ))) {
+      return true;
     }
-    const status = String(resultObject.status || details.status || event?.status || '').trim().toLowerCase();
-    if (
-      (status && !POSITIVE_TOOL_STATUSES.has(status))
-      || toolResultContainsFailure(resultObject)
-    ) {
-      return false;
-    }
-    return (
-      resultObject.ok === true
-      || resultObject.success === true
-      || POSITIVE_TOOL_STATUSES.has(status)
-      || (Array.isArray(resultObject.content) && resultObject.content.length > 0)
-      || (hasResultCount && resultCount > 0)
-    );
   }
-  if (Array.isArray(result)) {
-    return result.length > 0 && !result.some((item) => toolResultContainsFailure(item));
+  // Content, a nonempty array, resultCount, and a bare boolean are not proof of
+  // successful execution. Retain only the existing, bounded pytest-summary
+  // contract for text-only hosts, tied to an actual pytest invocation.
+  return positivePytestSummary(event, result);
+}
+
+function zeroToolExitCode(value) {
+  return (typeof value === 'number' && Number.isInteger(value) && value === 0)
+    || (typeof value === 'string' && /^[+-]?0+$/.test(value.trim()));
+}
+
+function affirmativeToolStatus(value, event) {
+  const status = String(value || '').trim().toLowerCase();
+  if (['ok', 'passed', 'success', 'succeeded', 'verified'].includes(status)) {
+    return true;
   }
-  if (typeof result === 'boolean') {
-    return result;
-  }
-  const resultText = String(result || '').trim();
-  return (
-    Boolean(resultText)
-    && !toolTextContainsFailure(resultText)
+  const toolName = String(event?.toolName || event?.tool_name || event?.name || '').toLowerCase();
+  // Service/readiness observations are meaningful for those tools, but an
+  // active/ready command has not established successful completion.
+  return !COMMAND_TOOL_MARKERS.some((marker) => toolName.includes(marker))
+    && ['active', 'healthy', 'ready'].includes(status);
+}
+
+function toolReceiptControlFailure(item) {
+  const owns = (key) => Object.prototype.hasOwnProperty.call(item, key);
+  return Boolean(
+    String(item.error || '').trim()
+    || ['ok', 'success'].some((key) => owns(key) && item[key] !== true)
+    || ['executed', 'ran', 'performed'].some((key) => owns(key) && item[key] !== true)
+    || ['isError', 'is_error', 'cancelled', 'canceled', 'skipped', 'aborted', 'timedOut', 'timed_out']
+      .some((key) => owns(key) && item[key] !== false)
+    || ['exitCode', 'exit_code'].some((key) => owns(key) && !zeroToolExitCode(item[key]))
+    || (owns('status') && !POSITIVE_TOOL_STATUSES.has(String(item.status || '').trim().toLowerCase()))
+    || (owns('resultCount') && (
+      !Number.isFinite(Number(item.resultCount)) || Number(item.resultCount) <= 0
+    ))
   );
 }
 
+function positivePytestSummary(event, result) {
+  const toolName = String(event?.toolName || event?.tool_name || event?.name || '').toLowerCase();
+  const pytestCommand = /^(?:python(?:\d+(?:\.\d+)*)?(?:\.exe)?\s+-m\s+)?pytest(?:\s|$)/i;
+  const executesPytest = /(?:^|[._-])pytest$/.test(toolName)
+    || (COMMAND_TOOL_MARKERS.some((marker) => toolName.includes(marker))
+      && pytestCommand.test(toolCommandText(event)));
+  if (!executesPytest) {
+    return false;
+  }
+  let text = '';
+  if (typeof result === 'string') {
+    text = result;
+  } else {
+    const blocks = Array.isArray(result) ? result : normalizeObject(result).content;
+    if (!Array.isArray(blocks) || !blocks.length
+      || !blocks.every((block) => block?.type === 'text' && typeof block.text === 'string')) {
+      return false;
+    }
+    text = blocks.map((block) => block.text).join('\n');
+  }
+  // Match the complete output, not a quoted example or an embedded log line.
+  // No partial/zero-test summaries, extra unknown text, or skipped results.
+  return /^\s*(?:=+\s*)?[1-9]\d*\s+passed(?:,\s*0\s+(?:failed|errors?)){0,2}(?:\s+in\s+\d+(?:\.\d+)?s)?\s*(?:=+)?\s*$/i.test(toolVerdictText(text));
+}
+
+function toolVerdictText(value) {
+  // SGR affects presentation only. Do not strip other terminal control codes,
+  // and never change the raw result used by toolResultDigest/signing.
+  return String(value || '').replace(/\x1b\[[0-9;:]*m/g, '').trim();
+}
+
 function toolTextContainsFailure(value) {
-  const text = String(value || '').trim();
+  const text = toolVerdictText(value);
   if (
     /^(?:pending|queued|running|unknown|skipped|not[ _-]?(?:run|executed)|unavailable)\b/i.test(text)
-    || /\b(?:status|state)\s*[:=]\s*(?:pending|queued|running|unknown|skipped|not[ _-]?(?:run|executed)|unavailable)\b/i.test(text)
+    || /\b(?:status|state|outcome|result)\s*(?:[:=]|is\b)\s*(?:pending|queued|running|unknown|skipped|not[ _-]?(?:run|executed)|unavailable|failed|failure|error|timeout|cancelled|canceled|aborted)\b/i.test(text)
+    || /\b(?:not|never)\s+(?:run|executed|performed|started)\b/i.test(text)
+    || /\b(?:command|execution|verification|tests?|checks?)\s+(?:(?:is|was|were|are|has been|has|have)\s+)?(?:pending|queued|running|unknown|skipped|unavailable|cancelled|canceled|aborted|failed|timed out)\b/i.test(text)
   ) {
     return true;
   }
-  const withoutZeroFailures = text.replace(
-    /\b(?:0|zero)\s+(?:failed|failures|errors?)\b/gi,
-    '',
-  );
-  return /\b(?:error|failed|failure|timeout|timed out)\b/i.test(withoutZeroFailures);
+  for (const match of text.matchAll(/\b(?:(?:exit(?:ed)?|return)\s+(?:(?:with\s+)?(?:code|status))|exit_code|exitCode)\s*[:=]?\s*([+-]?\d+)\b/gi)) {
+    if (Number(match[1]) !== 0) {
+      return true;
+    }
+  }
+  // Diagnostic records and nonzero failure counts conflict with a success
+  // envelope. Ordinary source text, filenames, and passed error-handling tests
+  // do not: words such as "error" alone are not an execution verdict.
+  return /(?:^|[\r\n])\s*(?:\[(?:error|fatal|failed|failure|timeout)\]|(?:error|fatal|failure|timeout)\s*(?::|!|$)|failed(?:\s|:|$)|traceback\s*\()/i.test(text)
+    || /(?:^|[\r\n]|,\s*|=+\s*)[1-9]\d*\s+(?:failed|failures|errors?)\b/i.test(text);
 }
 
 function toolResultContainsFailure(value, depth = 0) {
@@ -384,7 +430,22 @@ function toolResultContainsFailure(value, depth = 0) {
     return depth > 8;
   }
   if (typeof value === 'string') {
-    return toolTextContainsFailure(value);
+    // Some hosts serialize the result envelope inside a text content block.
+    // Inspect complete JSON objects/arrays for contradictions with the same
+    // depth budget; their positive fields never establish outer success.
+    const text = toolVerdictText(value);
+    if (/^[\[{]/.test(text)) {
+      let structured;
+      try {
+        structured = JSON.parse(text);
+      } catch {
+        // Ordinary text retains the diagnostic-record checks below.
+      }
+      if (structured && typeof structured === 'object') {
+        return serializedToolResultContainsFailure(structured, depth + 1);
+      }
+    }
+    return toolTextContainsFailure(text);
   }
   if (Array.isArray(value)) {
     return value.some((item) => toolResultContainsFailure(item, depth + 1));
@@ -393,19 +454,34 @@ function toolResultContainsFailure(value, depth = 0) {
     return false;
   }
   const item = normalizeObject(value);
-  const status = String(item.status || '').trim().toLowerCase();
-  if (
-    String(item.error || '').trim()
-    || item.ok === false
-    || item.success === false
-    || item.isError === true
-    || item.is_error === true
-    || Number(item.exitCode ?? item.exit_code ?? 0) !== 0
-    || (status && !POSITIVE_TOOL_STATUSES.has(status))
-  ) {
+  if (toolReceiptControlFailure(item)) {
     return true;
   }
   return Object.values(item).some((child) => toolResultContainsFailure(child, depth + 1));
+}
+
+function serializedToolResultContainsFailure(value, depth, executionEnvelope = true) {
+  if (depth > 8) {
+    return true;
+  }
+  if (typeof value === 'string') {
+    return executionEnvelope && toolResultContainsFailure(value, depth);
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => serializedToolResultContainsFailure(item, depth + 1, executionEnvelope));
+  }
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  if (executionEnvelope && toolReceiptControlFailure(value)) {
+    return true;
+  }
+  // A serialized root/details envelope carries execution controls. Records,
+  // quoted examples and other document data do not. Still traverse those data
+  // nodes for the same structural depth limit, without interpreting verdicts.
+  return Object.entries(value).some(([key, item]) => serializedToolResultContainsFailure(
+    item, depth + 1, executionEnvelope && key === 'details',
+  ));
 }
 
 function configuredEvidenceToolMarkers() {

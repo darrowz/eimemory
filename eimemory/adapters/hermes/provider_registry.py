@@ -13,6 +13,16 @@ _LOCK = RLock()
 _PROVIDERS: WeakValueDictionary[tuple[str,str], Any] = WeakValueDictionary()
 
 
+class HermesProviderSessionAlreadyBound(ValueError):
+    """Retryable ownership collision; the existing owner is never replaced."""
+
+    code = 'hermes_provider_session_already_bound'
+    memory_owner_busy = True
+
+    def __init__(self):
+        super().__init__(self.code)
+
+
 def _owner(provider):
     home=str(getattr(provider,'_hermes_home','') or '')
     return str(Path(home).expanduser().resolve()) if home else ''
@@ -28,7 +38,7 @@ def bind_hermes_provider(*, session_id: str, provider: Any) -> None:
         key=(_owner(provider),normalized)
         previous=_PROVIDERS.get(key)
         if previous is not None and previous is not provider:
-            raise ValueError('hermes_provider_session_already_bound')
+            raise HermesProviderSessionAlreadyBound()
         _PROVIDERS[key] = provider
 
 
@@ -43,7 +53,7 @@ def move_hermes_provider(*, old_session_id: str, new_session_id: str, provider: 
         old_key=(_owner(provider),old_session);new_key=(_owner(provider),new_session)
         previous=_PROVIDERS.get(new_key)
         if previous is not None and previous is not provider:
-            raise ValueError('hermes_provider_session_already_bound')
+            raise HermesProviderSessionAlreadyBound()
         if old_session and _PROVIDERS.get(old_key) is provider:
             _PROVIDERS.pop(old_key, None)
         _PROVIDERS[new_key] = provider
@@ -58,7 +68,7 @@ def moving_hermes_provider(*, old_session_id: str, new_session_id: str, provider
     with _LOCK:
         current=_PROVIDERS.get(new)
         if current is not None and current is not provider:
-            raise ValueError('hermes_provider_session_already_bound')
+            raise HermesProviderSessionAlreadyBound()
         _PROVIDERS[new]=provider
     try:yield
     except BaseException:

@@ -33,6 +33,32 @@ health check is not a verified task outcome. Delivery probes may send a real
 platform reply; configure and run them with the appropriate operator authority.
 See [adapter operations](../../../docs/operations.md).
 
+## Successful tool receipt contract
+
+An evidence tool must provide an affirmative result before the bridge signs a
+successful verification receipt: a boolean `ok: true` or `success: true`, an
+explicit zero `exitCode`/`exit_code`, or a successful status in the result or its
+`details`. Failure, unknown or unexecuted states take precedence over a positive
+flag. For commands, `completed` alone says nothing about the exit result;
+`active`, `healthy` and `ready` only qualify for observation tools.
+Serialized JSON diagnostics use the root envelope (or each root array item) and
+its `details` path. Document records and quoted examples remain data. ANSI SGR
+colors are removed only for verdict checks; the receipt digest retains the
+original result, including those colors.
+
+Nonempty text, arrays, a bare boolean and `resultCount` alone do not establish
+successful execution. Hosts returning data with only a count must supply an
+actual successful result before that evidence can receive a success signature;
+adding a count or an acknowledgement is insufficient. This stricter contract
+can reduce verified outcomes from older hosts with implicit success envelopes.
+The text-only compatibility path accepts a complete positive pytest summary
+only for a pytest invocation. Ordinary error-handling descriptions and filenames
+are not failure records; explicit failure diagnostics still override success.
+
+Receipts retain result-digest binding, run/session/tool correlation, and the
+requirement for verification after the last mutation. A signed tool receipt
+attests the admitted tool result; final answer accuracy requires its own checks.
+
 ## Acceptance boundary
 
 The operator reports accepted deployment on **1.14.72 / `612dc458`**.

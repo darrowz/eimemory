@@ -311,6 +311,52 @@ jobs:
           tests/test_derived_memory_withdrawal_review4_20261025.py
           tests/test_persona_closed_loop.py
           tests/test_openclaw_gateway_bridge.py
+  recall-support-and-tool-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - run: python -B -m pip install --no-compile '.[hermes]' pytest
+      - name: Verify support, lifecycle and signed-tool contracts
+        run: >-
+          python -B -m pytest -q --strict-markers
+          tests/test_caller_assistance.py
+          tests/test_hermes_provider_lifecycle.py
+          tests/test_hermes_provider_reuse_contract.py
+          tests/test_proactive_host_window.py
+          tests/test_proactive_literal_fallback.py
+          tests/test_raw_answer_support.py
+          tests/test_raw_answer_support_consumer.py
+          tests/test_raw_applicability.py
+          tests/test_raw_applicability_delivery.py
+          tests/test_raw_applicability_replay.py
+          tests/test_raw_applicability_request_grammar.py
+          tests/test_raw_applicability_round4.py
+          tests/test_raw_calendar_version_boundary.py
+          tests/test_raw_citation_gate.py
+          tests/test_raw_citation_gate_reviewfix.py
+          tests/test_raw_citation_support_contract.py
+          tests/test_raw_clause_tokens.py
+          tests/test_raw_content_relevance.py
+          tests/test_raw_support_candidate_recovery.py
+          tests/test_raw_support_provenance.py
+          tests/test_raw_support_recovery_boundaries.py
+          tests/test_raw_support_separation.py
+          tests/test_raw_version_enumeration.py
+          tests/test_runtime_raw_citation_delivery.py
+          tests/test_shared_verification_budget.py
+          tests/test_openclaw_tool_receipt_evidence.py
+          tests/test_openclaw_terminal_bridge_contract.py
+          tests/test_openclaw_host_identity.py
+          tests/test_openclaw_bridge_loop_task_ast.py
+          tests/test_openclaw_completion_gate.py
+          tests/test_openclaw_gateway_bridge.py
+          tests/test_openclaw_reply_delivery_tracker.py
   repository-regression:
     # The operator disabled full-repository CI; focused release gates remain active.
     if: ${{ false }}

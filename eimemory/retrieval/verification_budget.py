@@ -7,17 +7,19 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import isfinite
 from time import perf_counter
+from threading import Lock
 
 from eimemory.core.budgets import FINAL_AUTHORITY_SECONDS  # single source
 
 
-@dataclass(frozen=True)
+@dataclass
 class _Budget:
     calls: int = 0
     authority_until: float = 0.0
+    lock: object = field(default_factory=Lock)
 
 
 _BUDGET: ContextVar[_Budget | None] = ContextVar("recall_completion_budget", default=None)
@@ -25,6 +27,9 @@ _BUDGET: ContextVar[_Budget | None] = ContextVar("recall_completion_budget", def
 
 @contextmanager
 def verification_budget_scope():
+    if _BUDGET.get() is not None:
+        yield  # Nested engine/service scopes share the same request allowance.
+        return
     token = _BUDGET.set(_Budget())
     try:
         yield
@@ -41,14 +46,18 @@ def bounded_verification_call(timeout_seconds: float):
         yield
         return
     timeout = float(timeout_seconds)
-    if not isfinite(timeout) or not 0 < timeout <= 600 or budget.calls:
+    if not isfinite(timeout) or not 0 < timeout <= 600:
         raise ValueError("invalid_or_repeated_verification_budget")
     started = perf_counter()
-    _BUDGET.set(_Budget(calls=1))
+    with budget.lock:
+        if budget.calls:
+            raise ValueError("invalid_or_repeated_verification_budget")
+        budget.calls = 1
     yield  # Exceptions deliberately do not grant a final-read extension.
     finished = perf_counter()
     if finished <= started + timeout:
-        _BUDGET.set(_Budget(calls=1, authority_until=finished + FINAL_AUTHORITY_SECONDS))
+        with budget.lock:
+            budget.authority_until = finished + FINAL_AUTHORITY_SECONDS
 
 
 def final_authority_deadline(collection_deadline: float) -> float:

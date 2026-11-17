@@ -1,3 +1,12 @@
+## [1.15.82]
+
+- Separate related RAW evidence from optional answer support; preserve related search while binding support decisions to the request, current source content, provenance and delivered passages.
+- Refine version, validity, revocation and enumeration applicability without question-specific rules; recover eligible candidates before support assessment and share bounded verification budgets.
+- Preserve Hermes provider ownership and add explicit compatible-session reuse. Package the separately reviewed host lifecycle patch with its exact baseline and recovery contract.
+- Require affirmative OpenClaw tool results before signing successful receipts. Reject failed, unknown and unexecuted results, including JSON diagnostics and colored logs, while preserving ordinary document data and raw result digests.
+- Synthetic RAW recall remains 109/120 at rank one and 119/120 in the first five. Tool receipt regression passes 74/74; the independent 16-case matrix remains 15/16 with the count-only compatibility difference retained.
+- See `docs/releases/v1.15.82.md` for validation, default-off support assessment and remaining limitations.
+
 ## [1.15.81]
 
 - Add an explicit, source/owner/kind-bound fact-citation gate while preserving default RAW exploration, accepted ranking and ordinary L1/temporal recall.

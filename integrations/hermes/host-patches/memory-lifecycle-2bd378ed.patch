@@ -1,0 +1,427 @@
+--- a/agent/memory_manager.py
++++ b/agent/memory_manager.py
+@@ -919,15 +919,19 @@
+         )
+ 
+     def initialize_for_agent(self, say: Optional[Callable[[str], None]] = None, **kwargs) -> bool:
+-        """``initialize_all`` for an agent build; True while an external provider is still served. One
+-        refused as another profile's shared instance is dropped, and ``say`` (the agent's startup
+-        warning sink) tells the user this profile now runs without it."""
++        """Initialize for an agent build; True only while an initialized external provider is served.
++        Refused or failed providers lose their routes, and the startup warning sink names the
++        failure category without forwarding arbitrary exception text to the model or chat."""
+         before = [p for p in self._providers if p.name != "builtin"]
+         self.initialize_all(**kwargs)
+         for provider in (p for p in before if not any(p is kept for kept in self._providers)):
+-            message = (f"⚠ Memory provider {provider.name!r} is disabled for this profile: it handed out the "
+-                       "provider instance another profile already uses. Built-in memory still works; the "
+-                       "operator can see why with `hermes logs errors`.")
++            if self._initialization_failures.get(id(provider)) == "shared_instance":
++                message = (f"⚠ Memory provider {provider.name!r} is disabled for this profile: it handed out the "
++                           "provider instance another profile already uses. Built-in memory still works; the "
++                           "operator can see why with `hermes logs errors`.")
++            else:
++                message = (f"⚠ Memory provider {provider.name!r} is disabled for this agent because initialization "
++                           "failed. Its tools are unavailable; the operator can see why with `hermes logs errors`.")
+             (say or logger.warning)(message)
+         return self._has_external
+ 
+@@ -937,9 +941,21 @@
+             from hermes_constants import get_hermes_home
+             kwargs["hermes_home"] = str(get_hermes_home())
+         self._bound_scope = bound_scope(kwargs["hermes_home"], kwargs.get("agent_identity"))
++        self._initialization_failures: dict[int, str] = {}
++        self._memory_owner_busy = False
+         # One instance, one profile: never rebind an instance another profile's manager bound (#140058).
+         for provider in [p for p in self._providers if p.name != "builtin"]:
+             if not claim_instance(provider, kwargs["hermes_home"]):
++                self._initialization_failures[id(provider)] = "shared_instance"
+                 self._drop_provider(provider)
+-        self._each_provider("initialize failed", lambda p: p.initialize(session_id=session_id, **kwargs),
+-                            level=logging.WARNING)
++        for provider in list(self._providers):
++            try:
++                provider.initialize(session_id=session_id, **kwargs)
++            except Exception as exc:
++                logger.warning("Memory provider '%s' initialize failed: %s", provider.name, exc)
++                if getattr(type(exc), "memory_owner_busy", False) is True:
++                    self._memory_owner_busy = True
++                self._initialization_failures[id(provider)] = "initialize_failed"
++                # A failed instance cannot advertise tools or active memory.
++                # Do not shut it down here: another manager may still own it.
++                self._drop_provider(provider)
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -1208,6 +1208,10 @@
+ 
+ 
+ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
++    from agent.memory_handoff import MemoryManagerHandoff, MemoryOwnerBusy, record_constructing_agent
++    memory_build = record_constructing_agent(agent)
++    if isinstance(memory_manager, MemoryManagerHandoff):
++        memory_manager = memory_manager.adopt(agent)
+     # Persistent memory (MEMORY.md + USER.md) — loaded from disk
+     agent._memory_store = None
+     agent._memory_enabled = False
+@@ -1272,7 +1276,11 @@
+                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
+                 else:
+                     _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
++                    if memory_build is not None and getattr(agent._memory_manager, "_memory_owner_busy", False) is True:
++                        raise MemoryOwnerBusy()
+                     agent._memory_manager = None
++        except MemoryOwnerBusy:
++            raise
+         except Exception as _mpe:
+             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
+             agent._memory_manager = None
+--- /dev/null
++++ b/agent/memory_handoff.py
+@@ -0,0 +1,224 @@
++"""Exclusive transfer of a cached agent's memory owner during a gateway rebuild.
++
++The cache supplies the actual previous agent; kwargs never locate another
++manager. The token is consumed by agent initialization, not a provider proxy.
++"""
++from __future__ import annotations
++
++from contextvars import ContextVar, copy_context
++from hashlib import sha256
++import json
++
++
++_construction = ContextVar("memory_agent_construction", default=None)
++
++
++class MemoryOwnerBusy(RuntimeError):
++    error_code = "memory_owner_rebuild_in_progress"
++    retryable = True
++
++    def __init__(self):
++        super().__init__(self.error_code)
++
++
++def record_constructing_agent(agent):
++    construction = _construction.get()
++    if construction is not None:
++        construction.created = agent
++        # Provider workers copy ContextVars. The construction token must not
++        # escape into their owner context or a later delegated construction.
++        _construction.set(None)
++    return construction
++
++
++def memory_configuration(config, skip_memory):
++    value = {"memory": (config or {}).get("memory"), "skip_memory": bool(skip_memory)}
++    return sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()
++
++
++class MemoryManagerHandoff:
++    def __init__(self, old_agent, manager):
++        if getattr(old_agent, "_memory_manager", None) is not manager:
++            raise MemoryOwnerBusy()
++        self.old_agent, self.manager, self.adopted = old_agent, manager, None
++        old_agent._memory_manager = None
++
++    def adopt(self, agent):
++        if self.adopted is not None or self.old_agent._memory_manager is not None:
++            raise MemoryOwnerBusy()
++        self.adopted = agent
++        return self.manager
++
++    def withdraw(self):
++        if self.adopted is not None and getattr(self.adopted, "_memory_manager", None) is self.manager:
++            self.adopted._memory_manager = None
++
++
++class AgentConstruction:
++    def __init__(self, turn):
++        from hermes_constants import hermes_home_key
++        self.turn, self.runner, self.ctx = turn, turn._runner, turn._ctx
++        self.lock = getattr(self.runner, "_agent_cache_lock", None)
++        self.cache = getattr(self.runner, "_agent_cache", None)
++        self.key = (hermes_home_key(), self.ctx.session_id)
++        self.cache_key = self.ctx.session_key
++        self.original = self.reservation = self.created = self.handoff = None
++        self.old_agent = None
++        self.retired = False
++        self.current_context = copy_context()
++        self.owner_context = self.current_context
++        self.committed = False
++
++    def __enter__(self):
++        if self.lock is None or self.cache is None:
++            raise MemoryOwnerBusy()
++        with self.lock:
++            builds = self.runner.__dict__.setdefault("_memory_agent_builds", {})
++            if self.key in builds:
++                raise MemoryOwnerBusy()
++            builds[self.key] = self
++        self.token = _construction.set(self)
++        self.turn._memory_build = self
++        return self
++
++    def current(self):
++        check = getattr(self.ctx, "_run_still_current", None)
++        return callable(check) and check() is True
++
++    def reserve_locked(self, entry):
++        from gateway.run import _AGENT_PENDING_SENTINEL
++        if self.reservation is not None or self.cache.get(self.cache_key) is not entry:
++            raise MemoryOwnerBusy()
++        if entry is not None:
++            agent = entry[0]
++            if agent is _AGENT_PENDING_SENTINEL or id(agent) in self.runner._running_agent_ids():
++                raise MemoryOwnerBusy()
++            self.original, self.old_agent = entry, agent
++        self.reservation = (_AGENT_PENDING_SENTINEL, None, None, self.ctx.session_id, self)
++        self.cache[self.cache_key] = self.reservation
++
++    def assert_idle_locked(self, entry):
++        from gateway.run import _AGENT_PENDING_SENTINEL
++        if not self.current():
++            raise MemoryOwnerBusy()
++        if entry is not None and (entry[0] is _AGENT_PENDING_SENTINEL
++                                  or id(entry[0]) in self.runner._running_agent_ids()):
++            raise MemoryOwnerBusy()
++
++    def prepare(self, agent, platform, skip_memory):
++        from hermes_constants import get_hermes_home, hermes_home_key
++        from hermes_cli.profiles import get_active_profile_name
++        self.configuration = memory_configuration(self.ctx.user_config, skip_memory)
++        if agent is None:
++            return
++        if not self.current() or agent is not self.old_agent:
++            raise MemoryOwnerBusy()
++        manager = getattr(agent, "_memory_manager", None)
++        if manager is None:
++            return
++        stamp = getattr(agent, "_memory_owner_stamp", None)
++        if (stamp is None or stamp["home"] != self.key[0]
++                or getattr(manager, "_shutting_down", False)
++                or getattr(manager, "_teardown_claim", None) is not None):
++            raise MemoryOwnerBusy()
++        self.owner_context = stamp["context"]
++        context = dict(hermes_home=str(get_hermes_home()), agent_identity=get_active_profile_name(),
++                       agent_workspace="hermes", user_id=str(getattr(self.ctx.source, "user_id", "") or ""),
++                       platform=platform, agent_context=platform if platform in {"cron", "subagent"} else "primary")
++        reusable = (not skip_memory and stamp["configuration"] == self.configuration
++                    and stamp["session_id"] == self.ctx.session_id
++                    and stamp["user_id_alt"] == str(getattr(self.ctx.source, "user_id_alt", "") or "")
++                    and (getattr(manager, "_bound_scope", None) or {}).get("home_key") == hermes_home_key())
++        for provider in manager.providers:
++            check = getattr(provider, "can_reuse_for_session", None)
++            try:
++                allowed = callable(check) and check(self.ctx.session_id, **context) is True
++            except Exception:
++                allowed = False
++            reusable = reusable and allowed
++        if reusable and manager.providers:
++            self.handoff = MemoryManagerHandoff(agent, manager)
++        else:
++            # Drain the actual owner off the cache lock, under its captured
++            # native identity. A replacement cannot race an async teardown.
++            self.owner_context.copy().run(manager.release_soft)
++            agent._memory_manager = None
++            self.retired = True
++
++    def owner_changed(self, agent, platform, skip_memory):
++        """An opted-in provider may detect scope/source changes absent from model config."""
++        from hermes_constants import get_hermes_home
++        from hermes_cli.profiles import get_active_profile_name
++        manager = getattr(agent, "_memory_manager", None)
++        if manager is None:
++            return False
++        context = dict(hermes_home=str(get_hermes_home()), agent_identity=get_active_profile_name(),
++                       agent_workspace="hermes", user_id=str(getattr(self.ctx.source, "user_id", "") or ""),
++                       platform=platform, agent_context=platform if platform in {"cron", "subagent"} else "primary")
++        for provider in manager.providers:
++            check = getattr(provider, "can_reuse_for_session", None)
++            if not callable(check):
++                continue
++            try:
++                if skip_memory or check(self.ctx.session_id, **context) is not True:
++                    return True
++            except Exception:
++                return True
++        return False
++
++    @property
++    def manager_argument(self):
++        return self.handoff
++
++    def commit(self, agent, entry):
++        if not self.current():
++            raise MemoryOwnerBusy()
++        if self.handoff is not None and (self.handoff.adopted is not agent
++                or getattr(agent, "_memory_manager", None) is not self.handoff.manager):
++            raise MemoryOwnerBusy()
++        with self.lock:
++            if self.cache.get(self.cache_key) is not self.reservation:
++                raise MemoryOwnerBusy()
++            agent._memory_owner_stamp = {
++                "home": self.key[0], "session_id": self.ctx.session_id,
++                "user_id_alt": str(getattr(self.ctx.source, "user_id_alt", "") or ""),
++                "configuration": self.configuration, "context": self.current_context,
++            }
++            self.cache[self.cache_key] = entry
++            self.committed = True
++            self.runner._enforce_agent_cache_cap()
++
++    def _rollback(self):
++        if self.handoff is not None:
++            self.handoff.withdraw()
++        with self.lock:
++            ours = self.cache.get(self.cache_key) is self.reservation
++            restore = ours and self.original is not None and not self.retired and self.current()
++            if restore:
++                if self.handoff is not None:
++                    self.old_agent._memory_manager = self.handoff.manager
++                self.cache[self.cache_key] = self.original
++            elif ours:
++                self.cache.pop(self.cache_key, None)
++        manager = getattr(self.created, "_memory_manager", None) if self.created is not None else None
++        if self.handoff is not None and not restore:
++            manager = self.handoff.manager
++        if manager is not None:
++            cleanup_context = self.owner_context if self.handoff is not None else self.current_context
++            cleanup_context.copy().run(manager.release_soft)
++            if self.created is not None:
++                self.created._memory_manager = None
++        if self.old_agent is not None and not restore:
++            self.turn._release_evicted_agent(self.old_agent)
++
++    def __exit__(self, exc_type, exc, traceback):
++        try:
++            if self.reservation is not None and not self.committed:
++                self._rollback()
++        finally:
++            self.turn._memory_build = None
++            _construction.reset(self.token)
++            with self.lock:
++                builds = self.runner.__dict__.get("_memory_agent_builds", {})
++                if builds.get(self.key) is self:
++                    builds.pop(self.key)
+--- a/gateway/session_execution.py
++++ b/gateway/session_execution.py
+@@ -90,7 +90,8 @@
+         socket teardown while the idle sweeper waits on this lock). The turn rebuilds a fresh agent, so
+         the caller does a SOFT release that keeps sandbox / browser / bg processes."""
+         from gateway.run import _AGENT_PENDING_SENTINEL
+-        evicted = self._runner._agent_cache.pop(self._ctx.session_key, None)
++        evicted = self._runner._agent_cache.get(self._ctx.session_key)
++        self._memory_build.reserve_locked(evicted)
+         agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
+         return agent if agent and agent is not _AGENT_PENDING_SENTINEL else None
+ 
+@@ -101,7 +102,12 @@
+             return out
+         with cache_lock:
+             cached = cache.get(ctx.session_key)
++            self._memory_build.assert_idle_locked(cached)
+             if not (cached and cached[1] == sig):
++                if cached:
++                    out.evicted = self._pop_cached_agent_for_eviction()
++                else:
++                    self._memory_build.reserve_locked(None)
+                 return out
+             # cached[2] = message_count at cache time (stale when a second process appended rows);
+             # cached[3] = the session_id the snapshot was taken for.
+@@ -145,7 +151,7 @@
+         """Off-lock soft release on a daemon thread so teardown never blocks the gateway loop."""
+         self._runner._spawn_release_thread(
+             self._runner._release_evicted_agent_soft, (agent,), f"agent-xproc-evict-{str(self._ctx.session_key)[:24]}",
+-            inline_fallback=True,
++            inline_fallback=True, session_key=self._ctx.session_key,
+         )
+ 
+     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,
+@@ -171,6 +177,7 @@
+             provider_sort=pr.get("sort"), provider_require_parameters=pr.get("require_parameters", False),
+             provider_data_collection=pr.get("data_collection"),
+             session_id=ctx.session_id, platform=platform_key,
++            memory_manager=self._memory_build.manager_argument,
+             user_id=src.user_id, user_id_alt=src.user_id_alt, user_name=src.user_name,
+             chat_id=src.chat_id, chat_name=src.chat_name, chat_type=src.chat_type, thread_id=src.thread_id,
+             gateway_session_key=ctx.session_key,
+@@ -191,6 +198,12 @@
+     def _resolve_turn_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):
+         """Reuse this session's cached AIAgent (frozen system prompt + tool schemas → prompt cache
+         hits) or build a fresh one. Returns (agent, reused_cached_agent)."""
++        from agent.memory_handoff import AgentConstruction
++        with AgentConstruction(self):
++            return self._resolve_turn_agent_owned(
++                turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr)
++
++    def _resolve_turn_agent_owned(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):
+         ctx = self._ctx
+         runner = self._runner
+         skip_context_files = self._skip_context_files(platform_key)
+@@ -207,6 +220,13 @@
+         msg_count = self._current_message_count()
+         found = self._lookup_cached_agent(sig, cache_lock, cache, max_iterations, peek_sid, dead, msg_count)
+         agent = found.agent
++        from gateway.session_policy import policy_for_source
++        policy = policy_for_source(runner, ctx.source)
++        skip_memory = bool(policy and policy.ignore_rules)
++        if found.reused and self._memory_build.owner_changed(agent, platform_key, skip_memory):
++            found.evicted, found.reused, agent = agent, False, None
++            with cache_lock:
++                self._memory_build.reserve_locked(cache.get(ctx.session_key))
+         # Lock released — refresh the reused agent's fallback chain from disk OUTSIDE the cache lock
+         # (disk I/O under the lock stalls the idle-sweep watcher and Discord heartbeats). A chain
+         # configured after caching must reach the next turn; per-session serialization keeps it safe.
+@@ -215,12 +235,11 @@
+             # A cached agent already moved onto a fallback provider cannot serve a confirmed lock.
+             found.evicted, found.reused, agent = agent, False, None
+             with cache_lock:
+-                cache.pop(ctx.session_key, None)
++                self._memory_build.reserve_locked(cache.get(ctx.session_key))
+         if found.reused and agent is not None:
+             self._runner._apply_fallback_chain_to_agent(agent, None if locked else runner._refresh_fallback_model())
+-        if found.evicted is not None:
+-            self._release_evicted_agent(found.evicted)
+         if agent is None:
++            self._memory_build.prepare(found.evicted, platform_key, skip_memory)
+             from tools.delegate_tool_config import gateway_delegation_inline, gateway_delegation_inline_scope
+             # delegation.gateway_mode from this turn's own (profile-scoped) config and the chat's resolved interim
+             # setting (never muted for a heartbeat turn, which shares the user's session and its cached agent);
+@@ -232,11 +251,8 @@
+                     turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+                     skip_context_files,
+                 )
+-            if cache_lock and cache is not None:
+-                with cache_lock:
+-                    # Record the snapshot's session_id with message_count so the cross-process guard
+-                    # can skip the meaningless count comparison if the active session_id switches.
+-                    cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
+-                    runner._enforce_agent_cache_cap()
++            self._memory_build.commit(agent, (agent, sig, msg_count, ctx.session_id))
++            if found.evicted is not None:
++                self._release_evicted_agent(found.evicted)
+             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, sig)
+         return agent, found.reused
+--- a/gateway/run_turn_runner.py
++++ b/gateway/run_turn_runner.py
+@@ -1339,9 +1339,18 @@
+         runner._reasoning_config = reasoning_config
+         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
+         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+-        agent, reused_cached_agent = self._resolve_turn_agent(
+-            turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+-        )
++        from agent.memory_handoff import MemoryOwnerBusy
++        try:
++            agent, reused_cached_agent = self._resolve_turn_agent(
++                turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
++            )
++        except MemoryOwnerBusy as exc:
++            from agent.turn_failure_copy import stamp_failure
++            return stamp_failure({
++                "final_response": "Memory is still in use by the previous turn. Please retry shortly.",
++                "messages": [], "api_calls": 0, "tools": [], "failed": True,
++                "completed": False, "error": exc.error_code,
++            }, exc.error_code, exc.retryable)
+         if pending_fallback_notice:
+             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
+             agent._pending_fallback_notice = pending_fallback_notice

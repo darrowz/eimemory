@@ -414,3 +414,28 @@ def fact_citation_gate(search):
             raise CitationUnavailable(reason, decision) from exc
         return CitationResults(result, receipt["decision"])
     return gated
+
+
+def current_delivery_snapshot(store, *, scope, source_ids, deadline):
+    """Independent current-source commitment for a pending host request.
+
+    A single bounded observation, not a new recall or absence decision. The
+    caller supplies the authorized request scope, never refs from a response.
+    """
+    context = {"exact_scope_only": True, "_recall_deadline_monotonic": deadline}
+    sources = _fact_authority_inputs(context, source_ids, _CURRENT.get())
+    receipt = {}
+
+    @raw_request_boundary
+    def read(bound_store, **kwargs):
+        selected = kwargs['scope']
+        selected = selected if isinstance(selected, ScopeRef) else ScopeRef.from_dict(selected)
+        authority = _authority(selected, context)
+        snapshot, _ = _snapshot(bound_store, authority, _Budget(authority.deadline))
+        receipt['digest'] = snapshot.digest
+        return []
+
+    read(store, query='', scope=scope, source_ids=sources, task_context=context)
+    if 'digest' not in receipt:
+        raise CitationUnavailable('snapshot_unavailable')
+    return receipt['digest']

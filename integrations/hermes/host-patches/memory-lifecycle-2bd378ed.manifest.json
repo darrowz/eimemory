@@ -1,0 +1,125 @@
+{
+  "schema": "eimemory.hermes-host-patch.v1",
+  "patch_id": "memory-lifecycle-2bd378ed",
+  "upstream": "https://github.com/NousResearch/hermes-agent.git",
+  "base_commit": "2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19",
+  "base_kind": "exact copied working-tree preimages, including pre-existing redacted completed-turn snapshot integration; HEAD alone is insufficient",
+  "patch": "memory-lifecycle-2bd378ed.patch",
+  "patch_sha256": "f756ce42475491824ffe1f7c13f6f1923e11059eeab9935dc2c49d2137f8529d",
+  "encoding": "UTF-8",
+  "files": [
+    {
+      "path": "agent/memory_manager.py",
+      "before_sha256": "6f10bc79db7b52b8251df46a1e9fcde5cb8b2d197f75828e72f11e753c8fcb44",
+      "after_sha256": "402383a7585f588c1e4b609d46909c739645e931a64f5deaf7ec2a1888d40667",
+      "before_state": "regular_file"
+    },
+    {
+      "path": "agent/agent_init.py",
+      "before_sha256": "6d3deb12e5b60dd432e474fff4bcd54393d723aaf9b4102ddf99d0e5a25b7109",
+      "after_sha256": "5c1a34756178341b8bedf55b43e0d2ab39b90ce7969a90a4603a1a2416681ac2",
+      "before_state": "regular_file"
+    },
+    {
+      "path": "agent/memory_handoff.py",
+      "before_sha256": null,
+      "after_sha256": "40036f779daba884c64b0631ffa5ee0f9c786985baa1e64bd176df202634b02a",
+      "before_state": "absent"
+    },
+    {
+      "path": "gateway/session_execution.py",
+      "before_sha256": "d3ff9ef1f0227075b01da3360cf89ead0a63659a0722d4248f1d821a2091342e",
+      "after_sha256": "285eb899ad833fce80fa493092f802a1b2ca149c804ff7a6f8c5027f27897adf",
+      "before_state": "regular_file"
+    },
+    {
+      "path": "gateway/run_turn_runner.py",
+      "before_sha256": "c20474c99ae171882f5524646b60cf5d877e596b6f753051134ce1b8840edbb6",
+      "after_sha256": "6c575d176a6662829bc1e13d6063e659326c60f4687f7472cde7437f1f6aa001",
+      "before_state": "regular_file"
+    }
+  ],
+  "includes": [
+    "round1 initialization-failure provider removal",
+    "canonical cached memory-manager ownership transfer, reservation and rollback",
+    "retryable failed turn before model invocation when the owner is busy"
+  ],
+  "preconditions": {
+    "exact_before_hashes_required": true,
+    "new_file_must_be_absent": true,
+    "preserve_existing_snapshot_and_profile_boundary_changes": true,
+    "do_not_stack_round1_patch": true,
+    "gateway_stopped_before_apply": true,
+    "restart_required_for_owner_stamps": true,
+    "automatic_installer_provided": false,
+    "production_state_or_credentials_modified_by_package": false
+  },
+  "paired_eimemory_contracts": [
+    {
+      "path": "integrations/hermes/eimemory/__init__.py",
+      "sha256": "8eab7fb7557b7aeed77add8d9712af669dfc72e4c86c002940800fac04ff3488",
+      "contract": "can_reuse_for_session returns strict boolean True only for the same live initialized owner identity and sources",
+      "frozen_original_sha256": "a7b6b1129e53f95987e7873bd6b8e60d6911f42692ef3b032e12814250bbc339",
+      "sha256_basis": "Git canonical LF bytes; frozen_original_sha256 identifies the historical local replay bytes"
+    },
+    {
+      "path": "eimemory/adapters/hermes/provider_registry.py",
+      "sha256": "e2608cc0da89b88aa95b42d36b50a8407aee5af9211fc9158b27d773ceb7f56d",
+      "contract": "HermesProviderSessionAlreadyBound remains ValueError-compatible and declares class-level memory_owner_busy=True",
+      "frozen_original_sha256": "0694a512bce98f7907a76a616feae2785e700be6ede404885ee713e87e140609",
+      "sha256_basis": "Git canonical LF bytes; frozen_original_sha256 identifies the historical local replay bytes"
+    }
+  ],
+  "verification": {
+    "historical_local_replay": {
+      "upstream": {
+        "passed": 2,
+        "failed": 24,
+        "error": 0,
+        "skipped": 0
+      },
+      "initialization_only_control": {
+        "passed": 2,
+        "failed": 24,
+        "error": 0,
+        "skipped": 0
+      },
+      "combined_patch": {
+        "passed": 26,
+        "failed": 0,
+        "error": 0,
+        "skipped": 0
+      }
+    },
+    "git_apply_check": "Previously passed in isolated local copy; all five applied files matched frozen after hashes. Recheck the actual target before applying.",
+    "audit_test_hashes": {
+      ".audit/round2/host/tests/test_busy_owner_lifecycle.py": "bd37c91c60d74ce09aae0ba370efe8b535ecc4f2383c7aa0d785619dc634cce7",
+      ".audit/round2/host/tests/test_busy_turn_result.py": "c9f2b702ecd00601936f5205a1b519995a68c57547facc7f47eca932ebb2e1b1",
+      ".audit/round2/host/tests/test_canonical_memory_lifecycle.py": "bdedde766d52c5ba2d88d8ae1c327e7a3a73be75f33a878aaba56071fb56769a"
+    },
+    "audit_evidence_location": ".audit/round2/host/before-after.json (local retained audit, not included in this three-file package)",
+    "standard_host_test_runner": "scripts/run_tests.sh",
+    "locally_observed_standard_host_tests": [
+      {
+        "path": "tests/gateway/test_api_server_memory_sessions.py",
+        "tests": [
+          "test_manager_survives_across_requests_and_is_exclusive_per_home",
+          "test_a_manager_parked_past_the_retry_horizon_is_not_handed_to_a_reused_id"
+        ],
+        "scope": "legacy API memory checkout/checkin compatibility pool; does not certify the patched canonical lifecycle"
+      }
+    ],
+    "not_exercised": [
+      "full Hermes import/dependency environment",
+      "complete TurnRunner admission/leases",
+      "LLM or production RPC",
+      "real adapters and production state",
+      "legacy ApiServerMemorySessions checkout/checkin pool"
+    ]
+  },
+  "rollback": "With affected gateway processes stopped and all five files matching after_sha256, git apply --reverse --check and git apply --reverse this exact patch; verify before hashes and original absence of memory_handoff.py. Preserve pre-existing host changes and all user/session state.",
+  "deployment_status": "Artifact package only. No installation or production verification is asserted.",
+  "patch_audit_original_sha256": "f756ce42475491824ffe1f7c13f6f1923e11059eeab9935dc2c49d2137f8529d",
+  "patch_sha256_basis": "Git canonical LF bytes",
+  "line_endings": "LF; only CRLF-to-LF normalization is allowed; patch semantics unchanged"
+}

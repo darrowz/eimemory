@@ -1802,7 +1802,9 @@ class ProactiveRecallService:
             try:
                 if self._closing:
                     raise RuntimeError("proactive recall is closing")
-                worker = Thread(target=run, name="eimemory-proactive-recall", daemon=True)
+                from contextvars import copy_context
+                request_context = copy_context()
+                worker = Thread(target=lambda: request_context.run(run), name="eimemory-proactive-recall", daemon=True)
                 self._workers.add(worker)
                 # Keep close from observing a registration before start completes.
                 worker.start()

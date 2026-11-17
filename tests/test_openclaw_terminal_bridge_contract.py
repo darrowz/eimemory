@@ -575,7 +575,7 @@ plugin.register({ hooks: { on(name, handler) { handlers[name] = (event, context)
     await handlers.after_tool_call({ toolName: 'read', toolCallId: runId + '-call', runId, result }, context);
     return handlers.agent_end({ runId, success: true, messages: [] }, context);
   }
-  console.log(JSON.stringify({ a: await run('digest-a', 'AAAAAA'), b: await run('digest-b', 'BBBBBB') }));
+  console.log(JSON.stringify({ a: await run('digest-a', { ok: true, content: [{ type: 'text', text: 'AAAAAA' }] }), b: await run('digest-b', { ok: true, content: [{ type: 'text', text: 'BBBBBB' }] }) }));
 })().catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
 """.strip()
     env = _bridge_env(tmp_path / "bridge-state")

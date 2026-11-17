@@ -174,7 +174,19 @@ def raw_request_boundary(search):
                     changed = True
                     continue
                 # Never forward text returned by a candidate/rerank provider.
-                final.append({**entry, "record": authoritative_raw_payload(record)})
+                delivered = {**entry, "record": authoritative_raw_payload(record)}
+                if context.get("evidence_intent") == "fact_citation":
+                    from dataclasses import asdict
+                    from .applicability import assess_applicability
+                    applicability = assess_applicability(
+                        record, query=str(kwargs.get("query") or ""), task_context=context)
+                    if applicability.status == "not_applicable":
+                        continue
+                    # Derive metadata from current canonical state, never from
+                    # provider-supplied payloads or ranking annotations.
+                    if applicability.required:
+                        delivered["applicability"] = asdict(applicability)
+                final.append(delivered)
             if changed or perf_counter() >= deadline:
                 raise RawRecallUnavailable("raw_recall_unavailable")
             if outer is not None:

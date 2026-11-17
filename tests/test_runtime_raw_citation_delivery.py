@@ -619,11 +619,14 @@ def test_proactive_remaining_deadline_reaches_old_recall_and_raw(runtime, monkey
     monkeypatch.setattr(runtime.store, "read_raw_citation_records", observe_snapshot)
     before = perf_counter()
     result = proactive(runtime)
-    assert "infrastructure repository" in final_context(runtime, result)
     assert deadlines and deadlines[0][0] == "l1"
     assert sum(kind == "raw" for kind, _ in deadlines) == 2
     assert all(value <= deadlines[0][1] for _, value in deadlines)
     assert deadlines[0][1] <= before + 3.1
+    metadata_started = perf_counter()
+    assert "infrastructure repository" in final_context(runtime, result)
+    assert sum(kind == "raw" for kind, _ in deadlines) == 3
+    assert deadlines[-1][1] <= metadata_started + 3.1
 
 
 @pytest.mark.parametrize("policy", ["bypass", "control", "empty"])
@@ -1010,9 +1013,10 @@ def test_real_metadata_endpoint_is_read_only_bound_metadata_and_requires_valid_a
     assert set(metadata) == {"ok", "expectation"}
     assert set(expected) == {"schema", "channel", "session_id", "turn_id", "host_query_digest", "scope_digest",
         "source_ids_digest", "task_type", "task_mode", "delivery_mode", "scope_basis", "release_identity",
-        "policy_version", "decision_id", "original_context_digest"}
+        "policy_version", "decision_id", "original_context_digest", "raw_snapshot_digest"}
     assert expected["policy_version"] == reply["policy_version"]
     assert expected["release_identity"] == reply["release_identity"]
+    assert expected['raw_snapshot_digest'] == reply['bundle']['raw_citation']['decision']['snapshot_digest']
     assert runtime.store.load_proactive_decision(reply["decision_id"]) == before
     for supplied in (None, reply["raw_citation_authority"]):
         assert consume_sidecar(reply, query=QUERY, scope=resolve_channel_scope("hermes", BASE),

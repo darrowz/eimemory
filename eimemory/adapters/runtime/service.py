@@ -46,6 +46,7 @@ from eimemory.metadata import business_metadata
 from eimemory.knowledge.l1_pipeline import extract_l1_from_l0_record
 from eimemory.knowledge.l1_queue import L1ExtractQueue, L1QueueStateError
 from eimemory.recall.query_clean import clean_user_query
+from eimemory.recall.raw_citation import support_request_budget
 from eimemory.recall.loadout import assemble_loadout, render_loadout
 from eimemory.models.records import (
     CompactRecallBudgetExceeded, LinkRef, RecallBundle, RecordEnvelope, ScopeRef,
@@ -117,6 +118,7 @@ class AgentRuntimeMemoryService:
             return exc.to_dict()
         return result
 
+    @support_request_budget
     def _prefetch_result(self, *, channel: str, scope: dict, query: str, task_type: str = "",
                          limit: int = 8, task_context: dict[str, Any] | None = None) -> tuple[dict, RecallBundle]:
         channel_id = normalize_runtime_channel(channel)
@@ -156,6 +158,7 @@ class AgentRuntimeMemoryService:
                 "presentation", bundle.raw_citation.presentation)} if bundle.raw_citation is not None else {}),
         }, bundle
 
+    @support_request_budget
     def proactive_prefetch(
         self,
         *,
@@ -186,6 +189,10 @@ class AgentRuntimeMemoryService:
         if host_deadline:
             citation_context["_recall_deadline_monotonic"] = min(
                 citation_context["_recall_deadline_monotonic"], host_deadline)
+        delivery_deadline = citation_context["_recall_deadline_monotonic"]
+        if os.environ.get("EIMEMORY_RAW_ANSWER_SUPPORT_ENABLED", "0") == "1":
+            from eimemory.retrieval.caller_assistance import _HOST_DEADLINE
+            delivery_deadline = _HOST_DEADLINE.get() or delivery_deadline
         result = self.runtime.proactive.decide(
             channel=channel_id,
             scope=channel_scope,
@@ -195,7 +202,7 @@ class AgentRuntimeMemoryService:
             query=normalized_query,
             task_type=str(task_type or "").strip(),
             acceptance_generated=acceptance_generated,
-            **({"_chat_delivery_deadline": citation_context["_recall_deadline_monotonic"]}
+            **({"_chat_delivery_deadline": delivery_deadline}
                if channel_id == "hermes" else {}),
         )
         if (channel_id == "hermes" and result.get("ok") is True and not result.get("bypassed")
@@ -307,9 +314,20 @@ class AgentRuntimeMemoryService:
             and all(origin.get(key) == expected[key] for key in ("host_query_digest", "task_mode", "delivery_mode")))
         if time.monotonic() >= deadline:
             return unavailable
+        raw_snapshot_digest = None
+        if matched and valid_origin and not expected['task_mode']:
+            from eimemory.raw.citation_gate import current_delivery_snapshot
+            try:
+                raw_snapshot_digest = current_delivery_snapshot(self.runtime.store,
+                    scope=channel_scope, source_ids=sources, deadline=deadline)
+            except Exception:
+                # Policy/L1 metadata remains useful; a missing independent
+                # source commitment withholds only the separate RAW lane.
+                pass
         return {"ok": True, "expectation": {"schema": "proactive_raw_delivery_expectation.v1", **expected,
             **current, "decision_id": stored["decision_id"] if matched else None,
-            "original_context_digest": origin.get("context_digest") if valid_origin else None}}
+            "original_context_digest": origin.get("context_digest") if valid_origin else None,
+            "raw_snapshot_digest": raw_snapshot_digest}}
 
     def _proactive_transition_release(self, *, decision, channel, scope, sources, session, turn,
                                      release, terminal_outcome=None):

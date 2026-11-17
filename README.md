@@ -31,7 +31,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.15.81" src="https://img.shields.io/badge/version-1.15.81-blue">
+  <img alt="Package version 1.15.82" src="https://img.shields.io/badge/version-1.15.82-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -285,9 +285,9 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.15.81, source package)
+## Current package status (1.15.82, source package)
 
-The [1.15.81 release notes](docs/releases/v1.15.81.md) add a bounded, explicit fact-citation gate without replacing default RAW exploration or ordinary L1/temporal recall. Hermes normal prefetch and eligible proactive delivery carry a separately labelled RAW lane; initial and repeated proactive RAW consumption require independent current policy/release metadata from the trusted service. A related result is not a claim of entailment, and unavailable or rejected RAW never means that independently valid L1 is absent.
+The [1.15.82 release notes](docs/releases/v1.15.82.md) separate ordinary related RAW search from optional answer-support assessment, refine citation applicability and delivery binding, and require affirmative tool evidence before OpenClaw signs a successful verification receipt. Answer-support assessment remains disabled by default. Hermes provider reuse keeps exact ownership checks; the separately packaged, pinned Hermes host lifecycle patch is required for host cache handoff and is not applied by plugin installation alone. Synthetic RAW recall retains Top-1 109/120 and Top-5 119/120; these are document-ranking results, not final answer accuracy or production acceptance.
 
 The unchanged 200-question public RAW fixture retains answerable Top-1 109/120 and Top-5 119/120. Default RAW correct-empty retrieval stays 0/80; explicit fact-citation gating reaches 5/80 with no added answerable empty retrieval or admitted reorder. These are retrieval results on a repeatedly used regression set, not final model-answer accuracy. The [1.15.80 release notes](docs/releases/v1.15.80.md) describe the retained ranking baseline.
 
