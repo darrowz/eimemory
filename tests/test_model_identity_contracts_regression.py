@@ -318,7 +318,9 @@ def test_success_shape_stays_unchanged_for_service_search_and_cli(capsys):
     runtime = _runtime_returning(_bundle([_record()]))
     service = AgentRuntimeMemoryService(runtime)
     out = service.prefetch(channel='hermes',scope={},query='synthetic query',limit=1)
-    assert set(out) == {'ok','adapter_contract_version','channel','scope','bundle','context'}
+    assert set(out) == {'ok','adapter_contract_version','channel','scope','bundle','context',
+                        'raw_citation_presentation'}
+    assert out['raw_citation_presentation'] == out['bundle']['raw_citation']['presentation']
     assert out['ok'] is True and 'size_budget' not in out
     search = service.search_l0(channel='hermes',scope={},query='synthetic query',limit=1)
     assert set(search) == {'ok','channel','scope','bundle'}

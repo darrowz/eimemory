@@ -720,6 +720,26 @@ for _domain in DOMAINS:
 for _domain in ("memory.recall", "memory.governance", "storage.integrity"):
     DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], "eimemory/intake/promotion_batch.py")
 
+# RAW support admission determines both retrieved evidence and what adapters may
+# deliver as an answer citation. Keep these explicit so future modules fail closed.
+for _domain in ("memory.recall", "channel.delivery"):
+    DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain],
+        "eimemory/raw/answer_support.py",
+        "eimemory/raw/applicability.py",
+        "eimemory/raw/support_candidates.py")
+
+# The lifecycle package controls host memory-owner reuse and gateway delivery;
+# its pinned preimages and application instructions also gate deployment.
+for _domain in ("memory.recall", "channel.delivery", "deployment.runtime"):
+    DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain],
+        "integrations/hermes/host-patches/README.md",
+        "integrations/hermes/host-patches/memory-lifecycle-2bd378ed.manifest.json",
+        "integrations/hermes/host-patches/memory-lifecycle-2bd378ed.patch")
+
+# Git's line-ending policy fixes the published patch and manifest bytes used by
+# deployment hash verification; it does not authorize other unregistered files.
+DOMAIN_PATHS["deployment.runtime"] = (*DOMAIN_PATHS["deployment.runtime"], ".gitattributes")
+
 IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
 IGNORED_PATHS = {
     ".gitignore",

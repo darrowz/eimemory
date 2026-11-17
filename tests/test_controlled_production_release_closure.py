@@ -299,6 +299,11 @@ def pipeline(tmp_path, monkeypatch):
     observations = iter(stability()["samples"])
     monitor.collect_controlled_stability_sample = lambda **kwargs: next(observations)
     monitor.assess_controlled_stability = assess_stability
+    reset_calls = []
+    def reset_failed_jobs():
+        reset_calls.append("reset")
+        return {"ok": True, "action": "systemctl_user_reset_failed", "units": [], "reset": [], "errors": {}}
+    monitor.reset_failed_allowlisted_job_units = reset_failed_jobs
     monkeypatch.setitem(sys.modules, monitor.__name__, monitor)
     monkeypatch.setattr(controlled_rpc_probe, "run_controlled_rpc_probe", lambda *args, **kwargs: rpc_probe())
     from eimemory.evaluation import production_query_dataset
@@ -334,7 +339,8 @@ def pipeline(tmp_path, monkeypatch):
         return closure.run_release_closure(runtime, scope=SCOPE, repo_root="/fixture/repo",
             current_link="/fixture/current", health_url="http://127.0.0.1:8091/health",
             prior_commit="b" * 40, pending_path=tmp_path / "pending.json")
-    return SimpleNamespace(core=core, monitor=monitor, transport=controlled_rpc_probe, runtime=runtime, run=run)
+    return SimpleNamespace(core=core, monitor=monitor, transport=controlled_rpc_probe, runtime=runtime,
+                           run=run, reset_calls=reset_calls)
 
 
 def test_selected_pipeline_uses_fresh_native_verifier_and_keeps_natural_pending(pipeline):
@@ -345,6 +351,9 @@ def test_selected_pipeline_uses_fresh_native_verifier_and_keeps_natural_pending(
     pipeline.core.verify_controlled_production_acceptance = verify
     report = pipeline.run()
     assert report["ok"] is True and summary(report)["ok"] is True
+    assert pipeline.reset_calls == ["reset"]
+    assert report["job_unit_reset_failed"] == {
+        "ok": True, "action": "systemctl_user_reset_failed", "units": [], "reset": [], "errors": {}}
     assert calls[0]["record_id"] == "controlled-current"
     assert calls[0]["release"].receipt_id == receipt()["promotion_request_id"]
     assert len(calls) == 2 and calls[0] == calls[1]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from eimemory.core.strict_json import loads as strict_json_loads
 import os
+from dataclasses import replace
 from hashlib import sha256
 from datetime import datetime, timedelta, timezone
 import re
@@ -140,8 +141,11 @@ class AgentRuntimeMemoryService:
         )
         if channel_id == "hermes" and not isinstance(bundle.raw_citation, RawCitationLane):
             # Server-owned operation semantics, never a keyword/DTO classifier.
-            bundle.raw_citation = collect_citation(self.runtime.memory, query=normalized_query,
-                scope=channel_scope, context=context, limit=limit)
+            # The fallback lane belongs to this delivery. Do not attach it to a
+            # caller-owned bundle that may be reused by another consumer.
+            bundle = replace(bundle, raw_citation=collect_citation(
+                self.runtime.memory, query=normalized_query,
+                scope=channel_scope, context=context, limit=limit))
         assembled = self._assemble_recall_bundle(
             bundle,
             limit=max(1, min(50, self._positive_limit(limit, 8))),

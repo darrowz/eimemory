@@ -103,8 +103,36 @@ def test_1_14_46_unknown_paths_now_have_owners(path: str, required: set[str]) ->
 
 
 @pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        (".gitattributes", {"deployment.runtime"}),
+        ("eimemory/raw/answer_support.py", {"memory.recall", "channel.delivery"}),
+        ("eimemory/raw/applicability.py", {"memory.recall", "channel.delivery"}),
+        ("eimemory/raw/support_candidates.py", {"memory.recall", "channel.delivery"}),
+        ("integrations/hermes/host-patches/README.md", {"memory.recall", "channel.delivery", "deployment.runtime"}),
+        ("integrations/hermes/host-patches/memory-lifecycle-2bd378ed.manifest.json", {"memory.recall", "channel.delivery", "deployment.runtime"}),
+        ("integrations/hermes/host-patches/memory-lifecycle-2bd378ed.patch", {"memory.recall", "channel.delivery", "deployment.runtime"}),
+    ],
+)
+def test_1_15_82_support_and_host_package_have_exact_owners(path: str, expected: set[str]) -> None:
+    assert not _ignored(path)
+    assert _domains(path) == expected
+
+
+@pytest.mark.parametrize(
     "path",
-    ["deploy/brand_new_helper.py", "eimemory/knowledge/brand_new.py", "scripts/brand_new.py", "eimemory/adapters/hermes/brand_new.py", "eimemory/scheduler/brand_new.py", "eimemory/ops/projection_acceptance_restore_extra.py"],
+    [
+        "deploy/brand_new_helper.py",
+        "eimemory/knowledge/brand_new.py",
+        "scripts/brand_new.py",
+        "eimemory/adapters/hermes/brand_new.py",
+        "eimemory/scheduler/brand_new.py",
+        "eimemory/ops/projection_acceptance_restore_extra.py",
+        "eimemory/raw/answer_support_extra.py",
+        "integrations/hermes/host-patches/memory-lifecycle-future.patch",
+        "integrations/hermes/host-patches/memory-lifecycle-future.manifest.json",
+    ],
 )
 def test_new_unregistered_files_still_fail_closed(path: str) -> None:
+    assert not _ignored(path)
     assert _domains(path) == set()

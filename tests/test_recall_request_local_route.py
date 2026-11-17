@@ -27,6 +27,7 @@ from eimemory.llm.command_client import (
     VerifierRouteUnavailable,
 )
 from eimemory.retrieval.caller_assistance import route_for_channel, route_for_request
+from eimemory.models.records import RecallBundle
 
 
 AGENTS = ("hongrui", "hongtai", "hongxin", "xiaomage")
@@ -57,9 +58,14 @@ def hermes_profiles(tmp_path, monkeypatch):
 
 
 def _api(callback):
-    api = MemoryAPI.__new__(MemoryAPI)
-    api.recall_engine = SimpleNamespace(recall=callback)
-    return api
+    # Exercise the initialized API and its real post-recall boundaries. The
+    # route probe may return a transport result, but an engine returns a bundle.
+    def collect(request):
+        return RecallBundle(items=[], rules=[], reflections=[], confidence=0.0,
+                            next_action_hint="", explanation={"probe_result": callback(request)})
+
+    api = MemoryAPI(SimpleNamespace(), recall_engine=SimpleNamespace(recall=collect))
+    return SimpleNamespace(recall=lambda **kwargs: api.recall(**kwargs).explanation["probe_result"])
 
 
 @pytest.mark.parametrize("agent", AGENTS)

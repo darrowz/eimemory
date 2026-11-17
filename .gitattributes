@@ -1,3 +1,4 @@
 # Unified diff context lines contain a single space for blank source lines.
 *.patch text eol=lf whitespace=-blank-at-eol
 integrations/hermes/host-patches/*.json text eol=lf
+integrations/hermes/host/memory_sync_snapshot.py text eol=lf

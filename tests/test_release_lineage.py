@@ -451,7 +451,7 @@ def test_openclaw_deploy_surface_marks_channel_domain_changed(tmp_path: Path) ->
         ),
         (
             "integrations/hermes/eimemory/__init__.py",
-            {"memory.recall", "deployment.runtime"},
+            {"memory.recall", "channel.delivery", "deployment.runtime"},
         ),
         (
             "integrations/hermes/eimemory_hook/__init__.py",
@@ -1721,10 +1721,19 @@ def test_installed_prior_release_is_the_lineage_ancestor_after_a_squash(tmp_path
     assert {state["mode"] for state in report["domains"].values()} == {"inherited"}
 
 
-def test_unknown_production_path_marks_every_domain_changed(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "path",
+    [
+        "eimemory/new_runtime_surface.py",
+        "eimemory/raw/answer_support_extra.py",
+        "integrations/hermes/host-patches/memory-lifecycle-future.patch",
+        "integrations/hermes/host-patches/memory-lifecycle-future.manifest.json",
+    ],
+)
+def test_unknown_production_path_marks_every_domain_changed(tmp_path: Path, path: str) -> None:
     repo = _repo(tmp_path)
     prior_commit = _commit(repo, "eimemory/retrieval/engine.py", "prior\n", "prior")
-    current_commit = _commit(repo, "eimemory/new_runtime_surface.py", "changed\n", "current")
+    current_commit = _commit(repo, path, "changed\n", "current")
     runtime = Runtime.create(root=tmp_path / "runtime")
     try:
         _receipt(runtime, SCOPE, prior_commit, "1.0.0")
@@ -1733,7 +1742,8 @@ def test_unknown_production_path_marks_every_domain_changed(tmp_path: Path) -> N
 
         report = record_release_lineage(runtime, scope=SCOPE, repo_root=repo, current_release=current)
 
-        assert report["unknown_production_paths"] == ["eimemory/new_runtime_surface.py"]
+        assert report["unknown_production_paths"] == [path]
+        assert report["compatible"] is False
         assert {value["mode"] for value in report["domains"].values()} == {"changed_unverified"}
     finally:
         runtime.close()

@@ -325,6 +325,8 @@ jobs:
       - name: Verify support, lifecycle and signed-tool contracts
         run: >-
           python -B -m pytest -q --strict-markers
+          tests/test_explicit_raw_presentation.py
+          tests/test_model_identity_contracts_regression.py
           tests/test_caller_assistance.py
           tests/test_hermes_provider_lifecycle.py
           tests/test_hermes_provider_reuse_contract.py

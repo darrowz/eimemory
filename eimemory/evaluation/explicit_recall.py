@@ -196,6 +196,9 @@ def observe_explicit_recall(service: Any, *, channel: str, scope: dict, query: s
         expected_result = {"ok": True, "adapter_contract_version": RUNTIME_ADAPTER_CONTRACT_VERSION,
                            "channel": channel, "scope": asdict(exact), "bundle": assembled,
                            "context": render_loadout(assembled, max_chars=service.max_context_chars)}
+        if bundle.raw_citation is not None:
+            expected_result['raw_citation_presentation'] = (assembled.get('raw_citation') or {}).get(
+                'presentation', bundle.raw_citation.presentation)
         if result != expected_result:
             raise ValueError("explicit result rendering mismatch")
         # Legacy cascade summaries contain no physical scope/source_id. They
