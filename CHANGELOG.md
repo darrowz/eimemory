@@ -1,3 +1,10 @@
+## [1.15.84]
+
+- Discover an existing protected logical profile declaration from an ordinary native user CLI without enrolling a manager or changing authority selection.
+- Verify native user runtime owners with exact unit, account, cgroup, invocation, process lifetime and namespace checks; use that observation for profile and capture evidence. Managed transport failures never fall back to direct observation.
+- Preserve exact business-profile coverage and all stability gates. A readable topology is not manager registration, historical custody recovery or business acceptance.
+- See `docs/releases/v1.15.84.md` for validation and acceptance boundaries.
+
 ## [1.15.83]
 
 - Recheck registered-source trust and binding at final recall admission, including persisted brief parents, so revocation after candidate selection withholds stale body and citations.

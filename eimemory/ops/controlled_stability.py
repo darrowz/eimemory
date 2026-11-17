@@ -227,30 +227,19 @@ def _unit_states() -> list[dict[str, str]]:
 
 def _host_process_observation(state: dict[str,str]) -> dict[str,Any]:
     from eimemory.core.runtime_manager import request
-    value=request('runtime_process_environment',unit=state['Id'])['observation']
-    fields={'schema','unit','pid','start_ticks','invocation_id','environment'}
-    if (not isinstance(value,dict) or set(value) not in (fields, fields | {'namespace_pids'})
-            or value['schema']!='eimemory.runtime_process_environment.v1' or value['unit']!=state['Id']
-            or type(value['pid']) is not int or value['pid']!=int(state['MainPID']) or value['pid']<=0
-            or type(value['start_ticks']) is not int or value['start_ticks']<=0
-            or not isinstance(value['invocation_id'],str) or re.fullmatch('[0-9a-f]{32}',value['invocation_id']) is None
-            or not isinstance(value['environment'],dict)
-            or any(not isinstance(k,str) or not isinstance(v,str) or '\0' in k+v for k,v in value['environment'].items())):
-        raise ValueError('runtime_host_process_observation_invalid')
-    if 'namespace_pids' in value and (not isinstance(value['namespace_pids'], list)
-            or not 0 <= len(value['namespace_pids']) <= 64
-            or any(type(pid) is not int or pid <= 0 for pid in value['namespace_pids'])
-            or (value['namespace_pids'] and value['namespace_pids'][0] != value['pid'])
-            or len(set(value['namespace_pids'])) != len(value['namespace_pids'])):
-        raise ValueError('runtime_host_process_observation_invalid')
-    return value
+    from eimemory.ops.runtime_service_observation import _validate_process_observation
+    return _validate_process_observation(
+        request('runtime_process_environment', unit=state['Id'])['observation'], state['Id'], state)
 
 
 def _process_environment(state: dict[str, str]) -> tuple[int, Path, dict[str, str]]:
-    from eimemory.ops.runtime_service_observation import registered_runtime_context
+    from eimemory.ops.runtime_service_observation import registered_runtime_context, runtime_process_observation
     if registered_runtime_context():
         value=_host_process_observation(state)
         return value['pid'],Path('/proc')/str(value['pid']),value['environment']
+    if _topology() is not None:
+        value = runtime_process_observation(state['Id'], state=state)
+        return value['pid'], Path('/proc') / str(value['pid']), value['environment']
     pid = int(state["MainPID"])
     if pid <= 0:
         raise ValueError("runtime_pid_unavailable")
@@ -378,12 +367,15 @@ def _current_pg_agrees(health, snapshot, *, at=None):
 
 
 def _process_status(state: dict[str, str], expected_commit: str) -> dict[str, Any]:
-    from eimemory.ops.runtime_service_observation import registered_runtime_context
-    if registered_runtime_context():
-        value=_host_process_observation(state)
+    from eimemory.ops.runtime_service_observation import registered_runtime_context, runtime_process_observation
+    registered = registered_runtime_context()
+    topology = _topology()
+    if registered or topology is not None:
+        value = (_host_process_observation(state) if registered else
+                 runtime_process_observation(state['Id'], state=state))
         result=_capture_environment_status(value['environment'],state['Id'],expected_commit)
         result.update(pid=value['pid'],start_ticks=value['start_ticks'])
-        if _topology() is not None:
+        if topology is not None:
             result['invocation_id'] = value['invocation_id']
         return result
     pid, process, env = _process_environment(state)

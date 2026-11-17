@@ -84,6 +84,8 @@ jobs:
           tests/test_manual_recovery_capture.py
           tests/test_user_topology_restore.py
           tests/test_hermes_topology_contract.py
+          tests/test_hermes_topology_discovery.py
+          tests/test_native_runtime_process_observation.py
           tests/test_hermes_native_profile_topology.py
           tests/test_installer_hermes_dependency.py
           tests/test_hermes_multiplex_context.py

@@ -57,8 +57,8 @@ def _read(path, maximum=1024 * 1024):
 
 
 def _process_owner():
-    from eimemory.core.runtime_manager import request
-    observation = request('runtime_process_environment', unit=MAIN_GATEWAY)['observation']
+    from eimemory.ops.runtime_service_observation import runtime_process_observation
+    observation = runtime_process_observation(MAIN_GATEWAY)
     return {key: observation[key] for key in ('unit', 'pid', 'start_ticks', 'invocation_id')}, observation
 
 
@@ -108,7 +108,7 @@ def _stable_body(proof):
 
 
 def collect_native_profile_topology(topology, owner_state=None, *, expected_commit):
-    """Use controller observations outside private PID namespaces; fail closed."""
+    """Observe the selected runtime owner and native metadata; fail closed."""
     topology = validate_snapshot(topology)
     reasons = []
     proof = dict(schema=SCHEMA, topology_digest=topology['topology_digest'], owner={},

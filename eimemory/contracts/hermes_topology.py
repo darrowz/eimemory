@@ -175,21 +175,34 @@ def validate_snapshot(value):
 
 
 def _authority():
-    # Do not derive enrollment from a request's HOME/XDG or profile secret scope.
+    # Logical declarations do not enroll a manager or choose its transport.
+    # Keep the selector's validation and the existing managed user route.
     from eimemory.contracts.user_control_plane import account, coordinates, read_file, user_mode
     if not user_mode():
-        return None
+        if os.name != 'posix' or not hasattr(os, 'geteuid') or os.geteuid() <= 0:
+            return None
+        # An ordinary native operator may read their existing protected pair.
+        # Legacy managed PID1/transition contexts must not adopt user authority
+        # merely because that account also owns a declaration. Select before
+        # reading; never fall back after a manager or authority error.
+        from eimemory.ops.runtime_service_observation import registered_runtime_context
+        if registered_runtime_context():
+            return None
+        if os.getgid() != os.getegid():
+            raise ValueError('hermes_topology_native_group_identity_invalid')
+    # Fixed passwd account coordinates; never request HOME/XDG/profile values.
     coords = coordinates()
     coords['runtime_user'] = account().pw_name
     return coords, read_file
 
 
 def load_topology():
-    """Read the committed user declaration; absent enrollment alone returns None.
+    """Read a protected declaration in its permitted native account context.
 
     Independent recovery authenticates the intent's complete source inventory
     and private registration receipt. Product consumers verify the published
-    operator intent and declaration digest; neither artifact grants L5 credit.
+    operator intent and declaration digest. Reading it grants neither manager
+    enrollment nor L5 credit; a missing pair remains unconfigured.
     """
     authority = _authority()
     if authority is None:
