@@ -833,6 +833,7 @@ def _publish_installation(args,account,files,manifest,seed,settings,managed_raw,
     uid=account.pw_uid;home=Path(account.pw_dir)
     authority=home/'.config/eimemory/control-plane';state=home/'.local/state/eimemory/control-plane'
     code=home/'.local/lib/eimemory/control-plane';registry_path=authority/'runtime-manager.v1.json'
+    if hasattr(helper,'require_completed_current_enrollment'):helper.require_completed_current_enrollment()
     commit=manifest['controller_commit'];runtime=seed['runtime_commit']
     # Backups share the key/ledger's inaccessible mount boundary in products.
     import tarfile
@@ -1238,15 +1239,16 @@ def finish_published_installation(args):
 
 
 
-def install_user_units(files,unit_home,uid,*,controller_commit,runtime_commit):
+def install_user_units(files,unit_home,uid,*,controller_commit,runtime_commit,writer=None):
     """Install initial job/validation mounts before the first job can start."""
+    publish=write if writer is None else writer
     for name,raw in files.items():
         if name.startswith('templates/'):
             unit=name.removeprefix('templates/')
             if is_gateway_unit(unit):continue
-            write(unit_home/unit,raw,uid,0o644)
+            publish(unit_home/unit,raw,uid,0o644)
             destination=unit_home/(unit+'.d')
-            directory(destination,uid)
+            if writer is None:directory(destination,uid)
             if unit.endswith('.service'):
                 if unit=='eimemory-code-deployment-job@.service':
                     policy_name='job-runtime-policy.conf';target=controller_commit
@@ -1255,9 +1257,9 @@ def install_user_units(files,unit_home,uid,*,controller_commit,runtime_commit):
                 else:
                     policy_name='runtime-policy.conf';target=runtime_commit
                 policy=files[policy_name].replace(b'@COMMIT@',target.encode())
-                write(destination/'90-eimemory-runtime.conf',policy,uid)
+                publish(destination/'90-eimemory-runtime.conf',policy,uid)
         elif name=='eimemory-runtime-manager.service':
-            write(unit_home/name,raw,uid,0o644)
+            publish(unit_home/name,raw,uid,0o644)
 
 
 def failed_attempt_native(contract,record,environment):
@@ -1388,6 +1390,8 @@ def register_topology(args):
             for profile in logical['profiles']):
         raise ValueError('user_topology_operator_identity_invalid')
     intent_raw=reviewed(args.topology_intent,args.expected_topology_intent_sha256,65536);intent=contract.strict_json(intent_raw)
+    if intent.get('schema') != 'eimemory.hermes_topology_intent.v1':
+        raise ValueError('user_topology_historical_registration_required')
     topology.validate_operator_topology_intent(intent,main=topology.MAIN_GATEWAY,
         retired=logical['retired_gateways'],uid=uid,gid=account.pw_gid)
     if (contract.canonical(intent)!=intent_raw or intent['topology_sha256']!=topology.topology_digest(logical)
@@ -1489,6 +1493,7 @@ def stage_release(args):
         return execute_reviewed_module(name,code/name,data)
     helper=load('user_control_plane.py','eimemory/contracts/user_control_plane.py')
     for path in (authority,state,code):helper.trusted_directory(path)
+    if hasattr(helper,'require_completed_current_enrollment'):helper.require_completed_current_enrollment()
     contract=load('runtime_manager_contract.py','eimemory/contracts/runtime_manager.py')
     registry=contract.validate_registry(contract.strict_json(raw))
     if (registry['runtime_uid']!=uid or registry['runtime_gid']!=account.pw_gid
@@ -1981,6 +1986,38 @@ def abandon_failed_manual(args):
 
 
 def main():
+    if sys.argv[1:2] in (['inspect-current-user'],['initialize-current-user'],['recover-current-user'],['finish-current-user']):
+        operation=sys.argv[1]
+        parser=argparse.ArgumentParser(description='Independent current-epoch user enrollment; no historical custody credit')
+        parser.add_argument('operation',choices=[operation])
+        parser.add_argument('--bundle',type=Path,required=True)
+        parser.add_argument('--expected-bundle-sha256',required=True)
+        parser.add_argument('--enrollment-id',required=True)
+        if operation=='finish-current-user':parser.add_argument('--expected-plan-sha256',required=True)
+        elif operation=='recover-current-user':
+            review=parser.add_mutually_exclusive_group(required=True)
+            review.add_argument('--expected-plan-sha256')
+            review.add_argument('--expected-operator-intent-sha256')
+        else:
+            parser.add_argument('--repository-root',required=True)
+            for name in ('runtime-settings','unit-scopes','logical-topology'):
+                parser.add_argument('--'+name,type=Path,required=True)
+                parser.add_argument('--expected-'+name+'-sha256',required=True)
+            if operation=='inspect-current-user':parser.add_argument('--output',type=Path,required=True)
+            else:
+                parser.add_argument('--operator-intent',type=Path,required=True)
+                parser.add_argument('--expected-operator-intent-sha256',required=True)
+        args=parser.parse_args()
+        if os.name!='posix' or os.getuid()!=os.geteuid() or os.geteuid()<=0:
+            raise ValueError('current_enrollment_native_user_required')
+        import pwd
+        account=pwd.getpwuid(os.geteuid())
+        files,manifest=bundle_files(args.bundle,args.expected_bundle_sha256,account.pw_uid,account.pw_gid)
+        source=files['runtime_manager_current_user.py']
+        module=execute_reviewed_module('reviewed_current_user',Path(__file__).with_name('runtime_manager_current_user.py'),source)
+        result=module.run(args,sys.modules[__name__],files,manifest)
+        print(json.dumps(result,sort_keys=True))
+        return
     if sys.argv[1:2] in (['register-topology'],['inspect-topology-native']):
         operation=sys.argv[1]
         parser=argparse.ArgumentParser(description='Reviewed user topology declaration and native readback')

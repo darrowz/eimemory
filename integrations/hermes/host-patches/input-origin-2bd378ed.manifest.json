@@ -1,0 +1,264 @@
+{
+  "schema": "eimemory.hermes-input-origin-companion.v1",
+  "patch_id": "input-origin-2bd378ed",
+  "upstream": "https://github.com/NousResearch/hermes-agent.git",
+  "base_commit": "2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19",
+  "base_kind": "Exact retained live preimages after the existing lifecycle patch; HEAD alone is insufficient.",
+  "patch": "input-origin-2bd378ed.patch",
+  "patch_sha256": "c038d3fee59b04f2bc84c34b760a5cd357e8429a192bddca678a3ebd51c63682",
+  "sha256_basis": "Git canonical LF bytes",
+  "files": [
+    {
+      "path": "gateway/run_turn.py",
+      "before_sha256": "851dea07d3177ca1a274a5b94e6d490a3b22aee46f5fb57d27fb8a363a03879a",
+      "after_sha256": "4f4d0d37f62241df3e6484f9a73663e72deede31ccea9bdd4790260bb0065eb3",
+      "before_state": "regular_file"
+    },
+    {
+      "path": "gateway/run_turn_runner.py",
+      "before_sha256": "6c575d176a6662829bc1e13d6063e659326c60f4687f7472cde7437f1f6aa001",
+      "after_sha256": "64b853418acf6a85f04de6503bae7be7d1462ef4b0ada97e5c6555669ad8126a",
+      "before_state": "regular_file"
+    },
+    {
+      "path": "gateway/eimemory_input_origin.py",
+      "before_sha256": null,
+      "after_sha256": "ae49780d7f3659715441de0d861dcef90857841077e8f5b20b22b539fc446220",
+      "before_state": "absent"
+    }
+  ],
+  "preconditions": {
+    "exact_before_hashes_required": true,
+    "new_file_must_be_absent": true,
+    "existing_lifecycle_patch_preserved": true,
+    "old_five_file_patch_not_rewritten": true,
+    "gateway_quiesced_before_switch": true,
+    "restart_required": true
+  },
+  "evidence_boundary": "Input origin only. External platform is not human proof, model delivery, task outcome or answer correctness.",
+  "deployment_status": "Source artifact only; not installed or production accepted.",
+  "verification": {
+    "status": "Exact isolated Git application and owner-seam compatibility checks completed.",
+    "windows": {
+      "tests": 344,
+      "failures": 1,
+      "errors": 1,
+      "skipped": 49,
+      "passed": 293,
+      "junit_sha256": "6a85f9597cc2ae755a6eda7b4bcefa438e092d48e341bc0cb271ae871c84acc5"
+    },
+    "linux": {
+      "tests": 344,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 344,
+      "junit_sha256": "962f4b16ee30c13ab25c62baab7a319ba576fc960c94b4e956dc3df2dddb6631"
+    },
+    "windows_baseline_controls": {
+      "tests": 2,
+      "failures": 1,
+      "errors": 1,
+      "skipped": 0,
+      "passed": 0,
+      "junit_sha256": "f4abe469a8c0d63e645fc3ca5f8ba899a89fe9ad21f116b6c4e4f8dcfa7dc8f3"
+    },
+    "windows_existing_limitations": [
+      "49 existing POSIX credential/owner checks are skipped by their existing platform guards.",
+      "One existing chmod permission assertion fails on pure 5060 and candidate Windows.",
+      "One existing os.geteuid fixture errors on pure 5060 and candidate Windows."
+    ],
+    "native_owner_seam": {
+      "tests": 2,
+      "windows_passed": 2,
+      "linux_passed": 2,
+      "boundary": "Applied real owner statements with isolated Runtime/RPC and substituted outer host services; not complete native gateway acceptance."
+    },
+    "current_source_hashes": {
+      "eimemory/adapters/eibrain/rpc.py": "23ab5c91f1bfa1104603fcd52cac7816055cb881c76b90f9d3485cc0390143e3",
+      "eimemory/adapters/eibrain/rpc_server.py": "3fdac519a6b384ca573748e7fe7440fba51fcccc067a2848c53a8610def3b657",
+      "eimemory/adapters/hermes/answer_observation.py": "cc52dec05cde9a11513d0628473b1832db4ac0fef886c2f3e969883653f5c4d0",
+      "eimemory/adapters/hermes/effect_observer.py": "8e863b60c08358cc7c5c1356149a35b68a38d729b14d7b4efae4db8c5b187157",
+      "eimemory/adapters/hermes/input_origin.py": "a67c6ff74b5375fe62934b0c48f53eda32ed6e8e3ae51f2d3a1b18be6de98484",
+      "eimemory/adapters/hermes/provider_core.py": "56bee046f264af8bc11fb6fda9042e6954bfe1e5b85939e33e7557d1e7dc4bdf",
+      "eimemory/governance/learning/effect_dataset.py": "37aa8bb9e09c00efb3b8f364c360459501de494d43c24495ff62392f205a8116",
+      "eimemory/governance/learning/effect_hypotheses.py": "4042ec9e9c54be4c8eeb38a1de8d1bc854bd0efed2d73dac8f957aa49c1ba590",
+      "eimemory/governance/learning/effect_learning.py": "0e7b2b2ad9ab9775f1dafd76a7efa3086bf8ff7993099dc2d11c22a9e24f1e10",
+      "eimemory/ops/natural_outcomes.py": "09957203ef129818399007838b9166220c1f31349aaceaa84c8513cc641a5c59",
+      "eimemory/retrieval/input_origin.py": "edc367bc56021cbae539a1de0887ba85b8619111153a4d89f92abbcde0b10f8a",
+      "integrations/hermes/host/input_origin.py": "ae49780d7f3659715441de0d861dcef90857841077e8f5b20b22b539fc446220",
+      "tests/effect_origin_fixture.py": "a0e8f85b73ba2a36bef7202ce26f02070c795fa4992b952b28a40fb8478849f5",
+      "tests/test_hermes_answer_observation.py": "46a2a61ae84426f7ea6638ff2e1b6fbe444b94e19944469603eeca53d1a9716a",
+      "tests/test_hermes_input_origin.py": "f7d93add5ef749dec91f42cac752ead8b0ecf8c04d39711c8a4b704723b34720",
+      "tests/test_hermes_native_input_origin.py": "5553f3232a155f1fa35c0ef2d8c6e525dcd55a59fc4823d3acf0631cad34b57c",
+      "tests/test_real_effect_cycle.py": "0641a3ebd960ed1bf310e37d7c82a5fcf027bdf9b391de8eb6cf038ad9cf3616",
+      "tests/test_real_effect_hypotheses.py": "f6e9055423b1a4f6084d6b64549299599b1e13bd62e1caf41d50215222352231",
+      "tests/test_runtime_effect_sources.py": "b1f66404e0c29886f60f748c304e0aef8203992573e62dc523e55baa4ed298ac"
+    },
+    "not_exercised": [
+      "Full native gateway documented test runner and dependency environment.",
+      "Production source/service switch, platform send receipts and traffic coverage.",
+      "Final-answer correctness, task outcomes and the original synthetic 200-question benchmark."
+    ]
+  },
+  "paired_eimemory_contracts": [
+    {
+      "path": "eimemory/adapters/eibrain/rpc.py",
+      "sha256": "23ab5c91f1bfa1104603fcd52cac7816055cb881c76b90f9d3485cc0390143e3"
+    },
+    {
+      "path": "eimemory/adapters/eibrain/rpc_server.py",
+      "sha256": "3fdac519a6b384ca573748e7fe7440fba51fcccc067a2848c53a8610def3b657"
+    },
+    {
+      "path": "eimemory/adapters/hermes/answer_observation.py",
+      "sha256": "cc52dec05cde9a11513d0628473b1832db4ac0fef886c2f3e969883653f5c4d0"
+    },
+    {
+      "path": "eimemory/adapters/hermes/effect_observer.py",
+      "sha256": "8e863b60c08358cc7c5c1356149a35b68a38d729b14d7b4efae4db8c5b187157"
+    },
+    {
+      "path": "eimemory/adapters/hermes/input_origin.py",
+      "sha256": "a67c6ff74b5375fe62934b0c48f53eda32ed6e8e3ae51f2d3a1b18be6de98484"
+    },
+    {
+      "path": "eimemory/adapters/hermes/provider_core.py",
+      "sha256": "56bee046f264af8bc11fb6fda9042e6954bfe1e5b85939e33e7557d1e7dc4bdf"
+    },
+    {
+      "path": "eimemory/adapters/hermes/provider_registry.py",
+      "sha256": "e2608cc0da89b88aa95b42d36b50a8407aee5af9211fc9158b27d773ceb7f56d"
+    },
+    {
+      "path": "eimemory/governance/learning/effect_dataset.py",
+      "sha256": "37aa8bb9e09c00efb3b8f364c360459501de494d43c24495ff62392f205a8116"
+    },
+    {
+      "path": "eimemory/governance/learning/effect_hypotheses.py",
+      "sha256": "4042ec9e9c54be4c8eeb38a1de8d1bc854bd0efed2d73dac8f957aa49c1ba590"
+    },
+    {
+      "path": "eimemory/governance/learning/effect_learning.py",
+      "sha256": "0e7b2b2ad9ab9775f1dafd76a7efa3086bf8ff7993099dc2d11c22a9e24f1e10"
+    },
+    {
+      "path": "eimemory/ops/natural_outcomes.py",
+      "sha256": "09957203ef129818399007838b9166220c1f31349aaceaa84c8513cc641a5c59"
+    },
+    {
+      "path": "eimemory/retrieval/input_origin.py",
+      "sha256": "edc367bc56021cbae539a1de0887ba85b8619111153a4d89f92abbcde0b10f8a"
+    },
+    {
+      "path": "integrations/hermes/eimemory/__init__.py",
+      "sha256": "69e46c26c8e0987510b76466eda24b5164e326675def777b09e7c743284c4bfb"
+    },
+    {
+      "path": "integrations/hermes/host/input_origin.py",
+      "sha256": "ae49780d7f3659715441de0d861dcef90857841077e8f5b20b22b539fc446220"
+    }
+  ],
+  "source_base_commit": "5060fc22c6446ce0265c2346f888fa789ae74a64",
+  "preimage_observation": {
+    "read_only": true,
+    "checked_at_utc": "2026-11-17T20:48:08.342357+00:00",
+    "files": [
+      {
+        "path": "agent/memory_manager.py",
+        "exists": true,
+        "symlink": false,
+        "sha256": "402383a7585f588c1e4b609d46909c739645e931a64f5deaf7ec2a1888d40667"
+      },
+      {
+        "path": "agent/agent_init.py",
+        "exists": true,
+        "symlink": false,
+        "sha256": "5c1a34756178341b8bedf55b43e0d2ab39b90ce7969a90a4603a1a2416681ac2"
+      },
+      {
+        "path": "agent/memory_handoff.py",
+        "exists": true,
+        "symlink": false,
+        "sha256": "40036f779daba884c64b0631ffa5ee0f9c786985baa1e64bd176df202634b02a"
+      },
+      {
+        "path": "gateway/session_execution.py",
+        "exists": true,
+        "symlink": false,
+        "sha256": "285eb899ad833fce80fa493092f802a1b2ca149c804ff7a6f8c5027f27897adf"
+      },
+      {
+        "path": "gateway/run_turn_runner.py",
+        "exists": true,
+        "symlink": false,
+        "sha256": "6c575d176a6662829bc1e13d6063e659326c60f4687f7472cde7437f1f6aa001"
+      },
+      {
+        "path": "gateway/run_turn.py",
+        "exists": true,
+        "symlink": false,
+        "sha256": "851dea07d3177ca1a274a5b94e6d490a3b22aee46f5fb57d27fb8a363a03879a"
+      },
+      {
+        "path": "gateway/eimemory_input_origin.py",
+        "exists": false,
+        "symlink": false,
+        "sha256": null
+      }
+    ]
+  },
+  "lifecycle_composition": {
+    "original_manifest": "memory-lifecycle-2bd378ed.manifest.json",
+    "original_manifest_sha256": "23fbd6dab4a0d8501083804193d3f66b0d4497357ce4bb1718281f89bfd80f50",
+    "original_patch": "memory-lifecycle-2bd378ed.patch",
+    "original_patch_sha256": "f756ce42475491824ffe1f7c13f6f1923e11059eeab9935dc2c49d2137f8529d",
+    "historical_26_case_replay_unchanged": true,
+    "advanced_paths": [
+      {
+        "path": "gateway/run_turn_runner.py",
+        "lifecycle_postimage": "6c575d176a6662829bc1e13d6063e659326c60f4687f7472cde7437f1f6aa001",
+        "input_origin_postimage": "64b853418acf6a85f04de6503bae7be7d1462ef4b0ada97e5c6555669ad8126a"
+      }
+    ],
+    "inherited_postimages": [
+      {
+        "path": "agent/memory_manager.py",
+        "after_sha256": "402383a7585f588c1e4b609d46909c739645e931a64f5deaf7ec2a1888d40667"
+      },
+      {
+        "path": "agent/agent_init.py",
+        "after_sha256": "5c1a34756178341b8bedf55b43e0d2ab39b90ce7969a90a4603a1a2416681ac2"
+      },
+      {
+        "path": "agent/memory_handoff.py",
+        "after_sha256": "40036f779daba884c64b0631ffa5ee0f9c786985baa1e64bd176df202634b02a"
+      },
+      {
+        "path": "gateway/session_execution.py",
+        "after_sha256": "285eb899ad833fce80fa493092f802a1b2ca149c804ff7a6f8c5027f27897adf"
+      }
+    ],
+    "new_companion_postimages": [
+      {
+        "path": "gateway/run_turn.py",
+        "after_sha256": "4f4d0d37f62241df3e6484f9a73663e72deede31ccea9bdd4790260bb0065eb3"
+      },
+      {
+        "path": "gateway/run_turn_runner.py",
+        "after_sha256": "64b853418acf6a85f04de6503bae7be7d1462ef4b0ada97e5c6555669ad8126a"
+      },
+      {
+        "path": "gateway/eimemory_input_origin.py",
+        "after_sha256": "ae49780d7f3659715441de0d861dcef90857841077e8f5b20b22b539fc446220"
+      }
+    ],
+    "verification_boundary": "All seven expected compound paths are listed. The four inherited postimages were read back live unchanged. Only this new three-file patch was applied and exercised in the present isolated tests; production postimages remain unmodified."
+  },
+  "callback_boundary": {
+    "provenance_population": "Host-attested inputs recorded at post-LLM callback; admitted inputs lacking that callback remain unknown.",
+    "external_is_not_human": true,
+    "finalizer_is_not_delivery": true,
+    "edit_revision": "Native event.edit_revision is included when provided; missing revisions conservatively share message identity."
+  }
+}

@@ -216,7 +216,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
             if not isinstance(request, dict) or not isinstance(request.get("method"), str):
                 raise RequestBoundaryError("invalid_request")
             method = request["method"]
-            if method in {"adapter.attest_tool_result", "adapter.record_verified_capability_outcome", "adapter.proactive_signal"}:
+            if method in {"adapter.attest_tool_result", "adapter.record_verified_capability_outcome", "adapter.proactive_signal", "adapter.attest_input_origin"}:
                 if not producer:
                     stage = 'response_write'
                     self._send_json(401, {"ok": False, "error": "attestation_unauthorized"})

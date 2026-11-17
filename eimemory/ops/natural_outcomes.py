@@ -46,7 +46,7 @@ def _origin(row: sqlite3.Row) -> str:
         return "deploy_replay"
     if session.startswith("cron_"):
         return "scheduled"
-    return "natural"
+    return "non_acceptance_candidate"
 
 
 def outcome_stats(db_path: Path, *, since: str = "", channel: str = "") -> dict[str, Any]:
@@ -66,8 +66,7 @@ def outcome_stats(db_path: Path, *, since: str = "", channel: str = "") -> dict[
             where.append("channel = ?")
             params.append(channel)
         decisions = conn.execute(
-            f"SELECT decision_id, channel, agent_id, session_id, {accept_sql} AS acceptance_generated, "
-            "outcome_verified, outcome_success FROM proactive_decisions WHERE " + " AND ".join(where),
+            f"SELECT *, {accept_sql} AS acceptance_generated FROM proactive_decisions WHERE " + " AND ".join(where),
             params,
         ).fetchall()
         signals_by_decision: dict[str, list[tuple[str, dict]]] = {}
@@ -81,15 +80,38 @@ def outcome_stats(db_path: Path, *, since: str = "", channel: str = "") -> dict[
         origins: Counter[str] = Counter()
         gateways: dict[str, dict[str, Any]] = {}
         totals: Counter[str] = Counter()
+        candidates: Counter[str] = Counter()
+        unique_inputs = set()
         for row in decisions:
             origin = _origin(row)
-            origins[origin] += 1
-            if origin != "natural":
+            if origin != 'non_acceptance_candidate':
+                origins[origin] += 1
                 continue
+            from eimemory.retrieval.input_origin import read_input_origin, unknown, TABLE
+            evidence = unknown()
+            if TABLE in tables:
+                try:
+                    decision = dict(row)
+                    decision['scope'] = {key: row[key] for key in ('tenant_id', 'agent_id', 'workspace_id', 'user_id')}
+                    decision['source_ids'] = json.loads(row['source_ids_json'])
+                    decision['acceptance_generated'] = None if row['acceptance_generated'] is None else bool(row['acceptance_generated'])
+                    evidence = read_input_origin(conn, decision)
+                except (TypeError, ValueError, KeyError):
+                    evidence = unknown('unverified')
+            origins[evidence['origin_kind']] += 1
+            candidates['decisions'] += 1
+            candidates['with_any_signal'] += int(bool(signals_by_decision.get(str(row['decision_id']))))
+            candidates['with_verified_outcome'] += int(bool(row['outcome_verified']))
+            candidates['origin_verified'] += int(evidence['verified'])
+            candidates['origin_unknown'] += int(evidence['origin_kind'] == 'unknown')
+            if not evidence['natural_learning_eligible']:
+                continue
+            unique_inputs.add(evidence['unique_input_digest'])
             bucket = gateways.setdefault(f"{row['channel']}:{canonical_agent_id(str(row['agent_id'] or ''))}", {
                 "decisions": 0, "with_any_signal": 0, "with_turn_signal": 0, "with_followup_signal": 0,
-                "with_rating": 0, "with_verified_outcome": 0, "labels": Counter()})
+                "with_rating": 0, "with_verified_outcome": 0, "labels": Counter(), '_unique_inputs': set()})
             bucket["decisions"] += 1
+            bucket['_unique_inputs'].add(evidence['unique_input_digest'])
             phases = signals_by_decision.get(str(row["decision_id"]), [])
             seen = {phase for phase, _ in phases}
             bucket["with_any_signal"] += int(bool(phases))
@@ -102,6 +124,7 @@ def outcome_stats(db_path: Path, *, since: str = "", channel: str = "") -> dict[
                     if key != "latency_ms" and isinstance(value, str):
                         bucket["labels"][f"{key}={value}"] += 1
         for bucket in gateways.values():
+            bucket['unique_admitted_inputs'] = len(bucket.pop('_unique_inputs'))
             total = bucket["decisions"]
             bucket["signal_coverage"] = round(bucket["with_any_signal"] / total, 4) if total else 0.0
             bucket["verified_outcome_coverage"] = round(bucket["with_verified_outcome"] / total, 4) if total else 0.0
@@ -121,7 +144,11 @@ def outcome_stats(db_path: Path, *, since: str = "", channel: str = "") -> dict[
             "since": since,
             "channel": channel,
             "decisions_by_origin": dict(origins),
+            "non_acceptance_candidates": {key: int(candidates[key]) for key in
+                ('decisions', 'with_any_signal', 'with_verified_outcome', 'origin_verified', 'origin_unknown')},
             "natural": {
+                "population": "host_attested_external_input",
+                "unique_admitted_inputs": len(unique_inputs),
                 **{key: int(totals[key]) for key in ("decisions", "with_any_signal", "with_turn_signal",
                                                      "with_followup_signal", "with_rating", "with_verified_outcome")},
                 "signal_coverage": round(totals["with_any_signal"] / natural, 4) if natural else 0.0,
@@ -129,6 +156,7 @@ def outcome_stats(db_path: Path, *, since: str = "", channel: str = "") -> dict[
             },
             "gateways": dict(sorted(gateways.items())),
             "semantics": {
+                "input_origin": "Legacy/unverified origin is unknown. External platform provenance is not human, delivery, answer correctness or task-success proof.",
                 "signals": "host-observed labels (recall.effect_signal.v1); not verified task outcomes",
                 "verified_outcome": "proactive_decisions.outcome_verified (host-attested terminal outcome only)",
             },

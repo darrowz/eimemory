@@ -545,6 +545,16 @@ class EIBrainRPCBridge:
                     session_id=session_id, turn_id=turn_id, decision_id=decision_id,
                     injected_citations=injected_citations,
                 )
+            elif method == "adapter.attest_input_origin":
+                fields = {"channel", "scope", "source_ids", "session_id", "turn_id", "decision_id", "origin"}
+                if (attestation_producer != channel or channel != "hermes" or set(params) != fields
+                        or not self._valid_nonempty_strings(params['source_ids'])
+                        or not all(isinstance(params[key], str) and params[key].strip()
+                                   for key in ('session_id', 'turn_id', 'decision_id'))):
+                    return self._with_contract(self._invalid_request())
+                from eimemory.retrieval.input_origin import record_input_origin
+                result = record_input_origin(self.runtime.store, **params,
+                                             attestation_producer=attestation_producer)
             elif method == "adapter.proactive_signal":
                 if attestation_producer != channel:
                     return self._with_contract(self._invalid_request())

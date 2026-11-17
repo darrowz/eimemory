@@ -72,9 +72,20 @@ def load_observations(store, *, channel, scope, source_ids, start=None, end=None
                      "retrieval_diagnostics": {"real_effect_policy": p.get("real_effect_policy", {})}, "items": []}
                 decisions[d["decision_id"]] = d
             signals.append({**p, "signal_id": row[0], "observed_at": row[2]})
+        from eimemory.retrieval.input_origin import read_input_origin
+        for decision in decisions.values():
+            decision['input_origin'] = read_input_origin(sqlite, decision)
         return decisions, signals, unanchored
 
     decisions, signals, unanchored = store.read_consistent(read_snapshot)
+    # Fix each admitted input's canonical decision over the complete exact
+    # namespace before applying a trial/report time window. Otherwise a retry
+    # inside a later window could receive fresh credit for an old input.
+    canonical = {d['input_origin']['unique_input_digest']: d['decision_id']
+                 for d in credited_inputs(decisions.values())}
+    for decision in decisions.values():
+        origin = decision['input_origin']
+        origin['canonical_decision_id'] = canonical.get(origin.get('unique_input_digest'))
     selected = {key: d for key, d in decisions.items()
                 if (start is None or instant(d["created_at"]) >= start)
                 and (end is None or instant(d["created_at"]) < end)}
@@ -92,3 +103,22 @@ def load_observations(store, *, channel, scope, source_ids, start=None, end=None
     return {"channel": channel, "scope": scope, "source_ids": sources,
             "decisions": sorted(selected.values(), key=lambda d: (d["created_at"], d["decision_id"])),
             "unanchored_signals": unanchored, "population": "retained_decisions_and_anchored_observations"}
+
+
+def credited_inputs(decisions):
+    """One earliest decision per host-attested admitted input, before labels.
+
+    Unattested legacy observations remain reportable candidates, but cannot
+    authorize a new natural-data hypothesis or trial credit. Selecting by
+    creation order never picks the most favorable answer/signal.
+    """
+    seen, selected = set(), []
+    for decision in sorted(decisions, key=lambda d: (d['created_at'], d['decision_id'])):
+        origin = decision.get('input_origin') or {}
+        key = origin.get('unique_input_digest')
+        if (origin.get('natural_learning_eligible') is not True or not key or key in seen
+                or origin.get('canonical_decision_id', decision['decision_id']) != decision['decision_id']):
+            continue
+        seen.add(key)
+        selected.append(decision)
+    return selected

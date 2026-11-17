@@ -8,6 +8,7 @@ from eimemory.retrieval.proactive import ProactiveRecallService
 from eimemory.retrieval.effect_signals import record_signal
 from eimemory.governance.learning.effect_hypotheses import produce_effect_hypotheses
 from eimemory.knowledge.evidence_contracts import versioned_record_ref
+from effect_origin_fixture import configure_test_origin, attest_test_input
 
 BASE = {"tenant_id": "default", "agent_id": "effects", "workspace_id": "workspace", "user_id": "user"}
 SCOPE = resolve_channel_scope("hermes", BASE)
@@ -16,6 +17,7 @@ RELEASE = {"release_commit": "a" * 40, "release_version": "test", "deployment_re
 
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
+    configure_test_origin(monkeypatch, BASE)
     monkeypatch.delenv("EIMEMORY_SOURCE_IDS", raising=False)
     value = Runtime.create(root=tmp_path)
     value.proactive = ProactiveRecallService(value, control_percent=0, release_identity=RELEASE)
@@ -37,6 +39,7 @@ def observe(runtime, record, index, *, correction="suspected", rating=None, task
     assert decision["items"]
     params = {"channel": "hermes", "scope": SCOPE, "source_ids": ["hermes"], "session_id": session,
               "turn_id": "turn", "decision_id": decision["decision_id"]}
+    attest_test_input(runtime, params)
     if injected:
         runtime.proactive.mark_injected(**params, injected_citations=[i["citation"] for i in decision["items"]], release_identity=RELEASE)
     record_signal(runtime.store, **params, phase="turn_completed", event_id="completed",

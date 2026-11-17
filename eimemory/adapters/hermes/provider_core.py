@@ -644,7 +644,10 @@ class HermesMemoryProviderCore:
         session = str(session_id or self._session_id).strip() or "hermes-session"
         host_turn = str(turn_id or "").strip()
         key = self._prefetch_key(session, query)
-        self._effects.pre(session, host_turn, query)
+        self._effects.pre(session, host_turn, query, host_query=user_message)
+        if os.environ.get('EIMEMORY_CAPTURE_INPUT_ORIGIN', '0') == '1':
+            from eimemory.adapters.hermes.input_origin import observe_pre
+            observe_pre(self, session, host_turn, user_message)
         with self._lock:
             pending = dict(self._pending_proactive.get(key) or {})
             if pending and host_turn:
@@ -734,6 +737,9 @@ class HermesMemoryProviderCore:
                 if not self._terminal_call_succeeded(terminal):
                     self._retain_terminal_retries([terminal_params])
         completed_turn = host_turn or str((pending or {}).get("host_turn_id") or "")
+        if os.environ.get('EIMEMORY_CAPTURE_INPUT_ORIGIN', '0') == '1':
+            from eimemory.adapters.hermes.input_origin import observe_post
+            observe_post(self, session, host_turn, user_message, pending)
         self._effects.completed(session, completed_turn, pending, task_success,
                                 assistant_message=assistant_message, observed_host_turn_id=host_turn)
         completed_turn = completed_turn or str((pending or {}).get("decision_turn_id") or "")

@@ -123,7 +123,7 @@ if [ "$(id -u)" -eq 0 ] && ! id "$SERVICE_USER" >/dev/null 2>&1; then
   exit 2
 fi
 if [ -z "${EIMEMORY_CONTROL_PLANE:-}" ] && [ "$(id -u)" -ne 0 ] && \
-   "$PYTHON_BIN" -I -B -c 'import os,pwd,pathlib; p=pathlib.Path(pwd.getpwuid(os.geteuid()).pw_dir)/".config/eimemory/control-plane"; raise SystemExit(0 if any(os.path.lexists(p/n) for n in ("installation.v1.json","runtime-manager.v1.json")) else 1)'; then
+   "$PYTHON_BIN" -I -B -c 'import os,pwd,pathlib; p=pathlib.Path(pwd.getpwuid(os.geteuid()).pw_dir)/".config/eimemory/control-plane"; raise SystemExit(0 if any(os.path.lexists(p/n) for n in ("installation.v1.json","runtime-manager.v1.json","current-user-enrollment.v1.json")) else 1)'; then
   export EIMEMORY_CONTROL_PLANE=user
 fi
 CONTROL_PYCACHE_PREFIX=/var/lib/eimemory-manager/empty-pycache

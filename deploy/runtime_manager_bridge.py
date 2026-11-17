@@ -154,6 +154,23 @@ class Bridge:
         trusted_directory(self.registry_path.parent)
         return self.c.validate_registry(self.c.strict_json(read_file(self.registry_path)))
 
+    def require_enrollment_complete(self):
+        """Pending birth admits observations, never a new deployment lineage."""
+        if not USER_MODE:return
+        helper=globals().get('user_control')
+        if helper is None:
+            if (not os.path.lexists(self.registry_path.parent/'current-user-enrollment.v1.json')
+                    and not os.path.lexists(self.state/'current-enrollments')):return
+            raise ValueError('manager_current_enrollment_state_invalid')
+        try:
+            if helper.require_completed_current_enrollment():self.registered_topology(self.registry())
+        except ValueError as exc:
+            if str(exc)=='user_control_plane_enrollment_pending':
+                raise ValueError('manager_current_enrollment_pending') from exc
+            if str(exc).startswith('user_control_plane_enrollment_'):
+                raise ValueError('manager_current_enrollment_state_invalid') from exc
+            raise
+
     def systemctl(self,registry,unit,*args):
         if self.c.is_dynamic_unit(unit):
             manager='user' if USER_MODE else 'system'
@@ -321,6 +338,7 @@ class Bridge:
         if len(groups)!=1:raise ValueError('manager_activation_cgroup_invalid')
         cgroup=groups[0];unit=cgroup.rsplit('/',1)[-1]
         if unit.startswith(self.c.JOB_UNIT_PREFIX):
+            self.require_enrollment_complete()
             key=unit[len(self.c.JOB_UNIT_PREFIX):-8];record=self.record(key)
             self.verify_job_peer(registry,record,pid,uid);scope=record['request'].get('scope')
             if scope is None:raise ValueError('manager_activation_manual_release_has_no_incident_owner')
@@ -419,6 +437,7 @@ class Bridge:
         if sha256(raw).hexdigest()!=pin:raise ValueError('manager_controller_entry_digest_mismatch')
 
     def submit(self,registry,key):
+        self.require_enrollment_complete()
         path=self.record_path(key)
         if path.exists():
             # Durable submission is never replayed as a second start after an
@@ -432,6 +451,7 @@ class Bridge:
         return self.job_status(registry,key)
 
     def job_status(self,registry,key):
+        self.require_enrollment_complete()
         record=self.record(key)
         state=self.unit_state(record['registry'],record['unit'],[*self.c.NATIVE_EXIT_PROPERTIES,'ControlPID'])
         invocation=state.get('InvocationID')
@@ -499,6 +519,7 @@ class Bridge:
         return read_file(path,uid=registry['runtime_uid'],mode=0o600,maximum=4*1024*1024)
 
     def validation_status(self,registry,key,operation):
+        self.require_enrollment_complete()
         path=self.validation_record_path(key,operation)
         trusted_directory(path.parent,mode=0o750)
         record=self.c.strict_json(read_file(path))
@@ -583,6 +604,7 @@ class Bridge:
         return {'job_key':key,'operation':operation,'artifact_sha256':digest,'sealed_artifact':sealed['reference'],'idempotent':False}
 
     def validate_job(self,registry,key,operation,pid,uid):
+        self.require_enrollment_complete()
         path=self.validation_record_path(key,operation)
         if path.exists():return self.validation_status(registry,key,operation)
         parent=self.record(key);self.verify_job_peer(registry,parent,pid,uid)
@@ -718,6 +740,7 @@ class Bridge:
         atomic_json(directory/(record['context_key']+'.json'),record,gid=registry['runtime_gid'],exclusive=exclusive)
 
     def restore_fused(self,registry,record):
+        self.require_enrollment_complete()
         # A completed oneshot must not be started twice after a daemon crash.
         # Persist each submission before calling PID1 and retain ambiguity.
         if CURRENT.resolve(strict=True)!=RELEASES/record['runtime_commit'] or registry['runtime_commit']!=record['runtime_commit']:
@@ -761,6 +784,7 @@ class Bridge:
         return {'context_key':record['context_key'],'restored':True,'phase':'completed','active_before':record['active_before']}
 
     def fused_closure(self,registry,action,pid,uid,key=None):
+        self.require_enrollment_complete()
         state=self.fused_peer(registry,pid,uid);active=self.state/'active-transition.json'
         pointer=self.c.strict_json(read_file(active)) if active.exists() else None
         existing=None
@@ -892,6 +916,9 @@ class Bridge:
         expected_reference={'basename':path.name,'sha256':digest}
         if reference is not None and reference!=expected_reference:
             raise ValueError('manager_topology_intent_changed')
+        if intent['schema']=='eimemory.hermes_current_topology_intent.v1':
+            self.current_user_topology(registry,intent,raw,logical_raw)
+            return intent,expected_reference
         history=self.state/'managed-incident-receipts'/('topology-intent-'+intent['intent_id'])
         trusted_directory(history,mode=0o700)
         if read_file(history/'intent.original',mode=0o600)!=raw:
@@ -932,6 +959,59 @@ class Bridge:
             'authorization':'explicit_user_operator','autonomous_repair_credit':False}
         if receipt!=expected:raise ValueError('manager_topology_registration_unverified')
         return intent,expected_reference
+
+    def current_user_topology(self,registry,intent,intent_raw,logical_raw):
+        """Authenticate a new current epoch without pretending an old job exists."""
+        if not USER_MODE:raise ValueError('manager_current_topology_user_required')
+        source=intent['source'];history=self.state/'current-enrollments'/source['enrollment_id']
+        trusted_directory(history,mode=0o700)
+        path=ROOT/'current_user_enrollment_contract.py';raw=read_file(path,maximum=512*1024)
+        release=RELEASES/registry['controller_commit']
+        for installed,relative in ((path,'eimemory/contracts/current_user_enrollment.py'),
+                (ROOT/'runtime_manager_bridge.py','deploy/runtime_manager_bridge.py'),
+                (ROOT/'hermes_topology_contract.py','eimemory/contracts/hermes_topology.py'),
+                (ROOT/'user_control_plane.py','eimemory/contracts/user_control_plane.py')):
+            source_path=release/relative;info=source_path.lstat()
+            if (source_path.resolve(strict=True)!=source_path or info.st_uid not in {0,CONTROL_UID}
+                    or info.st_mode&0o022):raise ValueError('manager_current_topology_controller_unreviewed')
+            source_raw=read_file(source_path,uid=info.st_uid,mode=stat.S_IMODE(info.st_mode),maximum=1024*1024)
+            if read_file(installed,maximum=1024*1024)!=source_raw:
+                raise ValueError('manager_current_topology_controller_changed')
+        spec=importlib.util.spec_from_file_location('reviewed_current_user_enrollment',path)
+        epoch=importlib.util.module_from_spec(spec);exec(compile(raw,str(path),'exec'),epoch.__dict__)
+        def original(name,maximum=65536):return read_file(history/name,mode=0o600,maximum=maximum)
+        plan_raw=original('plan.json');plan=self.c.strict_json(plan_raw)
+        initial_raw=original('registry.initial.json');initial=self.c.validate_registry(self.c.strict_json(initial_raw))
+        operator=self.c.strict_json(original('operator-intent.json'))
+        topology_raw=original('topology-intent.current.json')
+        topology_original=original('topology.original',1024*1024)
+        native_raw=original('native-snapshot.json',4*1024*1024)
+        authority_raw=original('authority-snapshot.json',64*1024*1024)
+        receipt=self.c.strict_json(original('complete.json'))
+        key=read_file(self.state/'activation-signing.key',mode=0o600,maximum=4096)
+        selector=self.c.strict_json(read_file(self.registry_path.parent/'current-user-enrollment.v1.json'))
+        if (original('activation-key.original',4096)!=key or topology_raw!=intent_raw or topology_original!=logical_raw
+                or selector!={'schema':'eimemory.current_user_enrollment_selector.v1','enrollment_id':plan['enrollment_id'],
+                    'runtime_uid':plan['runtime_uid'],'runtime_gid':plan['runtime_gid'],'current_commit':plan['current_commit']}
+                or self.c.canonical(plan)!=plan_raw or self.c.canonical(initial)!=initial_raw
+                or source['plan_sha256']!=sha256(plan_raw).hexdigest()
+                or source['registry_sha256']!=sha256(initial_raw).hexdigest()
+                or source['base_commit']!=initial['runtime_commit']
+                or intent['native_snapshot_sha256']!=plan['native_snapshot_sha256']
+                or initial['runtime_uid']!=registry['runtime_uid'] or initial['runtime_gid']!=registry['runtime_gid']
+                or initial['runtime_user']!=registry['runtime_user'] or initial['managed_incident_authority']!={'enabled':False}):
+            raise ValueError('manager_current_topology_source_changed')
+        epoch.validate_completion(receipt,key,plan=plan,intent=operator,registry=initial,
+            topology_raw=logical_raw,topology_intent_raw=intent_raw,native_raw=native_raw,authority_raw=authority_raw)
+        publication=self.c.strict_json(original('publication.json',64*1024*1024),max_bytes=64*1024*1024)
+        journal=self.c.strict_json(original('journal.json',64*1024*1024),max_bytes=64*1024*1024)
+        material={name:item for name,item in publication.items() if not name.endswith('/hermes-topology-intent.v1.json')}
+        if (journal.get('phase') not in {'published','completed'}
+                or self.c.digest(journal.get('before'))!=plan['before_inventory_sha256']
+                or self.c.digest(material)!=plan['publication_sha256']
+                or publication.get(str(self.registry_path.parent/'hermes-topology-intent.v1.json'),{}).get('sha256')!=sha256(intent_raw).hexdigest()):
+            raise ValueError('manager_current_topology_publication_changed')
+        return True
 
     def native_topology_snapshot(self,registry,main,retired):
         properties=['LoadState','ActiveState','UnitFileState','MainPID','ControlPID','ControlGroup','InvocationID']
@@ -1259,6 +1339,7 @@ class Bridge:
             finally:os.close(descriptor)
 
     def transition(self,registry,key,phase,pid,uid):
+        self.require_enrollment_complete()
         record=self.record(key);self.verify_job_peer(registry,record,pid,uid)
         if phase not in {'quiesce','publish','activate','resume_watchers','resume','rollback'}:raise ValueError('manager_transition_phase_invalid')
         if record.get('resumed') is True:
@@ -1698,6 +1779,7 @@ print(json.dumps({'ok':True,'commit':sys.argv[1]}))
         """Controller-owned sweep. HTTP runs before taking either lifecycle lock."""
         path=self.state/'active-transition.json'
         if not os.path.lexists(path):return False
+        self.require_enrollment_complete()
         pointer_raw=read_file(path);pointer=self.c.strict_json(pointer_raw)
         if not isinstance(pointer,dict) or pointer.get('complete') is not False or 'job_key' not in pointer:return False
         registry=self.registry();record=self.record(pointer['job_key'])
@@ -1930,6 +2012,7 @@ print(json.dumps({'ok':True,'commit':sys.argv[1]}))
             **({'idempotent':True} if finalized else {})}
 
     def publish_runtime(self,registry,record,target,*,activate):
+        self.require_enrollment_complete()
         # Only a reviewed immutable root template is rendered. Candidate unit
         # source is never read/imported by root. Root reviews template upgrades
         # through bootstrap independently of autonomous code changes.
@@ -2158,6 +2241,17 @@ print(json.dumps({'ok':True,'commit':sys.argv[1]}))
             'runtime_identity':{'unit'},'activation_attestation':set(),'verify_activation_attestation':{'receipt_id','digest'},'error_window':set(),'single_rpc_owner':set(),'readonly_probe':{'job_key'},'submit_job':{'job_key'},'job_status':{'job_key'},'release_job':{'job_key'},
             'job_journal':{'job_key','invocation'},'validate_deployment_job':{'job_key','validation_operation'},'seal_deployment_validation_result':{'job_key','validation_operation','invocation','artifact_digest'},'deployment_validation_status':{'job_key','validation_operation'},'finalize_job':{'job_key'},'prepare_business_job':{'job_key'},'restore_background_job':{'job_key'},'complete_job':{'job_key'},'transition':{'job_key','phase'}}
         if op not in fields or set(value)!=base|fields[op]:raise ValueError('manager_request_shape_invalid')
+        observations={'unit_state','unit_journal','runtime_identity','runtime_process_environment','activation_attestation',
+            'verify_activation_attestation','error_window','single_rpc_owner','job_journal'}
+        if op not in observations:
+            try:self.require_enrollment_complete()
+            except ValueError as exc:
+                if op!='recover_fused_closure' or str(exc)!='manager_current_enrollment_pending':raise
+                # The fixed service's pre-start hook may observe that no fused
+                # work exists; it cannot start/restore one during pending birth.
+                self.fused_peer(registry,pid,uid)
+                if os.path.lexists(self.state/'active-transition.json'):raise
+                return {'restored':True,'phase':'no_pending_context'}
         if op=='issue_managed_incident_proof':
             return {'reference':self.managed_authority(registry).issue(value['source_record_id'],value['source_digest'],
                 verified_activation_receipt=self.verify_activation,registry=registry,peer={'pid':pid,'uid':uid})}

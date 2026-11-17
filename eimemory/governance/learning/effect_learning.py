@@ -5,7 +5,7 @@ import json
 import math
 from zoneinfo import ZoneInfo
 
-from eimemory.governance.learning.effect_dataset import instant, load_observations, namespace
+from eimemory.governance.learning.effect_dataset import instant, load_observations, namespace, credited_inputs
 from eimemory.governance.learning.effect_hypotheses import METRICS, current_target, produce_effect_hypotheses
 from eimemory.governance.learning.effect_policy import (
     RECEIPT_SCHEMA, canonical, digest, load_effect_policy, namespace_key, seal, stopped, verify,
@@ -203,7 +203,7 @@ def evaluate_trial(runtime, policy, trial, *, now):
     dataset = load_observations(runtime.store, channel=policy["channel"], scope=policy["scope"], source_ids=policy["source_ids"],
                                 start=instant(trial["started_at"]), end=now)
     arms = {"baseline": [], "candidate": []}
-    for d in dataset["decisions"]:
+    for d in credited_inputs(dataset["decisions"]):
         ctx = d.get("retrieval_diagnostics", {}).get("real_effect_policy", {})
         if ctx.get("trial_id") == trial["trial_id"] and (d["release_identity"] != trial["release_identity"]
                 or d["policy_version"].split("+effect:", 1)[0] != trial["base_policy_version"]):
@@ -349,7 +349,7 @@ def evaluate_monitor(runtime, policy, monitor, *, now):
         return "rollback", "effect_policy_expired_or_reissued", None
     dataset = load_observations(runtime.store, channel=policy["channel"], scope=policy["scope"], source_ids=policy["source_ids"],
                                 start=instant(monitor["started_at"]), end=now)
-    samples = [d for d in dataset["decisions"] if not d["control_cohort"]
+    samples = [d for d in credited_inputs(dataset["decisions"]) if not d["control_cohort"]
                and d.get("retrieval_diagnostics", {}).get("real_effect_policy", {}).get("monitor_id") == monitor["monitor_id"]]
     if any(d["release_identity"] != monitor["release_identity"]
            or d["policy_version"].split("+effect:", 1)[0] != monitor["base_policy_version"] for d in samples):

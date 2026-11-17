@@ -60,10 +60,12 @@ def validate_operator_topology_intent(value, *, main, retired, uid, gid):
     fields = {'schema', 'intent_id', 'runtime_uid', 'runtime_gid', 'mode', 'main_gateway',
               'retired_gateways', 'source', 'topology_sha256', 'native_snapshot_sha256',
               'authorization', 'autonomous_repair_credit'}
-    source_fields = {'registry_sha256', 'transition_sha256', 'job_key', 'job_sha256',
-                     'invocation_id', 'base_commit', 'capture_sha256'}
+    current = isinstance(value, dict) and value.get('schema') == 'eimemory.hermes_current_topology_intent.v1'
+    source_fields = ({'enrollment_id', 'plan_sha256', 'registry_sha256', 'base_commit'} if current else
+                     {'registry_sha256', 'transition_sha256', 'job_key', 'job_sha256',
+                      'invocation_id', 'base_commit', 'capture_sha256'})
     if (not isinstance(value, dict) or set(value) != fields
-            or value.get('schema') != 'eimemory.hermes_topology_intent.v1'
+            or value.get('schema') not in {'eimemory.hermes_topology_intent.v1', 'eimemory.hermes_current_topology_intent.v1'}
             or value.get('mode') != 'single_native_gateway' or value.get('main_gateway') != main
             or value.get('retired_gateways') != list(retired)
             or type(value.get('runtime_uid')) is not int or value['runtime_uid'] != uid or uid <= 0
@@ -77,7 +79,7 @@ def validate_operator_topology_intent(value, *, main, retired, uid, gid):
     if (not hexadecimal(value.get('intent_id'), 32)
             or not hexadecimal(value.get('native_snapshot_sha256'), 64)
             or not hexadecimal(value.get('topology_sha256'), 64)
-            or any(not hexadecimal(value['source'][key], 32 if key == 'invocation_id' else
+            or any(not hexadecimal(value['source'][key], 32 if key in {'invocation_id', 'enrollment_id'} else
                                    40 if key == 'base_commit' else 64) for key in source_fields)):
         raise ValueError('manager_topology_intent_binding_invalid')
     return value
@@ -225,7 +227,8 @@ def load_topology():
     except (ValueError, TypeError, UnicodeError) as exc:
         raise ValueError('hermes_topology_registration_invalid') from exc
     digest = topology_digest(body)
-    if (not isinstance(intent, dict) or intent.get('schema') != 'eimemory.hermes_topology_intent.v1'
+    if (not isinstance(intent, dict) or intent.get('schema') not in {
+            'eimemory.hermes_topology_intent.v1', 'eimemory.hermes_current_topology_intent.v1'}
             or intent.get('mode') != 'single_native_gateway'
             or intent.get('main_gateway') != MAIN_GATEWAY
             or intent.get('authorization') != 'explicit_user_operator'

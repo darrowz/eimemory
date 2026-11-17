@@ -1,3 +1,11 @@
+## [1.15.88]
+
+- Add explicit current-user enrollment with an authenticated current-epoch archive, atomic publication, rollback and same-birth completion. Preserve existing authority journals and historical migration requirements; keep repair and release credit separate.
+- Block registry and job mutations while current enrollment is incomplete. Preserve unrelated barriers, work and legitimate appended history during recovery.
+- Bind input provenance through a separate private-producer RPC, signed metadata table and isolated retry queue. Keep unverified legacy inputs unknown; count one earliest eligible retained input before applying learning windows.
+- Fix complete-answer observation digests for whitespace normalization and bounded recall queries using a versioned host/pre/recall digest contract.
+- Package a separate native origin companion with exact live preimages and a composed host verification boundary. Installation, enabling capture and real enrollment require their own native checks. See `docs/releases/v1.15.88.md`.
+
 ## [1.15.87]
 
 - Carry one maintenance deadline through SQLite reads, embedding work and dedicated PostgreSQL connections. Commit small resumable checkpoints and preserve an unknown outcome when a sent COMMIT loses its acknowledgement.

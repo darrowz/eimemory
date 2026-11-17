@@ -11,6 +11,7 @@ from pathlib import Path
 from contextlib import contextmanager
 import re
 import stat
+import json
 
 MODE_ENV = 'EIMEMORY_CONTROL_PLANE'
 
@@ -26,7 +27,7 @@ def user_mode():
         # Enrollment survives a missing/corrupt registry: never fall back to
         # a privileged endpoint after a user deployment has been installed.
         return any(os.path.lexists(directory/name) for name in
-                   ('installation.v1.json','runtime-manager.v1.json'))
+                   ('installation.v1.json','runtime-manager.v1.json','current-user-enrollment.v1.json'))
     return False
 
 
@@ -177,6 +178,49 @@ def controller_startup_guard():
     if os.path.lexists(marker):
         raise ValueError('user_control_plane_controller_installation_incomplete')
     verify_controller_host_namespace()
+
+
+def require_completed_current_enrollment():
+    """Isolate a pending current epoch; legacy registration stays compatible."""
+    coords=coordinates();intent_path=coords['authority']/'hermes-topology-intent.v1.json'
+    def strict(raw):
+        def pairs(items):
+            result={}
+            for name,value in items:
+                if name in result:raise ValueError('user_control_plane_enrollment_intent_invalid')
+                result[name]=value
+            return result
+        return json.loads(raw,object_pairs_hook=pairs)
+    selector_path=coords['authority']/'current-user-enrollment.v1.json'
+    selector=strict(read_file(selector_path)) if os.path.lexists(selector_path) else None
+    histories=coords['state']/'current-enrollments'
+    current_history=False
+    if histories.exists():
+        for path in histories.iterdir():
+            if re.fullmatch('[0-9a-f]{32}',path.name) is None:continue
+            phase=strict(read_file(path/'journal.json',maximum=64*1024*1024)).get('phase')
+            if phase!='rolled_back':current_history=True
+    if not os.path.lexists(intent_path):
+        if selector is not None or current_history:raise ValueError('user_control_plane_enrollment_state_invalid')
+        return
+    intent=strict(read_file(intent_path))
+    if intent.get('schema')=='eimemory.hermes_topology_intent.v1':
+        if selector is not None or current_history:raise ValueError('user_control_plane_enrollment_state_invalid')
+        return
+    source=intent.get('source',{});identifier=source.get('enrollment_id')
+    if (intent.get('schema')!='eimemory.hermes_current_topology_intent.v1'
+            or not isinstance(identifier,str) or re.fullmatch('[0-9a-f]{32}',identifier) is None
+            or intent.get('runtime_uid')!=coords['uid'] or intent.get('runtime_gid')!=coords['gid']):
+        raise ValueError('user_control_plane_enrollment_intent_invalid')
+    if (not isinstance(selector,dict) or set(selector)!={'schema','enrollment_id','runtime_uid','runtime_gid','current_commit'}
+            or selector['schema']!='eimemory.current_user_enrollment_selector.v1' or selector['enrollment_id']!=identifier
+            or selector['runtime_uid']!=coords['uid'] or selector['runtime_gid']!=coords['gid']
+            or not isinstance(selector['current_commit'],str) or re.fullmatch('[0-9a-f]{40}',selector['current_commit']) is None):
+        raise ValueError('user_control_plane_enrollment_state_invalid')
+    journal=strict(read_file(coords['state']/'current-enrollments'/identifier/'journal.json',maximum=64*1024*1024))
+    if journal.get('schema')!='eimemory.current_user_publication_journal.v1' or journal.get('phase')!='completed':
+        raise ValueError('user_control_plane_enrollment_pending')
+    return True
 
 
 def _system_owner(info, path, uid):

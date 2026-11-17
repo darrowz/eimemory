@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 if [ -z "${EIMEMORY_CONTROL_PLANE:-}" ] && [ "$(id -u)" -ne 0 ] &&
-   python3 -I -B -c 'import os,pwd,pathlib; p=pathlib.Path(pwd.getpwuid(os.geteuid()).pw_dir)/".config/eimemory/control-plane"; raise SystemExit(0 if any(os.path.lexists(p/n) for n in ("installation.v1.json","runtime-manager.v1.json")) else 1)'; then
+   python3 -I -B -c 'import os,pwd,pathlib; p=pathlib.Path(pwd.getpwuid(os.geteuid()).pw_dir)/".config/eimemory/control-plane"; raise SystemExit(0 if any(os.path.lexists(p/n) for n in ("installation.v1.json","runtime-manager.v1.json","current-user-enrollment.v1.json")) else 1)'; then
   export EIMEMORY_CONTROL_PLANE=user
 fi
 case "${EIMEMORY_CONTROL_PLANE:-}" in ""|user) ;; *) echo user_control_plane_mode_invalid >&2; exit 2 ;; esac

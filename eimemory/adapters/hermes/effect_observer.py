@@ -64,7 +64,7 @@ class EffectObserver:
         # Never persist a possibly user-supplied host identifier verbatim.
         return "host-" + sha256(str(turn).encode()).hexdigest()[:32]
 
-    def pre(self, session, turn, query):
+    def pre(self, session, turn, query, *, host_query=None):
         with self.lock:
             self.request_flush()
             if not turn:
@@ -86,6 +86,10 @@ class EffectObserver:
                 previous["observed"] = True
             self.turns[key] = {"fingerprint": fingerprint, "query_digest": sha256(str(query).encode('utf-8', errors='replace')).hexdigest(),
                                "time": time.monotonic(), "tools": {}, "done": False}
+            if (os.environ.get('EIMEMORY_CAPTURE_ANSWER_OBSERVATIONS', '0') == '1'
+                    and isinstance(host_query, str) and 0 < len(host_query) <= 1024 * 1024):
+                self.turns[key].update(host_query_digest=sha256(host_query.encode('utf-8', errors='replace')).hexdigest(),
+                                       host_query_chars=len(host_query))
             self.current[session] = turn
             while len(self.current) > 128:
                 self.current.popitem(last=False)
@@ -154,6 +158,8 @@ class EffectObserver:
                 from eimemory.adapters.hermes.answer_observation import observe_answer
                 observe_answer(self.provider, session_id=session, host_turn_id=turn, pending=pending,
                                observed_host_turn_id=observed_host_turn_id,
+                               started_host_query_digest=state.get('host_query_digest'),
+                               host_query_chars=state.get('host_query_chars'),
                                started_query_digest=state.get("query_digest"), assistant_message=assistant_message)
             self.previous[session] = {"turn": turn, "time": time.monotonic(), "fingerprint": state["fingerprint"],
                                       "namespace": namespace, "observed": False}

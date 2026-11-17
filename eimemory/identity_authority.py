@@ -344,13 +344,30 @@ def _append(authority, fd, payload):
     return event
 
 
+def user_policy_migration(policy, uid):
+    """Render a current policy while retaining the historical requester identity."""
+    if (type(uid) is not int or uid <= 0 or not isinstance(policy,dict)
+            or type(policy.get('requester_uid')) is not int):
+        raise IdentityAuthorityError('identity_user_policy_uid_invalid')
+    if policy.get('schema') == 'identity_operator_policy.v2':
+        if policy.get('requester_uid') != uid:
+            raise IdentityAuthorityError('identity_user_policy_uid_invalid')
+        return policy, None
+    if policy.get('schema') != 'identity_operator_policy.v1' or policy.get('requester_uid') != 0:
+        raise IdentityAuthorityError('identity_operator_policy_invalid')
+    reference = digest(policy)
+    return ({**policy, 'schema':'identity_operator_policy.v2', 'requester_uid':uid,
+             'retained_policy_digests':[reference]}, reference)
+
+
 def migrate_user_policy(directory=None):
     """Retain every original grant/hash while changing only future operator identity."""
     if not user_mode():raise IdentityAuthorityError('identity_user_control_plane_required')
     _require_root()
     path=authority_directory(directory)
     with snapshot(path,exclusive=True) as (authority,_fd):
-        if authority.policy['schema']=='identity_operator_policy.v2':
+        current, reference = user_policy_migration(authority.policy, account().pw_uid)
+        if reference is None:
             return {'ok':True,'status':'existing','policy_digest':authority.policy_digest}
         legacy=authority.policy
         history=path/'retained-policies'
@@ -363,8 +380,6 @@ def migrate_user_policy(directory=None):
             fd=os.open(archive,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o640)
             with os.fdopen(fd,'wb') as stream:
                 stream.write(raw);stream.flush();os.fsync(stream.fileno())
-        current={**legacy,'schema':'identity_operator_policy.v2','requester_uid':account().pw_uid,
-                 'retained_policy_digests':[authority.policy_digest]}
         temporary=path/('.user-policy-'+uuid.uuid4().hex)
         fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o640)
         with os.fdopen(fd,'wb') as stream:

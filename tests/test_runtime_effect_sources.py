@@ -55,7 +55,9 @@ def test_native_hermes_callback_is_visible_to_default_report_and_attribution(liv
     assert report["metrics"]["task_success_rate"]["value"] == 0
     attribution = produce_effect_hypotheses(runtime, scope=provider._scope)
     assert attribution["source_ids"] == ["hermes"]
-    assert len(attribution["unattributed_failures"]) == 1
+    assert attribution['input_origin_coverage'] == {
+        'non_acceptance_candidate_rows': 1, 'host_attested_external_rows': 0, 'credited_unique_inputs': 0}
+    assert attribution['unattributed_failures'] == [] and attribution['hypotheses'] == []
 
 
 def test_cli_report_does_not_restore_wrong_default_namespace(runtime, monkeypatch, capsys):

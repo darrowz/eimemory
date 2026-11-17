@@ -78,6 +78,8 @@ jobs:
           tests/test_runtime_identity_drift.py
           tests/test_runtime_manager.py
           tests/test_user_control_plane.py
+          tests/test_current_user_enrollment.py
+          tests/test_current_user_native_properties.py
           tests/test_gateway_native_boundary.py
           tests/test_user_release_recovery.py
           tests/test_user_installation_finish.py
@@ -149,6 +151,8 @@ jobs:
           tests/test_real_effect_signals.py
           tests/test_hermes_answer_observation.py
           tests/test_hermes_session_observation.py
+          tests/test_hermes_input_origin.py
+          tests/test_hermes_native_input_origin.py
           tests/test_real_effect_report.py
           tests/test_real_effect_hypotheses.py
           tests/test_real_effect_cycle.py

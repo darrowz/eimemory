@@ -39,8 +39,9 @@ def test_callback_binds_full_answer_and_keeps_task_outcome_unverified(live, monk
     answer = 'Private complete answer. ' + 'Evidence and conditions. ' * 430
     complete(provider, query, answer)
     observed, = events(caplog)
-    assert observed['schema'] == 'eimemory.hermes_answer_observation.v1'
+    assert observed['schema'] == 'eimemory.hermes_answer_observation.v2'
     assert observed['query_digest'] == sha256(query.encode()).hexdigest()
+    assert observed['host_query_digest'] == sha256(query.encode()).hexdigest()
     assert observed['answer_digest'] == sha256(answer.encode()).hexdigest()
     assert observed['answer_chars'] == len(answer) > 8000
     assert observed['observation_only'] is True
@@ -144,4 +145,52 @@ def test_missing_or_oversized_callback_body_is_not_reported_as_complete(live, mo
     answer = 'x' * (1024 * 1024 + 1) if answer_kind == 'oversized' else {
         'empty': '', 'missing': None, 'numeric': 123}[answer_kind]
     provider._effects.completed('signal-session', 'bound-turn', pending, assistant_message=answer)
+    assert events(caplog) == []
+
+
+@pytest.mark.parametrize('query', [
+    '中文问题\n  several   words\twith spacing',
+    'NUL\x00分隔   中文\t部署版本',
+    '  leading and trailing   spaces  ',
+    ('中文\n  repeated   words\t' * 600) + ' original host tail',
+])
+def test_v2_query_digest_matches_actual_decision_and_keeps_full_host_identity(live, monkeypatch, caplog, query):
+    runtime, _, provider, _, _ = live
+    enable(monkeypatch, provider)
+    caplog.set_level(logging.INFO)
+    complete(provider, query, 'Observed callback body')
+    observed, = events(caplog)
+    key = next(iter(provider._effects.previous.values()))['namespace']['decision_id']
+    decision = runtime.store.load_proactive_decision(key)
+    assert observed['schema'] == 'eimemory.hermes_answer_observation.v2'
+    assert observed['query_digest'] == decision['query_digest']
+    assert observed['host_query_digest'] == sha256(query.encode()).hexdigest()
+    assert observed['host_query_chars'] == len(query)
+    assert observed['pre_query_digest'] == sha256(query.strip()[:8000].encode()).hexdigest()
+    assert query not in json.dumps(observed)
+
+
+def test_v2_keeps_distinct_host_bodies_that_share_the_same_8000_character_query(live, monkeypatch, caplog):
+    _, _, provider, _, _ = live
+    enable(monkeypatch, provider)
+    caplog.set_level(logging.INFO)
+    prefix = ('中文\n repeated words ' * 600)[:8000]
+    first, second = prefix+' first complete host tail', prefix+' second complete host tail'
+    complete(provider, first, 'Answer A', turn='long-query-a')
+    complete(provider, second, 'Answer B', turn='long-query-b')
+    one, two = events(caplog)
+    assert one['query_digest'] == two['query_digest']
+    assert one['pre_query_digest'] == two['pre_query_digest']
+    assert one['host_query_digest'] != two['host_query_digest']
+
+
+def test_normalization_does_not_weaken_exact_pre_query_matching(live, monkeypatch, caplog):
+    _, _, provider, _, _ = live
+    enable(monkeypatch, provider)
+    caplog.set_level(logging.INFO)
+    query = 'Same normalized question'
+    provider.on_pre_llm_call(user_message=query, session_id='signal-session', turn_id='bound-turn')
+    provider.prefetch(query, session_id='signal-session')
+    next(iter(provider._pending_proactive.values()))['query'] = 'Same  normalized question'
+    provider.on_post_llm_call(user_message=query, assistant_message='An answer', session_id='signal-session', turn_id='bound-turn')
     assert events(caplog) == []

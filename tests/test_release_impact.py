@@ -43,6 +43,18 @@ def _commit(repo: Path, path: str, content: str, message: str) -> str:
     [
         *[
             (path, ["channel.delivery", "code.evolution", "deployment.runtime",
+                    "memory.governance", "memory.recall", "storage.integrity"],
+             [], "classified_production_change")
+            for path in (
+                "eimemory/retrieval/input_origin.py",
+                "eimemory/adapters/hermes/input_origin.py",
+                "integrations/hermes/host/input_origin.py",
+                "integrations/hermes/host-patches/input-origin-2bd378ed.manifest.json",
+                "integrations/hermes/host-patches/input-origin-2bd378ed.patch",
+            )
+        ],
+        *[
+            (path, ["channel.delivery", "code.evolution", "deployment.runtime",
                     "memory.governance", "memory.recall"], [], "classified_production_change")
             for path in (
                 "eimemory/adapters/hermes/answer_observation.py",
@@ -59,6 +71,8 @@ def _commit(repo: Path, path: str, content: str, message: str) -> str:
                 "deploy/runtime_manager_launch.py",
                 "deploy/runtime_manager_bridge.py",
                 "deploy/build_runtime_manager_bundle.py",
+                "deploy/runtime_manager_current_user.py",
+                "eimemory/contracts/current_user_enrollment.py",
                 "eimemory/governance/evolution/managed_code_incident_proof.py",
                 "eimemory/core/managed_incident_proof_authority.py",
             )

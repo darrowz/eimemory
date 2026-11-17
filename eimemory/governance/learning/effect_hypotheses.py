@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 
-from eimemory.governance.learning.effect_dataset import instant, load_observations
+from eimemory.governance.learning.effect_dataset import instant, load_observations, credited_inputs
 from eimemory.knowledge.evidence_contracts import versioned_record_ref
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -31,7 +31,8 @@ def produce_effect_hypotheses(runtime, *, scope, channel="hermes", source_ids=No
     dataset = load_observations(runtime.store, channel=channel, scope=scope, source_ids=source_ids,
                                 start=now - timedelta(days=lookback_days), end=now)
     groups, unattributed, protected, stale = {}, [], set(), set()
-    for d in dataset["decisions"]:
+    credited = credited_inputs(dataset["decisions"])
+    for d in credited:
         labels = d["labels"]
         negatives = [m for m, (key, negative, known) in METRICS.items() if labels.get(key) == negative]
         failure = bool(negatives) or labels.get("tool_chain") == "failed"
@@ -114,4 +115,8 @@ def produce_effect_hypotheses(runtime, *, scope, channel="hermes", source_ids=No
     return {"ok": True, "schema": "recall.effect_hypothesis_batch.v1", "channel": dataset["channel"],
             "scope": dataset["scope"], "source_ids": dataset["source_ids"], "hypotheses": hypotheses,
             "unattributed_failures": unattributed, "protected_targets": sorted(protected), "stale_targets": sorted(stale),
+            "input_origin_coverage": {
+                "non_acceptance_candidate_rows": len(dataset['decisions']),
+                "host_attested_external_rows": sum(d.get('input_origin', {}).get('natural_learning_eligible') is True for d in dataset['decisions']),
+                "credited_unique_inputs": len(credited)},
             "certifies_l5": False}

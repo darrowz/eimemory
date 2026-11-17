@@ -21,7 +21,7 @@ if not USER_MODE and not os.environ.get('EIMEMORY_CONTROL_PLANE') and os.name=='
  import pwd
  from pathlib import Path
  _directory=Path(pwd.getpwuid(os.geteuid()).pw_dir)/'.config/eimemory/control-plane'
- USER_MODE=any(os.path.lexists(_directory/name) for name in ('installation.v1.json','runtime-manager.v1.json'))
+ USER_MODE=any(os.path.lexists(_directory/name) for name in ('installation.v1.json','runtime-manager.v1.json','current-user-enrollment.v1.json'))
 if USER_MODE:
  if __package__:
   from eimemory.contracts.user_control_plane import coordinates

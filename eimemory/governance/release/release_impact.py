@@ -696,6 +696,8 @@ for _domain in ("memory.governance", "code.evolution", "deployment.runtime"):
         "deploy/runtime_manager_owner_files.py", "deploy/runtime_manager_settings.py",
         "deploy/runtime_manager_user_policy.py", "eimemory/core/runtime_manager.py",
         "eimemory/contracts/user_control_plane.py", "deploy/install_user_runtime_manager.py",
+        "eimemory/contracts/current_user_enrollment.py", "deploy/runtime_manager_current_user.py",
+        "deploy/reconcile_managed_authority_to_current.py",
         "deploy/prepare_user_release.py",
         "deploy/retire_manual_code_policy.py",
         "eimemory/ops/prepare_managed_incident_authority.py")
@@ -749,6 +751,19 @@ for _domain in ("memory.recall", "memory.governance", "channel.delivery",
         "eimemory/adapters/hermes/session_observation.py")
 DOMAIN_PATHS["deployment.runtime"] = (*DOMAIN_PATHS["deployment.runtime"],
     "eimemory/retrieval/projection_deadline.py")
+
+# Input provenance crosses producer, persistence, learning and deployment
+# boundaries. Register the new source artifacts explicitly for every gate.
+for _domain in DOMAINS:
+    DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain],
+        "eimemory/retrieval/input_origin.py",
+        "eimemory/adapters/hermes/input_origin.py",
+        "integrations/hermes/host/input_origin.py",
+        "integrations/hermes/host-patches/input-origin-2bd378ed.manifest.json",
+        "integrations/hermes/host-patches/input-origin-2bd378ed.patch")
+for _domain in ("memory.recall", "channel.delivery", "deployment.runtime"):
+    DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain],
+        "integrations/hermes/host-patches/input-origin-2bd378ed.README.md")
 
 IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
 IGNORED_PATHS = {

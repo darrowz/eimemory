@@ -86,6 +86,10 @@ jobs:
           tests/test_projection_maintenance_deadline.py
           tests/test_hermes_answer_observation.py
           tests/test_hermes_session_observation.py
+          tests/test_hermes_input_origin.py
+          tests/test_hermes_native_input_origin.py
+          tests/test_current_user_enrollment.py
+          tests/test_current_user_native_properties.py
           tests/test_projection_conflict_error_contract.py
           tests/test_projection_reader_transaction_ownership.py
           tests/test_controlled_projection_phase_readiness.py

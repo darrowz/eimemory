@@ -38,6 +38,7 @@ def build(root,commit, *, account=None, _user_profile=False):
     files['compatibility.json']=json.dumps({name:sha256((root/name).read_bytes()).hexdigest() for name in COMPATIBILITY_PATHS},sort_keys=True,separators=(',',':')).encode()
     files['runtime_manager_contract.py']=(root/'eimemory/contracts/runtime_manager.py').read_bytes()
     files['hermes_topology_contract.py']=(root/'eimemory/contracts/hermes_topology.py').read_bytes()
+    files['current_user_enrollment_contract.py']=(root/'eimemory/contracts/current_user_enrollment.py').read_bytes()
     for name in ('runtime_manager_bridge.py','runtime_manager_launch.py','runtime_manager_settings.py','runtime_manager_user_policy.py','runtime_manager_owner_files.py','storage_release_transaction.py'):
         files[name]=(root/'deploy'/name).read_bytes()
     authority=root/'eimemory/core/managed_incident_proof_authority.py'
@@ -211,6 +212,7 @@ def build_user(root, commit, *, account=None):
     code=home/'.local/lib/eimemory/control-plane'
     runtime=Path('/run/user')/str(account.pw_uid)
     files['user_control_plane.py']=(root/'eimemory/contracts/user_control_plane.py').read_bytes()
+    files['runtime_manager_current_user.py']=(root/'deploy/runtime_manager_current_user.py').read_bytes()
     rewrites=(('/var/lib/eimemory-manager/empty-pycache',str(code/'empty-pycache')),
         ('/run/user/1001',str(runtime)),
         ('/usr/libexec/eimemory-manager',str(code)),
@@ -223,7 +225,7 @@ def build_user(root, commit, *, account=None):
         'CapabilityBoundingSet=\nAmbientCapabilities=\n'
         f'ReadOnlyPaths={home_seal} {code} {authority} {state} {home}/.config/systemd {home}/.local/share/systemd {runtime}/systemd {runtime}/eimemory-manager\n'
         f'ReadWritePaths=-{home}/.hermes -{home}/.cache -{home}/.codex -{home}/.openclaw -{home}/.local/state/hermes\n'
-        f'InaccessiblePaths={authority}/managed-incident-proof.key {state}/activation-signing.key {state}/managed-incident-receipts {runtime}/bus {runtime}/systemd/private\n')
+        f'InaccessiblePaths={authority}/managed-incident-proof.key {state}/activation-signing.key {state}/managed-incident-receipts {state}/current-enrollments {runtime}/bus {runtime}/systemd/private\n')
     for name in tuple(files):
         if not name.endswith(('.service','.conf','.timer','.path')):
             continue

@@ -88,6 +88,17 @@ def main(argv: list[str] | None = None) -> int:
 
     reg = json.loads(reg_path.read_text(encoding="utf-8"))
     old_man = json.loads(man_path.read_text(encoding="utf-8"))
+    helper_path=cp/'user_control_plane.py'
+    helper_raw=helper_path.read_bytes()
+    if (helper_path.is_symlink() or helper_path.stat().st_uid!=os.geteuid()
+            or helper_path.stat().st_mode&0o022
+            or hashlib.sha256(helper_raw).hexdigest()!=reg['compatibility_hashes']['eimemory/contracts/user_control_plane.py']):
+        raise ValueError('reconcile_user_helper_untrusted')
+    helper_spec=importlib.util.spec_from_file_location('reconcile_reviewed_user_control',helper_path)
+    helper=importlib.util.module_from_spec(helper_spec)
+    exec(compile(helper_raw,str(helper_path),'exec'),helper.__dict__)
+    if hasattr(helper,'require_completed_current_enrollment'):
+        helper.require_completed_current_enrollment()
     aligned = (
         reg.get("runtime_commit") == commit
         and reg.get("controller_commit") == commit

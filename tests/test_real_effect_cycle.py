@@ -16,6 +16,7 @@ from eimemory.governance.learning.effect_policy import (
 from eimemory.governance.learning.effect_tick import run_effect_tick
 from eimemory.governance.learning.effect_report import build_effect_report
 from eimemory.governance.learning.effect_hypotheses import produce_effect_hypotheses
+from effect_origin_fixture import configure_test_origin, attest_test_input
 
 BASE = {"tenant_id": "default", "agent_id": "effects", "workspace_id": "workspace", "user_id": "user"}
 SCOPE = resolve_channel_scope("hermes", BASE)
@@ -29,6 +30,7 @@ def configure(runtime):
 
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
+    configure_test_origin(monkeypatch, BASE)
     monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", "effect-cycle-test-only-0123456789-ABCDEFGH")
     monkeypatch.delenv("EIMEMORY_REAL_EFFECT_POLICY_FILE", raising=False)
     monkeypatch.delenv("EIMEMORY_REAL_EFFECT_STOP", raising=False)
@@ -53,6 +55,7 @@ def observe(runtime, records, session, *, correction="suspected", turn="turn", l
         return decision
     params = {"channel": "hermes", "scope": SCOPE, "source_ids": ["hermes"], "session_id": session,
               "turn_id": turn, "decision_id": decision["decision_id"]}
+    attest_test_input(runtime, params)
     if decision["items"]:
         runtime.proactive.mark_injected(**params, injected_citations=[i["citation"] for i in decision["items"]], release_identity=decision["release_identity"])
     record_signal(runtime.store, **params, phase="turn_completed", event_id="completed",
