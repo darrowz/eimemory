@@ -424,7 +424,7 @@ def _family(sqlite, api, access, fact, *, deadline=None):
     family, complete = sqlite.temporal_fact_family(family_id=family_id, scope=access.scope,
                                                   source_id=access.source_id, max_events=MAX_EVENTS)
     if not complete:
-        raise ValueError("temporal_family_incomplete")
+        raise _CurrentAuthorityUnavailable("temporal_family_incomplete")
     pinned_access = access_for(api, access.scope, access.source_id, sqlite=sqlite, deadline=deadline)
     _certify_temporal_family(sqlite, family, access=pinned_access, family_id=family_id,
                              fact=fact, source_registry=api.source_registry)
@@ -476,6 +476,127 @@ def ground_observation(api, parent, text, proposal=None, *, sqlite=None):
     except (ValueError, TypeError, KeyError):
         pass
     return None
+
+
+class _CurrentAuthorityUnavailable(RuntimeError):
+    """A bounded source read cannot establish either applicability or absence."""
+
+
+def _undated_atom(text):
+    # This is only a retrospective legacy classifier. It must not turn a
+    # request, transition, date, uncertainty or compound statement into a fact.
+    if (_INTENT.search(text) or re.search(_DATE, text)
+            or re.search(r"\b(?:please|confirm|should|must|will|would|could|plan|intend)\b|请|计划|打算|应当|应该|将要", text, re.I)):
+        raise ValueError("chat_legacy_atom_unresolved")
+    lhs, connective, value = _relation(text.strip().rstrip("。."))
+    if not re.fullmatch(r"是|为|=|is", connective, re.I):
+        raise ValueError("chat_legacy_atom_unresolved")
+    _asserted_context(text, value)
+    # A second assertion/conjunction is outside this scalar grammar. Quoted
+    # literal values retain the parser's existing opaque-value convention.
+    if not _quoted_value(value) and re.search(r"\b(?:and|or)\b|并且|以及|而且|同时|(?:是|为|=)", value, re.I):
+        raise ValueError("chat_legacy_atom_unresolved")
+    return lhs, value
+
+
+def _legacy_undated_fact(user, text):
+    """An exact positive atom in the source; no fuzzy summary equivalence."""
+    lhs, value = _undated_atom(text)
+    clause = _observation_clause(user, text)
+    if clause is not None:
+        if _undated_atom(clause) != (lhs, value):
+            raise ValueError("chat_legacy_atom_unresolved")
+    else:
+        # A legacy extractor may normalize the connective or punctuation.
+        # Only whole source atoms with the same literal operands qualify.
+        # With no exact span, any temporal context keeps the old rejection.
+        if _INTENT.search(user) or re.search(_DATE, user):
+            raise ValueError("chat_legacy_atom_unresolved")
+        matches = 0
+        start = 0
+        for end in [*[m.end() for m in re.finditer(r"[\n。；;!?？]|\.(?=\s|$)", user)], len(user)]:
+            candidate, start = user[start:end].strip(), end
+            if not candidate:
+                continue
+            try:
+                matches += _undated_atom(candidate) == (lhs, value)
+            except ValueError:
+                pass
+        if matches != 1:
+            raise ValueError("chat_legacy_atom_unresolved")
+    return _fact_for_slot(lhs)
+
+
+def _existing_grounding(sqlite, api, item, *, deadline=None):
+    """Classify an existing candidate without changing capture/write semantics."""
+    if deadline and perf_counter() >= float(deadline):
+        raise _CurrentAuthorityUnavailable("chat_temporal_deadline")
+    meta = business_metadata(item.meta)
+    if KEY in meta:
+        # A null/malformed/persisted unresolved marker is never legacy absence.
+        return meta[KEY] if meta[KEY] is not None else {"state": "unresolved"}
+    if not (item.kind == "memory" and item.source_id in CHANNELS
+            and item.source == item.source_id + ".l1"):
+        return None
+    access = _partition_access(item.scope, item.source_id)
+    revision = sqlite.get_by_exact_ref(
+        revision_id_for(access, "ordinary-chat:" + item.record_id), scope=item.scope,
+        source_id=item.source_id, fail_on_unavailable=True, preserve_unknown_occurred_at=True)
+    if revision is not None:
+        return dict(state="resolved", fact=temporal_payload(revision)["request"]["fact"])
+    if "source_event_binding" not in meta:
+        return None  # Existing unbound preintegration records retain their route.
+    parent = validate_l1_source_event(item, meta["source_event_binding"], get_exact=sqlite.get_by_exact_ref)
+    if not _chat_parent(parent):
+        raise ValueError("chat_source_parent_invalid")
+    from eimemory.knowledge.safety import evaluate_knowledge_safety
+    if not evaluate_knowledge_safety(parent, task="recall", registry=api.source_registry)["recall_allowed"]:
+        raise ValueError("chat_source_parent_inapplicable")
+    user = source_user(parent)
+    if getattr(api, "_ordinary_chat_temporal", False):
+        grounding = ground_observation(api, parent, item.summary, sqlite=sqlite)
+    else:
+        # The disabled reader can prove subtraction/absence, never certify a
+        # managed value. Do not call the write-side capability check here.
+        grounding = ground_assertion(user, item.summary)
+        clause = _observation_clause(user, item.summary)
+        if grounding is None and _INTENT.search(user if clause is None else clause):
+            grounding = {"state": "unresolved"}
+        if grounding is None and clause is not None:
+            try:
+                lhs, _, _ = _relation(item.summary.strip().rstrip("。."))
+                fact = _fact_for_slot(lhs)
+            except ValueError:
+                return None
+            family, complete = sqlite.temporal_fact_family(
+                family_id=family_id_for(access, fact), scope=item.scope,
+                source_id=item.source_id, max_events=MAX_EVENTS)
+            if not complete:
+                raise _CurrentAuthorityUnavailable("temporal_family_incomplete")
+            if family:
+                grounding = {"state": "unresolved"}
+    if grounding is None:
+        return None
+    # New writes still persist unresolved undated explicit-slot assertions.
+    # Only an unmarked historical body may use this absence proof, and only
+    # when its complete exact family has never acquired temporal authority.
+    if grounding.get("state") == "unresolved":
+        if (item.content.get("text") != item.summary
+                or meta.get("memory_layer") != "l1" or meta.get("capture_origin") != "l1_extract"
+                or meta.get("runtime_channel") != item.source_id):
+            return grounding
+        try:
+            fact = _legacy_undated_fact(user, item.summary)
+        except ValueError:
+            return grounding
+        family, complete = sqlite.temporal_fact_family(
+            family_id=family_id_for(access, fact), scope=item.scope,
+            source_id=item.source_id, max_events=MAX_EVENTS)
+        if not complete:
+            raise _CurrentAuthorityUnavailable("temporal_family_incomplete")
+        if not family:
+            return None
+    return grounding
 
 
 def exclude_managed_candidates(api, request, items):
@@ -974,6 +1095,136 @@ def _source_contradicts(grounded, originals, valid_at, certified):
     return False
 
 
+def _grounded_fact(grounding):
+    fact = grounding.get("fact") if type(grounding) is dict else None
+    if (type(grounding) is not dict or grounding.get("state") != "resolved"
+            or type(fact) is not dict or fact.get("namespace") not in NAMESPACES
+            or type(fact.get("entity_id")) is not str or not fact["entity_id"]
+            or type(fact.get("attribute")) is not str or not fact["attribute"]):
+        raise ValueError("chat_temporal_grounding_unresolved")
+    return fact
+
+
+def _current_family_rows(sqlite, api, access, fact, valid_at, *, originals, facts, deadline, source_deadline):
+    """Exact current evidence proof shared by recall and target qualification."""
+    family = _family(sqlite, api, access, fact, deadline=deadline)
+    resolved = resolve_family(family, at=valid_at, limit=MAX_EVENTS)
+    if resolved["truncated"]:
+        raise _CurrentAuthorityUnavailable("temporal_resolution_incomplete")
+    if resolved["status"] != "resolved":
+        return resolved, []
+    source_id, scope = access.source_id, access.scope
+    if source_id not in originals:
+        from eimemory.storage.recall_deadline import recall_read_scope
+        with recall_read_scope(api.store, {"_recall_collection_deadline_monotonic": source_deadline},
+                               sqlite=sqlite, lock_held=True):
+            originals[source_id] = _original_assertions(sqlite, api, scope, source_id,
+                [value for identity, value in facts.items() if identity[0] == source_id],
+                deadline=source_deadline)
+    source_assertions = originals[source_id][(fact["namespace"], fact["entity_id"], fact["attribute"])]
+    certified = set()
+    for operation in family:
+        for evidence_id in operation.evidence:
+            evidence = sqlite.get_by_exact_ref(evidence_id, scope=scope, source_id=source_id,
+                                               fail_on_unavailable=True)
+            metadata = business_metadata(evidence.meta)
+            assertion = metadata[KEY]
+            certified.add((metadata["source_event_binding"]["record_id"],
+                           assertion["user_digest"], assertion["quote"]))
+    by_id, rows = {r.record_id: r for r in family}, []
+    for selected in resolved["items"]:
+        journal = by_id[selected["revision_id"]]
+        for evidence_id in journal.evidence:
+            record = sqlite.get_by_exact_ref(evidence_id, scope=scope, source_id=source_id,
+                                             fail_on_unavailable=True)
+            if record is None or record.status != "active":
+                raise ValueError("chat_temporal_evidence_unavailable")
+            grounded = business_metadata(record.meta)[KEY]
+            if grounded["fact"] != fact or grounded["value"] != selected["value"]:
+                raise ValueError("chat_temporal_slot_mismatch")
+            if _source_contradicts(grounded, source_assertions, valid_at, certified):
+                raise ValueError("chat_newer_original_unresolved")
+            rows.append((record, journal, selected))
+    return resolved, rows
+
+
+def current_target_temporal_reasons(api, records, *, scope, valid_at, deadline_at):
+    """Query-independent current-source qualification, aligned to input records.
+
+    Empty means this gate permits the exact target, not that recall will find
+    it. Unknown reads are not relabelled as inapplicable facts or replaced by
+    other targets. No journal, marker or source record is written.
+    """
+    records = list(records)
+    unavailable = "source_current_authority_unavailable"
+    inapplicable = "source_temporal_inapplicable"
+    results = [unavailable] * len(records)
+    deadline = float(deadline_at) if deadline_at else perf_counter() + 0.5
+    try:
+        at = parse_instant(valid_at) if isinstance(valid_at, str) else valid_at
+        if not isinstance(at, datetime) or at.tzinfo is None:
+            return results
+        def read(sqlite):
+            families, members = {}, {}
+            for index, supplied in enumerate(records):
+                if perf_counter() >= deadline:
+                    break
+                try:
+                    if supplied.scope != scope:
+                        results[index] = inapplicable
+                        continue
+                    item = sqlite.get_by_exact_ref(supplied.record_id, scope=scope,
+                        source_id=supplied.source_id, fail_on_unavailable=True)
+                    if (item is None or item.status != "active"
+                            or authority_digest(item) != authority_digest(supplied)):
+                        results[index] = inapplicable
+                        continue
+                    from eimemory.knowledge.safety import evaluate_knowledge_safety
+                    if not evaluate_knowledge_safety(item, task="recall", registry=api.source_registry)["recall_allowed"]:
+                        results[index] = inapplicable
+                        continue
+                    grounding = _existing_grounding(sqlite, api, item, deadline=deadline)
+                    if grounding is None:
+                        results[index] = ""
+                        continue
+                    if not getattr(api, "_ordinary_chat_temporal", False):
+                        results[index] = inapplicable
+                        continue
+                    fact = _grounded_fact(grounding)
+                    key = (item.source_id, fact["namespace"], fact["entity_id"], fact["attribute"])
+                    families[key] = fact
+                    members.setdefault(key, []).append((index, item))
+                except (OSError, RuntimeError, sqlite3.Error):
+                    results[index] = unavailable
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    results[index] = inapplicable
+            if len(families) > 16:
+                return
+            originals = {}
+            source_deadline = min(deadline, perf_counter() + 0.5)
+            for key, fact in families.items():
+                if perf_counter() >= deadline:
+                    break
+                try:
+                    access = access_for(api, scope, key[0])
+                    _, rows = _current_family_rows(sqlite, api, access, fact, at,
+                        originals=originals, facts=families, deadline=deadline, source_deadline=source_deadline)
+                    allowed = {(exact_ref(row), authority_digest(row)) for row, _, _ in rows}
+                    for index, item in members[key]:
+                        results[index] = "" if (exact_ref(item), authority_digest(item)) in allowed else inapplicable
+                except (OSError, RuntimeError, sqlite3.Error):
+                    pass  # Remain unavailable, including incomplete/bounded reads.
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    for index, _ in members[key]:
+                        results[index] = inapplicable
+        from eimemory.storage.recall_deadline import recall_read_scope
+        with recall_read_scope(api.store, {"_recall_collection_deadline_monotonic": deadline}):
+            api.store.read_consistent(read)
+        return results
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error):
+        return [unavailable] * len(records)
+
+
 def resolve_candidates(api, request, items, *, expand, include_admission=False):
     """Only replace managed L1 candidates with certified, active source evidence.
 
@@ -984,40 +1235,21 @@ def resolve_candidates(api, request, items, *, expand, include_admission=False):
     """
     scope = request.scope.to_scope_ref()
     explicit, usable_time = query_time(request.query)
-    valid_at = parse_instant(explicit) if explicit else datetime.now(timezone.utc).replace(microsecond=0)
+    current_at = datetime.now(timezone.utc).replace(microsecond=0)
+    valid_at = parse_instant(explicit) if explicit else current_at
     deadline = request.task_context_dict().get("_recall_deadline_monotonic")
     ordinary = []  # only evidence positively classified as unrelated legacy
     try:
         def read(sqlite):
             families = {}
+            question_families, known_items = set(), {}
             for item in items:
                 if deadline and perf_counter() >= float(deadline):
                     raise ValueError("chat_temporal_deadline")
-                grounding = business_metadata(item.meta).get(KEY)
-                # A stripped/changed child marker cannot turn journal evidence
-                # into unqualified legacy truth. The deterministic protocol ID
-                # is checked in the same pinned snapshot, never by a new index.
+                if item.scope != scope:
+                    continue
                 try:
-                    if (grounding is None and item.scope == scope and item.source_id in CHANNELS
-                            and item.source == item.source_id + ".l1" and item.kind == "memory"):
-                        access = access_for(api, scope, item.source_id, sqlite=sqlite)
-                        revision = sqlite.get_by_exact_ref(
-                            revision_id_for(access, "ordinary-chat:" + item.record_id),
-                            scope=scope, source_id=item.source_id, fail_on_unavailable=True,
-                            preserve_unknown_occurred_at=True)
-                        if revision is not None:
-                            grounding = dict(state="resolved", fact=temporal_payload(revision)["request"]["fact"])
-                        else:
-                            # Pre-integration chat evidence is not migrated or
-                            # reinterpreted as current truth. If it has this route's
-                            # literal dated shape, only a certified journal may make
-                            # it applicable; a missing journal stays conservative.
-                            meta = business_metadata(item.meta)
-                            binding = meta.get("source_event_binding")
-                            if type(binding) is dict:
-                                parent = validate_l1_source_event(item, binding, get_exact=sqlite.get_by_exact_ref)
-                                if eligible_parent(api, parent):
-                                    grounding = ground_observation(api, parent, item.summary, sqlite=sqlite)
+                    grounding = _existing_grounding(sqlite, api, item, deadline=deadline)
                 except (OSError, ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error):
                     continue  # this unknown item cannot suppress unrelated legacy facts
                 if grounding is None:
@@ -1029,10 +1261,20 @@ def resolve_candidates(api, request, items, *, expand, include_admission=False):
                         or type(fact.get("entity_id")) is not str or type(fact.get("attribute")) is not str
                         or not fact["entity_id"] or not fact["attribute"]
                         or item.scope != scope or request.source_ids is not None and item.source_id not in request.source_ids
-                        or request.target_source_id is not None and item.source_id != request.target_source_id
-                        or not _query_matches(request.query, fact, deadline=deadline)):
+                        or request.target_source_id is not None and item.source_id != request.target_source_id):
                     continue
                 family_key = (item.source_id, fact["namespace"], fact["entity_id"], fact["attribute"])
+                if _query_matches(request.query, fact, deadline=deadline):
+                    question_families.add(family_key)
+                elif (request.query == item.title == item.summary
+                        and len(request.query) <= _QUERY_MAX_CHARS
+                        and ground_assertion(request.query, request.query) is not None):
+                    # Exact literal-title lookup is member-specific. It does
+                    # not give a date inside a title historical-query authority
+                    # or let an obsolete title borrow a replacement's proof.
+                    known_items.setdefault(family_key, set()).add((exact_ref(item), authority_digest(item)))
+                else:
+                    continue
                 families[family_key] = fact
             if len(families) > 16:
                 return ordinary, ()
@@ -1044,61 +1286,30 @@ def resolve_candidates(api, request, items, *, expand, include_admission=False):
                 family_chosen, family_matches = [], []
                 try:
                     access = access_for(api, scope, source_id)
-                    family = _family(sqlite, api, access, fact, deadline=deadline)
-                    resolved = resolve_family(family, at=valid_at, limit=MAX_EVENTS)
-                    if resolved["status"] != "resolved" or resolved["truncated"]:
-                        continue
-                    if source_id not in originals:
-                        from eimemory.storage.recall_deadline import recall_read_scope
-                        with recall_read_scope(api.store, {"_recall_collection_deadline_monotonic": source_deadline},
-                                               sqlite=sqlite, lock_held=True):
-                            originals[source_id] = _original_assertions(sqlite, api, scope, source_id,
-                                [value for identity, value in families.items() if identity[0] == source_id],
-                                deadline=source_deadline)
-                    source_assertions = originals[source_id][(fact["namespace"], fact["entity_id"], fact["attribute"])]
-                    # Certified operations already account for corrections and
-                    # retractions. Only the exact unrepresented source clause
-                    # is an uncertainty; a sibling clause in that L0 is separate.
-                    certified = set()
-                    for operation in family:
-                        for evidence_id in operation.evidence:
-                            evidence = sqlite.get_by_exact_ref(evidence_id, scope=scope, source_id=source_id,
-                                                               fail_on_unavailable=True)
-                            metadata = business_metadata(evidence.meta)
-                            assertion = metadata[KEY]
-                            certified.add((metadata["source_event_binding"]["record_id"],
-                                           assertion["user_digest"], assertion["quote"]))
-                    by_id = {r.record_id: r for r in family}
-                    for selected in resolved["items"]:
-                        journal = by_id[selected["revision_id"]]
-                        for evidence_id in journal.evidence:
-                            record = sqlite.get_by_exact_ref(evidence_id, scope=scope, source_id=source_id,
-                                                             fail_on_unavailable=True)
-                            if record is None or record.status != "active":
-                                raise ValueError("chat_temporal_evidence_unavailable")
-                            # _family has validated this exact grounding against
-                            # the original source, not just a temporal tag. Bind
-                            # the chosen journal fact/value to that same quote.
-                            grounded = business_metadata(record.meta)[KEY]
-                            if grounded["fact"] != fact or grounded["value"] != selected["value"]:
-                                raise ValueError("chat_temporal_slot_mismatch")
-                            if _source_contradicts(grounded, source_assertions, valid_at, certified):
-                                raise ValueError("chat_newer_original_unresolved")
-                            if expand:
-                                family_chosen.append(record)
-                                if include_admission:
-                                    family_matches.append(TemporalMatch(
-                                        request=request, query=request.query, record_ref=exact_ref(record),
-                                        record_digest=authority_digest(record), valid_at=valid_at.isoformat(),
-                                        interval=tuple(selected["interval"].items()),
-                                        fact=(fact["namespace"], fact["entity_id"], fact["attribute"]),
-                                        family_id=family_id_for(access, fact), revision_id=journal.record_id,
-                                        head_revision=resolved["head_revision"], quote=record.summary,
-                                        quote_digest=sha256(record.summary.encode()).hexdigest()))
-                            else:
-                                family_chosen.extend(r for r in items if r.record_id == record.record_id
-                                              and r.scope == scope and r.source_id == source_id
-                                              and authority_digest(r) == authority_digest(record))
+                    family_key = (source_id, fact["namespace"], fact["entity_id"], fact["attribute"])
+                    proof_at = valid_at if family_key in question_families else current_at
+                    resolved, rows = _current_family_rows(sqlite, api, access, fact, proof_at,
+                        originals=originals, facts=families, deadline=deadline, source_deadline=source_deadline)
+                    for record, journal, selected in rows:
+                        family_key = (source_id, fact["namespace"], fact["entity_id"], fact["attribute"])
+                        if (family_key not in question_families
+                                and (exact_ref(record), authority_digest(record)) not in known_items[family_key]):
+                            continue
+                        if expand:
+                            family_chosen.append(record)
+                            if include_admission:
+                                family_matches.append(TemporalMatch(
+                                    request=request, query=request.query, record_ref=exact_ref(record),
+                                    record_digest=authority_digest(record), valid_at=proof_at.isoformat(),
+                                    interval=tuple(selected["interval"].items()),
+                                    fact=(fact["namespace"], fact["entity_id"], fact["attribute"]),
+                                    family_id=family_id_for(access, fact), revision_id=journal.record_id,
+                                    head_revision=resolved["head_revision"], quote=record.summary,
+                                    quote_digest=sha256(record.summary.encode()).hexdigest()))
+                        else:
+                            family_chosen.extend(r for r in items if r.record_id == record.record_id
+                                          and r.scope == scope and r.source_id == source_id
+                                          and authority_digest(r) == authority_digest(record))
                 except (OSError, ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error):
                     continue  # fail closed for this entire family
                 chosen.extend(family_chosen)

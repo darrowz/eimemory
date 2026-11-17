@@ -29,6 +29,25 @@ def _diagnostics(samples):
         "dataset_source": "controlled_records", "samples": samples}}, [])["memory_benchmark"]
 
 
+@pytest.mark.parametrize("reason", [
+    "source_temporal_inapplicable", "source_current_evidence_inapplicable",
+    "source_current_authority_unavailable",
+])
+def test_current_source_qualification_survives_nightly_projection(reason):
+    sample = _sample(0)
+    sample["evaluable"] = False
+    sample["failure_reason"] = reason
+    report = {"memory_eval_ci": {
+        "dataset_source": "controlled_records", "samples": [sample],
+        "dataset_generation": {"ok": False, "reason": reason,
+                               "skipped_reason_counts": {reason: 1}},
+    }}
+    result = nightly_result_diagnostics(report, [])["memory_benchmark"]
+    assert result["dataset_generation"]["skipped_reason_counts"] == {reason: 1}
+    assert result["failed_case_refs"][0]["failure_reason"] == reason
+    assert "reason_not_allowlisted" not in json.dumps(result)
+
+
 @pytest.mark.parametrize("count", [6, 10, 11])
 def test_failure_detail_limit_covers_six_and_ten_but_truthfully_truncates_eleven(count):
     samples = [_sample(index) for index in range(count)]

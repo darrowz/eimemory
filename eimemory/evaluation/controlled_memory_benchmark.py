@@ -12,12 +12,14 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from math import isfinite
+import sqlite3
 from time import perf_counter
 from typing import Any
 
 from eimemory.adapters.runtime.channel import runtime_channel_from_scope
 from eimemory.api.memory import MemoryAPI
 from eimemory.contracts.recall_boundary import authority_digest, default_recall_blocked_lane, exact_ref
+from eimemory.core.budgets import recall_budget_seconds
 from eimemory.evaluation.metrics import percentile
 from eimemory.metadata import business_metadata
 from eimemory.models.records import ScopeRef
@@ -41,9 +43,11 @@ _ELIGIBILITY_REASONS = frozenset({"source_not_authorized", "source_record_inacti
                                  "source_record_operational", "source_record_missing", "source_query_material_empty",
                                  "source_not_stable_before_cutoff", "source_created_at_invalid",
                                  "source_record_capture_rejected", "source_record_episode_evidence",
-                                 "source_record_evidence_only"})
+                                 "source_record_evidence_only", "source_temporal_inapplicable",
+                                 "source_current_evidence_inapplicable", "source_current_authority_unavailable"})
 _GENERATION_REASONS = frozenset({"", "authorized_source_ids_missing", "controlled_memory_store_unavailable",
-                                "controlled_memory_benchmark_empty", "controlled_memory_cutoff_invalid"})
+                                "controlled_memory_benchmark_empty", "controlled_memory_cutoff_invalid",
+                                "source_current_authority_unavailable"})
 _SELECTOR_DROPS = frozenset(ADMISSION_DROPS) | {
     "grounding", "score", "top_score_margin", "exact_dominance", "durable_event_dominance",
     "recall_budget_exhausted", "candidate_hydration_timeout", "authority_unavailable", "authority_changed",
@@ -91,15 +95,21 @@ def build_controlled_memory_benchmark(
     if not callable(getattr(store, "list_records", None)):
         return _dataset(scope_ref, sources, [], skipped, 0, False, "controlled_memory_store_unavailable",
                         stable_before=cutoff_text)
-    candidate_reader = getattr(store, "list_controlled_memory_candidates", None)
-    if callable(candidate_reader):
-        records = candidate_reader(kinds=list(_KINDS), scope=scope_ref,
-            source_ids=list(sources), limit=scan_limit + 1, created_before=cutoff_text)
-    else:
-        records = store.list_records(kinds=list(_KINDS), scope=scope_ref, status="active",
-                                     source_ids=list(sources), limit=scan_limit + 1)
+    deadline_at = perf_counter() + recall_budget_seconds()
+    try:
+        candidate_reader = getattr(store, "list_controlled_memory_candidates", None)
+        if callable(candidate_reader):
+            records = candidate_reader(kinds=list(_KINDS), scope=scope_ref,
+                source_ids=list(sources), limit=scan_limit + 1, created_before=cutoff_text)
+        else:
+            records = store.list_records(kinds=list(_KINDS), scope=scope_ref, status="active",
+                                         source_ids=list(sources), limit=scan_limit + 1)
+    except (OSError, RuntimeError, ValueError, sqlite3.Error):
+        return _dataset(scope_ref, sources, [], skipped, 0, False,
+                        "source_current_authority_unavailable", stable_before=cutoff_text, ok=False)
     cases = []
     scanned = 0
+    valid_at = datetime.now(timezone.utc).replace(microsecond=0)
     for record in records[:scan_limit]:
         scanned += 1
         reason = _eligible_reason(record, scope_ref, sources) or _stable_source_reason(record, cutoff)
@@ -107,11 +117,19 @@ def build_controlled_memory_benchmark(
             skipped[reason] += 1
             continue
         # Re-read through the exact source partition before binding the case.
-        current = store.get_by_exact_ref(record.record_id, scope=scope_ref, source_id=record.source_id)
-        reason = ("source_record_missing" if current is None
-                  else _eligible_reason(current, scope_ref, sources) or _stable_source_reason(current, cutoff))
+        try:
+            current = store.get_by_exact_ref(record.record_id, scope=scope_ref, source_id=record.source_id,
+                                             fail_on_unavailable=True)
+            reason = ("source_record_missing" if current is None else _eligible_reason(current, scope_ref, sources)
+                      or _stable_source_reason(current, cutoff) or _current_target_reason(
+                          runtime, current, valid_at=valid_at, deadline_at=deadline_at))
+        except (OSError, RuntimeError, ValueError, sqlite3.Error):
+            reason = "source_current_authority_unavailable"
         if reason:
             skipped[reason] += 1
+            if reason == "source_current_authority_unavailable":
+                return _dataset(scope_ref, sources, [], skipped, scanned, len(records) > scan_limit,
+                                reason, stable_before=cutoff_text, ok=False)
             continue
         case = _case(current)
         if case is None:
@@ -156,7 +174,8 @@ def run_controlled_memory_benchmark(
                or not sources or not isinstance(cases, list) or len(cases) > MAX_CONTROLLED_CASES
                or not callable(getattr(getattr(runtime, "memory", None), "recall", None)))
     if invalid or not cases:
-        reason = (generation.get("reason") if generation.get("reason") == "controlled_memory_cutoff_invalid"
+        reason = (generation.get("reason") if generation.get("reason") in {
+                    "controlled_memory_cutoff_invalid", "source_current_authority_unavailable"}
                   else "controlled_memory_dataset_invalid" if invalid
                   else generation.get("reason") or "controlled_memory_benchmark_empty")
         return {**base, "ok": not invalid, "execution_ok": not invalid,
@@ -169,7 +188,8 @@ def run_controlled_memory_benchmark(
     evaluated = sum(sample["evaluable"] for sample in samples)
     passed = pass_count == len(samples) and evaluated == len(samples)
     execution_ok = not any(sample.get("failure_reason") in {
-        "controlled_retrieval_unavailable", "controlled_retrieval_incomplete"} for sample in samples)
+        "controlled_retrieval_unavailable", "controlled_retrieval_incomplete",
+        "source_current_authority_unavailable"} for sample in samples)
     elapsed = [sample["latency_ms"] for sample in samples]
     return {**base, "ok": execution_ok, "execution_ok": execution_ok,
             "memory_benchmark_status": "evaluated" if evaluated else "not_run",
@@ -185,7 +205,8 @@ def run_controlled_memory_benchmark(
                            "latency_ms_p95": percentile(elapsed, 95)}}
 
 
-def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]) -> dict[str, Any]:
+def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...],
+              *, recall_call=None) -> dict[str, Any]:
     started = perf_counter()
     sample: dict[str, Any] = {"case_id": "", "phase": "usage", "passed": False, "evaluable": False,
                               "expected_rank": 0, "returned_record_count": 0, "returned_refs": [],
@@ -206,6 +227,8 @@ def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]
     current = runtime.store.get_by_exact_ref(str(binding.get("record_id") or ""), scope=scope,
                                              source_id=binding["source_id"])
     reason = "source_record_missing" if current is None else _eligible_reason(current, scope, sources)
+    if not reason:
+        reason = _current_target_reason(runtime, current)
     if reason:
         return finish(reason)
     canonical = _case(current)
@@ -228,8 +251,9 @@ def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]
                 CandidateRef(current.record_id, ExactScope.from_scope(scope), current.source_id),
                 query=cleaned_query,
                 source_ids=case["task_context"]["source_ids"]) as trace:
-            bundle = runtime.memory.recall(query=case["query"], scope=asdict(scope),
-                                           task_context=dict(case["task_context"]), limit=case["limit"])
+            recall = runtime.memory.recall if recall_call is None else recall_call
+            bundle = recall(query=case["query"], scope=asdict(scope),
+                            task_context=dict(case["task_context"]), limit=case["limit"])
     except Exception as exc:
         sample["error_type"] = type(exc).__name__
         sample["retrieval_diagnostics"] = _controlled_retrieval_diagnostics(
@@ -257,6 +281,8 @@ def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]
     after = runtime.store.get_by_exact_ref(current.record_id, scope=scope, source_id=current.source_id)
     if after is None or _eligible_reason(after, scope, sources) or authority_digest(after) != binding["payload_digest"]:
         return finish("source_case_binding_changed")
+    if reason := _current_target_reason(runtime, after):
+        return finish(reason)
     sample["evaluable"] = True
     if any(_eligible_reason(item, scope, sources) for item in returned):
         return finish("returned_source_not_authorized_or_current")
@@ -457,6 +483,33 @@ def _eligible_reason(record: Any, scope: ScopeRef, sources: tuple[str, ...]) -> 
             or default_recall_blocked_lane(business_metadata(record.meta), record.content, record.provenance)):
         return "source_record_operational"
     return ""
+
+
+def _current_target_reason(runtime: Any, record: Any, *, valid_at: datetime | None = None,
+                           deadline_at: float | None = None) -> str:
+    """Qualify a positive target from current authority before measuring recall."""
+    from eimemory.knowledge.chat_temporal import CHANNELS, KEY
+    from eimemory.knowledge.current_evidence import current_evidence_reasons
+
+    if deadline_at is None:
+        deadline_at = perf_counter() + recall_budget_seconds()
+    memory = getattr(runtime, "memory", None)
+    if (KEY in business_metadata(record.meta)
+            or (record.kind == "memory" and record.source_id in CHANNELS
+                and record.source == record.source_id + ".l1")):
+        if getattr(memory, "store", None) is not runtime.store:
+            return "source_current_authority_unavailable"
+        from eimemory.knowledge.chat_temporal import current_target_temporal_reasons
+
+        [reason] = current_target_temporal_reasons(memory, [record], scope=record.scope,
+            valid_at=valid_at or datetime.now(timezone.utc).replace(microsecond=0), deadline_at=deadline_at)
+        if reason:
+            return reason
+    registry = memory.source_registry if isinstance(memory, MemoryAPI) else None
+    [reason] = current_evidence_reasons([record], store=runtime.store, registry=registry, deadline_at=deadline_at)
+    if reason in {"evidence_unavailable", "evidence_changed"}:
+        return "source_current_authority_unavailable"
+    return "source_current_evidence_inapplicable" if reason else ""
 
 
 def _binding_metadata(binding: Any) -> dict[str, Any]:

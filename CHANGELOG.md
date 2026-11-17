@@ -1,3 +1,11 @@
+## [1.15.85]
+
+- Reclassify an unmarked legacy observation only when its literal original source and exact parent support an undated scalar fact and no temporal family reserves that slot. Persisted unresolved markers, unsupported assertions and changed parents remain withheld.
+- Qualify controlled positive targets against shared current temporal and source authority before recall, then revalidate them during execution and receipt verification. Preserve bounded selection, exact source grants and distinct unavailable versus inapplicable outcomes.
+- Retain the real MemoryAPI while observing CPA recall, preserve new qualification reasons in nightly diagnostics, and register the related temporal and controlled-target suites in both CI workflows.
+- Preserve the original signed 15-case result and native replay at 10/15. Candidate same-question, independent-source and formal closure results remain pending; no improved recall or business acceptance is claimed yet.
+- See `docs/releases/v1.15.85.md` for scope and validation boundaries.
+
 ## [1.15.84]
 
 - Discover an existing protected logical profile declaration from an ordinary native user CLI without enrolling a manager or changing authority selection.

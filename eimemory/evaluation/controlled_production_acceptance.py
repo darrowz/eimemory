@@ -63,7 +63,8 @@ VERIFICATION_FAILURE_REASONS = frozenset(
     policy_untrusted production_engine_contract_mismatch release_mismatch release_receipt_invalid report_authority_invalid
     report_expired report_not_accepted retrieval_incomplete returned_boundary_invalid returned_evidence_invalid
     source_authority_unavailable source_boundary_invalid source_cutoff_invalid source_query_material_empty source_version_changed
-    source_version_unavailable timestamp_invalid traffic_agent_not_authorized traffic_discovery_unavailable verification_failed
+    source_version_unavailable source_current_authority_unavailable source_target_inapplicable
+    timestamp_invalid traffic_agent_not_authorized traffic_discovery_unavailable verification_failed
     """.split()
 )
 
@@ -343,6 +344,11 @@ def _physical(runtime, binding, scope, sources, cutoff, *, require_old=True, epi
             or (require_old and benchmark._stable_source_reason(record, _instant(cutoff)))
             or benchmark._binding(record) != binding):
         _error('source_version_changed')
+    if require_old and not episode:
+        target_reason = benchmark._current_target_reason(runtime, record)
+        if target_reason:
+            _error(target_reason if target_reason == 'source_current_authority_unavailable'
+                   else 'source_target_inapplicable')
     from eimemory.subject_projection_consumption import projection_is_current
     if not projection_is_current(runtime.store, record):
         _error('source_authority_unavailable')
@@ -510,6 +516,8 @@ def _evaluate_agent(runtime, entry, policy, cutoff):
     else:
         dataset = benchmark.build_controlled_memory_benchmark(runtime, scope=scope, source_ids=sources,
             stable_before=cutoff, limit=policy['max_cases_per_scope'])
+        if dataset['dataset_generation']['ok'] is not True:
+            _error('source_current_authority_unavailable')
         cases = dataset.get('cases', [])
     if len(cases) < policy['minimum_cases_per_scope']:
         _error('insufficient_existing_records')
@@ -583,8 +591,6 @@ def _evaluate_agent(runtime, entry, policy, cutoff):
                 re.fullmatch(r'controlled_acceptance_[a-z_]+', code) else 'controlled_acceptance_native_recall_failed')
             raise
 
-    proxy = SimpleNamespace(store=runtime.store,
-        memory=SimpleNamespace(recall=recall, recall_engine=runtime.memory.recall_engine))
     evidence = []
     for case in cases:
         # A failed native callback is still this case's failed observation.
@@ -593,7 +599,7 @@ def _evaluate_agent(runtime, entry, policy, cutoff):
                            cascade_evidence=[], compact_digest='', call_count=0, failure_reason='',
                            bundle_observed=False,returned_counts={},
                            compact_observation=dict(attempted=False,structure_valid=None))
-        sample = benchmark._run_case(proxy, case, scope, sources)
+        sample = benchmark._run_case(runtime, case, scope, sources, recall_call=recall)
         binding = case['source_binding']
         version = _physical(runtime, binding, scope, sources, cutoff)
         if version != before[case['case_id']]:

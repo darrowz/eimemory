@@ -661,6 +661,7 @@ _CONTROLLED_MEMORY_REASONS = frozenset({
     "memory_benchmark_channel_binding_ambiguous", "memory_benchmark_channel_binding_missing",
     "memory_benchmark_source_ids_invalid",
     "controlled_memory_cutoff_invalid", "source_not_stable_before_cutoff", "source_created_at_invalid",
+    "source_temporal_inapplicable", "source_current_evidence_inapplicable", "source_current_authority_unavailable",
     "controlled_query_empty_after_cleaning",
 })
 _MEMORY_RECORD_REF = r"(?:mem|rec|digest|ktop|claim|kpage|knowledge_page|ku|knowledge_unit)_[0-9a-f]{8,64}"

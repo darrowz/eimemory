@@ -166,6 +166,16 @@ jobs:
           tests/test_code_evolution_allowlist_consistency.py
           tests/test_code_evolution_security.py
           tests/test_controlled_memory_benchmark.py
+          tests/test_controlled_current_target_qualification.py
+          tests/test_ordinary_chat_temporal_semantics.py
+          tests/test_ordinary_chat_temporal_grounding.py
+          tests/test_ordinary_chat_temporal_money.py
+          tests/test_chat_temporal_reader_boundary.py
+          tests/test_chat_temporal_bounded_source_operations.py
+          tests/test_chat_temporal_same_date_conflict.py
+          tests/test_chat_temporal_reviewfix1.py
+          tests/test_chat_temporal_reviewfix2.py
+          tests/test_chat_temporal_existing_targets.py
           tests/test_controlled_memory_completion.py
           tests/test_controlled_production_acceptance.py
           tests/test_controlled_release_lineage.py
