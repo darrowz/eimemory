@@ -388,7 +388,15 @@ def _partition_access(scope, source_id, *, admit_evidence=lambda record: False):
                               source=source_id + ".chat_temporal", admit_evidence=admit_evidence)
 
 
-def access_for(api, scope, source_id, *, sqlite=None, deadline=None):
+def _strict_parent_reader(sqlite):
+    """A read proof must distinguish absent parents from unreadable rows."""
+    def read(record_id, **kwargs):
+        kwargs["fail_on_unavailable"] = True
+        return sqlite.get_by_exact_ref(record_id, **kwargs)
+    return read
+
+
+def access_for(api, scope, source_id, *, sqlite=None, deadline=None, strict_parent_read=False):
     if not getattr(api, "_ordinary_chat_temporal", False):
         raise PermissionError("ordinary_chat_temporal_unbound")
 
@@ -403,7 +411,8 @@ def access_for(api, scope, source_id, *, sqlite=None, deadline=None):
                     or meta.get("runtime_channel") != source_id):
                 return False
             binding = meta.get("source_event_binding")
-            parent = validate_l1_source_event(record, binding, get_exact=sqlite.get_by_exact_ref)
+            parent = validate_l1_source_event(record, binding,
+                get_exact=_strict_parent_reader(sqlite) if strict_parent_read else sqlite.get_by_exact_ref)
             if not eligible_parent(api, parent) or record.content.get("text") != record.summary:
                 return False
             from eimemory.knowledge.safety import evaluate_knowledge_safety
@@ -425,7 +434,8 @@ def _family(sqlite, api, access, fact, *, deadline=None):
                                                   source_id=access.source_id, max_events=MAX_EVENTS)
     if not complete:
         raise _CurrentAuthorityUnavailable("temporal_family_incomplete")
-    pinned_access = access_for(api, access.scope, access.source_id, sqlite=sqlite, deadline=deadline)
+    pinned_access = access_for(api, access.scope, access.source_id, sqlite=sqlite, deadline=deadline,
+                              strict_parent_read=True)
     _certify_temporal_family(sqlite, family, access=pinned_access, family_id=family_id,
                              fact=fact, source_registry=api.source_registry)
     return family
@@ -546,7 +556,7 @@ def _existing_grounding(sqlite, api, item, *, deadline=None):
         return dict(state="resolved", fact=temporal_payload(revision)["request"]["fact"])
     if "source_event_binding" not in meta:
         return None  # Existing unbound preintegration records retain their route.
-    parent = validate_l1_source_event(item, meta["source_event_binding"], get_exact=sqlite.get_by_exact_ref)
+    parent = validate_l1_source_event(item, meta["source_event_binding"], get_exact=_strict_parent_reader(sqlite))
     if not _chat_parent(parent):
         raise ValueError("chat_source_parent_invalid")
     from eimemory.knowledge.safety import evaluate_knowledge_safety
@@ -1246,9 +1256,11 @@ def resolve_candidates(api, request, items, *, expand, include_admission=False):
             for item in items:
                 if deadline and perf_counter() >= float(deadline):
                     raise ValueError("chat_temporal_deadline")
-                if item.scope != scope:
-                    continue
                 try:
+                    # Classify within the candidate's own exact partition,
+                    # including stripped journal markers on shared candidates.
+                    # Ordinary shared/alias evidence keeps its admitted route;
+                    # managed family authority still requires request.scope.
                     grounding = _existing_grounding(sqlite, api, item, deadline=deadline)
                 except (OSError, ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error):
                     continue  # this unknown item cannot suppress unrelated legacy facts

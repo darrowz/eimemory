@@ -3,7 +3,8 @@
 - Reclassify an unmarked legacy observation only when its literal original source and exact parent support an undated scalar fact and no temporal family reserves that slot. Persisted unresolved markers, unsupported assertions and changed parents remain withheld.
 - Qualify controlled positive targets against shared current temporal and source authority before recall, then revalidate them during execution and receipt verification. Preserve bounded selection, exact source grants and distinct unavailable versus inapplicable outcomes.
 - Retain the real MemoryAPI while observing CPA recall, preserve new qualification reasons in nightly diagnostics, and register the related temporal and controlled-target suites in both CI workflows.
-- Preserve the original signed 15-case result and native replay at 10/15. Candidate same-question, independent-source and formal closure results remain pending; no improved recall or business acceptance is claimed yet.
+- Preserve authorized shared-owner and physical-alias ordinary candidates during temporal classification. Distinguish an unreadable existing source parent from an absent parent during current-authority checks.
+- Preserve the original signed 15-case result and native replay at 10/15. The independently qualified operational cohort passes 15/15 in isolated native execution, and eleven additional frozen source cases pass 11/11 before and after. Formal deployment closure remains subject to its saved native receipt.
 - See `docs/releases/v1.15.85.md` for scope and validation boundaries.
 
 ## [1.15.84]

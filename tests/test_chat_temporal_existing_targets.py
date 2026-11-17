@@ -243,3 +243,40 @@ def test_literal_title_requires_complete_family(chat, monkeypatch):
     _, _, _, item = seed(chat)
     override_reader(monkeypatch, chat.runtime.memory, "temporal_fact_family", lambda **kwargs: ([], False))
     assert temporal.resolve_candidates(chat.runtime.memory, request(item.title), [item], expand=True) == []
+
+
+def test_ordinary_shared_owner_survives_temporal_gate(chat):
+    from dataclasses import replace
+    from test_chat_temporal_reader_boundary import manual_counterpart
+    item = manual_counterpart(chat)
+    item.scope = replace(item.scope, user_id="shared-authorized-owner")
+    # Authority selection already admitted this ordinary candidate. Temporal
+    # applicability is not a second blanket owner restriction for all lanes.
+    assert selected(chat, [item]) == [item]
+
+
+@pytest.mark.parametrize("marker", ["resolved", None, [], {}])
+def test_shared_owner_never_gains_managed_temporal_authority(chat, marker):
+    from dataclasses import replace
+    _, _, _, item = seed(chat)
+    item = deepcopy(item)
+    item.scope = replace(item.scope, user_id="shared-authorized-owner")
+    if marker != "resolved":
+        item.meta[temporal.KEY] = marker
+    assert temporal.resolve_candidates(chat.runtime.memory, request(item.title), [item], expand=True) == []
+
+
+def test_persisted_stripped_marker_cannot_become_ordinary_through_shared_scope(chat):
+    from dataclasses import replace
+    from eimemory.retrieval.contracts import CandidateRequest
+    _, _, _, item = seed(chat)
+    stripped = deepcopy(item)
+    strip_marker(stripped)
+    chat.runtime.store.rewrite(stripped)
+    current = chat.runtime.store.get_by_exact_ref(item.record_id, scope=item.scope,
+                                                  source_id=item.source_id, fail_on_unavailable=True)
+    assert temporal.KEY not in business_metadata(current.meta)
+    foreign_request = CandidateRequest.create(query=current.title,
+        scope=replace(owner(), user_id="other-request-owner"), source_ids=["hermes"])
+    for query in [request(current.title), foreign_request]:
+        assert temporal.resolve_candidates(chat.runtime.memory, query, [current], expand=True) == []
