@@ -13,7 +13,7 @@ No imports from the upstream runtime and no I/O or corpus-wide statistics.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 import re
 import unicodedata
@@ -247,6 +247,7 @@ class ContentMatch:
     terms: frozenset[str]
     phrases: frozenset[str]
     strength: int
+    title_body_terms: int = field(default=0, compare=False)
 
 
 def query_content(query: str) -> QueryContent:
@@ -278,14 +279,25 @@ def query_content(query: str) -> QueryContent:
 
 
 def match_content(plan: QueryContent, text: str, title: str = "") -> ContentMatch:
-    evidence = normalize(title + "\n" + text)
-    available = tokens(evidence)
-    matched = frozenset(t for t in plan.terms if latin_forms(t) & available)
+    body_terms = tokens(text)
+    title_terms = tokens(title)
+    available = body_terms | title_terms
+    matched = set()
+    title_body_terms = 0
+    # Some legacy rows fall back to the title for their entire evidence text.
+    distinct_title = bool(title_terms) and title.strip() != text.strip()
+    for term in plan.terms:
+        forms = latin_forms(term)
+        if not forms.isdisjoint(available):
+            matched.add(term)
+            if distinct_title and not forms.isdisjoint(title_terms) and not forms.isdisjoint(body_terms):
+                title_body_terms += 1
+    evidence = normalize(title + "\n" + text) if plan.phrases else ""
     phrases = frozenset(p for p in plan.phrases if phrase_present(p, evidence))
     # Integers define relevance bands, not calibrated probabilities. A literal
     # quoted phrase has precedence over the same words scattered across text.
     strength = len(matched) + len(phrases) * (len(plan.terms) + 1)
-    return ContentMatch(matched, phrases, strength)
+    return ContentMatch(frozenset(matched), phrases, strength, title_body_terms)
 
 
 def common_subject(first: ContentMatch, other: ContentMatch) -> frozenset[str]:

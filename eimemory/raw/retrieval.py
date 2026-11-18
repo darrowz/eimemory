@@ -822,6 +822,10 @@ def _boosts(*, query: str, text: str, record: Any, task_context: dict,
             boosts["keyword_overlap"] = round(min(0.8, overlap * 0.8), 6)
     if content_match.phrases:
         boosts["quoted_phrase"] = 0.75
+    if content_match.title_body_terms:
+        # Within one coverage band, prefer a document about the topic over
+        # an incidental body mention. This signal does not admit citations.
+        boosts["title_body_overlap"] = content_match.title_body_terms / len(query_terms)
     proper = _proper_nouns(query) + _proper_nouns(str(task_context.get("question") or ""))
     proper = list(dict.fromkeys(proper))
     if content_match.strength and proper and any(noun.lower() in text.lower() for noun in proper):

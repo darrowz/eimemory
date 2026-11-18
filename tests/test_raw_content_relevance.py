@@ -17,6 +17,33 @@ def ids(ranked):
     return [item["record"]["record_id"] for item in ranked]
 
 
+@pytest.mark.parametrize("query,title,answer,note", [
+    ("When do air filters need replacement?", "Air filters",
+     "Air filters need replacement every three months.", "We debated when air filters need replacement."),
+    ("潮汐测量周期", "潮汐测量", "潮汐测量周期为十二小时。", "周一开会讨论潮汐测量周期。"),
+])
+def test_document_topic_beats_an_incidental_mention_in_an_equal_coverage_band(query, title, answer, note):
+    ranked = rerank_raw_results(query=query, results=[
+        candidate("mention", note, .6, title="Meeting notes"),
+        candidate("about", answer, .45, title=title),
+    ])
+    assert ids(ranked) == ["about", "mention"]
+    assert ranked[0]["boosts"]["title_body_overlap"] > 0
+
+
+def test_title_match_cannot_outrank_better_coverage_or_count_a_missing_body_twice():
+    ranked = rerank_raw_results(query="bronze rivet depth", results=[
+        candidate("partial", "The rivet is bronze.", .99, title="Bronze rivet"),
+        candidate("full", "The bronze rivet depth is 6 mm.", .01),
+        {"record": {"record_id": "no-body", "title": "Rivet depth"}, "base_score": .5},
+        candidate("bad-title", "Email arrived on Monday.", .5, title="Bronze depth"),
+    ])
+    assert ids(ranked)[0] == "full"
+    for hit in ranked:
+        if hit["record"]["record_id"] in {"no-body", "bad-title"}:
+            assert "title_body_overlap" not in hit["boosts"]
+
+
 def test_content_answer_beats_unrelated_newer_correction():
     ranked = rerank_raw_results(
         query="Which screen states must a design handoff include?",
