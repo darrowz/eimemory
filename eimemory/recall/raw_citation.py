@@ -310,7 +310,10 @@ def _review_support(memory, lane, *, records, query, scope, context, collection_
                                        row["source_digest"], spans, _support_source_title(record)))
     # Candidate recovery is a separate model-input lane. It cannot expand
     # ordinary related results or borrow the lexical gate's proof for a new ref.
-    if 0 < len(eligible) < requested_limit and perf_counter() < collection_deadline:
+    # A complete lexical search can return zero rows for a paraphrase. Its
+    # scoped snapshot still authorizes the same bounded review-only lookup.
+    # An existing set withheld for applicability cannot seed that lookup.
+    if (eligible or not records) and len(eligible) < requested_limit and perf_counter() < collection_deadline:
         from eimemory.raw.support_candidates import recover_support_candidates, SupportRecoveryChanged
         try:
             extra = recover_support_candidates(memory.store, query=query, scope=scope, context=context,
@@ -341,14 +344,15 @@ def _review_support(memory, lane, *, records, query, scope, context, collection_
         except Exception:
             # Optional recovery has no authority to invalidate or replace the
             # original candidate receipt; the later snapshot check still runs.
-            pass
-    if not eligible:
-        lane.answer_support = _support_unknown("applicability_unresolved" if unresolved else "no_candidates")
-        return lane
+            if not records:
+                return lane.withhold("support_recovery_unavailable")
     if perf_counter() >= collection_deadline:
         # Recovery may have waited for a concurrent write. An expired budget
         # cannot establish that the previously collected related text is current.
         return lane.withhold("collection_deadline_exhausted")
+    if not eligible:
+        lane.answer_support = _support_unknown("applicability_unresolved" if unresolved else "no_candidates")
+        return lane
     # Route comes from this exact server-owned channel scope, never task DTOs.
     token = bind_verifier_route(route_for_request(context.get("runtime_channel"), scope=scope))
     try:
