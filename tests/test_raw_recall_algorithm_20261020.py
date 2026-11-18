@@ -1,10 +1,11 @@
 """Raw recall must ground, deduplicate and rank the complete candidate union."""
 from contextlib import closing
+from dataclasses import replace
 import math
 
 import pytest
 
-from eimemory.models.records import ScopeRef
+from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.raw import retrieval
 from eimemory.raw.store import RawEvidenceAPI
 from eimemory.storage.runtime_store import RuntimeStore
@@ -33,6 +34,34 @@ def test_unknown_query_does_not_return_unrelated_raw_corrections(raw_store):
     assert retrieval.search_raw_chunks(
         raw_store, query="quuxnevermatchedword", scope=SCOPE, limit=3,
     ) == []
+
+
+@pytest.mark.parametrize("restriction", ["source", "exact_scope"])
+@pytest.mark.parametrize("query,answer,related", [
+    ("amber depot custodian", "Amber depot keys are held by Lin.", "The depot meeting was postponed."),
+    ("linden sensor interval", "The linden sensor samples every 45 seconds.", "The sensor arrived on Tuesday."),
+    ("cobalt return address", "Ship cobalt returns to Dock 19.", "The return process was discussed."),
+])
+def test_boundary_precedes_raw_index_limit(raw_store, query, answer, related, restriction):
+    owner = replace(SCOPE, user_id="operator")
+
+    def add(kind, source, title, body, scope=owner):
+        return raw_store.append(RecordEnvelope.create(
+            kind=kind, scope=scope, source_id=source, title=title,
+            content={"raw_text": body, "text": body},
+        ))
+
+    target = add("raw_chunk", "handbook", "Operations note", answer)
+    add("memory", "handbook", "Meeting note", related)
+    source, scope = ("archive", owner) if restriction == "source" else ("handbook", SCOPE)
+    for i in range(8):
+        add("raw_chunk", source, query, f"{query} (archive {i})", scope)
+
+    hits = retrieval.search_raw_chunks(
+        raw_store, query=query, scope=owner, source_ids=["handbook"], limit=1,
+        task_context={"exact_scope_only": restriction == "exact_scope"},
+    )
+    assert [hit["record"]["record_id"] for hit in hits] == [target.record_id]
 
 
 @pytest.mark.parametrize("query,text", [

@@ -17,7 +17,7 @@ from eimemory.contracts.recall_boundary import authority_digest, exact_ref
 from time import perf_counter
 from eimemory.core.strict_json import loads as strict_json_loads
 from .boundary import (raw_request_boundary, raw_ref_allowed, capture_raw_snapshot,
-                       raw_read_scope, raw_remaining_seconds, invoke_raw_reranker,
+                       raw_index_options, raw_read_scope, raw_remaining_seconds, invoke_raw_reranker,
                        RawRecallUnavailable, require_raw_collection_complete)
 from eimemory.models.source_partitions import normalize_source_ids
 from ._relevance import (CONFLICT_DEPTH, ContentMatch, QueryContent, change_lines, common_subject,
@@ -74,7 +74,10 @@ def search_raw_chunks(
 
 
 def _search_raw_candidates(store, *, normalized_query, scope_ref, task_context, allowed_source_ids, limit):
-    candidates = _raw_api_search(store, query=normalized_query, scope=scope_ref, limit=max(limit * 4, limit))
+    candidates = _raw_api_search(
+        store, query=normalized_query, scope=scope_ref,
+        source_ids=allowed_source_ids, limit=max(limit * 4, limit),
+    )
     candidates = _authoritative_raw_candidates(
         store,
         candidates=candidates,
@@ -277,12 +280,15 @@ def _apply_topic_order(ranked: list[dict[str, Any]], plan: QueryContent) -> None
         break
 
 
-def _raw_api_search(store: Any, *, query: str, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
+def _raw_api_search(store: Any, *, query: str, scope: ScopeRef, limit: int,
+                    source_ids: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
     try:
         from eimemory.raw.store import RawEvidenceAPI  # type: ignore
         api = RawEvidenceAPI(store)
         with raw_read_scope(store):
-            return _normalize_results(api.search_raw_chunks(query=query, scope=scope, limit=limit))
+            return _normalize_results(api.search_raw_chunks(
+                query=query, scope=scope, source_ids=source_ids, limit=limit,
+            ))
     except RawRecallUnavailable:
         raise
     except Exception as exc:
@@ -321,7 +327,7 @@ def _store_raw_candidates(
                 kinds=["memory"],
                 scope=scope,
                 limit=limit,
-                source_ids=source_ids,
+                **raw_index_options(scope, source_ids),
             )
             require_raw_collection_complete(collected, report)
             records.extend(collected)

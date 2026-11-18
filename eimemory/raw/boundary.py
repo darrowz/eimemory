@@ -89,6 +89,15 @@ class _Boundary:
 _CURRENT: ContextVar[_Boundary | None] = ContextVar("eimemory_raw_boundary", default=None)
 
 
+def raw_index_options(scope, source_ids: tuple[str, ...] | list[str] | None) -> dict[str, Any]:
+    """Restrict indexed candidates before the store applies its result limit."""
+    options: dict[str, Any] = {} if source_ids is None else {"source_ids": source_ids}
+    state = _CURRENT.get()
+    if state is not None and state.exact_scope == scope_tuple(scope):
+        options["recall_filters"] = {"_exact_scope": True}
+    return options
+
+
 def raw_ref_allowed(record: Any) -> bool:
     from eimemory.metadata import business_metadata
     meta = record.get("meta") if isinstance(record, dict) else getattr(record, "meta", {})

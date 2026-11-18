@@ -369,6 +369,7 @@ jobs:
           tests/test_raw_citation_support_contract.py
           tests/test_raw_clause_tokens.py
           tests/test_raw_content_relevance.py
+          tests/test_raw_recall_algorithm_20261020.py
           tests/test_raw_support_candidate_recovery.py
           tests/test_raw_support_provenance.py
           tests/test_raw_support_recovery_boundaries.py

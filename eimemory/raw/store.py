@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.raw.boundary import raw_index_options, require_raw_collection_complete
 from eimemory.raw.chunks import chunk_text, raw_text_hash
 from eimemory.storage.runtime_store import RuntimeStore
 
@@ -111,6 +112,7 @@ class RawEvidenceAPI:
         query: str,
         scope: ScopeRef | dict | None = None,
         limit: int = 10,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> list[dict[str, Any]]:
         scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
         bounded = max(1, min(500, int(limit)))  # EXT-20
@@ -119,8 +121,8 @@ class RawEvidenceAPI:
             kinds=["raw_chunk"],
             scope=scope_ref,
             limit=bounded,
+            **raw_index_options(scope_ref, source_ids),
         )
-        from eimemory.raw.boundary import require_raw_collection_complete
         require_raw_collection_complete(records, report)
         scores = {
             str(item.get("record_id") or ""): float(item.get("final_score") or 0.0)
@@ -141,8 +143,9 @@ class RawEvidenceAPI:
         query: str,
         scope: ScopeRef | dict | None = None,
         limit: int = 10,
+        source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> list[dict[str, Any]]:
-        return self.search_raw_chunks(query=query, scope=scope, limit=limit)
+        return self.search_raw_chunks(query=query, scope=scope, limit=limit, source_ids=source_ids)
 
     def context_window(
         self,
