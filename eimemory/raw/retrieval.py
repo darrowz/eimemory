@@ -144,7 +144,8 @@ def rerank_raw_results(
     # Candidate collection, exact scope/source checks and authoritative
     # hydration remain upstream of this pure ranking step. No global corpus
     # statistics, provider-score thresholds or candidate expansion are needed.
-    plan = query_content(_content_query(query_text, task_context))
+    content_query = _content_query(query_text, task_context)
+    plan = query_content(content_query)
     ranked: list[dict[str, Any]] = []
     for index, result in enumerate(results):
         record = _result_record(result)
@@ -190,7 +191,10 @@ def rerank_raw_results(
     # Sort the finite secondary itself: public compression/rounding can erase
     # meaningful differences (and even unrounded compression saturates).
     ranked.sort(key=lambda item: (-item["_match"].strength, -item["_secondary"], item["_index"]))
-    if not plan.phrases and task_context.get("evidence_intent") != "fact_citation":
+    if (content_query == query_text and not plan.phrases
+            and not (task_context.get("speaker") or task_context.get("role"))
+            and not _should_expand_turn_context(task_context)
+            and task_context.get("evidence_intent") != "fact_citation"):
         _preserve_dialogue_fts_order(ranked)
     _apply_topic_order(ranked, plan)
     for item in ranked:
@@ -215,8 +219,10 @@ def _preserve_dialogue_fts_order(ranked: list[dict]) -> None:
     # discards the index's discriminative term weights and length normalization.
     # Keep exact quotes, mixed sources and document rankings on their normal path.
     indexed = [item for item in ranked if item["_fts_rank"] and item["_match"].terms]
+    context_matches = {"benchmark_session_match", "benchmark_turn_match", "entity_overlap", "temporal_hint"}
     if (len(ranked) < 2 or not indexed
             or any(item["_partition"] != ranked[0]["_partition"] for item in ranked)
+            or any(not context_matches.isdisjoint(item["boosts"]) for item in ranked)
             or not all(_dialogue_turn(item["record"]) for item in ranked)):
         return
     ceiling = max(item["final_score"] for item in ranked)

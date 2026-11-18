@@ -30,6 +30,24 @@ def test_dialogue_retains_index_order_and_duplicate_score_without_losing_fts_ran
     assert ranked[0]["final_score"] > ranked[1]["final_score"]
 
 
+@pytest.mark.parametrize("context,first", [
+    ({}, "repeated"),
+    ({"role": "user"}, "original"),
+    ({"turn_id": "a:2"}, "original"),
+    ({"session_id": "a"}, "original"),
+    ({"question_terms": ["yellow"]}, "original"),
+    ({"temporal_hints": ["2031-04-01"]}, "original"),
+])
+def test_index_order_on_structured_turns_preserves_requested_context(context, first):
+    original = candidate("original", "I put the gauge in the yellow crate.", .6, day="2031-04-01",
+                         session_id="a", turn_id="a:2", role="user")
+    repeated = candidate("repeated", "The gauge was packed yesterday.", .5, day="2031-04-02",
+                         session_id="b", turn_id="b:3", role="assistant")
+    original["fts_rank"], repeated["fts_rank"] = 2, 1
+    ranked = rerank_raw_results(query="gauge", results=[original, repeated], task_context=context)
+    assert ids(ranked)[0] == first
+
+
 @pytest.mark.parametrize("other,rank,query", [
     ("Workshop notes on spare gauges for testing.", 1, "R28 spare gauges for testing"),
     ("User: We have spare gauges.\nAssistant: Ready for testing.", True, "R28 spare gauges for testing"),
