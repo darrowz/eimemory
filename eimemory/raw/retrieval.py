@@ -126,10 +126,41 @@ def _search_raw_candidates(store, *, normalized_query, scope_ref, task_context, 
                 store, ranked=ranked, scope=scope_ref,
                 source_ids=allowed_source_ids, limit=limit,
             )
-    # Model quality is evaluated after delivery; keep local ranking and bounds.
-    if len(ranked) > limit:
-        ranked = ranked[:limit]
-    return ranked
+    return _dialogue_delivery_window(ranked, limit, normalized_query, task_context)
+
+
+def _dialogue_delivery_window(ranked: list[dict], limit: int, query: str, context: dict) -> list[dict]:
+    """Use one remaining slot for independently retrieved, contiguous evidence."""
+    window = ranked[:limit]
+    if (limit < 3 or len(window) == len(ranked) or context.get("applicability")
+            or context.get("known_at") or context.get("as_of")):
+        return window
+    # Only the ordinary, grounded, single-partition dialogue path sets this
+    # rank. Exact quotes, fact citation, explicit roles and task hints keep
+    # their existing delivery order.
+    if not all(item["boosts"].get("fts_reciprocal_rank") for item in window[:2]):
+        return window
+
+    def position(item):
+        record = item["record"]
+        session, turn = record.get("session_id"), str(record.get("turn_id", ""))
+        if not session or not re.fullmatch(r"(?:0|[1-9][0-9]{0,17})", turn):
+            return None
+        return session, int(turn)
+
+    anchors = [p for item in window[:2] if (p := position(item)) is not None]
+    if not anchors or query_content(query).historical:
+        return window
+    adjacent = {(session, num + delta) for session, num in anchors for delta in (-1, 1)}
+    present = {position(item) for item in window}
+    for item in ranked[limit:]:
+        # Only promote a neighbor with its own strong full-text rank. The
+        # query may cover other events, so preserve all but the final slot.
+        rank = item["boosts"].get("fts_reciprocal_rank", 0)
+        pos = position(item)
+        if rank >= 1 / min(20, limit * 4) and pos in adjacent and pos not in present:
+            return [*window[:-1], {**item, "boosts": {**item["boosts"], "turn_context_neighbor": 1.0}}]
+    return window
 
 
 def rerank_raw_results(
@@ -1064,7 +1095,7 @@ def _record_payload(record: Any, *, text: str) -> dict[str, Any]:
             "text": text,
             "occurred_at": _timestamp_text(record),
             "session_id": str(record.content.get("session_id") or ""),
-            "turn_id": str(record.content.get("turn_id") or ""),
+            "turn_id": str(record.content["turn_id"]) if record.content.get("turn_id") is not None else "",
             "chunk_id": str(record.content.get("chunk_id") or ""),
             "chunk_index": str(record.content["chunk_index"]) if record.content.get("chunk_index") is not None else "",
             "source_event_id": str(record.content.get("source_event_id") or ""),

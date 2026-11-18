@@ -183,6 +183,33 @@ def test_complete_turn_window_does_not_require_an_unavailable_backstop(raw_store
     assert [item["record"]["record_id"] for item in results] == [anchor.record_id, neighbor.record_id]
 
 
+@pytest.mark.parametrize("session,turn,rank,query,context,should_promote", [
+    ("workshop", 0, 5, "orchard fault", {}, True),
+    ("workshop", "2", 5, "orchard fault", {}, True),
+    ("other", "2", 5, "orchard fault", {}, False),
+    ("workshop", "turn-hash:2", 5, "orchard fault", {}, False),
+    ("workshop", "2", 18, "orchard fault", {}, False),
+    ("workshop", "2", None, "orchard fault", {}, False),
+    ("workshop", "2", 5, "orchard fault on 2025-05-01", {}, False),
+    ("workshop", "2", 5, "orchard fault", {"as_of": "2025-05-01"}, False),
+])
+def test_dialogue_window_delivers_only_scoped_grounded_adjacent_turn(
+        raw_store, monkeypatch, session, turn, rank, query, context, should_promote):
+    raw = RawEvidenceAPI(raw_store)
+    hits = []
+    for i, (conversation, ordinal, fts_rank) in enumerate([
+        ("workshop", "1", 1), ("trip", "1", 2), ("inventory", "9", 3), (session, turn, rank),
+    ]):
+        record = raw.ingest_chunk({"session_id": conversation, "turn_id": ordinal, "role": "user",
+            "text": f"Orchard fault report {i}."}, scope=SCOPE)
+        hits.append({"record": record, "base_score": .8, "fts_rank": fts_rank})
+    monkeypatch.setattr(retrieval, "_raw_api_search", lambda *a, **kw: hits)
+    got = retrieval.search_raw_chunks(raw_store, query=query, scope=SCOPE, limit=3, task_context=context)
+    assert [h["record"]["record_id"] for h in got] == [
+        hits[i]["record"].record_id for i in (0, 1, 3 if should_promote else 2)]
+    assert bool(got[-1]["boosts"].get("turn_context_neighbor")) == should_promote
+
+
 @pytest.mark.parametrize("score", [float("inf"), "1e10000", 10 ** 400])
 def test_nonfinite_provider_scores_cannot_dominate_or_break_ranking(raw_store, score):
     poisoned = ingest(raw_store, "cedar weak evidence", "poisoned")
