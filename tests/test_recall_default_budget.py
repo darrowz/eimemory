@@ -62,9 +62,7 @@ def test_memory_api_recall_setdefault_deadline_within_3s(monkeypatch):
         return MagicMock()
 
     engine.recall.side_effect = fake_recall
-    api = MemoryAPI.__new__(MemoryAPI)
-    api.store = MagicMock()
-    api.recall_engine = engine
+    api = MemoryAPI(engine.store, recall_engine=engine)
     _patch_routes(monkeypatch)
 
     before = perf_counter()
@@ -88,9 +86,7 @@ def test_memory_api_recall_never_extends_tighter_caller_deadline(monkeypatch):
         return MagicMock()
 
     engine.recall.side_effect = fake_recall
-    api = MemoryAPI.__new__(MemoryAPI)
-    api.store = MagicMock()
-    api.recall_engine = engine
+    api = MemoryAPI(engine.store, recall_engine=engine)
     _patch_routes(monkeypatch)
 
     now = perf_counter()
@@ -113,9 +109,7 @@ def test_memory_api_recall_caps_looser_than_3s_deadline(monkeypatch):
         return MagicMock()
 
     engine.recall.side_effect = fake_recall
-    api = MemoryAPI.__new__(MemoryAPI)
-    api.store = MagicMock()
-    api.recall_engine = engine
+    api = MemoryAPI(engine.store, recall_engine=engine)
     _patch_routes(monkeypatch)
 
     before = perf_counter()
