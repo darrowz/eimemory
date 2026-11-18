@@ -180,6 +180,7 @@ def rerank_raw_results(
                 "boosts": boosts,
                 "_secondary": secondary,
                 "_index": index,
+                "_fts_rank": result.get("fts_rank"),
                 "_match": content_match,
                 "_day": _evidence_day(record),
                 "_partition": _raw_key(record)[1:],
@@ -189,11 +190,50 @@ def rerank_raw_results(
     # Sort the finite secondary itself: public compression/rounding can erase
     # meaningful differences (and even unrounded compression saturates).
     ranked.sort(key=lambda item: (-item["_match"].strength, -item["_secondary"], item["_index"]))
+    if not plan.phrases and task_context.get("evidence_intent") != "fact_citation":
+        _preserve_dialogue_fts_order(ranked)
     _apply_topic_order(ranked, plan)
     for item in ranked:
-        for key in ("_index", "_match", "_day", "_partition", "_current", "_secondary"):
+        for key in ("_index", "_match", "_day", "_partition", "_current", "_secondary", "_fts_rank"):
             item.pop(key, None)
     return ranked
+
+
+_USER_PREFIX = re.compile(r"\s*(?:user|human|用户)\s*[:：]", re.I)
+_ASSISTANT_PREFIX = re.compile(r"\s(?:assistant|助手)\s*[:：]", re.I)
+
+
+def _dialogue_turn(record: dict) -> bool:
+    if record.get("turn_id") and str(record.get("role") or "").lower() in {"user", "assistant"}:
+        return True
+    text = record["text"]
+    return bool(_USER_PREFIX.match(text) and _ASSISTANT_PREFIX.search(text))
+
+
+def _preserve_dialogue_fts_order(ranked: list[dict]) -> None:
+    # On comparable turns, counting distinct words anywhere in a long reply
+    # discards the index's discriminative term weights and length normalization.
+    # Keep exact quotes, mixed sources and document rankings on their normal path.
+    indexed = [item for item in ranked if item["_fts_rank"] and item["_match"].terms]
+    if (len(ranked) < 2 or not indexed
+            or any(item["_partition"] != ranked[0]["_partition"] for item in ranked)
+            or not all(_dialogue_turn(item["record"]) for item in ranked)):
+        return
+    ceiling = max(item["final_score"] for item in ranked)
+    for item in indexed:
+        reciprocal = 1.0 / item["_fts_rank"]
+        item["boosts"]["fts_reciprocal_rank"] = reciprocal
+        item["final_score"] = round(ceiling + reciprocal, 6)
+    # Stable sort leaves unindexed hits and equal ranks in their previous order.
+    ranked.sort(key=lambda item: -item["boosts"].get("fts_reciprocal_rank", 0.0))
+
+
+def _scored_candidate(record: Any, item: Any) -> dict:
+    row = {"record": record, "base_score": _result_base_score(item)}
+    rank = item.get("fts_rank") if isinstance(item, dict) else None
+    if type(rank) is int and 1 <= rank <= 5000:
+        row["fts_rank"] = rank
+    return row
 
 
 def _evidence_day(record: Any) -> date | None:
@@ -455,9 +495,16 @@ def _unique_raw_candidates(results: list[Any]) -> list[dict[str, Any]]:
         record_key = _raw_key(record)
         if not record_key[0]:
             continue
-        score = _result_base_score(item)
-        if record_key not in by_ref or score > by_ref[record_key]["base_score"]:
-            by_ref[record_key] = {"record": record, "base_score": score}
+        candidate = _scored_candidate(record, item)
+        previous = by_ref.get(record_key)
+        if previous is None:
+            by_ref[record_key] = candidate
+        else:
+            strongest = candidate if candidate["base_score"] > previous["base_score"] else previous
+            ranks = [x["fts_rank"] for x in (candidate, previous) if "fts_rank" in x]
+            if ranks:
+                strongest["fts_rank"] = min(ranks)
+            by_ref[record_key] = strongest
     return list(by_ref.values())
 
 
@@ -702,7 +749,7 @@ def _normalize_results(results: Any) -> list[dict[str, Any]]:
         record = _result_record(item)
         if record is None:
             continue
-        normalized.append({"record": record, "base_score": _result_base_score(item)})
+        normalized.append(_scored_candidate(record, item))
     return normalized
 
 
@@ -763,7 +810,7 @@ def _authoritative_raw_candidates(
         if not raw_ref_allowed(hydrated):
             continue
         capture_raw_snapshot(hydrated)
-        authoritative.append({"record": hydrated, "base_score": _result_base_score(item)})
+        authoritative.append(_scored_candidate(hydrated, item))
     return authoritative
 
 

@@ -17,6 +17,31 @@ def ids(ranked):
     return [item["record"]["record_id"] for item in ranked]
 
 
+def test_dialogue_retains_index_order_and_duplicate_score_without_losing_fts_rank():
+    query = "Where are the spare gauges for R28 kept after testing?"
+    rare = candidate("rare", "User: I put the R28 in the south cabinet.\nAssistant: Logged.", .1)
+    mention = candidate("mention", "User: The spare gauges for testing are here.\nAssistant: Good.", .9)
+    rare["fts_rank"], mention["fts_rank"] = 1, 4
+    duplicate = {**rare, "base_score": .8}
+    duplicate.pop("fts_rank")
+    ranked = rerank_raw_results(query=query, results=[mention, rare, duplicate])
+    assert ids(ranked) == ["rare", "mention"]
+    assert ranked[0]["base_score"] == .8
+    assert ranked[0]["final_score"] > ranked[1]["final_score"]
+
+
+@pytest.mark.parametrize("other,rank,query", [
+    ("Workshop notes on spare gauges for testing.", 1, "R28 spare gauges for testing"),
+    ("User: We have spare gauges.\nAssistant: Ready for testing.", True, "R28 spare gauges for testing"),
+    ("User: We have spare gauges.\nAssistant: Ready for testing.", 1, 'R28 "spare gauges" for testing'),
+])
+def test_document_mixture_invalid_rank_and_exact_quotes_keep_grounded_order(other, rank, query):
+    rare = candidate("rare", "User: R28 is in the cabinet.\nAssistant: Logged.", .1)
+    rare["fts_rank"] = rank
+    ranked = rerank_raw_results(query=query, results=[rare, candidate("mention", other, .8)])
+    assert ids(ranked) == ["mention", "rare"]
+
+
 @pytest.mark.parametrize("query,title,answer,note", [
     ("When do air filters need replacement?", "Air filters",
      "Air filters need replacement every three months.", "We debated when air filters need replacement."),
