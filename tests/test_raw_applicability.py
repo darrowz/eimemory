@@ -81,6 +81,42 @@ def test_expired_evidence_rejected_at_pinned_current_time_even_without_temporal_
     assert check("Valid from: 2026-01-01\nValid until: 2026-11-17\nZephyr stores manifests in Git.").reason == "validity_expired"
 
 
+@pytest.mark.parametrize("query, expected", [
+    ("As of 2033-05-10 10:00:00Z, which depot is active?", "applicable"),
+    ("截至2033-05-10T18:59:59+0800，调度库是哪个？", "applicable"),
+    ("As of 2033-05-10T10:30:00Z, which depot is active?", "applicable"),
+    ("As of 2033-05-10, which depot is active?", "not_applicable"),
+    ("截至2033-05-10 10:30:00，调度库是哪个？", "unknown"),
+    ("As of 2033-05-10T10:30:00, which depot is active?", "unknown"),
+])
+def test_intraday_validity_preserves_requested_clock(query, expected):
+    source = "Valid from: 2033-05-10T10:00:00Z\nValid until: 2033-05-10T11:00:00Z\nDepot: jade."
+    assert check(source, query).status == expected
+
+
+@pytest.mark.parametrize("instant, expected", [
+    ("2035-09-04 09:14:59-04:00", "applicable"),
+    ("2035-09-04 09:15:00-04:00", "not_applicable"),
+    ("2035-09-04T22:15:00+0900", "not_applicable"),
+    ("2035-09-04T14:00:00+01:9", "unknown"),
+    ("2035-09-04T14:00:00Zinvalid", "unknown"),
+])
+def test_archive_reading_at_local_cutoff(instant, expected):
+    source = "Valid from: 2035-09-01\nValid until: 2035-09-04T13:15:00Z\nOriole uses copper tape."
+    assert check(source, f"Which archive medium did Oriole use as of {instant}?").status == expected
+
+
+@pytest.mark.parametrize("instant, expected", [
+    ("2035-09-04:", "applicable"),
+    ("2035-09-04T13:14:59.5Z.", "applicable"),
+    ("2035-09-04   13:15:00z:", "not_applicable"),
+    ("2035-09-04T13:14:00+00:70", "unknown"),
+])
+def test_as_of_separators_and_invalid_offsets(instant, expected):
+    source = "Valid from: 2035-09-01\nValid until: 2035-09-04T13:15:00Z\nOriole uses copper tape."
+    assert check(source, f"As of {instant} which medium did Oriole use?").status == expected
+
+
 def test_independent_future_and_unbounded_evidence():
     assert check("有效起始：2027-01-01\n有效截止：unbounded\n青岚证书每30天轮换。",
                  "青岚证书的轮换周期是多少？").reason == "not_yet_valid"

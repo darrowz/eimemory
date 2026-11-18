@@ -110,3 +110,16 @@ def test_historical_validity_uses_requested_instant(runtime):
     add_raw(runtime, text)
     assert search(runtime, 'Where are Vesper manifests stored as of 2023-06-02?', fact=True)
     assert not search(runtime, 'Where are Vesper manifests stored as of 2024-01-01?', fact=True)
+
+
+def test_intraday_handoff_uses_only_effective_source_in_citation(runtime):
+    first = add_raw(runtime, 'Valid from: 2034-12-01\nValid until: 2034-12-06T14:00:00Z\n'
+                    'Wren deployment manifests are stored in depot-slate.')
+    next_record = add_raw(runtime, 'Valid from: 2034-12-06T14:00:00Z\nValid until: unbounded\n'
+                          'Wren deployment manifests are stored in depot-ivory.')
+    query = 'Where are Wren deployment manifests stored as of 2034-12-06 09:00:00-05:00?'
+    assert {row['record']['record_id'] for row in search(runtime, query, fact=False)} == {
+        first.record_id, next_record.record_id}
+    assert [row['record']['record_id'] for row in search(runtime, query, fact=True)] == [next_record.record_id]
+    lane = call(runtime, query=query)['bundle']['raw_citation']
+    assert [row['ref'][0] for row in lane['evidence']] == [next_record.record_id]

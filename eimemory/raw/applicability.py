@@ -40,9 +40,16 @@ _QUERY_VERSION = re.compile(
 )
 _VERSION_REQUEST_MARKER = re.compile(r"(?<![A-Za-z0-9_.])v(?=\d)|(?:\bversion\s+|版本\s*[:：]?\s*)(?=[v0-9<>=])", re.I)
 _QUERY_TIME = re.compile(
-    r"(?:\bas\s+of\s+|截至\s*|截止\s*)(\d{4}-\d{2}-\d{2}(?:T[0-9:.]+(?:Z|[+-]\d\d:\d\d))?)",
+    # Consume the whole ISO-like token before validating it. An optional
+    # well-formed time here would let a malformed one fall back to midnight.
+    r"(?:\bas\s+of\s+|截至\s*|截止\s*)(\d{4}-\d{2}-\d{2})"
+    r"(?:(?:T|[ \t]+(?=[0-9]{1,6}[:Z+-]))"
+    r"((?:[A-Za-z0-9_+-]|[:.](?=[A-Za-z0-9]))*))?",
     re.I,
 )
+_QUERY_CLOCK = re.compile(
+    r"(?:[01]\d|2[0-3])(?::?[0-5]\d(?::?[0-5]\d)?)?(?:\.\d+)?"
+    r"(?:Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)", re.I)
 _DECLARATION = re.compile(
     r"^[ \t]*(?:[-*][ \t]+)?(?P<label>applies[ \t]+to[ \t]+versions?|applicable[ \t]+versions?|适用版本|"
     r"valid[ \t]+from|valid[ \t]+until|有效起始|有效截止|status|状态)[ \t]*[:：][ \t]*(?P<value>.*?)[ \t]*$",
@@ -405,7 +412,13 @@ def _calendar_instant(date) -> datetime | None:
 
 
 def _query_times(query: str) -> set[str]:
-    times = {match.group(1) for match in _QUERY_TIME.finditer(query)}
+    times = set()
+    for match in _QUERY_TIME.finditer(query):
+        date, clock = match.groups()
+        if clock is None:
+            times.add(date)
+        else:
+            times.add(date + "T" + clock.upper() if _QUERY_CLOCK.fullmatch(clock) else "invalid")
     for date in _CALENDAR_DATE.finditer(query):
         # Only an explicit as-of request changes the reference clock. An
         # inventory date, example or incidental "on <date>" is not a validity
