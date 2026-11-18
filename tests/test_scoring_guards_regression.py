@@ -33,6 +33,23 @@ INVALID = [float("nan"), float("inf"), float("-inf"), "NaN", "+Infinity", "-Infi
 INVALID_IDS = ["nan", "inf", "minus-inf", "nan-string", "inf-string", "minus-inf-string", "overflow-string", "true", "false", "empty", "garbage", "dict", "list", "overflow-int"]
 
 
+@pytest.mark.parametrize(("text", "counts"), [
+    ("project PROJECT deploy-deploy maybeline", (1, 1, 0)),
+    ("rapid _api api3", (0, 0, 0)),
+    ("项目API偏好规则，可能不确定", (3, 1, 2)),
+    ("ſhould APİ ıMPORTANT GUeſſ", (2, 1, 1)),
+    ("ſproject İapi Kuser _server", (0, 1, 0)),
+    ("İnterface ſerver", (0, 1, 0)),
+])
+def test_keyword_evidence_preserves_identifier_and_unicode_boundaries(text, counts):
+    components = evaluate_memory_score(text=text).components
+    assert (
+        components["salience"].evidence["keyword_hits"],
+        components["reuse"].evidence["reusable_hits"],
+        components["confidence"].evidence["uncertain_hits"],
+    ) == counts
+
+
 @pytest.fixture
 def store(tmp_path):
     result = RuntimeStore(tmp_path / "synthetic-store")

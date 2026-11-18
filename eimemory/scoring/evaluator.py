@@ -57,6 +57,24 @@ INJECTION_MARKERS = {
     "jailbreak",
 }
 
+_KEYWORDS = HIGH_VALUE_KEYWORDS | REUSABLE_KEYWORDS | UNCERTAIN_KEYWORDS
+_LITERAL_KEYWORDS = {word for word in _KEYWORDS if " " in word or not word.isascii()}
+_WORD_PATTERNS = {
+    word: re.compile(rf"(?<![A-Za-z0-9_]){re.escape(word)}(?![A-Za-z0-9_])", re.I)
+    for word in _KEYWORDS - _LITERAL_KEYWORDS
+}
+
+
+def _keyword_hits(text: str) -> set[str]:
+    # Python's case-insensitive ASCII boundaries include these four extra
+    # letters. Keep the regex authoritative, e.g. for "ſhould" and "APİ".
+    folded = text.lower()
+    special_case = any(char in text for char in "İıſK")
+    hits = {word for word, pattern in _WORD_PATTERNS.items()
+            if (special_case or word in folded) and pattern.search(text)}
+    hits.update(word for word in _LITERAL_KEYWORDS if word in text)
+    return hits
+
 
 def _normalized_terms(text: str) -> list[str]:
     return [term.lower() for term in re.findall(r"[\w]+", text, flags=re.UNICODE) if term.strip()]
@@ -140,16 +158,13 @@ def _capture_components(
     memory_type = memory_type.lower().strip()
     source = source.lower().strip()
 
-    def _keyword_hit(keyword: str, haystack: str) -> bool:
-        # Word-boundary-ish match so "api" does not score inside "rapid" (RSC-16).
-        if " " in keyword or any(ord(ch) > 127 for ch in keyword):
-            return keyword in haystack
-        import re as _re
-        return _re.search(rf"(?<![A-Za-z0-9_]){_re.escape(keyword)}(?![A-Za-z0-9_])", haystack, flags=_re.I) is not None
-
-    keyword_hits = sum(1 for keyword in HIGH_VALUE_KEYWORDS if _keyword_hit(keyword, normalized) or _keyword_hit(keyword, combined))
-    reusable_hits = sum(1 for keyword in REUSABLE_KEYWORDS if _keyword_hit(keyword, normalized) or _keyword_hit(keyword, combined.lower()))
-    uncertain_hits = sum(1 for keyword in UNCERTAIN_KEYWORDS if _keyword_hit(keyword, normalized) or _keyword_hit(keyword, combined))
+    lower = combined.lower()
+    hits = {view: _keyword_hits(view) for view in dict.fromkeys((normalized, combined, lower))}
+    original_hits = hits[normalized] | hits[combined]
+    lowercase_hits = hits[normalized] | hits[lower]
+    keyword_hits = len(HIGH_VALUE_KEYWORDS & original_hits)
+    reusable_hits = len(REUSABLE_KEYWORDS & lowercase_hits)
+    uncertain_hits = len(UNCERTAIN_KEYWORDS & original_hits)
 
     thin_or_noisy = _thin_or_repetitive_body(text, body_terms)
     type_bonus = {
