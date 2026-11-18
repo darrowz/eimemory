@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from eimemory.contracts.recall_boundary import bind_score_entries, exact_ref
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.raw.boundary import raw_index_options, require_raw_collection_complete
 from eimemory.raw.chunks import chunk_text, raw_text_hash
@@ -124,18 +125,16 @@ class RawEvidenceAPI:
             **raw_index_options(scope_ref, source_ids),
         )
         require_raw_collection_complete(records, report)
-        scores = {
-            str(item.get("record_id") or ""): float(item.get("final_score") or 0.0)
-            for item in list((report or {}).get("scored_items") or [])
-            if isinstance(item, dict)
-        }
-        return [
-            {
-                "record": record,
-                "base_score": scores.get(record.record_id, 0.0),
-            }
-            for record in records
-        ]
+        scores = bind_score_entries(records, (report or {}).get("scored_items"))
+        hits = []
+        for record in records:
+            rating = scores.get(exact_ref(record), {})
+            hit = {"record": record, "base_score": float(rating.get("final_score") or 0.0)}
+            rank = rating.get("fts_rank")
+            if type(rank) is int and rank > 0 and "scope" in rating and "source_id" in rating:
+                hit["fts_rank"] = rank
+            hits.append(hit)
+        return hits
 
     def search(
         self,

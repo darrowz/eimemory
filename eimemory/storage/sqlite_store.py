@@ -43,7 +43,7 @@ from hashlib import sha256
 from time import perf_counter
 from uuid import uuid4
 from eimemory.core.record_ids import validate_record_id
-from eimemory.contracts.recall_boundary import (DEFAULT_BLOCKED_RECALL_LANES,
+from eimemory.contracts.recall_boundary import (DEFAULT_BLOCKED_RECALL_LANES, SCOPE_FIELDS,
     RECALL_LANE_MEMORY_TYPE_ALIASES, exact_ref, record_recall_memory_type)
 from eimemory.events import (
     DEFAULT_INTENT_PATTERNS,
@@ -4832,6 +4832,7 @@ class SqliteRecordStore:
         candidate_sources_by_key = dict(
             candidate_report.pop("_candidate_sources_by_storage_key", {}) or {}
         )
+        raw_fts_ranks = candidate_report.pop("_raw_fts_ranks", {})
         query_tokens_for_filter = [token for token in self._clean_text_for_query(query).split() if token]
         query_token_count = max(1, len(query_tokens_for_filter))
         query_ngrams = self._char_ngrams(query.lower())
@@ -5017,6 +5018,9 @@ class SqliteRecordStore:
                         "record_id": record.record_id,
                         "kind": record.kind,
                         "title": record.title,
+                        **({"fts_rank": raw_fts_ranks.get(row["storage_key"]),
+                            "source_id": record.source_id, "scope": {k: row[k] for k in SCOPE_FIELDS}}
+                           if raw_fts_ranks else {}),
                         "lexical_score": round(float(effective_lexical_count), 4),
                         "raw_lexical_score": round(float(lexical_count), 4),
                         "semantic_score": round(semantic_score, 4),
@@ -5071,10 +5075,12 @@ class SqliteRecordStore:
                     None,
                 )
             if reserved is not None:
+                swap = next(i for i in reversed(range(len(selected_rows)))
+                            if selected_rows[i][3].get("selection_reserve") != "raw_fts_leader")
                 if trace is not None:
-                    trace.drop("ranked_selected", selected_rows[-1][2], "anchor_reserve_swap")
+                    trace.drop("ranked_selected", selected_rows[swap][2], "anchor_reserve_swap")
                 reserved[3]["selection_reserve"] = "high_quality_anchor_only"
-                selected_rows[-1] = reserved
+                selected_rows[swap] = reserved
         selected = [record for _, _, record, _ in selected_rows]
         if trace is not None:
             trace.observe("ranked_selected", selected, truncated=len(scored) > len(selected))
@@ -5153,6 +5159,7 @@ class SqliteRecordStore:
         from eimemory.retrieval.target_trace import current_sqlite_trace
         trace = current_sqlite_trace(self)
         candidate_limit = self._candidate_limit(limit, recall_filters)
+        raw_only = kinds == ["raw_chunk"]
         has_recall_index_records = self._has_any_recall_index_records()
         if (
             bool(recall_filters.get("_exact_scope"))
@@ -5188,10 +5195,17 @@ class SqliteRecordStore:
         candidates: dict[str, dict[str, Any]] = {}
         force_anchor = bool(recall_filters.get("_force_anchor_fallback"))
         anchor_reserve = min(16, max(1, candidate_limit // 4))
-        fts_query = self._fts_query(query)
+        fts_query = self._fts_query(query, term_limit=_LONG_QUERY_FTS_TERMS) if raw_only else self._fts_query(query)
+        raw_fts_ranks = {}
         long_query_supplement = 0
         if fts_query and self._has_fts_table() and not force_anchor and not self._collection_deadline_exceeded(recall_filters):
-            fts_limit = max(1, candidate_limit - anchor_reserve)
+            # RAW reranks again after the store. Bound full-body hybrid scoring
+            # when FTS can supply candidates; legacy/failed FTS keeps its pool.
+            fts_budget = candidate_limit
+            if raw_only and "candidate_limit" not in recall_filters:
+                fts_budget = min(candidate_limit, max(32, limit * 4))
+            fts_reserve = min(anchor_reserve, max(1, fts_budget // 4))
+            fts_limit = max(1, fts_budget - fts_reserve)
             self._collect_fts_candidates(
                 candidates,
                 fts_query=fts_query,
@@ -5206,7 +5220,12 @@ class SqliteRecordStore:
             # terms) fills only the FTS budget the primary pass left unused, ranked after
             # the primary hits. Collection
             # only: scoring and grounding still use the full original query.
-            long_fts_query = self._long_query_fts_query(query)
+            if raw_only:
+                raw_fts_ranks = {key: rank for rank, key in enumerate(candidates, start=1)}
+                if raw_fts_ranks:
+                    candidate_limit = fts_budget
+                    anchor_reserve = fts_reserve
+            long_fts_query = "" if raw_only else self._long_query_fts_query(query)
             unused_fts_budget = max(0, fts_limit - len(candidates))
             if long_fts_query and unused_fts_budget and not self._collection_deadline_exceeded(recall_filters):
                 before = len(candidates)
@@ -5308,6 +5327,7 @@ class SqliteRecordStore:
             "candidate_limit": candidate_limit,
             "candidate_sources": source_counts,
             "long_query_supplement": long_query_supplement,
+            "_raw_fts_ranks": raw_fts_ranks,
             "_candidate_sources_by_storage_key": {
                 key: tuple(candidates[key].get("sources") or ())
                 for key in ordered_keys
@@ -5799,6 +5819,16 @@ class SqliteRecordStore:
         selected = list(scored[:bounded])
         if bounded == 1:
             return selected
+        if len(scored) > bounded and any("fts_rank" in entry[3] for entry in scored):
+            # A broad OR matches almost every document. Keep actual BM25
+            # leaders, not simply any row with FTS membership.
+            lexical = sorted((r for r in scored if r[3].get("fts_rank")),
+                             key=lambda r: r[3]["fts_rank"])[:bounded // 2]
+            pinned = {exact_ref(r[2]) for r in lexical}
+            for r in lexical:
+                r[3]["selection_reserve"] = "raw_fts_leader"
+            head = [r for r in selected if exact_ref(r[2]) not in pinned][:bounded - len(lexical)]
+            return sorted(head + lexical, key=lambda r: r[0], reverse=True)
         fts_quota = max(1, bounded // 4)
 
         def is_fts_lexical(entry: tuple[float, float, Any, dict[str, Any]]) -> bool:
@@ -5910,7 +5940,7 @@ class SqliteRecordStore:
                 expanded.append(term)
         return expanded
 
-    def _fts_query(self, query: str) -> str:
+    def _fts_query(self, query: str, *, term_limit: int = 12) -> str:
         terms = [
             term.replace('"', " ").strip()
             for term in self._fts_terms_for_tokenizer(list(self._candidate_query_terms(query)))
@@ -5919,7 +5949,7 @@ class SqliteRecordStore:
         terms = [term for term in terms if term]
         if not terms:
             return ""
-        return " OR ".join(f'"{term}"' for term in self._bounded_query_terms(terms, 12))
+        return " OR ".join(f'"{term}"' for term in self._bounded_query_terms(terms, term_limit))
 
     def _long_query_fts_query(self, query: str) -> str:
         """Wider bm25 expression for long queries only; "" otherwise."""

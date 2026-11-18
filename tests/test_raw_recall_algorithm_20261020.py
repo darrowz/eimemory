@@ -27,6 +27,52 @@ def ingest(store, text, event, *, occurred_at="2026-10-01T00:00:00Z"):
     )[0]
 
 
+def test_raw_search_uses_full_question_for_scoped_fts_rank(raw_store):
+    query = "orchard kettle beetle chartreuse fern meadow planet apple bridge berry willow pear violet meadowlark cabin lake"
+    # This word falls between sample positions in the default twelve-term arm.
+    assert '"chartreuse"' not in raw_store.sqlite._fts_query(query)
+    target = raw_store.append(RecordEnvelope.create(
+        kind="raw_chunk", scope=SCOPE, source_id="handbook", title="Visit",
+        content={"text": "chartreuse"},
+    ))
+    for index in range(24):
+        raw_store.append(RecordEnvelope.create(
+            kind="raw_chunk", scope=SCOPE, source_id="handbook", title="Visit",
+            content={"text": f"orchard cabin {index}"},
+        ))
+    raw_store.append(RecordEnvelope.create(
+        kind="raw_chunk", scope=SCOPE, source_id="unrelated", title=query,
+        content={"text": query},
+    ))
+
+    hits = RawEvidenceAPI(raw_store).search_raw_chunks(
+        query=query, scope=SCOPE, source_ids=["handbook"], limit=6,
+    )
+    assert [hit["record"].record_id for hit in hits if hit.get("fts_rank") == 1] == [target.record_id]
+    assert all(hit["record"].source_id == "handbook" for hit in hits)
+
+
+def test_raw_candidate_quota_retains_actual_fts_leaders(raw_store):
+    rows = []
+    for rank in range(6, 0, -1):
+        record = RecordEnvelope.create(kind="raw_chunk", scope=SCOPE, title=str(rank))
+        rows.append((rank, 0, record, {"fts_rank": rank, "candidate_sources": ["fts"]}))
+
+    chosen = raw_store.sqlite._select_hybrid_with_fts_quota(rows, limit=4)
+    assert [row[3]["fts_rank"] for row in chosen] == [6, 5, 2, 1]
+
+
+def test_legacy_id_only_score_cannot_supply_raw_fts_rank(raw_store, monkeypatch):
+    record = ingest(raw_store, "heron observatory", "observation")
+    rating = {"record_id": record.record_id, "final_score": 0.75, "fts_rank": 1}
+    monkeypatch.setattr(raw_store, "search_with_diagnostics", lambda **kw: (
+        [record], {"scored_items": [rating]},
+    ))
+
+    hits = RawEvidenceAPI(raw_store).search_raw_chunks(query="heron", scope=SCOPE)
+    assert hits == [{"record": record, "base_score": 0.75}]
+
+
 def test_unknown_query_does_not_return_unrelated_raw_corrections(raw_store):
     ingest(raw_store, "更正：午餐改为面条，之前说错了。", "lunch")
     ingest(raw_store, "小马哥负责系统问题，鸿睿负责执行核查。", "team")
